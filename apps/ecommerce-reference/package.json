@@ -1,0 +1,10 @@
+{
+  "name": "ecommerce-reference",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Single-repo layered ecommerce reference system for SCC delivery validation.",
+  "scripts": {
+    "demo": "node scripts/reference-flow.mjs --json"
+  }
+}

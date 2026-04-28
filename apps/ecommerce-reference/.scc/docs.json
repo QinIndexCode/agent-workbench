@@ -1,0 +1,24 @@
+{
+  "sources": [
+    {
+      "path": "docs/architecture.md",
+      "title": "Architecture",
+      "tags": ["architecture", "domain"]
+    },
+    {
+      "path": "docs/api-contracts.md",
+      "title": "API Contracts",
+      "tags": ["api", "idempotency"]
+    },
+    {
+      "path": "docs/observability.md",
+      "title": "Observability",
+      "tags": ["observability", "operations"]
+    },
+    {
+      "path": "docs/deployment-readiness.md",
+      "title": "Deployment Readiness",
+      "tags": ["deploy", "readiness"]
+    }
+  ]
+}
