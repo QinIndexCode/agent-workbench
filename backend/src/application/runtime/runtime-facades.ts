@@ -176,6 +176,9 @@ export interface BackendNewPlatformFacade {
   getCapabilityHub(): Promise<CapabilityHubView>;
   getEcosystemSummary(): Promise<EcosystemSummaryView>;
   listToolCapabilities(): Promise<EcosystemSummaryView['tools']>;
+  listScenarioPacks(): Promise<EcosystemSummaryView['scenarioPacks']>;
+  listEcosystemSkills(): Promise<EcosystemSummaryView['skills']>;
+  listEcosystemMcpServers(): Promise<EcosystemSummaryView['mcpServers']>;
   getWorkspaceWorkflow(): Promise<WorkspaceWorkflowView>;
   initWorkspaceWorkflow(): Promise<PlatformActionResult<WorkspaceWorkflowView>>;
   importWorkspaceDocs(): Promise<PlatformActionResult<WorkspaceDocsImportSummary>>;
@@ -297,6 +300,9 @@ export function createPlatformFacade(params: {
     getCapabilityHub: guardAsync(params.ensureReady, params.platformApplication.getCapabilityHub.bind(params.platformApplication)),
     getEcosystemSummary: guardAsync(params.ensureReady, params.platformApplication.getEcosystemSummary.bind(params.platformApplication)),
     listToolCapabilities: guardAsync(params.ensureReady, params.platformApplication.listToolCapabilities.bind(params.platformApplication)),
+    listScenarioPacks: guardAsync(params.ensureReady, params.platformApplication.listScenarioPacks.bind(params.platformApplication)),
+    listEcosystemSkills: guardAsync(params.ensureReady, params.platformApplication.listEcosystemSkills.bind(params.platformApplication)),
+    listEcosystemMcpServers: guardAsync(params.ensureReady, params.platformApplication.listEcosystemMcpServers.bind(params.platformApplication)),
     getWorkspaceWorkflow: guardAsync(params.ensureReady, params.platformApplication.getWorkspaceWorkflow.bind(params.platformApplication)),
     initWorkspaceWorkflow: guardAsync(params.ensureReady, params.platformApplication.initWorkspaceWorkflow.bind(params.platformApplication)),
     importWorkspaceDocs: guardAsync(params.ensureReady, params.platformApplication.importWorkspaceDocs.bind(params.platformApplication)),

@@ -378,6 +378,52 @@ test('default builtin run_command executor reports stdout and cwd for host-safe 
   }
 });
 
+test('default builtin run_command preserves UTF-8 PowerShell output on Windows', async () => {
+  if (process.platform !== 'win32') {
+    return;
+  }
+  const root = createTempRoot();
+  try {
+    const { foundation, runtime } = createRuntimeWithFoundation({
+      config: {
+        paths: {
+          rootDir: root
+        }
+      }
+    });
+    const taskId = 'task_builtin_command_utf8';
+    await fs.mkdir(path.join(root, 'workspace', taskId), { recursive: true });
+
+    const runTool = runtime.extensions.findTool('run_command');
+    const runExecutor = foundation.toolExecutors.resolve(runTool);
+    const command = "Write-Output 'Path – A Thoughtful Blog 中文'";
+    const result = await runExecutor.execute({
+      tool: runTool,
+      invocation: {
+        taskId,
+        unitId: 'AGENT-001',
+        toolName: 'run_command',
+        arguments: {
+          command
+        }
+      },
+      context: {
+        config: runtime.config,
+        sessionId: 'sess_builtin_command_utf8',
+        correlationId: 'corr_builtin_command_utf8',
+        turnId: 'turn_builtin_command_utf8',
+        checkpointId: null
+      }
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.output.exitCode, 0);
+    assert.match(result.output.stdout, /Path – A Thoughtful Blog 中文/);
+  } finally {
+    removeDir(root);
+  }
+});
+
 test('default builtin run_command executor preserves failed command stdout and stderr', async () => {
   const root = createTempRoot();
   try {
@@ -417,6 +463,9 @@ test('default builtin run_command executor preserves failed command stdout and s
 
     assert.equal(result.ok, false);
     assert.equal(result.kind, 'EXECUTION');
+    assert.equal(result.output.exitCode, 7);
+    assert.match(result.output.stdout, /OUT_MARKER/);
+    assert.match(result.output.stderr, /ERR_MARKER/);
     assert.equal(result.metadata.exitCode, 7);
     assert.equal(result.metadata.originalCommand, command);
     assert.equal(result.metadata.effectiveCommand, command);
@@ -551,6 +600,9 @@ test('fallback task turns feed failed run_command output into the next provider 
     const started = await runtime.tasks.startTask({ taskId: submitted.command.taskId });
     const failedInvocation = started.task.toolInvocations.find((record) => record.toolId === 'run_command');
     assert.equal(failedInvocation.status, 'FAILED');
+    assert.equal(failedInvocation.result.exitCode, 7);
+    assert.match(failedInvocation.result.stdout, /OUT_MARKER/);
+    assert.match(failedInvocation.result.stderr, /ERR_MARKER/);
     assert.match(failedInvocation.metadata.stdout, /OUT_MARKER/);
     assert.match(failedInvocation.metadata.stderr, /ERR_MARKER/);
     assert.match(JSON.stringify(started.task.runtime.llmContextMessages ?? []), /OUT_MARKER/);

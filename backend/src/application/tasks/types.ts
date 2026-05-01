@@ -41,6 +41,8 @@ export interface SubmitTaskInput {
 export interface TaskActionInput {
   taskId: string;
   userMessage?: string;
+  autoRun?: boolean;
+  maxTurns?: number;
   actor?: string | null;
   reason?: string | null;
   metadata?: Record<string, unknown>;
@@ -52,6 +54,8 @@ export interface SubmitTaskCommandInput {
   actor?: string | null;
   reason?: string | null;
   message?: string | null;
+  autoRun?: boolean;
+  maxTurns?: number;
   invocationId?: string | null;
   approvalStatus?: ResolveApprovalInput['status'];
   metadata?: Record<string, unknown>;

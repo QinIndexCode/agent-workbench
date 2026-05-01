@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
   loadBackendNewConfig,
   StorageLayout
@@ -67,22 +69,22 @@ test('buildTurnRuntimeState preserves accepted tracker history when quality gate
     const foundation = { config, layout };
     const plannerService = new TaskPlannerService();
     const definition = {
-      taskId: 'task_database_design',
-      title: 'Database Near MySQL Design',
-      intent: 'Design a MySQL-like OLTP database and prototype scaffold.',
-      preferredProviderId: 'xiaomi-mimo-v2-flash',
+      taskId: 'task_docs_normalize',
+      title: 'Normalize Documentation Batch',
+      intent: 'Normalize incoming source notes into grounded markdown documents.',
+      preferredProviderId: 'test-provider',
       createdAt: Date.now(),
       metadata: {},
       units: [
         {
           id: 'AGENT-001',
-          role: 'DatabaseArchitect',
-          goal: 'Produce a grounded design package and prototype.',
-          taskScope: 'Write the design package into database-lab/.',
+          role: 'DocumentationNormalizer',
+          goal: 'Produce grounded normalized documents from incoming source notes.',
+          taskScope: 'Read incoming/ and write normalized markdown plus trace evidence.',
           outputContract: '{"summary":"string","details":"string","producedFiles":[],"issues":[]}',
           dependencies: [],
           executionProfileId: 'implement',
-          qualityProfileId: 'database_near_mysql_design'
+          qualityProfileId: 'docs_normalize'
         }
       ]
     };
@@ -92,8 +94,8 @@ test('buildTurnRuntimeState preserves accepted tracker history when quality gate
       wrapper: 'square',
       raw: '{"summary":"Read brief files","details":"Grounded design write phase is next.","producedFiles":[],"issues":[]}',
       parsedJson: {
-        summary: 'Read brief files',
-        details: 'Grounded design write phase is next.',
+        summary: 'Read source files',
+        details: 'Grounded normalization write phase is next.',
         producedFiles: [],
         issues: []
       },
@@ -104,7 +106,7 @@ test('buildTurnRuntimeState preserves accepted tracker history when quality gate
       status: 'IN_PROGRESS',
       progressPercent: 20,
       decision: 'CONTINUE',
-      reason: 'Read the grounded brief files; next turn will write the design docs.',
+      reason: 'Read the grounded source files; next turn will write normalized docs.',
       nextUnit: null,
       filesCreated: []
     };
@@ -116,7 +118,7 @@ test('buildTurnRuntimeState preserves accepted tracker history when quality gate
       previousRuntime,
       assembled: {
         userProfile: createEmptyUserPreferenceProfile(10),
-        selectedProvider: { id: 'xiaomi-mimo-v2-flash' },
+        selectedProvider: { id: 'test-provider' },
         prompt: 'prompt',
         promptResult: { budget: createPromptBudget() },
         contextMessages: { messages: [], compressed: false, truncatedCount: 0 },
@@ -152,8 +154,8 @@ test('buildTurnRuntimeState preserves accepted tracker history when quality gate
       sessionId: 'sess_1',
       turnId: 'turn_1',
       providerResponseText: [
-        '{"tool":"read_file","arguments":{"path":"brief/workload-profile.md"}}',
-        '{"current_unit":"AGENT-001","status":"IN_PROGRESS","progress_percent":20,"decision":"CONTINUE","reason":"Read the grounded brief files; next turn will write the design docs.","next_unit":null,"files_created":[]}'
+        '{"tool":"read_file","arguments":{"path":"incoming/source-notes.md"}}',
+        '{"current_unit":"AGENT-001","status":"IN_PROGRESS","progress_percent":20,"decision":"CONTINUE","reason":"Read the grounded source files; next turn will write normalized docs.","next_unit":null,"files_created":[]}'
       ].join('\n'),
       plannerPreferred: true,
       phaseOutcome: {
@@ -237,8 +239,230 @@ test('buildTurnRuntimeState preserves accepted tracker history when quality gate
     assert.equal(nextRuntime.progressHistory[0].status, 'IN_PROGRESS');
     assert.match(
       nextRuntime.invalidOutputUnits['AGENT-001'].join(' '),
-      /quality_gate_failed:missing_database_design_manifest/
+      /quality_gate_failed:missing_docs_normalize_trace/
     );
+  } finally {
+    removeDir(root);
+  }
+});
+
+test('buildTurnRuntimeState feeds delivered artifact paths into quality evaluation', () => {
+  const root = createTempRoot();
+  try {
+    const config = loadBackendNewConfig({}, { cwd: root, env: {} });
+    const layout = new StorageLayout(config);
+    const foundation = { config, layout };
+    const plannerService = new TaskPlannerService();
+    const taskId = 'task_web_external_artifacts';
+    const workspaceDir = layout.forTask(taskId).workspaceDir;
+    const externalDir = path.join(root, 'AAA');
+    fs.mkdirSync(path.join(workspaceDir, 'quality'), { recursive: true });
+    fs.mkdirSync(externalDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(externalDir, 'index.html'),
+      '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><button data-theme-toggle>Theme</button><script src="script.js"></script></body></html>',
+      'utf8'
+    );
+    fs.writeFileSync(path.join(externalDir, 'styles.css'), 'button { color: #222; }', 'utf8');
+    fs.writeFileSync(path.join(externalDir, 'script.js'), 'document.querySelector("[data-theme-toggle]").addEventListener("click", () => document.body.classList.toggle("light"));', 'utf8');
+    fs.writeFileSync(
+      path.join(workspaceDir, 'quality', 'web-audit.json'),
+      JSON.stringify({
+        profile: 'web_experience',
+        artifactKind: 'static_site',
+        entryFiles: ['index.html'],
+        supportingFiles: ['styles.css', 'script.js'],
+        interactionSelectors: ['[data-theme-toggle]'],
+        brandingTitle: 'External Artifact Site'
+      }),
+      'utf8'
+    );
+
+    const definition = {
+      taskId,
+      title: 'External web artifact',
+      intent: 'Create a web artifact outside the task workspace.',
+      preferredProviderId: 'test-provider',
+      createdAt: Date.now(),
+      metadata: {},
+      units: [
+        {
+          id: 'AGENT-001',
+          role: 'WebBuilder',
+          goal: 'Build external web files.',
+          taskScope: 'Write the site to an explicit local destination and keep quality evidence in the workspace.',
+          outputContract: '{"summary":"string","details":"string","artifactDestination":"string","issues":[]}',
+          dependencies: [],
+          executionProfileId: 'implement',
+          qualityProfileId: 'web_experience'
+        }
+      ]
+    };
+    const previousRuntime = createTaskRuntimeState(definition, 10);
+    const acceptedOutput = {
+      unitId: 'AGENT-001',
+      wrapper: 'square',
+      raw: '{"summary":"Delivered site","details":"External files were written.","artifactDestination":"external","issues":[]}',
+      parsedJson: {
+        summary: 'Delivered site',
+        details: 'External files were written.',
+        artifactDestination: externalDir,
+        issues: []
+      },
+      contractKeys: ['summary', 'details', 'artifactDestination', 'issues']
+    };
+    const acceptedTracker = {
+      currentUnit: 'AGENT-001',
+      status: 'COMPLETE',
+      progressPercent: 100,
+      decision: 'CONTINUE',
+      reason: 'External files and quality evidence were written.',
+      nextUnit: null,
+      filesCreated: [
+        path.join(externalDir, 'index.html'),
+        path.join(externalDir, 'styles.css'),
+        path.join(externalDir, 'script.js'),
+        'quality/web-audit.json'
+      ]
+    };
+    const latestToolInvocations = [
+      path.join(externalDir, 'index.html'),
+      path.join(externalDir, 'styles.css'),
+      path.join(externalDir, 'script.js'),
+      'quality/web-audit.json'
+    ].map((filePath, index) => ({
+      invocationId: `tool_${index + 1}`,
+      toolId: 'write_file',
+      status: 'SUCCEEDED',
+      unitId: 'AGENT-001',
+      arguments: { path: filePath },
+      startedAt: 20 + index,
+      endedAt: 21 + index,
+      result: { path: filePath },
+      error: null,
+      metadata: {}
+    }));
+
+    const { nextRuntime } = buildTurnRuntimeState({
+      foundation,
+      plannerService,
+      definition,
+      previousRuntime,
+      assembled: {
+        userProfile: createEmptyUserPreferenceProfile(10),
+        selectedProvider: { id: 'test-provider' },
+        prompt: 'prompt',
+        promptResult: { budget: createPromptBudget() },
+        contextMessages: { messages: [], compressed: false, truncatedCount: 0 },
+        contextGatingSummary: {
+          mode: 'STANDARD',
+          rawContextMessageCount: 0,
+          retainedContextMessageCount: 0,
+          summarizedContextMessageCount: 0,
+          filteredContextMessageCount: 0,
+          rawContextCharacters: 0,
+          gatedContextCharacters: 0,
+          estimatedContextReductionRatio: 0,
+          reasons: []
+        },
+        existingConversations: [],
+        estimatedPromptCharacters: 512,
+        estimatedBaselineCharacters: 512,
+        estimatedReductionRatio: 0,
+        selectedValidatedOutputs: {
+          records: [],
+          retrievedContextCount: 0,
+          policyFilteredOutputCount: 0
+        },
+        pendingOperatorInputs: [],
+        stageMemorySummary: previousRuntime.stageMemorySummary,
+        capabilitySelectionSummary: previousRuntime.capabilitySelectionSummary,
+        retrievalSelectionSummary: previousRuntime.retrievalSelectionSummary
+      },
+      userMessage: undefined,
+      currentUnitId: 'AGENT-001',
+      checkpointId: 'chk_1',
+      correlationId: 'corr_1',
+      sessionId: 'sess_1',
+      turnId: 'turn_1',
+      providerResponseText: 'response',
+      plannerPreferred: true,
+      phaseOutcome: {
+        plannedTools: {
+          accepted: latestToolInvocations.length,
+          approvalRequired: 0,
+          rejected: [],
+          acceptedInvocationIds: latestToolInvocations.map((invocation) => invocation.invocationId),
+          approvalInvocationIds: []
+        },
+        orchestrated: {
+          parsed: {
+            rawText: '',
+            explicitOutputs: [],
+            trackers: [],
+            toolCalls: [],
+            warnings: []
+          },
+          acceptance: {
+            ok: true,
+            pendingCorrection: 'NONE',
+            failureCategory: null,
+            acceptedOutput,
+            acceptedTracker,
+            issues: [],
+            contractKeys: acceptedOutput.contractKeys,
+            exitCondition: {
+              ok: true,
+              issueCodes: [],
+              requiredOutputKeys: [],
+              failureCategory: null
+            }
+          },
+          plannedTools: {
+            acceptedInvocationIds: latestToolInvocations.map((invocation) => invocation.invocationId),
+            approvalInvocationIds: [],
+            rejectedToolCalls: []
+          }
+        },
+        diagnosticsAcceptance: {
+          ok: true,
+          pendingCorrection: 'NONE',
+          failureCategory: null,
+          acceptedOutput,
+          acceptedTracker,
+          issues: [],
+          contractKeys: acceptedOutput.contractKeys,
+          exitCondition: {
+            ok: true,
+            issueCodes: [],
+            requiredOutputKeys: [],
+            failureCategory: null
+          }
+        },
+        acceptedOutputs: [acceptedOutput],
+        acceptedTrackers: [acceptedTracker],
+        correctionUnitId: null,
+        pendingToolBatches: [],
+        batchAdmissionDecisions: [],
+        batchGuardrail: {
+          batchAdmissionRestricted: false,
+          reasons: []
+        },
+        consolidationState: {
+          status: 'COMPLETED',
+          stageIndex: 0,
+          lastCompletedAt: 11,
+          lastResult: 'COMPLETED',
+          lastIssueCodes: []
+        }
+      },
+      latestRuntimeAfterProvider: previousRuntime,
+      latestToolInvocations
+    });
+
+    assert.equal(nextRuntime.pendingCorrection, 'NONE');
+    assert.equal(nextRuntime.schedulerUnits['AGENT-001'].status, 'COMPLETE');
+    assert.equal(nextRuntime.invalidOutputUnits['AGENT-001'], undefined);
   } finally {
     removeDir(root);
   }

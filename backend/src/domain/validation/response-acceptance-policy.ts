@@ -81,7 +81,7 @@ function collectExplicitOutputArtifactPaths(
 }
 
 function classifyOutputFailure(issues: Array<{ code: string }>): ParsedTurnAcceptanceResult['failureCategory'] {
-  if (issues.some((issue) => issue.code === 'missing_contract_key')) {
+  if (issues.some((issue) => issue.code === 'missing_contract_key' || issue.code === 'contract_type_mismatch')) {
     return 'output_contract_mismatch';
   }
   return 'response_shape_mismatch';

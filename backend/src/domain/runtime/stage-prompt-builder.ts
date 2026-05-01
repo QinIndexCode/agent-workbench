@@ -233,11 +233,11 @@ function buildStageResponsePolicy(params: {
       : 'Emit tool calls only for current-stage units.',
     ...(params.policy.toolCallFormat === 'json'
       ? [
-        'Accepted canonical tool names: read_file, write_file, create_folder, list_files, search_files, run_command, delegate_subtask.',
+        'Accepted canonical tool names: read_file, inspect_file, write_file, create_folder, list_files, search_files, run_command, delegate_subtask.',
         'Do not use XML wrappers such as <tool>, <tool_call>, <tool_invocation>, or <invoke>.',
         'Canonical JSON tool object example:',
         '{"tool":"write_file","arguments":{"path":"relative/path.txt","content":"file content"}}',
-        'For larger files, write_file may use arguments.content_lines as an array of strings instead of one large escaped content string.',
+        'For HTML, CSS, JS, Markdown, or any content with quotes/backslashes/newlines, write_file must use arguments.content_lines as an array of lines instead of one giant escaped content string.',
         'For JSON manifests, write_file may use arguments.content_json as an object and the runtime will pretty-print it before writing.'
       ]
       : []),

@@ -816,8 +816,8 @@ function findLatestSuccessfulToolText(task: TaskQueryResponse, artifactPath: str
       continue;
     }
     if (normalizedToolId === 'write_file') {
-      const contentArg = matchingInvocation.arguments.content;
-      if (typeof contentArg === 'string' && contentArg.trim()) {
+      const contentArg = extractLiveProviderWriteFileContent(matchingInvocation.arguments);
+      if (contentArg) {
         return contentArg;
       }
       const output = matchingInvocation.result?.output;
@@ -828,6 +828,25 @@ function findLatestSuccessfulToolText(task: TaskQueryResponse, artifactPath: str
         }
       }
     }
+  }
+  return null;
+}
+
+export function extractLiveProviderWriteFileContent(argumentsRecord: Record<string, unknown>): string | null {
+  const content = argumentsRecord.content;
+  if (typeof content === 'string' && content.trim()) {
+    return content;
+  }
+  const contentLines = argumentsRecord.content_lines;
+  if (Array.isArray(contentLines)) {
+    const lines = contentLines
+      .filter((entry): entry is string => typeof entry === 'string')
+      .join('\n');
+    return lines.trim() ? lines : null;
+  }
+  const contentJson = argumentsRecord.content_json;
+  if (contentJson !== undefined) {
+    return `${JSON.stringify(contentJson, null, 2)}\n`;
   }
   return null;
 }

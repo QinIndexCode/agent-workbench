@@ -145,9 +145,18 @@ function isWriteEvidenceTool(toolId: string): boolean {
 function isVerificationEvidenceTool(toolId: string): boolean {
   const normalized = normalizeToolId(toolId);
   return normalized === 'read_file'
+    || normalized === 'inspect_file'
     || normalized === 'search_files'
     || normalized === 'list_files'
     || normalized === 'run_command';
+}
+
+function isFailedInspectionEvidenceTool(toolId: string): boolean {
+  const normalized = normalizeToolId(toolId);
+  return normalized === 'read_file'
+    || normalized === 'inspect_file'
+    || normalized === 'search_files'
+    || normalized === 'list_files';
 }
 
 function isDelegationEvidenceTool(toolId: string): boolean {
@@ -203,7 +212,10 @@ function buildToolEvidenceByUnit(latestToolInvocations: Array<{
     if (invocation.status === 'SUCCEEDED' && isDelegationEvidenceTool(invocation.toolId)) {
       summary.delegationEvidenceCount += 1;
     }
-    if (invocation.status === 'SUCCEEDED' && isVerificationEvidenceTool(invocation.toolId)) {
+    if (
+      (invocation.status === 'SUCCEEDED' && isVerificationEvidenceTool(invocation.toolId))
+      || (invocation.status === 'FAILED' && isFailedInspectionEvidenceTool(invocation.toolId))
+    ) {
       summary.verificationEvidenceCount += 1;
     }
     if (invocation.status === 'SUCCEEDED' && isWriteEvidenceTool(invocation.toolId)) {
@@ -330,6 +342,7 @@ export class TaskTurnRunner {
     turnId: string;
     checkpointId: string;
     parsedToolCalls: ReturnType<typeof parseTurn>['toolCalls'];
+    parseWarnings?: string[];
     toolCallFormat: 'json-or-xml' | 'json';
     allowedToolIds: string[] | null;
   }): Promise<PlannedToolSummary> {
@@ -338,6 +351,17 @@ export class TaskTurnRunner {
     const approvalInvocationIds: string[] = [];
     let accepted = 0;
     let approvalRequired = 0;
+    const invalidToolWarnings = (params.parseWarnings ?? []).filter((warning) => /invalid_tool_json/i.test(warning));
+    if (invalidToolWarnings.length > 0) {
+      rejected.push(...invalidToolWarnings);
+      return {
+        accepted,
+        approvalRequired,
+        rejected,
+        acceptedInvocationIds,
+        approvalInvocationIds
+      };
+    }
 
     for (const call of params.parsedToolCalls) {
       if (params.toolCallFormat === 'json' && call.source === 'xml') {
@@ -1081,6 +1105,7 @@ export class TaskTurnRunner {
         turnId: correlation.turnId,
         checkpointId,
         parsedToolCalls: parsed.toolCalls,
+        parseWarnings: parsed.warnings,
         toolCallFormat: assembled.promptResult.policy.toolCallFormat,
         allowedToolIds: currentAllowedToolIds
       });

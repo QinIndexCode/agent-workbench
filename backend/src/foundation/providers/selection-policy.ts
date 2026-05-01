@@ -6,7 +6,7 @@ function isLocalProvider(profile: ProviderProfile): boolean {
   if (profile.transport === 'local-stdio') {
     return true;
   }
-  if (profile.vendor && ['ollama', 'huggingface', 'vllm', 'lmstudio', 'llama'].includes(profile.vendor)) {
+  if (profile.vendor && ['ollama', 'vllm', 'lmstudio', 'localai', 'llama_cpp', 'llama'].includes(profile.vendor)) {
     return true;
   }
   if (!profile.baseUrl) {

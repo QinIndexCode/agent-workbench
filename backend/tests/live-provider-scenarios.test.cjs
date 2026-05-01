@@ -1,7 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { applyLiveProviderArtifactQualityGate, runTaskLiveProviderScenarioSuite } = require('../dist');
+const {
+  applyLiveProviderArtifactQualityGate,
+  extractLiveProviderWriteFileContent,
+  runTaskLiveProviderScenarioSuite
+} = require('../dist');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 
@@ -66,4 +70,26 @@ test('live provider artifact gate rejects unresolved artifact apply conflicts ev
   assert.equal(gated.failureCategory, 'artifact_apply_conflict');
   assert.match(gated.summary, /conflicting local edits/i);
   assert.deepEqual(gated.files, ['src/example.ts']);
+});
+
+test('live provider artifact audit recovers write_file content_lines and content_json evidence', () => {
+  assert.equal(
+    extractLiveProviderWriteFileContent({
+      content_lines: [
+        'const test = require("node:test");',
+        'const assert = require("node:assert/strict");'
+      ]
+    }),
+    'const test = require("node:test");\nconst assert = require("node:assert/strict");'
+  );
+
+  assert.equal(
+    extractLiveProviderWriteFileContent({
+      content_json: {
+        report: 'ok',
+        files: ['reports/diagnosis.md']
+      }
+    }),
+    '{\n  "report": "ok",\n  "files": [\n    "reports/diagnosis.md"\n  ]\n}\n'
+  );
 });

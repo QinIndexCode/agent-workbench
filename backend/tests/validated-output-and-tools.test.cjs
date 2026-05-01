@@ -286,8 +286,8 @@ test('builtin write_file executor supports content_json and content_lines payloa
         unitId: 'AGENT-001',
         toolName: 'write_file',
         arguments: {
-          path: 'quality/database-design.json',
-          content_json: { profile: 'database_near_mysql_design', designFiles: ['database-lab/design/README.md'] }
+          path: 'quality/workspace-artifact-summary.json',
+          content_json: { profile: 'workspace_artifact_review', designFiles: ['workspace-demo/design/README.md'] }
         }
       },
       context: commonContext
@@ -301,18 +301,89 @@ test('builtin write_file executor supports content_json and content_lines payloa
         unitId: 'AGENT-001',
         toolName: 'write_file',
         arguments: {
-          path: 'database-lab/prototype/README.md',
-          content_lines: ['# Database Lab Prototype', '', 'Grounded scaffold.']
+          path: 'workspace-demo/prototype/README.md',
+          content_lines: ['# Workspace Prototype', '', 'Grounded scaffold.']
         }
       },
       context: commonContext
     });
     assert.equal(linesResult.ok, true);
 
-    const qualityContent = await fs.readFile(path.join(layout.forTask(taskId).workspaceDir, 'quality', 'database-design.json'), 'utf8');
-    const readmeContent = await fs.readFile(path.join(layout.forTask(taskId).workspaceDir, 'database-lab', 'prototype', 'README.md'), 'utf8');
-    assert.match(qualityContent, /"profile": "database_near_mysql_design"/);
-    assert.equal(readmeContent, '# Database Lab Prototype\n\nGrounded scaffold.');
+    const qualityContent = await fs.readFile(path.join(layout.forTask(taskId).workspaceDir, 'quality', 'workspace-artifact-summary.json'), 'utf8');
+    const readmeContent = await fs.readFile(path.join(layout.forTask(taskId).workspaceDir, 'workspace-demo', 'prototype', 'README.md'), 'utf8');
+    assert.match(qualityContent, /"profile": "workspace_artifact_review"/);
+    assert.equal(readmeContent, '# Workspace Prototype\n\nGrounded scaffold.');
+  } finally {
+    removeDir(root);
+  }
+});
+
+test('builtin inspect_file executor reports text and binary file facts without decoding binary content', async () => {
+  const root = createTempRoot();
+  try {
+    const config = loadBackendNewConfig({ paths: { rootDir: root } }, { cwd: root, env: {} });
+    const registry = new ToolExecutorRegistry();
+    const extensionRegistry = new ExtensionRegistry();
+    const storage = new FileStorageAdapter();
+    const layout = new StorageLayout(config);
+    const foundation = {
+      config,
+      extensions: extensionRegistry,
+      toolExecutors: registry
+    };
+    const { registerBuiltinToolAdapters } = require('../dist');
+    registerBuiltinToolAdapters(foundation, extensionRegistry, registry);
+
+    const inspectTool = extensionRegistry.findTool('inspect_file');
+    const inspectExecutor = registry.resolve(inspectTool);
+    const taskId = 'task_inspect_file';
+    const workspaceRoot = layout.forTask(taskId).workspaceDir;
+    await storage.ensureDir(path.join(workspaceRoot, 'assets'));
+    await fs.writeFile(path.join(workspaceRoot, 'notes.md'), '# Notes\nhello world\n', 'utf8');
+    await fs.writeFile(path.join(workspaceRoot, 'assets', 'sample.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]));
+
+    const commonContext = {
+      config,
+      sessionId: 'sess_inspect_file',
+      correlationId: 'corr_inspect_file',
+      turnId: 'turn_inspect_file',
+      checkpointId: null
+    };
+    const textResult = await inspectExecutor.execute({
+      tool: inspectTool,
+      invocation: {
+        taskId,
+        unitId: 'AGENT-001',
+        toolName: 'inspect_file',
+        arguments: {
+          path: 'notes.md',
+          max_chars: 7
+        }
+      },
+      context: commonContext
+    });
+    const binaryResult = await inspectExecutor.execute({
+      tool: inspectTool,
+      invocation: {
+        taskId,
+        unitId: 'AGENT-001',
+        toolName: 'inspect_file',
+        arguments: {
+          path: 'assets/sample.png'
+        }
+      },
+      context: commonContext
+    });
+
+    assert.equal(textResult.ok, true);
+    assert.equal(textResult.output.probableMimeType, 'text/markdown');
+    assert.equal(textResult.output.textReadable, true);
+    assert.equal(textResult.output.preview, '# Notes');
+    assert.match(textResult.output.sha256, /^[a-f0-9]{64}$/);
+    assert.equal(binaryResult.ok, true);
+    assert.equal(binaryResult.output.probableMimeType, 'image/png');
+    assert.equal(binaryResult.output.textReadable, false);
+    assert.equal(binaryResult.output.preview, null);
   } finally {
     removeDir(root);
   }
@@ -383,8 +454,105 @@ test('buildCurrentTurnToolContextMessages preserves read_file content for the ne
   assert.equal(messages[0].role, 'tool');
   assert.equal(messages[0].metadata.source, 'tool_result');
   assert.match(messages[0].content, /Tool read_file succeeded/i);
+  assert.match(messages[0].content, /Selected file content:/i);
+  assert.match(messages[0].content, /\s+1: Constraint: return one explicit operator note\./i);
+  assert.match(messages[0].content, /\s+2: Do not re-read the file\./i);
   assert.match(messages[0].content, /Constraint: return one explicit operator note\./i);
   assert.match(messages[0].content, /Do not re-read the file\./i);
+});
+
+test('buildCurrentTurnToolContextMessages flags recent CommonJS import export mismatches from read files', () => {
+  const base = {
+    correlationId: 'corr_module_facts',
+    sessionId: 'sess_module_facts',
+    taskId: 'task_module_facts',
+    unitId: 'AGENT-001',
+    checkpointId: 'chk_module_facts',
+    toolId: 'read_file',
+    status: 'SUCCEEDED',
+    error: null,
+    metadata: {}
+  };
+  const invocations = [
+    {
+      ...base,
+      invocationId: 'tool_read_bench',
+      turnId: 'turn_module_inspect',
+      arguments: { path: 'app/scripts/bench.js' },
+      startedAt: 10,
+      endedAt: 11,
+      result: {
+        path: 'app/scripts/bench.js',
+        content: [
+          "'use strict';",
+          "const StorageEngine = require('../src/storage-engine');",
+          'const storage = new StorageEngine({ dataDir });'
+        ].join('\n'),
+        totalChars: 130,
+        selectedChars: 130,
+        truncated: false,
+        selection: { startLine: 1, endLine: 3, totalLines: 3, maxChars: null }
+      }
+    },
+    {
+      ...base,
+      invocationId: 'tool_read_storage',
+      turnId: 'turn_module_inspect',
+      arguments: { path: 'app/src/storage-engine.js' },
+      startedAt: 12,
+      endedAt: 13,
+      result: {
+        path: 'app/src/storage-engine.js',
+        content: [
+          "'use strict';",
+          "const { WALManager } = require('./wal-manager');",
+          'class StorageEngine {}',
+          'module.exports = { StorageEngine };'
+        ].join('\n'),
+        totalChars: 140,
+        selectedChars: 140,
+        truncated: false,
+        selection: { startLine: 1, endLine: 4, totalLines: 4, maxChars: null }
+      }
+    },
+    {
+      ...base,
+      invocationId: 'tool_read_wal',
+      turnId: 'turn_module_inspect',
+      arguments: { path: 'app/src/wal-manager.js' },
+      startedAt: 14,
+      endedAt: 15,
+      result: {
+        path: 'app/src/wal-manager.js',
+        content: [
+          "'use strict';",
+          'class WalManager {}',
+          'module.exports = { WalManager };'
+        ].join('\n'),
+        totalChars: 80,
+        selectedChars: 80,
+        truncated: false,
+        selection: { startLine: 1, endLine: 3, totalLines: 3, maxChars: null }
+      }
+    }
+  ];
+
+  const messages = buildCurrentTurnToolContextMessages({
+    invocations,
+    currentUnitId: 'AGENT-001',
+    turnId: 'turn_module_repair',
+    maxContentChars: 800,
+    maxMessages: 2
+  });
+
+  assert.equal(messages[0].metadata.source, 'tool_result_module_facts');
+  assert.match(messages[0].content, /Recent read_file module contract facts/i);
+  assert.match(messages[0].content, /app\/scripts\/bench\.js imports \.\.\/src\/storage-engine as default CommonJS value "StorageEngine"/i);
+  assert.match(messages[0].content, /app\/src\/storage-engine\.js exports named CommonJS object \{ StorageEngine \}/i);
+  assert.match(messages[0].content, /Use destructuring require or change the module default export/i);
+  assert.match(messages[0].content, /imports named CommonJS export "WALManager" from \.\/wal-manager/i);
+  assert.match(messages[0].content, /closest export is "WalManager"; CommonJS property names are case-sensitive/i);
+  assert.equal(messages.length, 1);
 });
 
 test('buildCurrentTurnToolContextMessages preserves run_command result streams', () => {
@@ -430,6 +598,127 @@ test('buildCurrentTurnToolContextMessages preserves run_command result streams',
   assert.match(messages[0].content, /stderr:\s+\(empty\)/i);
 });
 
+test('buildCurrentTurnToolContextMessages summarizes materialized writes and unconfirmed local references', () => {
+  const base = {
+    correlationId: 'corr_write_summary',
+    sessionId: 'sess_write_summary',
+    taskId: 'task_write_summary',
+    unitId: 'AGENT-001',
+    checkpointId: 'chk_write_summary',
+    status: 'SUCCEEDED',
+    error: null,
+    metadata: {}
+  };
+  const invocations = [
+    {
+      ...base,
+      invocationId: 'tool_write_bench',
+      turnId: 'turn_write_summary',
+      toolId: 'write_file',
+      arguments: {
+        path: 'app/scripts/bench.js',
+        content_lines: [
+          "const { StorageEngine } = require('../src/storage-engine');",
+          'module.exports = { StorageEngine };'
+        ]
+      },
+      startedAt: 10,
+      endedAt: 11,
+      result: { path: 'app/scripts/bench.js', bytesWritten: 91 }
+    },
+    {
+      ...base,
+      invocationId: 'tool_write_package',
+      turnId: 'turn_write_summary',
+      toolId: 'write_file',
+      arguments: {
+        path: 'app/package.json',
+        content_json: { scripts: { bench: 'node scripts/bench.js' } }
+      },
+      startedAt: 12,
+      endedAt: 13,
+      result: { path: 'app/package.json', bytesWritten: 64 }
+    }
+  ];
+
+  const messages = buildCurrentTurnToolContextMessages({
+    invocations,
+    currentUnitId: 'AGENT-001',
+    turnId: 'turn_write_summary',
+    maxContentChars: 1200,
+    maxMessages: 1
+  });
+
+  assert.equal(messages[0].metadata.source, 'tool_result_summary');
+  assert.match(messages[0].content, /Successful write_file paths \(2\): app\/scripts\/bench\.js, app\/package\.json/);
+  assert.match(messages[0].content, /Common relative code references not confirmed by same-turn writes/i);
+  assert.match(messages[0].content, /app\/scripts\/bench\.js -> \.\.\/src\/storage-engine/i);
+  assert.match(messages[0].content, /not a language semantic check/i);
+  assert.match(messages[0].content, /exported API, verify it with inspect_file\/read_file\/list_files and a real compile\/test\/run command/i);
+  assert.equal(messages.length, 2);
+});
+
+test('buildCurrentTurnToolContextMessages flags unconfirmed local references across common languages', () => {
+  const base = {
+    correlationId: 'corr_multilang_refs',
+    sessionId: 'sess_multilang_refs',
+    taskId: 'task_multilang_refs',
+    unitId: 'AGENT-001',
+    checkpointId: 'chk_multilang_refs',
+    status: 'SUCCEEDED',
+    error: null,
+    metadata: {}
+  };
+  const invocations = [
+    {
+      ...base,
+      invocationId: 'tool_write_py',
+      turnId: 'turn_multilang_refs',
+      toolId: 'write_file',
+      arguments: {
+        path: 'pkg/service.py',
+        content_lines: [
+          'from .storage import Storage',
+          'from ..shared.config import load_config'
+        ]
+      },
+      startedAt: 10,
+      endedAt: 11,
+      result: { path: 'pkg/service.py', bytesWritten: 74 }
+    },
+    {
+      ...base,
+      invocationId: 'tool_write_rs',
+      turnId: 'turn_multilang_refs',
+      toolId: 'write_file',
+      arguments: {
+        path: 'src/lib.rs',
+        content_lines: [
+          'mod engine;',
+          'pub use engine::Engine;'
+        ]
+      },
+      startedAt: 12,
+      endedAt: 13,
+      result: { path: 'src/lib.rs', bytesWritten: 37 }
+    }
+  ];
+
+  const messages = buildCurrentTurnToolContextMessages({
+    invocations,
+    currentUnitId: 'AGENT-001',
+    turnId: 'turn_multilang_refs',
+    maxContentChars: 1600,
+    maxMessages: 1
+  });
+
+  assert.equal(messages[0].metadata.source, 'tool_result_summary');
+  assert.match(messages[0].content, /pkg\/service\.py -> \.\/storage \(candidates: pkg\/storage\.py, pkg\/storage\/__init__\.py, pkg\/storage\.js/i);
+  assert.match(messages[0].content, /pkg\/service\.py -> \.\.\/shared\/config/i);
+  assert.match(messages[0].content, /src\/lib\.rs -> \.\/engine/i);
+  assert.match(messages[0].content, /src\/engine\.rs/);
+});
+
 test('gateProviderRequestContext drops verbose assistant tool payloads but keeps tool results', () => {
   const config = loadBackendNewConfig({}, { cwd: process.cwd(), env: {} });
   const result = gateProviderRequestContext({
@@ -437,13 +726,13 @@ test('gateProviderRequestContext drops verbose assistant tool payloads but keeps
     current: [
       {
         role: 'assistant',
-        content: '{"tool":"write_file","arguments":{"path":"database-lab/design/architecture.md","content":"' + 'x'.repeat(2000) + '"}}',
+        content: '{"tool":"write_file","arguments":{"path":"workspace-demo/design/architecture.md","content":"' + 'x'.repeat(2000) + '"}}',
         compressed: false,
         metadata: { unitId: 'AGENT-001' },
       },
       {
         role: 'tool',
-        content: 'Tool write_file succeeded.\nResult: {"path":"database-lab/design/architecture.md","bytesWritten":2048}',
+        content: 'Tool write_file succeeded.\nResult: {"path":"workspace-demo/design/architecture.md","bytesWritten":2048}',
         compressed: false,
         metadata: {
           unitId: 'AGENT-001',
@@ -470,7 +759,7 @@ test('gateProviderRequestContext drops verbose assistant tool payloads but keeps
   });
 
   const retainedAssistantPayload = result.contextMessages.messages.find((message) =>
-    message.role === 'assistant' && /database-lab\/design\/architecture\.md/i.test(message.content)
+    message.role === 'assistant' && /workspace-demo\/design\/architecture\.md/i.test(message.content)
   );
   const retainedToolResult = result.contextMessages.messages.find((message) =>
     message.metadata?.source === 'tool_result' && /bytesWritten/i.test(message.content)
@@ -488,7 +777,7 @@ test('gateProviderRequestContext keeps only the latest operator correction promp
     current: [
       {
         role: 'user',
-        content: 'First read brief/workload-profile.md, brief/mysql-targets.md, and brief/constraints.md only.',
+        content: 'First read brief/workload-profile.md, brief/integration-targets.md, and brief/constraints.md only.',
         compressed: false,
         metadata: { unitId: 'AGENT-001' },
       },
@@ -506,7 +795,7 @@ test('gateProviderRequestContext keeps only the latest operator correction promp
       },
       {
         role: 'user',
-        content: 'Write only database-lab/design/README.md and database-lab/design/architecture.md now.',
+        content: 'Write only workspace-demo/design/README.md and workspace-demo/design/architecture.md now.',
         compressed: false,
         metadata: { unitId: 'AGENT-001', source: 'operator_message' },
       },
@@ -525,7 +814,7 @@ test('gateProviderRequestContext keeps only the latest operator correction promp
     .map((message) => message.content);
 
   assert.deepEqual(retainedOperatorMessages, [
-    'Write only database-lab/design/README.md and database-lab/design/architecture.md now.',
+    'Write only workspace-demo/design/README.md and workspace-demo/design/architecture.md now.',
   ]);
   assert.ok(result.contextMessages.messages.some((message) =>
     message.metadata?.source === 'tool_result' && /workload-profile/i.test(message.content)
@@ -539,7 +828,7 @@ test('gateProviderRequestContext drops superseded stage-scoped operator prompts 
     current: [
       {
         role: 'user',
-        content: 'First read brief/workload-profile.md, brief/mysql-targets.md, and brief/constraints.md only.',
+        content: 'First read brief/workload-profile.md, brief/integration-targets.md, and brief/constraints.md only.',
         compressed: false,
         metadata: { unitId: 'AGENT-001' },
       },
@@ -557,7 +846,7 @@ test('gateProviderRequestContext drops superseded stage-scoped operator prompts 
       },
       {
         role: 'user',
-        content: 'Write only database-lab/design/README.md and database-lab/design/architecture.md now.',
+        content: 'Write only workspace-demo/design/README.md and workspace-demo/design/architecture.md now.',
         compressed: false,
         metadata: { unitId: 'AGENT-001', source: 'operator_message' },
       },
@@ -576,7 +865,7 @@ test('gateProviderRequestContext drops superseded stage-scoped operator prompts 
     .map((message) => message.content);
 
   assert.deepEqual(retainedUserMessages, [
-    'Write only database-lab/design/README.md and database-lab/design/architecture.md now.',
+    'Write only workspace-demo/design/README.md and workspace-demo/design/architecture.md now.',
   ]);
   assert.ok(result.summary.reasons.some((reason) => /superseded_stage_messages_dropped:1/.test(reason)));
   assert.ok(result.contextMessages.messages.some((message) =>
@@ -609,7 +898,7 @@ test('gateProviderRequestContext drops superseded stage-scoped assistant plannin
       },
       {
         role: 'user',
-        content: 'Write only database-lab/design/README.md and database-lab/design/architecture.md now.',
+        content: 'Write only workspace-demo/design/README.md and workspace-demo/design/architecture.md now.',
         compressed: false,
         metadata: { unitId: 'AGENT-001', source: 'operator_message' },
       },

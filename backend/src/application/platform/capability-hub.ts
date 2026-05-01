@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { BackendNewFoundation } from '../../foundation/bootstrap/types';
 import { createMcpCatalogView } from '../../foundation/mcp';
-import { getProviderPreset } from '../../foundation/providers/presets';
+import { findProviderPresetDefinition, getProviderPreset } from '../../foundation/providers';
+import { ProviderCapabilityMetadata, ProviderImplementationStatus } from '../../foundation/providers/types';
 import { ProviderProfile } from '../../foundation/providers/types';
 import { createSkillCatalogView } from '../../foundation/skills';
 import {
@@ -42,6 +43,51 @@ function parseProviderMetadata(profile: ProviderProfile): Record<string, unknown
     : {};
 }
 
+function deriveProviderImplementationStatus(profile: ProviderProfile): ProviderImplementationStatus {
+  const metadata = parseProviderMetadata(profile);
+  const status = metadata.implementationStatus;
+  if (status === 'runnable' || status === 'profile-only' || status === 'external-auth-required') {
+    return status;
+  }
+  return findProviderPresetDefinition(
+    typeof metadata.presetId === 'string' ? metadata.presetId : profile.vendor
+  )?.implementationStatus ?? 'runnable';
+}
+
+function deriveProviderCapabilities(profile: ProviderProfile): ProviderCapabilityMetadata {
+  const metadata = parseProviderMetadata(profile);
+  const raw = metadata.capabilities;
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const record = raw as Record<string, unknown>;
+    return {
+      inputModalities: Array.isArray(record.inputModalities)
+        ? record.inputModalities.filter((entry): entry is ProviderCapabilityMetadata['inputModalities'][number] => (
+          entry === 'text' || entry === 'image' || entry === 'audio' || entry === 'file'
+        ))
+        : ['text'],
+      outputModalities: Array.isArray(record.outputModalities)
+        ? record.outputModalities.filter((entry): entry is ProviderCapabilityMetadata['outputModalities'][number] => (
+          entry === 'text' || entry === 'image' || entry === 'audio' || entry === 'file'
+        ))
+        : ['text'],
+      supportsVision: record.supportsVision === true,
+      supportsFiles: record.supportsFiles === true,
+      supportedFileExtensions: Array.isArray(record.supportedFileExtensions)
+        ? record.supportedFileExtensions.filter((entry): entry is string => typeof entry === 'string')
+        : []
+    };
+  }
+  return findProviderPresetDefinition(
+    typeof metadata.presetId === 'string' ? metadata.presetId : profile.vendor
+  )?.capabilities ?? {
+    inputModalities: ['text'],
+    outputModalities: ['text'],
+    supportsVision: false,
+    supportsFiles: false,
+    supportedFileExtensions: []
+  };
+}
+
 function deriveProviderAuthSource(profile: ProviderProfile, hasSecret: boolean): ProviderAuthSource {
   const scheme = profile.auth?.scheme ?? getProviderPreset(profile.vendor).auth.scheme;
   if (scheme === 'none') {
@@ -55,10 +101,17 @@ function deriveProviderReadiness(params: {
   hasSecret: boolean;
   hasClient: boolean;
   authSource: ProviderAuthSource;
+  implementationStatus: ProviderImplementationStatus;
 }): CapabilityReadiness {
   const metadata = parseProviderMetadata(params.profile);
   if (metadata.enabled === false) {
     return 'disabled';
+  }
+  if (params.implementationStatus === 'external-auth-required') {
+    return 'external-auth-required';
+  }
+  if (params.implementationStatus === 'profile-only') {
+    return 'profile-only';
   }
   if (params.authSource === 'missing-secret') {
     return 'missing-secret';
@@ -66,7 +119,12 @@ function deriveProviderReadiness(params: {
   if (!params.hasClient) {
     return 'missing-client';
   }
-  if (!params.profile.baseUrl && params.profile.transport !== 'local-stdio') {
+  if (
+    !params.profile.baseUrl
+    && params.profile.transport !== 'local-stdio'
+    && params.profile.transport !== 'profile-only'
+    && params.profile.transport !== 'enterprise-cloud'
+  ) {
     return 'partial';
   }
   return 'ready';
@@ -125,6 +183,8 @@ export function createProviderProfileView(params: {
   const hasRegisteredClient = params.foundation.providerClients.has(profile.id)
     || Boolean(profile.transport && params.foundation.providerClients.hasTransport(profile.transport));
   const authSource = deriveProviderAuthSource(profile, params.hasSecret);
+  const implementationStatus = deriveProviderImplementationStatus(profile);
+  const capabilities = deriveProviderCapabilities(profile);
   const runtimeDefaultProviderId = params.runtimeDefaultProviderId ?? params.foundation.config.providers.defaultProviderId ?? null;
   const savedDefaultProviderId = params.savedDefaultProviderId ?? runtimeDefaultProviderId;
   return {
@@ -138,9 +198,12 @@ export function createProviderProfileView(params: {
       profile,
       hasSecret: params.hasSecret,
       hasClient: hasRegisteredClient,
-      authSource
+      authSource,
+      implementationStatus
     }),
     authSource,
+    implementationStatus,
+    capabilities,
     adapter: buildProviderAdapter(profile),
     model: buildModelDescriptor(profile),
     variant: buildModelVariantDescriptor(profile)

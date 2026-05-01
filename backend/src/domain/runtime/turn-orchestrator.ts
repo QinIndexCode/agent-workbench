@@ -29,19 +29,15 @@ export function applyRejectedToolCallsToAcceptance(params: {
     return params.acceptance;
   }
   const rejectedIssues = createRejectedToolIssues(params.rejectedToolCalls);
-  if (!params.acceptance.ok) {
-    return {
-      ...params.acceptance,
-      issues: [...params.acceptance.issues, ...rejectedIssues]
-    };
-  }
   return {
     ...params.acceptance,
     ok: false,
     pendingCorrection: 'AWAITING_TOOL_ACTION',
     failureCategory: 'tool_action_required_but_not_emitted',
-    acceptedTracker: null,
-    issues: rejectedIssues
+    acceptedTracker: params.acceptance.ok ? null : params.acceptance.acceptedTracker,
+    issues: params.acceptance.ok
+      ? rejectedIssues
+      : [...rejectedIssues, ...params.acceptance.issues]
   };
 }
 

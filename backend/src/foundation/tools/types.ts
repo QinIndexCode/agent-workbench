@@ -27,7 +27,7 @@ export interface ToolSuccessResultEnvelope {
 export interface ToolFailureResultEnvelope {
   ok: false;
   kind: ToolErrorKind;
-  output: null;
+  output: Record<string, unknown> | null;
   message: string;
   metadata: Record<string, unknown>;
 }

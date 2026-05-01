@@ -55,6 +55,17 @@ function normalizeToolId(toolId: string): string {
   return toolId.trim().toLowerCase().replace(/-/g, '_');
 }
 
+function isFailedInspectionVerificationInvocation(invocation: ToolInvocationRecord): boolean {
+  if (invocation.status !== 'FAILED') {
+    return false;
+  }
+  const normalizedToolId = normalizeToolId(invocation.toolId);
+  return normalizedToolId === 'read_file'
+    || normalizedToolId === 'inspect_file'
+    || normalizedToolId === 'search_files'
+    || normalizedToolId === 'list_files';
+}
+
 function isWriteEvidenceTool(toolId: string): boolean {
   const normalized = normalizeToolId(toolId);
   return normalized === 'write_file' || normalized === 'create_folder' || normalized === 'run_command';
@@ -117,10 +128,13 @@ function buildUnitToolEvidenceSummary(params: {
       continue;
     }
     toolEvidenceCount += 1;
-    if (invocation.status === 'SUCCEEDED' && shouldMarkInvocationAsVerification({
-      toolName: invocation.toolId,
-      argumentsRecord: invocation.arguments
-    })) {
+    if (
+      (invocation.status === 'SUCCEEDED' && shouldMarkInvocationAsVerification({
+        toolName: invocation.toolId,
+        argumentsRecord: invocation.arguments
+      }))
+      || isFailedInspectionVerificationInvocation(invocation)
+    ) {
       verificationEvidenceCount += 1;
     }
     if (invocation.status === 'SUCCEEDED' && isWriteEvidenceTool(invocation.toolId)) {
@@ -544,7 +558,7 @@ function shouldSurfaceSucceededTool(invocation: ToolInvocationRecord, evidencePa
   if (['write_file', 'create_folder', 'run_command'].includes(normalizedToolId)) {
     return true;
   }
-  if (normalizedToolId === 'read_file') {
+  if (normalizedToolId === 'read_file' || normalizedToolId === 'inspect_file') {
     return true;
   }
   if (['list_files', 'search_files'].includes(normalizedToolId)) {
@@ -1598,11 +1612,14 @@ export class TaskRecordService {
       invocation.status === 'SUCCEEDED' && isPersistentWriteEvidenceInvocation(invocation)
     ));
     const hasSuccessfulVerificationEvidence = currentUnitInvocations.some((invocation) => (
-      invocation.status === 'SUCCEEDED'
-      && shouldMarkInvocationAsVerification({
-        toolName: invocation.toolId,
-        argumentsRecord: invocation.arguments
-      })
+      (
+        invocation.status === 'SUCCEEDED'
+        && shouldMarkInvocationAsVerification({
+          toolName: invocation.toolId,
+          argumentsRecord: invocation.arguments
+        })
+      )
+      || isFailedInspectionVerificationInvocation(invocation)
     ));
     const hasSuccessfulDelegationEvidence = currentUnitInvocations.some((invocation) => (
       invocation.status === 'SUCCEEDED'

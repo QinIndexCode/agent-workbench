@@ -76,9 +76,7 @@ export const TASK_QUALITY_PROFILE_IDS = [
   'docs_normalize',
   'docs_synthesize',
   'system_audit',
-  'desktop_observation',
-  'database_near_mysql_design',
-  'database_near_mysql_verify'
+  'desktop_observation'
 ] as const;
 
 export type QualityProfileId = typeof TASK_QUALITY_PROFILE_IDS[number];

@@ -13,9 +13,7 @@ export type QualityProfileId =
   | 'docs_normalize'
   | 'docs_synthesize'
   | 'system_audit'
-  | 'desktop_observation'
-  | 'database_near_mysql_design'
-  | 'database_near_mysql_verify';
+  | 'desktop_observation';
 
 export interface TaskSummary {
   taskId: string;
@@ -678,6 +676,11 @@ export interface TaskCommandPayload {
   metadata?: Record<string, unknown>;
 }
 
+export interface TaskActionOptions {
+  autoRun?: boolean;
+  maxTurns?: number;
+}
+
 export interface TaskActionResponse {
   command: {
     taskId: string;
@@ -692,28 +695,87 @@ export type ProviderTransport =
   | 'openai-compatible'
   | 'deepseek-compatible'
   | 'anthropic-compatible'
+  | 'native-cohere'
+  | 'native-ai21'
+  | 'native-replicate'
+  | 'native-perplexity-agent'
+  | 'enterprise-cloud'
+  | 'profile-only'
   | 'local-stdio';
 
 export type ProviderVendor =
+  | 'ai21'
   | 'openai'
   | 'chatgpt'
   | 'anthropic'
-  | 'meta'
-  | 'llama'
-  | 'grok'
-  | 'xai'
-  | 'gemini'
-  | 'huggingface'
+  | 'aws_bedrock_openai'
+  | 'azure_openai'
+  | 'cerebras'
+  | 'cloudflare_ai_gateway'
+  | 'cloudflare_workers_ai'
+  | 'cohere'
+  | 'dashscope_cn'
+  | 'dashscope_intl'
+  | 'dashscope_us'
+  | 'deepinfra'
   | 'deepseek'
-  | 'minimax'
-  | 'zhipu'
+  | 'fireworks'
+  | 'gemini'
+  | 'google_gemini'
   | 'glm'
+  | 'grok'
+  | 'groq'
+  | 'heroku_inference'
+  | 'huggingface'
+  | 'hyperbolic'
+  | 'ibm_watsonx_gateway'
   | 'kimi'
-  | 'moonshot'
-  | 'ollama'
-  | 'vllm'
+  | 'llama'
+  | 'llama_api'
+  | 'llama_cpp'
   | 'lmstudio'
+  | 'localai'
+  | 'meta'
+  | 'minimax'
+  | 'minimax_cn'
+  | 'mistral'
+  | 'moonshot'
+  | 'novita'
+  | 'nvidia_nim'
+  | 'ollama'
+  | 'openrouter'
+  | 'perplexity'
+  | 'perplexity_agent'
+  | 'qianfan'
+  | 'replicate'
+  | 'sambanova'
+  | 'siliconflow'
+  | 'siliconflow_cn'
+  | 'stepfun_cn'
+  | 'stepfun_global'
+  | 'stepfun_plan'
+  | 'tencent_hunyuan'
+  | 'together'
+  | 'vertex_ai_openai'
+  | 'vercel_ai_gateway'
+  | 'vllm'
+  | 'volcengine_ark'
+  | 'xai'
+  | 'zhipu'
+  | 'zhipu_coding'
   | 'custom';
+
+export type ProviderPresetCategory = 'api-key' | 'enterprise-cloud' | 'local';
+export type ProviderImplementationStatus = 'runnable' | 'profile-only' | 'external-auth-required';
+export type ProviderModality = 'text' | 'image' | 'audio' | 'file';
+
+export interface ProviderCapabilityMetadata {
+  inputModalities: ProviderModality[];
+  outputModalities: ProviderModality[];
+  supportsVision: boolean;
+  supportsFiles: boolean;
+  supportedFileExtensions: string[];
+}
 
 export interface ProviderProfile {
   id: string;
@@ -748,6 +810,12 @@ export interface ProviderPresetView {
   defaultModel: string;
   requiresApiKey: boolean;
   supportsQuickAdd: boolean;
+  category: ProviderPresetCategory;
+  envVarNames: string[];
+  requiredConfigFields: string[];
+  implementationStatus: ProviderImplementationStatus;
+  capabilities: ProviderCapabilityMetadata;
+  notes: string | null;
 }
 
 export interface ProviderProfileView {
@@ -759,6 +827,8 @@ export interface ProviderProfileView {
   hasSecret: boolean;
   readiness: string;
   authSource: string;
+  implementationStatus: ProviderImplementationStatus;
+  capabilities: ProviderCapabilityMetadata;
   adapter: {
     providerId: string;
     transport: ProviderTransport;
@@ -904,6 +974,11 @@ export interface ToolCapabilityEntry {
   } | null;
   readiness: EcosystemReadiness;
   visibleByDefault: boolean;
+  healthCheck: {
+    status: EcosystemReadiness;
+    checks: string[];
+    diagnostics: string[];
+  };
 }
 
 export interface ScenarioPackSummary {
@@ -911,8 +986,19 @@ export interface ScenarioPackSummary {
   label: string;
   focus: string;
   qualityProfileId: string | null;
+  qualityGateId?: string | null;
   artifactAudit: string;
+  surfaceChecks: string[];
   cleanupHints: string[];
+  modelPolicy: {
+    defaultModelClass: 'fast' | 'strong' | 'provider-default';
+    reason: string;
+  };
+  timeoutPolicy: {
+    maxTurns: number;
+    maxIdleCorrections: number;
+    maxRuntimeMs: number;
+  };
   status: EcosystemReadiness;
 }
 
@@ -924,6 +1010,17 @@ export interface ExperienceHealthSummary {
   selectedReusableTaskIds: string[];
   failedReuseTaskIds: string[];
   lastValidatedAt: number | null;
+  approvedDetails: Array<{
+    proposalId: string;
+    title: string;
+    patternKey: string;
+    materializedPath: string | null;
+    validationStatus: 'monitoring' | 'promotable' | 'conflicted';
+    successfulReuseTaskIds: string[];
+    failedReuseTaskIds: string[];
+    limitations: string[];
+    confidence: number;
+  }>;
 }
 
 export interface EcosystemSummaryView {

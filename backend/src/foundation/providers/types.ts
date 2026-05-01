@@ -2,28 +2,99 @@ export type ProviderTransport =
   | 'openai-compatible'
   | 'deepseek-compatible'
   | 'anthropic-compatible'
+  | 'native-cohere'
+  | 'native-ai21'
+  | 'native-replicate'
+  | 'native-perplexity-agent'
+  | 'enterprise-cloud'
+  | 'profile-only'
   | 'local-stdio';
 
 export type ProviderVendor =
-  | 'openai'
-  | 'chatgpt'
+  | 'ai21'
   | 'anthropic'
-  | 'meta'
-  | 'llama'
-  | 'grok'
-  | 'xai'
-  | 'gemini'
-  | 'huggingface'
+  | 'aws_bedrock_openai'
+  | 'azure_openai'
+  | 'cerebras'
+  | 'chatgpt'
+  | 'cloudflare_ai_gateway'
+  | 'cloudflare_workers_ai'
+  | 'cohere'
+  | 'custom'
+  | 'dashscope_cn'
+  | 'dashscope_intl'
+  | 'dashscope_us'
+  | 'deepinfra'
   | 'deepseek'
-  | 'minimax'
-  | 'zhipu'
+  | 'fireworks'
+  | 'gemini'
+  | 'google_gemini'
   | 'glm'
+  | 'grok'
+  | 'groq'
+  | 'heroku_inference'
+  | 'huggingface'
+  | 'hyperbolic'
+  | 'ibm_watsonx_gateway'
   | 'kimi'
-  | 'moonshot'
-  | 'ollama'
-  | 'vllm'
+  | 'llama'
+  | 'llama_api'
+  | 'llama_cpp'
   | 'lmstudio'
-  | 'custom';
+  | 'localai'
+  | 'meta'
+  | 'minimax'
+  | 'minimax_cn'
+  | 'mistral'
+  | 'moonshot'
+  | 'novita'
+  | 'nvidia_nim'
+  | 'ollama'
+  | 'openai'
+  | 'openrouter'
+  | 'perplexity'
+  | 'perplexity_agent'
+  | 'qianfan'
+  | 'replicate'
+  | 'sambanova'
+  | 'siliconflow'
+  | 'siliconflow_cn'
+  | 'stepfun_cn'
+  | 'stepfun_global'
+  | 'stepfun_plan'
+  | 'tencent_hunyuan'
+  | 'together'
+  | 'vertex_ai_openai'
+  | 'vercel_ai_gateway'
+  | 'vllm'
+  | 'volcengine_ark'
+  | 'xai'
+  | 'zhipu'
+  | 'zhipu_coding';
+
+export type ProviderPresetCategory =
+  | 'api-key'
+  | 'enterprise-cloud'
+  | 'local';
+
+export type ProviderImplementationStatus =
+  | 'runnable'
+  | 'profile-only'
+  | 'external-auth-required';
+
+export type ProviderModality =
+  | 'text'
+  | 'image'
+  | 'audio'
+  | 'file';
+
+export interface ProviderCapabilityMetadata {
+  inputModalities: ProviderModality[];
+  outputModalities: ProviderModality[];
+  supportsVision: boolean;
+  supportsFiles: boolean;
+  supportedFileExtensions: string[];
+}
 
 export interface ProviderAuthConfig {
   scheme: 'bearer' | 'x-api-key' | 'none';

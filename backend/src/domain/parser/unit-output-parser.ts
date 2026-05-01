@@ -231,6 +231,13 @@ function collectParsedJsonObjects(source: string): Array<{ raw: string; parsed: 
     pushParsedRecord(candidate, tryParseJson(candidate));
   }
 
+  const repairedSource = repairContentLinesJson(source);
+  if (repairedSource) {
+    for (const candidate of extractJsonObjects(repairedSource)) {
+      pushParsedRecord(candidate, tryParseJson(candidate));
+    }
+  }
+
   const relaxedStarts: number[] = [];
   let inString = false;
   let quoteChar = '';
@@ -288,6 +295,24 @@ function collectParsedJsonObjects(source: string): Array<{ raw: string; parsed: 
   }
 
   return records;
+}
+
+function countJsonLikeToolObjectStarts(source: string): number {
+  return Array.from(source.matchAll(/\{\s*"(?:tool|tool_name|function_name|function|action)"\s*:/g)).length;
+}
+
+function collectToolParseWarnings(source: string, toolCalls: ToolCallEnvelope[]): string[] {
+  const jsonLikeToolObjectCount = countJsonLikeToolObjectStarts(source);
+  const parsedJsonToolCallCount = toolCalls.filter((call) => call.source === 'json').length;
+  if (jsonLikeToolObjectCount <= parsedJsonToolCallCount) {
+    return [];
+  }
+  const missingCount = jsonLikeToolObjectCount - parsedJsonToolCallCount;
+  return [
+    `invalid_tool_json: detected ${missingCount} JSON-like tool call block(s) that could not be parsed. ` +
+      'Do not continue with partial tool execution; re-emit the failed tool calls as valid JSON. ' +
+      'For file content, prefer arguments.content_lines for text/code files or arguments.content_json for JSON files.'
+  ];
 }
 
 function unwrapRunCommandParameters(parameters: Record<string, unknown>): Record<string, unknown> {
@@ -668,11 +693,50 @@ function collectSelfClosingToolInvocationAttrSources(source: string): string[] {
   return attrs;
 }
 
+function repairMarkdownBulletsInContentLinesJson(value: string): string | null {
+  if (!/"content_lines"\s*:/.test(value)) {
+    return null;
+  }
+  const repaired = value.replace(/(\[\s*|,\s*)-\s*(?=")/g, '$1');
+  return repaired === value ? null : repaired;
+}
+
+function repairQuotedCommaSeparatorsInContentLinesJson(value: string): string | null {
+  if (!/"content_lines"\s*:/.test(value)) {
+    return null;
+  }
+  const repaired = value.replace(/,","(?=[^\s,\]\}])/g, ',"');
+  return repaired === value ? null : repaired;
+}
+
+function repairContentLinesJson(value: string): string | null {
+  const repairs = [
+    repairMarkdownBulletsInContentLinesJson,
+    repairQuotedCommaSeparatorsInContentLinesJson
+  ];
+  let repaired = value;
+  for (const repair of repairs) {
+    const next = repair(repaired);
+    if (next) {
+      repaired = next;
+    }
+  }
+  return repaired === value ? null : repaired;
+}
+
 function tryParseJson(value: string): unknown | null {
   try {
     return JSON.parse(value);
   } catch {
-    return null;
+    const repaired = repairContentLinesJson(value);
+    if (!repaired) {
+      return null;
+    }
+    try {
+      return JSON.parse(repaired);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -1317,11 +1381,12 @@ function estimateToolCallPosition(source: string, call: ToolCallEnvelope): numbe
 }
 
 export function parseTurn(rawText: string): ParsedTurn {
+  const toolCalls = collectToolCalls(rawText);
   return {
     rawText,
     explicitOutputs: collectExplicitOutputs(rawText),
     trackers: collectTrackers(rawText),
-    toolCalls: collectToolCalls(rawText),
-    warnings: []
+    toolCalls,
+    warnings: collectToolParseWarnings(rawText, toolCalls)
   };
 }

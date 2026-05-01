@@ -116,6 +116,7 @@ export class ToolBatchExecutorService {
       hint: 'SERIAL_READY' | 'PARALLEL_CANDIDATE';
     }>;
     parsedToolCalls: ParsedTurn['toolCalls'];
+    parseWarnings?: string[];
   }): Promise<ToolBatchPlanAndExecutionResult> {
     if (!params.activeStage || params.plannedBatches.length === 0) {
       return {
@@ -142,6 +143,23 @@ export class ToolBatchExecutorService {
       items: [] as ToolBatchRecord['items']
     }));
     const candidates: ValidatedCandidate[] = [];
+    const invalidToolWarnings = (params.parseWarnings ?? []).filter((warning) => /invalid_tool_json/i.test(warning));
+    if (invalidToolWarnings.length > 0) {
+      rejected.push(...invalidToolWarnings);
+      return {
+        batchRecords: [],
+        batchExecutionResults: [],
+        admissionDecisions: [],
+        guardrail: {
+          batchAdmissionRestricted: false,
+          reasons: ['invalid_tool_json']
+        },
+        dispatch: createEmptyDispatch(),
+        acceptedInvocationIds,
+        approvalInvocationIds,
+        rejected
+      };
+    }
 
     for (const [callIndex, call] of params.parsedToolCalls.entries()) {
       if (params.toolCallFormat === 'json' && call.source === 'xml') {

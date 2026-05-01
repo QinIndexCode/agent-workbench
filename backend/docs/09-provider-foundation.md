@@ -14,21 +14,24 @@
 - 明确 `vendor / transport / model / baseUrl / apiKeySecretId`
 - 明确 `auth / endpoints / apiVersion / organization / project`
 
+### `foundation/providers/preset-catalog.ts`
+
+- 提供单一结构化 preset catalog，避免 backend、frontend、CLI 各自维护一份厂商模板
+- 当前按三类表达 provider：
+  - `api-key`: 普通 API key / bearer token provider
+  - `enterprise-cloud`: 需要 region、project、deployment、account、SigV4/OAuth 等额外企业云配置
+  - `local`: Ollama、LM Studio、vLLM、LocalAI、llama.cpp 等 OpenAI-compatible 本地 HTTP 服务
+- 每个 preset 都声明 `implementationStatus`：
+  - `runnable`: 已有通用 adapter 可以按 transport 执行
+  - `profile-only`: 只作为配置档案和 UI/CLI 可见 catalog，不伪装成可运行
+  - `external-auth-required`: 需要企业云鉴权或额外配置，不能只靠一个 API key 自动运行
+- 每个 preset 都声明输入/输出 modality、vision/file capability 和建议环境变量；这些是能力契约，不代表 runtime 已经接收任意二进制附件。
+
 ### `foundation/providers/presets.ts`
 
-- 提供主流厂商 preset
-- 当前覆盖：
-  - OpenAI / ChatGPT
-  - Anthropic
-  - Grok / xAI
-  - DeepSeek
-  - Gemini
-  - MiniMax
-  - ZhiPu / GLM
-  - Kimi / Moonshot
-  - Ollama
-  - Meta / Llama
-  - Custom
+- 从 catalog 生成向后兼容的 `ProviderPreset`
+- 继续负责 profile 归一化和默认值填充
+- 不再维护第二份厂商列表
 
 ### `foundation/providers/registry.ts`
 
@@ -65,6 +68,7 @@
 - 云端兼容 transport 必须显式提供 `baseUrl` 或由 preset 补默认值
 - 厂商差异下沉到 `vendor + transport + auth + endpoints`
 - runtime 不直接知道“某家厂商要什么特殊 header 或特殊路径”
+- 图片、文件等能力先通过 provider capability 和 `inspect_file` 这类安全工具显式呈现；模型请求是否接收附件必须另行定义通用 contract，不能由单个 provider 特性倒推 runtime 语义
 
 ## 为什么这层现在就要补
 

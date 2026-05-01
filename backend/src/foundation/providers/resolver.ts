@@ -16,7 +16,10 @@ function assertProviderProfile(profile: ProviderProfile): void {
     throw new Error(`backend_new provider error: provider "${profile.id}" transport must not be empty.`);
   }
 
-  if (profile.transport !== 'local-stdio' && !profile.baseUrl?.trim()) {
+  const canBeProfileOnly = profile.transport === 'local-stdio'
+    || profile.transport === 'profile-only'
+    || profile.transport === 'enterprise-cloud';
+  if (!canBeProfileOnly && !profile.baseUrl?.trim()) {
     throw new Error(
       `backend_new provider error: provider "${profile.id}" requires baseUrl for transport "${profile.transport}".`
     );

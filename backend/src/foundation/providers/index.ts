@@ -1,4 +1,5 @@
 export * from './types';
+export * from './preset-catalog';
 export * from './presets';
 export * from './registry';
 export * from './manifest-loader';

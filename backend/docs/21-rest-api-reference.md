@@ -307,11 +307,23 @@ Example:
 | `/workspace/workflow/init` | `POST` | Initialize `.scc` workflow scaffolding for the current workspace |
 | `/workspace/workflow/docs/import` | `POST` | Import workspace docs into memory |
 
+### Ecosystem registry
+
+| Route | Method | Meaning |
+| --- | --- | --- |
+| `/ecosystem` | `GET` | Readiness summary across providers, MCP, skills, approved experience, tools, scenario packs, and workspace commands |
+| `/tools` | `GET` | Tool capability registry with input schema summaries, evidence shape, failure taxonomy, and readiness |
+| `/tools/health` | `GET` | Compact tool health-check view for diagnostics and CLI automation |
+| `/scenario-packs` | `GET` | Registered validation scenario packs with core quality profile, scenario-specific quality gate, surface checks, model policy, and timeout policy |
+| `/ecosystem/skills` | `GET` | Skill readiness projection used by ecosystem diagnostics |
+| `/ecosystem/mcp` | `GET` | MCP readiness projection used by ecosystem diagnostics |
+
 ### Providers
 
 | Route | Method | Meaning |
 | --- | --- | --- |
 | `/providers` | `GET` | List provider views |
+| `/providers/presets` | `GET` | List provider preset catalog entries |
 | `/providers/:id` | `GET` | Get provider view |
 | `/providers/:id` | `PUT` | Upsert provider profile |
 | `/providers/:id` | `DELETE` | Delete provider profile |
@@ -319,6 +331,18 @@ Example:
 | `/providers/:id/default` | `POST` | Set default provider |
 | `/providers/secrets` | `GET` | List provider secret summaries |
 | `/providers/secrets` | `POST` | Create or update a provider secret |
+
+Provider preset entries include both legacy quick-add fields and catalog metadata:
+
+| Field | Meaning |
+| --- | --- |
+| `category` | `api-key`, `enterprise-cloud`, or `local` |
+| `envVarNames` | Suggested environment variable names only; the server does not persist secrets from env automatically |
+| `requiredConfigFields` | Extra non-secret fields such as `resource`, `deployment`, `region`, `project_id`, `account_id`, or `gateway_id` |
+| `implementationStatus` | `runnable`, `profile-only`, or `external-auth-required` |
+| `capabilities` | Input/output modalities plus vision/file extension declarations |
+
+`profile-only` and `external-auth-required` presets are visible for configuration and readiness planning. `POST /providers/:id/test` returns a clear non-runnable reason for those profiles instead of treating a missing adapter as an opaque runtime failure.
 
 ### Config
 

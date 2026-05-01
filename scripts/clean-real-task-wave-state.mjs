@@ -9,26 +9,15 @@ import {
 } from './lib/backend-runtime-paths.mjs';
 
 const DEFAULT_BACKEND_RUNTIME_DIRS = [
-  'approvals',
-  'checkpoints',
-  'config-snapshots',
-  'conversations',
-  'events',
-  'logs',
-  'platform',
-  'projections',
   'providers',
-  'secrets',
-  'sessions',
-  'tasks',
-  'tool-invocations',
-  'traces',
-  'validated-outputs',
-  'workspace',
 ];
 
 const DEFAULT_CODEX_RUN_DIRS = ['logs', 'tmp'];
 const DEFAULT_EXTERNAL_PATHS = ['D:\\AAA'];
+const DEFAULT_PRESERVED_REPO_PATH_PREFIXES = [
+  '.codex-run/logs/real-task-wave-matrix',
+  '.codex-run/logs/human-task-matrix',
+];
 const STATIC_PRESERVED_REPO_PATHS = [
   'backend/data/.gitignore',
   'backend/data/providers/manifest.json',
@@ -96,6 +85,15 @@ function hasTrackedDescendants(relativePath, trackedPaths) {
   return false;
 }
 
+function isPreservedRepoPath(relativePath, preservedPrefixes) {
+  return preservedPrefixes.some((prefix) => relativePath === prefix || relativePath.startsWith(`${prefix}/`));
+}
+
+function hasPreservedDescendants(relativePath, preservedPrefixes) {
+  const prefix = `${relativePath}/`;
+  return preservedPrefixes.some((preservedPath) => preservedPath.startsWith(prefix));
+}
+
 function describeLegacyResidue(rootDir, residuePath) {
   const relativePath = normalizeRepoRelativePath(path.relative(rootDir, residuePath));
   return LEGACY_RESIDUE_LABELS.get(relativePath) ?? relativePath.replace(/[/.]+/g, '_');
@@ -109,15 +107,19 @@ async function removePath(target, removedEntries, type) {
   });
 }
 
-async function purgeRepoDirectory(targetDir, relativeDir, trackedPaths, summary) {
+async function purgeRepoDirectory(targetDir, relativeDir, trackedPaths, summary, preservedPrefixes = []) {
   await fs.mkdir(targetDir, { recursive: true });
   const entries = await listDirectorySafe(targetDir);
   for (const entry of entries) {
     const absolutePath = path.join(targetDir, entry.name);
     const relativePath = normalizeRepoRelativePath(path.join(relativeDir, entry.name));
+    if (isPreservedRepoPath(relativePath, preservedPrefixes)) {
+      summary.preservedEntries.push(relativePath);
+      continue;
+    }
     if (entry.isDirectory()) {
-      if (hasTrackedDescendants(relativePath, trackedPaths)) {
-        await purgeRepoDirectory(absolutePath, relativePath, trackedPaths, summary);
+      if (hasTrackedDescendants(relativePath, trackedPaths) || hasPreservedDescendants(relativePath, preservedPrefixes)) {
+        await purgeRepoDirectory(absolutePath, relativePath, trackedPaths, summary, preservedPrefixes);
         continue;
       }
       await removePath(absolutePath, summary.removedEntries, 'directory');
@@ -140,17 +142,20 @@ async function purgeExternalDirectory(targetDir, summary) {
   }
 }
 
-async function collectResidualRepoEntries(targetDir, relativeDir, trackedPaths, residuals = []) {
+async function collectResidualRepoEntries(targetDir, relativeDir, trackedPaths, residuals = [], preservedPrefixes = []) {
   const entries = await listDirectorySafe(targetDir);
   for (const entry of entries) {
     const absolutePath = path.join(targetDir, entry.name);
     const relativePath = normalizeRepoRelativePath(path.join(relativeDir, entry.name));
+    if (isPreservedRepoPath(relativePath, preservedPrefixes)) {
+      continue;
+    }
     if (entry.isDirectory()) {
-      if (hasTrackedDescendants(relativePath, trackedPaths)) {
-        await collectResidualRepoEntries(absolutePath, relativePath, trackedPaths, residuals);
+      if (hasTrackedDescendants(relativePath, trackedPaths) || hasPreservedDescendants(relativePath, preservedPrefixes)) {
+        await collectResidualRepoEntries(absolutePath, relativePath, trackedPaths, residuals, preservedPrefixes);
         continue;
       }
-      await collectResidualRepoEntries(absolutePath, relativePath, trackedPaths, residuals);
+      await collectResidualRepoEntries(absolutePath, relativePath, trackedPaths, residuals, preservedPrefixes);
       continue;
     }
     if (!trackedPaths.has(relativePath)) {
@@ -187,6 +192,12 @@ export async function cleanRealTaskWaveState(options = {}) {
   const backendDataRoot = resolveBackendRuntimeRoot(rootDir);
   const externalPaths = options.externalPaths ?? DEFAULT_EXTERNAL_PATHS;
   const legacyResiduePaths = options.legacyResiduePaths ?? resolveKnownLegacyResiduePaths(rootDir);
+  const preservedRepoPathPrefixes = [
+    ...DEFAULT_PRESERVED_REPO_PATH_PREFIXES,
+    ...(options.preservedRepoPathPrefixes ?? []),
+  ]
+    .map((entry) => normalizeRepoRelativePath(entry))
+    .filter(Boolean);
 
   const summary = {
     generatedAt: new Date().toISOString(),
@@ -218,8 +229,8 @@ export async function cleanRealTaskWaveState(options = {}) {
     ok: false,
   };
 
-  await purgeRepoDirectory(dotCodexRunRoot, '.codex-run', trackedPaths, summary.cleanup.dotCodexRun);
-  await purgeRepoDirectory(backendDataRoot, 'backend/data', trackedPaths, summary.cleanup.backendData);
+  await purgeRepoDirectory(dotCodexRunRoot, '.codex-run', trackedPaths, summary.cleanup.dotCodexRun, preservedRepoPathPrefixes);
+  await purgeRepoDirectory(backendDataRoot, 'backend/data', trackedPaths, summary.cleanup.backendData, preservedRepoPathPrefixes);
   for (let index = 0; index < externalPaths.length; index += 1) {
     await purgeExternalDirectory(externalPaths[index], summary.cleanup.external[index]);
   }
@@ -235,7 +246,7 @@ export async function cleanRealTaskWaveState(options = {}) {
     await purgeRepoDirectory(legacyPath, relativePath, trackedPaths, {
       removedEntries: summary.cleanup.legacyResidue,
       preservedEntries: summary.cleanup.backendData.preservedEntries,
-    });
+    }, preservedRepoPathPrefixes);
   }
 
   await ensureDirectories(
@@ -249,8 +260,8 @@ export async function cleanRealTaskWaveState(options = {}) {
     summary.recreatedDirectories,
   );
 
-  summary.residuals.dotCodexRun = await collectResidualRepoEntries(dotCodexRunRoot, '.codex-run', trackedPaths);
-  summary.residuals.backendData = await collectResidualRepoEntries(backendDataRoot, 'backend/data', trackedPaths);
+  summary.residuals.dotCodexRun = await collectResidualRepoEntries(dotCodexRunRoot, '.codex-run', trackedPaths, [], preservedRepoPathPrefixes);
+  summary.residuals.backendData = await collectResidualRepoEntries(backendDataRoot, 'backend/data', trackedPaths, [], preservedRepoPathPrefixes);
   summary.residuals.external = [];
   for (const target of externalPaths) {
     summary.residuals.external.push({

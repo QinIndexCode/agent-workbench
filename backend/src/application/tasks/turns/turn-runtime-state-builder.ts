@@ -1,3 +1,4 @@
+import path from 'node:path';
 import {
   AcceptanceFailureCategory,
   CorrectionPromptMode,
@@ -21,6 +22,7 @@ import {
 import { BackendNewFoundation } from '../../../foundation/bootstrap/types';
 import { ToolInvocationRecord } from '../../../foundation/repository/types';
 import { evaluateTaskQuality } from '../../../domain/quality/task-quality';
+import { collectTaskArtifactPaths } from '../artifact-routing';
 import { TaskPlannerService } from '../planning/task-planner-service';
 import { TurnContextAssemblyResult } from './turn-context-assembly';
 import { TurnPhaseOutcome } from './turn-phase-types';
@@ -66,6 +68,447 @@ function stringifyContextMetadataValue(value: unknown, maxChars: number): string
   return stringifyContextValue(value, maxChars);
 }
 
+function formatPathList(paths: string[], limit: number): string {
+  const normalized = Array.from(new Set(paths.map(normalizeWorkspaceRelativePath).filter((value): value is string => !!value)));
+  if (normalized.length === 0) {
+    return '(none)';
+  }
+  const shown = normalized.slice(0, limit);
+  const suffix = normalized.length > shown.length ? `; +${normalized.length - shown.length} more` : '';
+  return `${shown.join(', ')}${suffix}`;
+}
+
+function isAbsoluteArtifactEvidencePath(value: string): boolean {
+  return /^[A-Za-z]:\//.test(value) || value.startsWith('/');
+}
+
+function getWriteFileContentFromArguments(argumentsRecord: Record<string, unknown>): string | null {
+  const directContent = argumentsRecord.content;
+  if (typeof directContent === 'string') {
+    return directContent;
+  }
+  const contentLines = argumentsRecord.content_lines;
+  if (Array.isArray(contentLines) && contentLines.every((entry) => typeof entry === 'string')) {
+    return contentLines.join('\n');
+  }
+  const contentJson = argumentsRecord.content_json;
+  if (contentJson && typeof contentJson === 'object' && !Array.isArray(contentJson)) {
+    return `${JSON.stringify(contentJson, null, 2)}\n`;
+  }
+  return null;
+}
+
+function formatLineNumberedExcerpt(content: string, startLine: number): string {
+  const safeStartLine = Number.isFinite(startLine) && startLine > 0 ? Math.floor(startLine) : 1;
+  return content
+    .split(/\r?\n/)
+    .map((line, index) => `${String(safeStartLine + index).padStart(4, ' ')}: ${line}`)
+    .join('\n');
+}
+
+function normalizePythonRelativeModuleSpecifier(specifier: string): string | null {
+  const match = specifier.match(/^(\.+)([A-Za-z_][\w.]*)$/);
+  if (!match) {
+    return null;
+  }
+  const [, dots, modulePath] = match;
+  const parentPrefix = dots.length > 1 ? '../'.repeat(dots.length - 1) : './';
+  return `${parentPrefix}${modulePath.replace(/\./g, '/')}`;
+}
+
+function extractCommonRelativeCodeReferences(content: string): string[] {
+  const specifiers = new Set<string>();
+  const patterns = [
+    /\b(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"](\.{1,2}\/[^'"]+)['"]/g,
+    /\bimport\s*\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g,
+    /\brequire\s*\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g,
+    /^\s*#\s*include\s+["](\.{0,2}\/?[^">]+)[">]/gm,
+    /^\s*require_relative\s+['"]([^'"]+)['"]/gm,
+    /^\s*mod\s+([A-Za-z_][\w]*)\s*;/gm
+  ];
+  for (const pattern of patterns) {
+    for (const match of content.matchAll(pattern)) {
+      if (typeof match[1] === 'string' && match[1].trim()) {
+        const rawSpecifier = match[1].trim();
+        specifiers.add(rawSpecifier.startsWith('.') ? rawSpecifier : `./${rawSpecifier}`);
+      }
+    }
+  }
+  const pythonPatterns = [
+    /^\s*from\s+(\.+[A-Za-z_][\w.]*)\s+import\s+/gm,
+    /^\s*import\s+(\.+[A-Za-z_][\w.]*)\s*$/gm
+  ];
+  for (const pattern of pythonPatterns) {
+    for (const match of content.matchAll(pattern)) {
+      if (typeof match[1] !== 'string') {
+        continue;
+      }
+      const normalized = normalizePythonRelativeModuleSpecifier(match[1].trim());
+      if (normalized) {
+        specifiers.add(normalized);
+      }
+    }
+  }
+  return [...specifiers];
+}
+
+function getSameTurnReferenceCandidates(fromPath: string, specifier: string): string[] {
+  const baseDir = path.posix.dirname(fromPath.replace(/\\/g, '/'));
+  const joined = path.posix.normalize(path.posix.join(baseDir, specifier.replace(/\\/g, '/')))
+    .replace(/^\.\//, '');
+  const extension = path.posix.extname(joined);
+  if (extension) {
+    return [joined];
+  }
+  const fallbackCandidates = [
+    `${joined}.js`,
+    `${joined}.cjs`,
+    `${joined}.mjs`,
+    `${joined}.ts`,
+    `${joined}.tsx`,
+    `${joined}.jsx`,
+    `${joined}.mts`,
+    `${joined}.cts`,
+    `${joined}.py`,
+    `${joined}/__init__.py`,
+    `${joined}.rs`,
+    `${joined}/mod.rs`,
+    `${joined}.rb`,
+    `${joined}.php`,
+    `${joined}.go`,
+    `${joined}.java`,
+    `${joined}.kt`,
+    `${joined}.cs`,
+    `${joined}.h`,
+    `${joined}.hpp`,
+    `${joined}.c`,
+    `${joined}.cpp`,
+    `${joined}.json`,
+    `${joined}/index.js`,
+    `${joined}/index.ts`
+  ];
+  const sourceExtension = path.posix.extname(fromPath).toLowerCase();
+  const prioritizedCandidates =
+    sourceExtension === '.py'
+      ? [`${joined}.py`, `${joined}/__init__.py`]
+      : sourceExtension === '.rs'
+        ? [`${joined}.rs`, `${joined}/mod.rs`]
+        : sourceExtension === '.rb'
+          ? [`${joined}.rb`]
+          : ['.c', '.cc', '.cpp', '.h', '.hpp'].includes(sourceExtension)
+            ? [`${joined}.h`, `${joined}.hpp`, `${joined}.c`, `${joined}.cpp`]
+            : sourceExtension === '.go'
+              ? [`${joined}.go`]
+              : sourceExtension === '.java'
+                ? [`${joined}.java`]
+                : sourceExtension === '.kt'
+                  ? [`${joined}.kt`]
+                  : sourceExtension === '.cs'
+                    ? [`${joined}.cs`]
+                    : [];
+  return Array.from(new Set([...prioritizedCandidates, ...fallbackCandidates]));
+}
+
+interface JavaScriptModuleImportFact {
+  specifier: string;
+  localName: string;
+  kind: 'commonjs_default' | 'commonjs_named';
+}
+
+interface JavaScriptModuleExportFacts {
+  commonJsDefault: string | null;
+  commonJsNamedObject: string[];
+  namedExports: string[];
+}
+
+function extractJavaScriptModuleImports(content: string): JavaScriptModuleImportFact[] {
+  const imports: JavaScriptModuleImportFact[] = [];
+  const defaultRequirePattern = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g;
+  for (const match of content.matchAll(defaultRequirePattern)) {
+    imports.push({
+      kind: 'commonjs_default',
+      localName: match[1],
+      specifier: match[2]
+    });
+  }
+  const namedRequirePattern = /\b(?:const|let|var)\s*\{\s*([^}]+?)\s*\}\s*=\s*require\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g;
+  for (const match of content.matchAll(namedRequirePattern)) {
+    const specifier = match[2];
+    const names = match[1]
+      .split(',')
+      .map((entry) => entry.trim())
+      .map((entry) => entry.split(':')[0]?.trim())
+      .filter((entry): entry is string => Boolean(entry));
+    for (const localName of names) {
+      imports.push({
+        kind: 'commonjs_named',
+        localName,
+        specifier
+      });
+    }
+  }
+  return imports;
+}
+
+function parseSimpleExportNames(value: string): string[] {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .map((entry) => {
+      const aliasMatch = entry.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/);
+      if (aliasMatch) {
+        return aliasMatch[2];
+      }
+      const propertyMatch = entry.match(/^([A-Za-z_$][\w$]*)\s*:/);
+      if (propertyMatch) {
+        return propertyMatch[1];
+      }
+      const directMatch = entry.match(/^([A-Za-z_$][\w$]*)$/);
+      return directMatch?.[1] ?? null;
+    })
+    .filter((entry): entry is string => Boolean(entry));
+}
+
+function extractJavaScriptModuleExports(content: string): JavaScriptModuleExportFacts {
+  const commonJsNamedObject = new Set<string>();
+  const namedExports = new Set<string>();
+  const objectExportMatch = content.match(/\bmodule\.exports\s*=\s*\{([\s\S]*?)\}\s*;?/m);
+  if (objectExportMatch) {
+    for (const name of parseSimpleExportNames(objectExportMatch[1])) {
+      commonJsNamedObject.add(name);
+      namedExports.add(name);
+    }
+  }
+  let commonJsDefault: string | null = null;
+  const defaultExportMatch = content.match(/\bmodule\.exports\s*=\s*([A-Za-z_$][\w$]*)\s*;?/);
+  if (defaultExportMatch && !objectExportMatch) {
+    commonJsDefault = defaultExportMatch[1];
+  }
+  for (const match of content.matchAll(/\b(?:exports|module\.exports)\.([A-Za-z_$][\w$]*)\s*=/g)) {
+    commonJsNamedObject.add(match[1]);
+    namedExports.add(match[1]);
+  }
+  for (const match of content.matchAll(/\bexport\s+(?:async\s+)?(?:class|function|const|let|var)\s+([A-Za-z_$][\w$]*)/g)) {
+    namedExports.add(match[1]);
+  }
+  for (const match of content.matchAll(/\bexport\s*\{([^}]+)\}/g)) {
+    for (const name of parseSimpleExportNames(match[1])) {
+      namedExports.add(name);
+    }
+  }
+  return {
+    commonJsDefault,
+    commonJsNamedObject: [...commonJsNamedObject],
+    namedExports: [...namedExports]
+  };
+}
+
+function buildCurrentTurnReadFileModuleFactSummary(params: {
+  invocations: ToolInvocationRecord[];
+  currentUnitId: string;
+  turnId: string;
+}): LlmContextMessage | null {
+  const latestWriteByPath = new Map<string, number>();
+  for (const invocation of params.invocations) {
+    if (
+      invocation.unitId !== params.currentUnitId
+      || invocation.status !== 'SUCCEEDED'
+      || normalizeToolId(invocation.toolId) !== 'write_file'
+    ) {
+      continue;
+    }
+    const filePath = normalizeWorkspaceRelativePath((invocation.result as Record<string, unknown> | null)?.path)
+      ?? normalizeWorkspaceRelativePath(invocation.arguments.path);
+    if (!filePath) {
+      continue;
+    }
+    latestWriteByPath.set(filePath, Math.max(latestWriteByPath.get(filePath) ?? 0, invocation.endedAt ?? invocation.startedAt ?? 0));
+  }
+  const readFiles = params.invocations
+    .filter((invocation) => (
+      invocation.unitId === params.currentUnitId
+      && invocation.status === 'SUCCEEDED'
+      && normalizeToolId(invocation.toolId) === 'read_file'
+    ))
+    .sort((left, right) => {
+      const leftTimestamp = left.endedAt ?? left.startedAt ?? 0;
+      const rightTimestamp = right.endedAt ?? right.startedAt ?? 0;
+      return leftTimestamp - rightTimestamp;
+    })
+    .map((invocation) => {
+      const output = invocation.result && typeof invocation.result === 'object' && !Array.isArray(invocation.result)
+        ? invocation.result as Record<string, unknown>
+        : null;
+      const content = typeof output?.content === 'string' ? output.content : null;
+      const filePath = normalizeWorkspaceRelativePath(output?.path)
+        ?? normalizeWorkspaceRelativePath(invocation.arguments.path);
+      if (!content || !filePath) {
+        return null;
+      }
+      const readAt = invocation.endedAt ?? invocation.startedAt ?? 0;
+      const laterWriteAt = latestWriteByPath.get(filePath) ?? 0;
+      if (laterWriteAt > readAt) {
+        return null;
+      }
+      return { path: filePath, content };
+    })
+    .filter((entry): entry is { path: string; content: string } => Boolean(entry))
+    .slice(-16);
+  if (readFiles.length < 2) {
+    return null;
+  }
+  const readFileByPath = new Map(readFiles.map((entry) => [entry.path, entry]));
+  const exportFactsByPath = new Map(readFiles.map((entry) => [entry.path, extractJavaScriptModuleExports(entry.content)]));
+  const mismatchFacts: string[] = [];
+  for (const source of readFiles) {
+    for (const importFact of extractJavaScriptModuleImports(source.content)) {
+      const targetPath = getSameTurnReferenceCandidates(source.path, importFact.specifier)
+        .find((candidate) => readFileByPath.has(candidate));
+      if (!targetPath) {
+        continue;
+      }
+      const exportFacts = exportFactsByPath.get(targetPath);
+      if (!exportFacts) {
+        continue;
+      }
+      if (
+        importFact.kind === 'commonjs_default'
+        && exportFacts.commonJsNamedObject.includes(importFact.localName)
+        && !exportFacts.commonJsDefault
+      ) {
+        mismatchFacts.push(
+          `${source.path} imports ${importFact.specifier} as default CommonJS value "${importFact.localName}", `
+          + `but ${targetPath} exports named CommonJS object { ${exportFacts.commonJsNamedObject.join(', ')} }. `
+          + `Use destructuring require or change the module default export before constructing/calling "${importFact.localName}".`
+        );
+      }
+      if (
+        importFact.kind === 'commonjs_named'
+        && exportFacts.commonJsDefault === importFact.localName
+        && !exportFacts.commonJsNamedObject.includes(importFact.localName)
+      ) {
+        mismatchFacts.push(
+          `${source.path} destructures "${importFact.localName}" from ${importFact.specifier}, `
+          + `but ${targetPath} assigns module.exports directly to ${exportFacts.commonJsDefault}. `
+          + 'Use default require or export a named object consistently.'
+        );
+      }
+      if (importFact.kind === 'commonjs_named') {
+        const exportedNames = Array.from(new Set([
+          ...exportFacts.commonJsNamedObject,
+          ...exportFacts.namedExports,
+          ...(exportFacts.commonJsDefault ? [exportFacts.commonJsDefault] : [])
+        ]));
+        if (exportedNames.length > 0 && !exportedNames.includes(importFact.localName)) {
+          const caseOnlyMatch = exportedNames.find((name) => name.toLowerCase() === importFact.localName.toLowerCase());
+          mismatchFacts.push(
+            `${source.path} imports named CommonJS export "${importFact.localName}" from ${importFact.specifier}, `
+            + `but ${targetPath} exports { ${exportedNames.join(', ')} }. `
+            + `${caseOnlyMatch ? `The closest export is "${caseOnlyMatch}"; CommonJS property names are case-sensitive. ` : ''}`
+            + 'Align the destructured import name with the exported name, or export the requested name explicitly.'
+          );
+        }
+      }
+    }
+  }
+  if (mismatchFacts.length === 0) {
+    return null;
+  }
+  return createLlmContextMessage({
+    role: 'tool',
+    content: [
+      'Recent read_file module contract facts.',
+      `Potential local import/export mismatches (${mismatchFacts.length}): ${mismatchFacts.slice(0, 6).join('; ')}`,
+      'These facts are derived only from read_file results that have not been superseded by later same-path writes. Verify the fix with a real compile/test/run command.'
+    ].join('\n'),
+    metadata: {
+      unitId: params.currentUnitId,
+      source: 'tool_result_module_facts',
+      turnId: params.turnId
+    }
+  });
+}
+
+function buildCurrentTurnWriteFactSummary(params: {
+  invocations: ToolInvocationRecord[];
+  currentUnitId: string;
+  turnId: string;
+  maxContentChars: number;
+}): LlmContextMessage | null {
+  const currentTurnInvocations = params.invocations
+    .filter((invocation) => (
+      invocation.unitId === params.currentUnitId
+      && invocation.turnId === params.turnId
+      && (invocation.status === 'SUCCEEDED' || invocation.status === 'FAILED' || invocation.status === 'DENIED')
+    ))
+    .sort((left, right) => {
+      const leftTimestamp = left.endedAt ?? left.startedAt ?? 0;
+      const rightTimestamp = right.endedAt ?? right.startedAt ?? 0;
+      return leftTimestamp - rightTimestamp;
+    });
+  const writeInvocations = currentTurnInvocations.filter((invocation) => normalizeToolId(invocation.toolId) === 'write_file');
+  if (writeInvocations.length === 0) {
+    return null;
+  }
+  const successfulWritePaths = writeInvocations
+    .filter((invocation) => invocation.status === 'SUCCEEDED')
+    .map((invocation) =>
+      normalizeWorkspaceRelativePath((invocation.result as Record<string, unknown> | null)?.path)
+        ?? normalizeWorkspaceRelativePath(invocation.arguments.path)
+    )
+    .filter((value): value is string => !!value);
+  const successfulWriteSet = new Set(successfulWritePaths);
+  const failedWritePaths = writeInvocations
+    .filter((invocation) => invocation.status !== 'SUCCEEDED')
+    .map((invocation) => normalizeWorkspaceRelativePath(invocation.arguments.path) ?? 'unknown')
+    .filter(Boolean);
+  const unconfirmedReferences: string[] = [];
+  for (const invocation of writeInvocations) {
+    if (invocation.status !== 'SUCCEEDED') {
+      continue;
+    }
+    const writePath = normalizeWorkspaceRelativePath((invocation.result as Record<string, unknown> | null)?.path)
+      ?? normalizeWorkspaceRelativePath(invocation.arguments.path);
+    if (!writePath) {
+      continue;
+    }
+    const content = getWriteFileContentFromArguments(invocation.arguments);
+    if (!content) {
+      continue;
+    }
+    for (const specifier of extractCommonRelativeCodeReferences(content)) {
+      const candidates = getSameTurnReferenceCandidates(writePath, specifier);
+      if (!candidates.some((candidate) => successfulWriteSet.has(candidate))) {
+        unconfirmedReferences.push(`${writePath} -> ${specifier} (candidates: ${candidates.slice(0, 3).join(', ')})`);
+      }
+    }
+  }
+  const lines = [
+    'Current turn workspace facts from executed tools.',
+    `Successful write_file paths (${successfulWritePaths.length}): ${formatPathList(successfulWritePaths, 20)}.`,
+    ...(failedWritePaths.length > 0 ? [`Failed write_file paths (${failedWritePaths.length}): ${formatPathList(failedWritePaths, 12)}.`] : []),
+    ...(unconfirmedReferences.length > 0
+      ? [
+        `Common relative code references not confirmed by same-turn writes (${unconfirmedReferences.length}): ${unconfirmedReferences.slice(0, 8).join('; ')}.`,
+        'This is a file-existence hint, not a language semantic check. It does not prove import resolution, exported names, function signatures, or package-specific module rules.',
+        'Before relying on an unconfirmed local reference or exported API, verify it with inspect_file/read_file/list_files and a real compile/test/run command, or write the referenced file in a later tool turn.'
+      ]
+      : []),
+    'Treat planned paths, examples, and prior prose as unconfirmed until they appear in successful tool evidence.'
+  ];
+  return createLlmContextMessage({
+    role: 'tool',
+    content: stringifyContextValue(lines.join('\n'), params.maxContentChars),
+    metadata: {
+      unitId: params.currentUnitId,
+      source: 'tool_result_summary',
+      toolId: 'write_file',
+      status: 'SUCCEEDED',
+      turnId: params.turnId
+    }
+  });
+}
+
 function mergedInvocationResultAndMetadata(invocation: ToolInvocationRecord): Record<string, unknown> {
   const result = invocation.result && typeof invocation.result === 'object' && !Array.isArray(invocation.result)
     ? invocation.result
@@ -74,6 +517,27 @@ function mergedInvocationResultAndMetadata(invocation: ToolInvocationRecord): Re
     ? invocation.metadata
     : {};
   return { ...metadata, ...result };
+}
+
+function derivePendingInvocationIds(params: {
+  acceptedInvocationIds: string[];
+  approvalInvocationIds: string[];
+  latestToolInvocations: ToolInvocationRecord[];
+}): {
+  awaitingToolDispatch: string[];
+  awaitingApprovalInvocations: string[];
+} {
+  const latestById = new Map(params.latestToolInvocations.map((invocation) => [invocation.invocationId, invocation]));
+  return {
+    awaitingToolDispatch: params.acceptedInvocationIds.filter((invocationId) => {
+      const invocation = latestById.get(invocationId);
+      return !invocation || invocation.status === 'PLANNED' || invocation.status === 'RUNNING';
+    }),
+    awaitingApprovalInvocations: params.approvalInvocationIds.filter((invocationId) => {
+      const invocation = latestById.get(invocationId);
+      return !invocation || invocation.status === 'WAITING_APPROVAL';
+    })
+  };
 }
 
 function buildRunCommandResultContext(invocation: ToolInvocationRecord, maxContentChars: number): string {
@@ -130,7 +594,7 @@ function buildToolContextMessageContent(invocation: ToolInvocationRecord, maxCon
     const selectedChars = typeof output?.selectedChars === 'number' ? output.selectedChars : content.length;
     const totalChars = typeof output?.totalChars === 'number' ? output.totalChars : content.length;
     const truncated = output?.truncated === true;
-    const excerpt = stringifyContextValue(content, maxContentChars);
+    const excerpt = stringifyContextValue(formatLineNumberedExcerpt(content, startLine), maxContentChars);
     return [
       `Tool read_file succeeded for ${path}.`,
       `Selection: lines ${startLine}-${endLine ?? startLine}${totalLines ? ` of ${totalLines}` : ''}; chars ${selectedChars}/${totalChars}${truncated ? ' (truncated)' : ''}.`,
@@ -176,7 +640,9 @@ export function buildCurrentTurnToolContextMessages(params: {
       return leftTimestamp - rightTimestamp;
     })
     .slice(-(params.maxMessages ?? 4));
-  return selectedInvocations.map((invocation) => createLlmContextMessage({
+  const summaryMessage = buildCurrentTurnWriteFactSummary(params);
+  const moduleFactSummaryMessage = buildCurrentTurnReadFileModuleFactSummary(params);
+  const invocationMessages = selectedInvocations.map((invocation) => createLlmContextMessage({
     role: 'tool',
     content: buildToolContextMessageContent(invocation, params.maxContentChars),
     metadata: {
@@ -188,6 +654,11 @@ export function buildCurrentTurnToolContextMessages(params: {
       turnId: invocation.turnId
     }
   }));
+  return [
+    ...(summaryMessage ? [summaryMessage] : []),
+    ...(moduleFactSummaryMessage ? [moduleFactSummaryMessage] : []),
+    ...invocationMessages
+  ];
 }
 
 function normalizeToolId(toolId: string): string {
@@ -202,9 +673,18 @@ function isMaterializingWriteTool(toolId: string): boolean {
 function isVerificationEvidenceTool(toolId: string): boolean {
   const normalized = normalizeToolId(toolId);
   return normalized === 'read_file'
+    || normalized === 'inspect_file'
     || normalized === 'search_files'
     || normalized === 'list_files'
     || normalized === 'run_command';
+}
+
+function isFailedInspectionEvidenceTool(toolId: string): boolean {
+  const normalized = normalizeToolId(toolId);
+  return normalized === 'read_file'
+    || normalized === 'inspect_file'
+    || normalized === 'search_files'
+    || normalized === 'list_files';
 }
 
 function collectInvocationEvidencePaths(invocation: Pick<ToolInvocationRecord, 'arguments' | 'result'>): string[] {
@@ -246,16 +726,19 @@ function summarizeUnitToolEvidence(invocations: ToolInvocationRecord[], unitId: 
   let successfulVerificationToolCount = 0;
   const successfulWriteEvidencePaths = new Set<string>();
   for (const invocation of invocations) {
-    if (invocation.unitId !== unitId || invocation.status !== 'SUCCEEDED') {
+    if (invocation.unitId !== unitId || (invocation.status !== 'SUCCEEDED' && invocation.status !== 'FAILED')) {
       continue;
     }
-    if (isMaterializingWriteTool(invocation.toolId)) {
+    if (invocation.status === 'SUCCEEDED' && isMaterializingWriteTool(invocation.toolId)) {
       successfulMaterializingToolCount += 1;
       for (const path of collectInvocationEvidencePaths(invocation)) {
         successfulWriteEvidencePaths.add(path);
       }
     }
-    if (isVerificationEvidenceTool(invocation.toolId)) {
+    if (
+      (invocation.status === 'SUCCEEDED' && isVerificationEvidenceTool(invocation.toolId))
+      || (invocation.status === 'FAILED' && isFailedInspectionEvidenceTool(invocation.toolId))
+    ) {
       successfulVerificationToolCount += 1;
     }
   }
@@ -434,6 +917,8 @@ export function buildTurnRuntimeState(params: {
 }): TurnRuntimeStateBuildResult {
   const currentUnit = params.definition.units.find((unit) => unit.id === params.currentUnitId) ?? null;
   const latestAcceptedOutput = params.phaseOutcome.acceptedOutputs?.at(-1);
+  const qualityArtifactPaths = collectTaskArtifactPaths(params.latestToolInvocations);
+  const qualityArtifactDestinationPaths = qualityArtifactPaths.filter(isAbsoluteArtifactEvidencePath);
   const qualityEvaluation = currentUnit
     ? evaluateTaskQuality({
       taskId: params.definition.taskId,
@@ -443,8 +928,8 @@ export function buildTurnRuntimeState(params: {
       executionProfileId: currentUnit.executionProfileId ?? 'analyze',
       qualityProfileId: currentUnit.qualityProfileId ?? null,
       workspaceDir: params.foundation.layout.forTask(params.definition.taskId).workspaceDir,
-      artifactPaths: [],
-      artifactDestinationPaths: [],
+      artifactPaths: qualityArtifactPaths,
+      artifactDestinationPaths: qualityArtifactDestinationPaths,
       artifactDestinationDir: null,
       latestVisibleOutput: latestAcceptedOutput
         ? {
@@ -488,6 +973,11 @@ export function buildTurnRuntimeState(params: {
   const effectivePendingCorrection = qualityGateFailed
     ? qualityCorrectionKind
     : effectiveAcceptance.pendingCorrection;
+  const pendingInvocationIds = derivePendingInvocationIds({
+    acceptedInvocationIds: params.phaseOutcome.plannedTools.acceptedInvocationIds,
+    approvalInvocationIds: params.phaseOutcome.plannedTools.approvalInvocationIds,
+    latestToolInvocations: params.latestToolInvocations
+  });
   const runtimeWithAcceptedTrackers = params.phaseOutcome.acceptedTrackers.length === 0
     ? params.previousRuntime
     : (params.phaseOutcome.acceptedTrackers.length === 1
@@ -495,8 +985,8 @@ export function buildTurnRuntimeState(params: {
         definition: params.definition,
         runtime: params.previousRuntime,
         tracker: params.phaseOutcome.acceptedTrackers[0],
-        acceptedInvocationIds: params.phaseOutcome.plannedTools.acceptedInvocationIds,
-        approvalInvocationIds: params.phaseOutcome.plannedTools.approvalInvocationIds,
+        acceptedInvocationIds: pendingInvocationIds.awaitingToolDispatch,
+        approvalInvocationIds: pendingInvocationIds.awaitingApprovalInvocations,
         sessionId: params.sessionId,
         correlationId: params.correlationId,
         turnId: params.turnId,
@@ -507,8 +997,8 @@ export function buildTurnRuntimeState(params: {
         definition: params.definition,
         runtime: params.previousRuntime,
         trackers: params.phaseOutcome.acceptedTrackers,
-        acceptedInvocationIds: params.phaseOutcome.plannedTools.acceptedInvocationIds,
-        approvalInvocationIds: params.phaseOutcome.plannedTools.approvalInvocationIds,
+        acceptedInvocationIds: pendingInvocationIds.awaitingToolDispatch,
+        approvalInvocationIds: pendingInvocationIds.awaitingApprovalInvocations,
         sessionId: params.sessionId,
         correlationId: params.correlationId,
         turnId: params.turnId,
@@ -527,8 +1017,8 @@ export function buildTurnRuntimeState(params: {
       errors: qualityGateFailed
         ? [...qualityFailureMessages, ...qualityRequiredEvidenceMessages]
         : effectiveAcceptance.issueMessages,
-      acceptedInvocationIds: params.phaseOutcome.plannedTools.acceptedInvocationIds,
-      approvalInvocationIds: params.phaseOutcome.plannedTools.approvalInvocationIds,
+      acceptedInvocationIds: pendingInvocationIds.awaitingToolDispatch,
+      approvalInvocationIds: pendingInvocationIds.awaitingApprovalInvocations,
       sessionId: params.sessionId,
       correlationId: params.correlationId,
       turnId: params.turnId,

@@ -118,6 +118,8 @@ SCC-Batch now treats provider setup as **curated presets + custom provider**:
 - API-key-first setup for hosted providers
 - explicit runtime-vs-saved default provider truth
 - full custom provider support for OpenAI-compatible and other advanced transports
+- catalog metadata that separates `runnable`, `profile-only`, and `external-auth-required` providers
+- provider capability declarations for text, image, audio, and file readiness without implying binary attachment support in Core runtime
 
 The provider UI and API keep these two truths visible:
 
@@ -164,11 +166,24 @@ Provider preset discovery is also available from the CLI:
 npm run cli -- platform providers presets
 ```
 
+The catalog is intentionally provider-plane only: OpenAI-compatible, DeepSeek-compatible, Anthropic-compatible, and local OpenAI-compatible transports are runnable through generic adapters; native or enterprise-cloud presets stay structured but non-runnable until a generic adapter/auth contract exists.
+
+Ecosystem diagnostics use the same readiness truth as the Settings workbench:
+
+```bash
+npm run cli -- platform ecosystem status
+npm run cli -- platform tools health
+npm run cli -- platform scenarios list
+```
+
+The Settings `Ecosystem` view summarizes providers, MCP servers, skills, approved experience, tool health, scenario packs, and workspace commands without changing task submission defaults.
+
 ## Optional local enhancements
 
 These are supported but not required for the default local setup:
 
-- live provider validation sourced from `dont_touch_(APIKEY).md` using the canonical Xiaomi Mimo `mimo-v2.5` profile
+- live provider validation through a local, ignored harness secret source
+- matrix validation across harness-selected text-agent models; non-text generation models stay outside the Agent task matrix
 - Postgres-backed validation helpers
 - higher-fidelity benchmark profiles
 
@@ -181,11 +196,11 @@ Ignored local env helpers:
 `npm run release:scorecard` keeps the external-integration bar intact. A fully green run requires the same two external truths the product depends on:
 
 - Postgres via `BACKEND_NEW_PG_TEST_URL` or `BACKEND_NEW_DATABASE_URL`
-- live provider execution via `BACKEND_NEW_LIVE_PROVIDER_ENABLED=1` plus the canonical `xiaomi-mimo-v2-flash` provider/secret, now pinned to model `mimo-v2.5`
+- live provider execution via `BACKEND_NEW_LIVE_PROVIDER_ENABLED=1` plus a configured validation provider and secret
 
 Without those inputs, the scorecard is expected to report external blockers rather than pretend the repo has passed a full release-grade profile.
 
-For the current local repo workflow, the live provider source of truth is `dont_touch_(APIKEY).md`. The canonical Xiaomi live provider keeps the stable id `xiaomi-mimo-v2-flash`, but its canonical model truth is `mimo-v2.5`. The supported task-validation path is now real-provider only; do not reintroduce mock provider manifests for operator or Agent CLI testing.
+The supported task-validation path is real-provider evidence. Do not reintroduce mock provider manifests for operator or Agent CLI testing.
 
 ## Current release stance
 

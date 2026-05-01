@@ -438,7 +438,7 @@ export function buildResponsePolicySection(params: {
     pendingCorrection: params.pendingCorrection ?? 'NONE',
     guidanceLines: params.policy.guidanceLines
   });
-  const canonicalToolNamesLine = 'Accepted canonical tool names: read_file, write_file, create_folder, list_files, search_files, run_command, delegate_subtask.';
+  const canonicalToolNamesLine = 'Accepted canonical tool names: read_file, inspect_file, write_file, create_folder, list_files, search_files, run_command, delegate_subtask.';
   return [
     'RESPONSE_POLICY',
     `Provider prompt policy: ${params.policy.vendorLabel}`,
@@ -473,7 +473,7 @@ export function buildResponsePolicySection(params: {
         'Do not use XML wrappers such as <tool>, <tool_call>, <tool_invocation>, or <invoke>.',
         'Canonical JSON tool object example:',
         '{"tool":"write_file","arguments":{"path":"relative/path.txt","content":"file content"}}',
-        'For larger files, write_file may use arguments.content_lines as an array of strings instead of one large escaped content string.',
+        'For HTML, CSS, JS, Markdown, or any content with quotes/backslashes/newlines, write_file must use arguments.content_lines as an array of lines instead of one giant escaped content string.',
         'For JSON manifests, write_file may use arguments.content_json as an object and the runtime will pretty-print it before writing.'
       ]
       : []),
@@ -496,6 +496,8 @@ export function buildResponsePolicySection(params: {
     'If any tool invocation is PLANNED or WAITING_APPROVAL, do not return only a tracker.',
     'Only use EARLY_TERMINATE when all required work is already complete and no downstream unit still needs to run.',
     'Never claim files_created unless they come from actual tool results.',
+    'Treat successful tool results and validated outputs as authoritative facts. Treat plans, examples, requested paths, and prior prose as unconfirmed until verified by tool evidence.',
+    'Before importing, referencing, or claiming a local file/API that was not just confirmed by successful tool evidence, use inspect_file/read_file/list_files/search_files or a real compile/test/run command to verify it.',
     ...correctionLines,
     ...providerGuidanceLines
   ];

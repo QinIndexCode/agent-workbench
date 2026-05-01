@@ -15,9 +15,9 @@ function closeServer(server) {
   return new Promise((resolve) => server.close(resolve));
 }
 
-function registerProviderClient(foundation, responses) {
+function registerProviderClient(foundation, responses, providerId = 'provider-functional') {
   const queue = [...responses];
-  foundation.providerClients.register('provider-functional', {
+  foundation.providerClients.register(providerId, {
     async complete(request) {
       const next = queue.shift() ?? 'OK';
       return {
@@ -122,6 +122,166 @@ test('functional provider/config line keeps provider, secret, default, and test 
       assert.equal(providerTrail.commands.some((record) => record.action === 'SET_SECRET'), true);
       assert.equal(configTrail.commands.some((record) => record.commandId === defaulted.commandId), true);
     } finally {
+      await runtime.close();
+    }
+  } finally {
+    removeDir(root);
+  }
+});
+
+test('functional provider REST line covers presets, profile lifecycle, secrets, defaults, and non-runnable status', async () => {
+  const root = createTempRoot();
+  try {
+    const foundation = createBackendNewFoundation({
+      config: {
+        paths: {
+          rootDir: root
+        }
+      }
+    });
+    registerProviderClient(foundation, ['OK'], 'provider-rest');
+    const runtime = createBackendNewRuntime({ foundation });
+    const server = createBackendNewHttpServer(runtime);
+
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      const serverUrl = `http://127.0.0.1:${address.port}`;
+      const json = async (url, options = {}) => {
+        const response = await fetch(`${serverUrl}${url}`, {
+          headers: { 'content-type': 'application/json' },
+          ...options
+        });
+        const text = await response.text();
+        assert.equal(response.ok, true, `${options.method ?? 'GET'} ${url} failed: ${text}`);
+        return text ? JSON.parse(text) : null;
+      };
+
+      const presets = await json('/providers/presets');
+      const openai = presets.find((preset) => preset.id === 'openai');
+      const azure = presets.find((preset) => preset.id === 'azure_openai');
+      const ollama = presets.find((preset) => preset.id === 'ollama');
+      assert.equal(openai.category, 'api-key');
+      assert.equal(openai.implementationStatus, 'runnable');
+      assert.equal(openai.capabilities.supportsVision, true);
+      assert.equal(azure.category, 'enterprise-cloud');
+      assert.equal(azure.implementationStatus, 'external-auth-required');
+      assert.equal(azure.requiredConfigFields.includes('deployment'), true);
+      assert.equal(ollama.category, 'local');
+      assert.equal(ollama.requiresApiKey, false);
+
+      const upserted = await json('/providers/provider-rest', {
+        method: 'PUT',
+        body: JSON.stringify({
+          id: 'provider-rest',
+          label: 'Provider REST',
+          transport: 'openai-compatible',
+          vendor: 'custom',
+          baseUrl: 'https://provider.example.test/v1',
+          model: 'rest-model',
+          apiKeySecretId: 'provider-rest-secret',
+          metadata: {
+            presetId: 'custom-openai-compatible',
+            implementationStatus: 'runnable'
+          }
+        })
+      });
+      assert.equal(upserted.resource.id, 'provider-rest');
+
+      const secretSet = await json('/providers/secrets', {
+        method: 'POST',
+        body: JSON.stringify({
+          secretId: 'provider-rest-secret',
+          provider: 'provider-rest',
+          label: 'Provider REST key',
+          apiKey: 'sk-rest-secret'
+        })
+      });
+      assert.equal(secretSet.resource.provider, 'provider-rest');
+      assert.equal(JSON.stringify(secretSet).includes('sk-rest-secret'), false);
+
+      const secrets = await json('/providers/secrets');
+      assert.equal(secrets.some((secret) => secret.provider === 'provider-rest' && secret.hasValue === true), true);
+      assert.equal(JSON.stringify(secrets).includes('sk-rest-secret'), false);
+
+      const tested = await json('/providers/provider-rest/test', {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      assert.equal(tested.ok, true);
+      assert.equal(tested.providerId, 'provider-rest');
+
+      const defaulted = await json('/providers/provider-rest/default', {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      assert.equal(defaulted.resource.isSavedDefault, true);
+      assert.equal(defaulted.resource.isRuntimeDefault, true);
+
+      const listedAfterDefault = await json('/providers');
+      const listedRest = listedAfterDefault.find((provider) => provider.profile.id === 'provider-rest');
+      assert.equal(listedRest.readiness, 'ready');
+      assert.equal(listedRest.authSource, 'secret-store');
+      assert.equal(listedRest.implementationStatus, 'runnable');
+
+      await json('/providers/cohere-profile', {
+        method: 'PUT',
+        body: JSON.stringify({
+          id: 'cohere-profile',
+          label: 'Cohere Profile',
+          vendor: 'cohere',
+          transport: 'native-cohere',
+          baseUrl: 'https://api.cohere.com/v2',
+          model: 'command-a-03-2025',
+          metadata: {
+            presetId: 'cohere',
+            implementationStatus: 'profile-only'
+          }
+        })
+      });
+      const cohereTest = await json('/providers/cohere-profile/test', {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      assert.equal(cohereTest.ok, false);
+      assert.match(cohereTest.message, /profile-only/i);
+
+      await json('/providers/azure-profile', {
+        method: 'PUT',
+        body: JSON.stringify({
+          id: 'azure-profile',
+          label: 'Azure Profile',
+          vendor: 'azure_openai',
+          transport: 'enterprise-cloud',
+          model: 'deployment-name',
+          metadata: {
+            presetId: 'azure_openai',
+            implementationStatus: 'external-auth-required',
+            configFields: {
+              resource: 'resource-name',
+              deployment: 'deployment-name',
+              api_version: '2024-10-21'
+            }
+          }
+        })
+      });
+      const azureTest = await json('/providers/azure-profile/test', {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      assert.equal(azureTest.ok, false);
+      assert.match(azureTest.message, /external cloud authentication/i);
+
+      const deleted = await json('/providers/provider-rest', {
+        method: 'DELETE',
+        body: JSON.stringify({})
+      });
+      assert.equal(deleted.resource.ok, true);
+      const listedAfterDelete = await json('/providers');
+      assert.equal(listedAfterDelete.some((provider) => provider.profile.id === 'provider-rest'), false);
+    } finally {
+      server.close();
       await runtime.close();
     }
   } finally {

@@ -20,91 +20,24 @@ import { StatusSwitch } from '../ui/status-switch';
 import { AdminPageShell } from '../workbench/AdminPageShell';
 import { SummaryStrip } from '../workbench/SummaryStrip';
 import type { SummaryStripItem } from '../../lib/workbench';
-import type { ProviderPresetView, ProviderProfile, ProviderProfileView, ProviderTransport, ProviderVendor } from '../../types';
+import type {
+  ProviderCapabilityMetadata,
+  ProviderPresetView,
+  ProviderProfile,
+  ProviderProfileView,
+  ProviderTransport,
+  ProviderVendor,
+} from '../../types';
 
 const PAGE_SIZE = 10;
-const FALLBACK_PROVIDER_PRESETS: ProviderPresetView[] = [
-  {
-    id: 'openai',
-    label: 'OpenAI',
-    vendor: 'openai',
-    transport: 'openai-compatible',
-    baseUrl: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-5.4',
-    requiresApiKey: true,
-    supportsQuickAdd: true,
-  },
-  {
-    id: 'anthropic',
-    label: 'Anthropic',
-    vendor: 'anthropic',
-    transport: 'anthropic-compatible',
-    baseUrl: 'https://api.anthropic.com/v1',
-    defaultModel: 'claude-sonnet-4.5',
-    requiresApiKey: true,
-    supportsQuickAdd: true,
-  },
-  {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    vendor: 'deepseek',
-    transport: 'deepseek-compatible',
-    baseUrl: 'https://api.deepseek.com/v1',
-    defaultModel: 'deepseek-chat',
-    requiresApiKey: true,
-    supportsQuickAdd: true,
-  },
-  {
-    id: 'moonshot',
-    label: 'Moonshot / Kimi',
-    vendor: 'moonshot',
-    transport: 'openai-compatible',
-    baseUrl: 'https://api.moonshot.cn/v1',
-    defaultModel: 'moonshot-v1-8k',
-    requiresApiKey: true,
-    supportsQuickAdd: true,
-  },
-  {
-    id: 'zhipu',
-    label: 'Zhipu / GLM',
-    vendor: 'zhipu',
-    transport: 'openai-compatible',
-    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    defaultModel: 'glm-4.5',
-    requiresApiKey: true,
-    supportsQuickAdd: true,
-  },
-  {
-    id: 'ollama',
-    label: 'Ollama',
-    vendor: 'ollama',
-    transport: 'local-stdio',
-    baseUrl: 'http://127.0.0.1:11434/v1',
-    defaultModel: 'llama3.1',
-    requiresApiKey: false,
-    supportsQuickAdd: true,
-  },
-  {
-    id: 'lmstudio',
-    label: 'LM Studio',
-    vendor: 'lmstudio',
-    transport: 'openai-compatible',
-    baseUrl: 'http://127.0.0.1:1234/v1',
-    defaultModel: 'local-model',
-    requiresApiKey: false,
-    supportsQuickAdd: true,
-  },
-  {
-    id: 'custom-openai-compatible',
-    label: 'Custom OpenAI-compatible',
-    vendor: 'custom',
-    transport: 'openai-compatible',
-    baseUrl: '',
-    defaultModel: '',
-    requiresApiKey: false,
-    supportsQuickAdd: false,
-  },
-];
+
+const DEFAULT_PROVIDER_CAPABILITIES: ProviderCapabilityMetadata = {
+  inputModalities: ['text'],
+  outputModalities: ['text'],
+  supportsVision: false,
+  supportsFiles: false,
+  supportedFileExtensions: [],
+};
 
 interface ProviderDraft {
   id: string;
@@ -114,6 +47,7 @@ interface ProviderDraft {
   baseUrl: string;
   model: string;
   apiKeySecretId: string;
+  configFieldValues: Record<string, string>;
 }
 
 type ProviderModalMode = 'create' | 'edit';
@@ -130,6 +64,12 @@ const PROVIDER_TRANSPORTS: ProviderTransport[] = [
   'openai-compatible',
   'deepseek-compatible',
   'anthropic-compatible',
+  'native-cohere',
+  'native-ai21',
+  'native-replicate',
+  'native-perplexity-agent',
+  'enterprise-cloud',
+  'profile-only',
   'local-stdio',
 ];
 
@@ -138,6 +78,13 @@ const PROVIDER_VENDORS: ProviderVendor[] = [
   'openai',
   'anthropic',
   'deepseek',
+  'xai',
+  'google_gemini',
+  'mistral',
+  'cohere',
+  'groq',
+  'openrouter',
+  'perplexity',
   'huggingface',
   'ollama',
   'lmstudio',
@@ -162,6 +109,9 @@ function getProviderReadinessVariant(readiness: string) {
     case 'blocked':
     case 'missing':
       return 'error' as const;
+    case 'profile-only':
+    case 'external-auth-required':
+      return 'info' as const;
     default:
       return 'outline' as const;
   }
@@ -175,7 +125,8 @@ function buildPresetDraft(preset: ProviderPresetView): ProviderDraft {
     transport: preset.transport,
     baseUrl: preset.baseUrl ?? '',
     model: preset.defaultModel,
-    apiKeySecretId: normalizeNameToId(`${preset.id}-api-key`),
+    apiKeySecretId: preset.requiresApiKey ? normalizeNameToId(`${preset.id}-api-key`) : '',
+    configFieldValues: Object.fromEntries(preset.requiredConfigFields.map((field) => [field, ''])),
   };
 }
 
@@ -188,10 +139,18 @@ function buildCustomDraft(): ProviderDraft {
     baseUrl: '',
     model: '',
     apiKeySecretId: '',
+    configFieldValues: {},
   };
 }
 
 function buildProviderDraft(profile: ProviderProfileView): ProviderDraft {
+  const metadata = profile.profile.metadata && typeof profile.profile.metadata === 'object'
+    ? profile.profile.metadata
+    : {};
+  const rawConfigFields = metadata.configFields;
+  const configFieldValues = rawConfigFields && typeof rawConfigFields === 'object' && !Array.isArray(rawConfigFields)
+    ? Object.fromEntries(Object.entries(rawConfigFields).map(([key, value]) => [key, String(value ?? '')]))
+    : {};
   return {
     id: profile.profile.id,
     label: profile.profile.label,
@@ -200,6 +159,7 @@ function buildProviderDraft(profile: ProviderProfileView): ProviderDraft {
     baseUrl: profile.profile.baseUrl ?? '',
     model: profile.profile.model,
     apiKeySecretId: profile.profile.apiKeySecretId ?? '',
+    configFieldValues,
   };
 }
 
@@ -216,6 +176,26 @@ function sortProviders(providers: ProviderProfileView[]) {
     }
     return left.profile.label.localeCompare(right.profile.label);
   });
+}
+
+function uniqueStrings<T extends string>(values: T[]): T[] {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+const PRESET_CATEGORY_LABELS = {
+  'api-key': 'API key providers',
+  'enterprise-cloud': 'Enterprise cloud',
+  local: 'Local services',
+} as const;
+
+const PRESET_CATEGORY_ORDER: Array<ProviderPresetView['category']> = ['api-key', 'enterprise-cloud', 'local'];
+
+function normalizeFieldTestId(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+function hasRunnableAdapter(preset: ProviderPresetView | null) {
+  return !preset || preset.implementationStatus === 'runnable';
 }
 
 function SectionLead({
@@ -288,10 +268,7 @@ export function ConnectionsSettingsSection({
   const [currentPage, setCurrentPage] = useState(1);
   const [providerModalOpen, setProviderModalOpen] = useState(false);
   const [providerModalMode, setProviderModalMode] = useState<ProviderModalMode>('create');
-  const effectiveProviderPresets = useMemo(
-    () => (providerPresets.length > 0 ? providerPresets : FALLBACK_PROVIDER_PRESETS),
-    [providerPresets]
-  );
+  const effectiveProviderPresets = useMemo(() => providerPresets, [providerPresets]);
   const quickAddPresets = useMemo(
     () => effectiveProviderPresets.filter((preset) => preset.supportsQuickAdd),
     [effectiveProviderPresets]
@@ -308,6 +285,14 @@ export function ConnectionsSettingsSection({
   const [providerTestResults, setProviderTestResults] = useState<Record<string, string>>({});
 
   const orderedProviders = useMemo(() => sortProviders(providers), [providers]);
+  const groupedProviderPresets = useMemo(
+    () => PRESET_CATEGORY_ORDER.map((category) => ({
+      category,
+      label: PRESET_CATEGORY_LABELS[category],
+      presets: effectiveProviderPresets.filter((preset) => preset.category === category),
+    })).filter((group) => group.presets.length > 0),
+    [effectiveProviderPresets]
+  );
   const savedEnabledProvider = useMemo(
     () => orderedProviders.find((provider) => provider.isSavedDefault || provider.profile.id === savedDefaultProviderId) ?? null,
     [orderedProviders, savedDefaultProviderId]
@@ -332,10 +317,41 @@ export function ConnectionsSettingsSection({
     () => effectiveProviderPresets.find((preset) => preset.id === providerModalTemplate) ?? defaultQuickPreset,
     [defaultQuickPreset, effectiveProviderPresets, providerModalTemplate]
   );
+  const selectedRequiredConfigFields = providerModalMode === 'create' && providerCreateMode === 'quick'
+    ? selectedPreset?.requiredConfigFields ?? []
+    : [];
+  const selectedMissingRequiredConfig = selectedRequiredConfigFields.some((field) => !providerModalDraft.configFieldValues[field]?.trim());
+  const selectedPresetRunnable = hasRunnableAdapter(providerModalMode === 'create' && providerCreateMode === 'quick' ? selectedPreset : null);
+  const providerTransportOptions = useMemo(
+    () => uniqueStrings([
+      ...PROVIDER_TRANSPORTS,
+      ...effectiveProviderPresets.map((preset) => preset.transport),
+      ...orderedProviders.map((provider) => provider.profile.transport ?? provider.adapter.transport),
+    ]),
+    [effectiveProviderPresets, orderedProviders]
+  );
+  const providerVendorOptions = useMemo(
+    () => uniqueStrings([
+      ...PROVIDER_VENDORS,
+      ...effectiveProviderPresets.map((preset) => preset.vendor),
+      ...orderedProviders.map((provider) => provider.profile.vendor ?? provider.adapter.vendor),
+    ]),
+    [effectiveProviderPresets, orderedProviders]
+  );
 
   useEffect(() => {
     setCurrentPage((current) => Math.min(current, totalPages));
   }, [totalPages]);
+
+  useEffect(() => {
+    if (!defaultQuickPreset || providerModalTemplate) {
+      return;
+    }
+    setProviderModalTemplate(defaultQuickPreset.id);
+    if (!providerModalOpen) {
+      setProviderModalDraft(buildPresetDraft(defaultQuickPreset));
+    }
+  }, [defaultQuickPreset, providerModalOpen, providerModalTemplate]);
 
   const runAction = async <T,>(
     key: string,
@@ -361,7 +377,7 @@ export function ConnectionsSettingsSection({
 
   const openCreateModal = () => {
     setProviderModalMode('create');
-    setProviderCreateMode('quick');
+    setProviderCreateMode(defaultQuickPreset ? 'quick' : 'custom');
     setProviderModalTemplate(defaultQuickPreset?.id ?? '');
     setProviderModalTargetId(null);
     setProviderModalDraft(defaultQuickPreset ? buildPresetDraft(defaultQuickPreset) : buildCustomDraft());
@@ -401,6 +417,9 @@ export function ConnectionsSettingsSection({
     const existing = providerModalTargetId
       ? orderedProviders.find((provider) => provider.profile.id === providerModalTargetId) ?? null
       : null;
+    const presetForDraft = providerModalMode === 'create' && providerCreateMode === 'quick'
+      ? selectedPreset
+      : null;
     const baseProfile: ProviderProfile = existing?.profile ?? {
       id: providerId,
       label: providerModalDraft.label,
@@ -409,6 +428,23 @@ export function ConnectionsSettingsSection({
       baseUrl: providerModalDraft.baseUrl || undefined,
       model: providerModalDraft.model,
     };
+    const configFields = Object.fromEntries(
+      Object.entries(providerModalDraft.configFieldValues)
+        .map(([key, value]) => [key, value.trim()])
+        .filter(([, value]) => Boolean(value))
+    );
+    const metadata = presetForDraft
+      ? {
+        ...(baseProfile.metadata ?? {}),
+        presetId: presetForDraft.id,
+        providerCategory: presetForDraft.category,
+        implementationStatus: presetForDraft.implementationStatus,
+        envVarNames: presetForDraft.envVarNames,
+        requiredConfigFields: presetForDraft.requiredConfigFields,
+        configFields,
+        capabilities: presetForDraft.capabilities,
+      }
+      : baseProfile.metadata;
     const normalizedSecretId = providerModalDraft.apiKeySecretId.trim() || (providerModalSecret.trim() ? `${providerId}-api-key` : '');
     const saved = await api.updateProvider(providerId, {
       ...baseProfile,
@@ -419,6 +455,7 @@ export function ConnectionsSettingsSection({
       baseUrl: providerModalDraft.baseUrl.trim() || undefined,
       model: providerModalDraft.model.trim(),
       apiKeySecretId: normalizedSecretId || undefined,
+      metadata,
     });
 
     if (providerModalSecret.trim()) {
@@ -496,6 +533,8 @@ export function ConnectionsSettingsSection({
                   {pagedProviders.map((provider) => {
                     const isSavedDefault = provider.isSavedDefault || provider.isDefault || provider.profile.id === savedDefaultProviderId;
                     const isRuntimeDefault = provider.isRuntimeDefault || provider.isDefault || provider.profile.id === runtimeDefaultProviderId;
+                    const implementationStatus = provider.implementationStatus ?? 'runnable';
+                    const capabilities = provider.capabilities ?? DEFAULT_PROVIDER_CAPABILITIES;
                     const pendingRuntimeSwitch = isSavedDefault && !isRuntimeDefault;
                     const secondaryStateLabel = pendingRuntimeSwitch
                       ? (restartRequired ? 'reload required' : 'runtime pending')
@@ -513,6 +552,11 @@ export function ConnectionsSettingsSection({
                         </div>
                         <div className="flex min-w-0 flex-wrap items-center gap-2">
                           <Badge variant={getProviderReadinessVariant(provider.readiness)}>{provider.readiness}</Badge>
+                          {implementationStatus !== 'runnable' ? (
+                            <Badge variant="info">{implementationStatus}</Badge>
+                          ) : null}
+                          {capabilities.supportsVision ? <Badge variant="outline">vision</Badge> : null}
+                          {capabilities.supportsFiles ? <Badge variant="outline">files</Badge> : null}
                           {isSavedDefault ? <Badge variant="success">enabled provider</Badge> : null}
                           {secondaryStateLabel ? (
                             <Badge variant={pendingRuntimeSwitch ? 'warning' : 'info'}>
@@ -625,7 +669,7 @@ export function ConnectionsSettingsSection({
               <Button
                 type="button"
                 data-testid={providerModalMode === 'create' ? 'settings-connections-provider-create-submit' : `settings-connections-provider-save-${providerModalTargetId ?? 'draft'}`}
-                disabled={busyKey !== null || !providerModalDraft.label.trim() || !providerModalDraft.model.trim()}
+                disabled={busyKey !== null || !providerModalDraft.label.trim() || !providerModalDraft.model.trim() || selectedMissingRequiredConfig}
                 onClick={() => void runAction(
                   providerModalMode === 'create' ? 'provider-create' : `provider-save-${providerModalTargetId ?? 'draft'}`,
                   handleSave,
@@ -655,12 +699,15 @@ export function ConnectionsSettingsSection({
                   type="button"
                   size="sm"
                   variant={providerCreateMode === 'quick' ? 'primary' : 'secondary'}
+                  disabled={!effectiveProviderPresets.length}
                   onClick={() => {
-                    setProviderCreateMode('quick');
-                    if (selectedPreset) {
-                      setProviderModalTemplate(selectedPreset.id);
-                      setProviderModalDraft(buildPresetDraft(selectedPreset));
+                    const presetToLoad = defaultQuickPreset ?? selectedPreset;
+                    if (!presetToLoad) {
+                      return;
                     }
+                    setProviderCreateMode('quick');
+                    setProviderModalTemplate(presetToLoad.id);
+                    setProviderModalDraft(buildPresetDraft(presetToLoad));
                     setProviderModalAdvancedOpen(false);
                     announceDraftContext('Quick add mode keeps the form focused on API key and model.');
                   }}
@@ -700,22 +747,54 @@ export function ConnectionsSettingsSection({
                         }
                       }}
                     >
-                      {quickAddPresets.map((preset) => (
-                        <option key={preset.id} value={preset.id}>{preset.label}</option>
+                      {groupedProviderPresets.map((group) => (
+                        <optgroup key={group.category} label={group.label}>
+                          {group.presets.map((preset) => (
+                            <option key={preset.id} value={preset.id}>
+                              {preset.label} · {preset.implementationStatus}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </SelectInput>
                   </div>
                   <div className="rounded-[18px] border border-border-subtle bg-surface/18 px-4 py-3">
                     <p className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Preset details</p>
                     <div className="mt-2 space-y-1 text-sm text-text-secondary">
-                      <p><span className="text-text-primary">Vendor:</span> {selectedPreset?.vendor ?? 'custom'}</p>
-                      <p><span className="text-text-primary">Transport:</span> {selectedPreset?.transport ?? 'openai-compatible'}</p>
-                      <p><span className="text-text-primary">Default model:</span> {selectedPreset?.defaultModel || 'choose one below'}</p>
+                      <p className="break-words"><span className="text-text-primary">Vendor:</span> {selectedPreset?.vendor ?? 'custom'}</p>
+                      <p className="break-words"><span className="text-text-primary">Transport:</span> {selectedPreset?.transport ?? 'openai-compatible'}</p>
+                      <p className="break-words"><span className="text-text-primary">Category:</span> {selectedPreset?.category ?? 'api-key'}</p>
+                      <p className="break-words"><span className="text-text-primary">Adapter:</span> {selectedPreset?.implementationStatus ?? 'runnable'}</p>
+                      <p className="break-words"><span className="text-text-primary">Default model:</span> {selectedPreset?.defaultModel || 'choose one below'}</p>
                       {selectedPreset?.baseUrl ? (
-                        <p><span className="text-text-primary">Base URL:</span> {selectedPreset.baseUrl}</p>
+                        <p className="break-words"><span className="text-text-primary">Base URL:</span> {selectedPreset.baseUrl}</p>
+                      ) : null}
+                      {selectedPreset?.envVarNames.length ? (
+                        <p className="break-words"><span className="text-text-primary">Env:</span> {selectedPreset.envVarNames.join(', ')}</p>
+                      ) : null}
+                      {selectedPreset?.requiredConfigFields.length ? (
+                        <p className="break-words"><span className="text-text-primary">Config:</span> {selectedPreset.requiredConfigFields.join(', ')}</p>
+                      ) : null}
+                      {selectedPreset ? (
+                        <p className="break-words">
+                          <span className="text-text-primary">Inputs:</span>{' '}
+                          {selectedPreset.capabilities.inputModalities.join(', ')}
+                          {selectedPreset.capabilities.supportsVision ? ' · vision' : ''}
+                          {selectedPreset.capabilities.supportsFiles ? ' · files' : ''}
+                        </p>
                       ) : null}
                     </div>
                   </div>
+                  {!selectedPresetRunnable && selectedPreset ? (
+                    <div
+                      className="rounded-[18px] border border-info/25 bg-info-muted/10 px-4 py-3 text-sm text-text-secondary md:col-span-2"
+                      data-testid="settings-connections-provider-non-runnable"
+                    >
+                      {selectedPreset.implementationStatus === 'external-auth-required'
+                        ? 'This enterprise preset stores configuration metadata, but it needs external cloud authentication before runtime can execute it.'
+                        : 'This profile-only preset is visible for configuration, but no runnable adapter is registered in this release.'}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -736,6 +815,32 @@ export function ConnectionsSettingsSection({
               onChange={(event) => setProviderModalDraft((current) => ({ ...current, model: event.target.value }))}
             />
           </div>
+          {selectedRequiredConfigFields.length ? (
+            <div className="rounded-[18px] border border-border-subtle bg-surface/18 px-4 py-3 md:col-span-2">
+              <p className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Required configuration</p>
+              <p className="mt-1 text-sm text-text-secondary">
+                These fields are stored as provider metadata so enterprise and gateway profiles stay explicit.
+              </p>
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                {selectedRequiredConfigFields.map((field) => (
+                  <div className="space-y-2" key={field}>
+                    <FieldLabel>{field}</FieldLabel>
+                    <TextInput
+                      data-testid={`settings-connections-provider-config-field-${normalizeFieldTestId(field)}`}
+                      value={providerModalDraft.configFieldValues[field] ?? ''}
+                      onChange={(event) => setProviderModalDraft((current) => ({
+                        ...current,
+                        configFieldValues: {
+                          ...current.configFieldValues,
+                          [field]: event.target.value,
+                        },
+                      }))}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div className="space-y-2">
             <FieldLabel>{selectedPreset?.requiresApiKey === false ? 'Access token (optional)' : 'API key'}</FieldLabel>
             <TextInput
@@ -811,7 +916,7 @@ export function ConnectionsSettingsSection({
                       announceDraftContext(`Transport switched to ${nextTransport}.`);
                     }}
                   >
-                    {PROVIDER_TRANSPORTS.map((transport) => (
+                    {providerTransportOptions.map((transport) => (
                       <option key={transport} value={transport}>{transport}</option>
                     ))}
                   </SelectInput>
@@ -830,7 +935,7 @@ export function ConnectionsSettingsSection({
                       announceDraftContext(`Vendor switched to ${nextVendor}.`);
                     }}
                   >
-                    {PROVIDER_VENDORS.map((vendor) => (
+                    {providerVendorOptions.map((vendor) => (
                       <option key={vendor} value={vendor}>{vendor}</option>
                     ))}
                   </SelectInput>

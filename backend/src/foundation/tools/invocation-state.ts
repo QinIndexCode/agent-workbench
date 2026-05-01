@@ -68,7 +68,7 @@ export function applyToolInvocationTransition(
         ...record,
         status: 'FAILED',
         endedAt: timestamp,
-        result: null,
+        result: transition.result.output,
         error: transition.result.message,
         metadata: {
           ...record.metadata,

@@ -130,7 +130,7 @@ Behavior:
   - `enabled-but-failed`
   - `achieved`
 
-Xiaomi Mimo example:
+Validation harness example using an OpenAI-compatible provider:
 
 ```bash
 BACKEND_NEW_LIVE_PROVIDER_ENABLED=1 \
@@ -144,6 +144,7 @@ Provider note:
 
 - for openai-compatible providers, store `baseUrl` as the API root such as `https://token-plan-cn.xiaomimimo.com/v1`
 - do not store the full `.../chat/completions` URL in the manifest, because the runtime client appends `/chat/completions`
+- Xiaomi-style local validation remains a harness concern; it is not a public provider preset or a Core runtime special case.
 - ignored local helper:
 
 ```bash
@@ -520,6 +521,7 @@ These commands remain REST-first and machine-readable.
 | Command | Meaning |
 | --- | --- |
 | `platform providers list` | List provider views |
+| `platform providers presets` | List provider preset catalog entries |
 | `platform providers get <providerId>` | Get provider view |
 | `platform providers test <providerId>` | Smoke test provider connectivity |
 | `platform providers set-default <providerId>` | Set default provider |
@@ -537,6 +539,14 @@ Provider views now also carry the normalized capability-hub fields:
 - `adapter`
 - `model`
 - `variant`
+- `implementationStatus`
+- `capabilities`
+
+Provider preset catalog entries distinguish:
+
+- `runnable`: backed by a registered generic adapter such as OpenAI-compatible, DeepSeek-compatible, or Anthropic-compatible
+- `profile-only`: visible for structured configuration but not runnable in this release
+- `external-auth-required`: enterprise/cloud profile that needs additional account, region, deployment, OAuth, or SigV4 configuration
 
 This keeps provider selection and diagnostics aligned across REST, CLI, Web, and task debug summaries.
 
@@ -554,6 +564,21 @@ Capability entries use the shared vocabulary:
 - `scope`
 - `warning`
 
+### Ecosystem, tools, MCP, and scenario packs
+
+| Command | Meaning |
+| --- | --- |
+| `platform ecosystem status` | Return the full ecosystem readiness projection |
+| `platform tools list` | List tool capability entries, evidence shape, failure taxonomy, and readiness |
+| `platform tools health` | Return compact tool health checks for automation |
+| `platform mcp list` | List configured MCP servers |
+| `platform mcp status` | Return MCP readiness projection from the ecosystem registry |
+| `platform mcp get <serverId>` | Get one MCP server view |
+| `platform mcp test <serverId>` | Run MCP connectivity and capability smoke test |
+| `platform mcp upsert <jsonFile> --id <serverId>` | Upsert MCP server definition |
+| `platform mcp delete <serverId>` | Delete MCP server definition |
+| `platform scenarios list` | List registered scenario packs with core quality profile, scenario gate, model, timeout, and surface-check policy |
+
 ### Skills
 
 | Command | Meaning |
@@ -561,6 +586,7 @@ Capability entries use the shared vocabulary:
 | `platform skills list` | List skills |
 | `platform skills get <skillId>` | Get one skill with readiness, dependency, and asset metadata |
 | `platform skills status <skillId>` | Get the current status view for one skill |
+| `platform skills status` | Return skill readiness projection from the ecosystem registry |
 | `platform skills refresh` | Refresh configured skill roots |
 | `platform skills import --name <name> --root <path> [--id <id>]` | Import/register a skill placeholder |
 | `platform skills import-marketplace --marketplace <file> --plugin <name> [--skill <path>]` | Import Claude-style instruction skills from a marketplace manifest into the local skill registry |

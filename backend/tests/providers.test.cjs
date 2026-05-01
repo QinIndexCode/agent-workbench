@@ -8,6 +8,7 @@ const {
   FileApiKeySecretRepository,
   FileStorageAdapter,
   getProviderPreset,
+  listProviderPresetDefinitions,
   ProviderRegistry,
   selectProviderProfile,
   StorageLayout,
@@ -70,7 +71,7 @@ test('provider manifest and api key secret resolve into runtime profile', async 
 
     assert.equal(profile.id, 'deepseek-main');
     assert.equal(profile.apiKey, 'sk-provider-demo');
-    assert.equal(profile.baseUrl, 'https://api.deepseek.com/v1');
+    assert.equal(profile.baseUrl, 'https://api.deepseek.com');
     assert.equal(profile.transport, 'deepseek-compatible');
     assert.equal(profile.vendor, 'deepseek');
   } finally {
@@ -195,12 +196,95 @@ test('provider presets cover mainstream vendor defaults', () => {
   assert.equal(getProviderPreset('anthropic').transport, 'anthropic-compatible');
   assert.equal(getProviderPreset('deepseek').transport, 'deepseek-compatible');
   assert.equal(getProviderPreset('grok').baseUrl, 'https://api.x.ai/v1');
-  assert.equal(getProviderPreset('kimi').baseUrl, 'https://api.moonshot.cn/v1');
+  assert.equal(getProviderPreset('kimi').baseUrl, 'https://api.moonshot.ai/v1');
   assert.equal(getProviderPreset('glm').baseUrl, 'https://open.bigmodel.cn/api/paas/v4');
-  assert.equal(getProviderPreset('ollama').baseUrl, 'http://127.0.0.1:11434/v1');
-  assert.equal(getProviderPreset('huggingface').baseUrl, 'http://127.0.0.1:8080/v1');
-  assert.equal(getProviderPreset('vllm').baseUrl, 'http://127.0.0.1:8000/v1');
-  assert.equal(getProviderPreset('lmstudio').baseUrl, 'http://127.0.0.1:1234/v1');
+  assert.equal(getProviderPreset('ollama').transport, 'openai-compatible');
+  assert.equal(getProviderPreset('ollama').baseUrl, 'http://localhost:11434/v1');
+  assert.equal(getProviderPreset('huggingface').baseUrl, 'https://router.huggingface.co/v1');
+  assert.equal(getProviderPreset('vllm').baseUrl, 'http://localhost:8000/v1');
+  assert.equal(getProviderPreset('lmstudio').baseUrl, 'http://localhost:1234/v1');
+});
+
+test('provider preset catalog separates runnable adapters from profile-only and cloud-auth presets', () => {
+  const presets = listProviderPresetDefinitions();
+  const ids = new Set(presets.map((preset) => preset.id));
+
+  for (const id of ['openai', 'xai', 'deepseek', 'anthropic', 'google_gemini', 'groq', 'openrouter', 'azure_openai', 'ollama', 'lmstudio', 'vllm', 'localai', 'llama_cpp']) {
+    assert.equal(ids.has(id), true, `missing preset ${id}`);
+  }
+
+  const openai = presets.find((preset) => preset.id === 'openai');
+  const cohere = presets.find((preset) => preset.id === 'cohere');
+  const azure = presets.find((preset) => preset.id === 'azure_openai');
+  const ollama = presets.find((preset) => preset.id === 'ollama');
+
+  assert.equal(openai.implementationStatus, 'runnable');
+  assert.equal(openai.capabilities.supportsVision, true);
+  assert.equal(cohere.implementationStatus, 'profile-only');
+  assert.equal(azure.category, 'enterprise-cloud');
+  assert.equal(azure.implementationStatus, 'external-auth-required');
+  assert.equal(azure.supportsQuickAdd, false);
+  assert.equal(ollama.category, 'local');
+  assert.equal(ollama.transport, 'openai-compatible');
+});
+
+test('provider preset catalog covers API key, enterprise cloud, and local connection surfaces', () => {
+  const presets = listProviderPresetDefinitions();
+  const byId = new Map(presets.map((preset) => [preset.id, preset]));
+  assert.equal(byId.size, presets.length, 'provider preset ids must be unique');
+
+  const apiKeyPresetIds = [
+    'openai', 'xai', 'deepseek', 'anthropic', 'google_gemini', 'mistral', 'cohere',
+    'groq', 'fireworks', 'cerebras', 'sambanova', 'together', 'openrouter',
+    'perplexity', 'perplexity_agent', 'huggingface', 'nvidia_nim', 'ai21',
+    'replicate', 'dashscope_intl', 'dashscope_us', 'dashscope_cn', 'zhipu',
+    'zhipu_coding', 'moonshot', 'minimax', 'minimax_cn', 'siliconflow',
+    'siliconflow_cn', 'qianfan', 'stepfun_global', 'stepfun_cn', 'stepfun_plan',
+    'deepinfra', 'hyperbolic', 'novita', 'llama_api', 'vercel_ai_gateway',
+    'heroku_inference'
+  ];
+  const enterprisePresetIds = [
+    'azure_openai', 'vertex_ai_openai', 'aws_bedrock_openai',
+    'cloudflare_workers_ai', 'cloudflare_ai_gateway', 'ibm_watsonx_gateway',
+    'volcengine_ark', 'tencent_hunyuan'
+  ];
+  const localPresetIds = ['ollama', 'lmstudio', 'vllm', 'localai', 'llama_cpp'];
+
+  for (const id of apiKeyPresetIds) {
+    const preset = byId.get(id);
+    assert.ok(preset, `missing API key preset ${id}`);
+    assert.equal(preset.category, 'api-key', `${id} category`);
+    assert.equal(Array.isArray(preset.envVarNames), true, `${id} env vars`);
+    assert.equal(typeof preset.implementationStatus, 'string', `${id} implementation status`);
+    assert.equal(Array.isArray(preset.capabilities.inputModalities), true, `${id} input modalities`);
+    assert.equal(Array.isArray(preset.capabilities.outputModalities), true, `${id} output modalities`);
+  }
+
+  for (const id of enterprisePresetIds) {
+    const preset = byId.get(id);
+    assert.ok(preset, `missing enterprise preset ${id}`);
+    assert.equal(preset.category, 'enterprise-cloud');
+    assert.equal(preset.supportsQuickAdd, false);
+    assert.equal(preset.implementationStatus, 'external-auth-required');
+    assert.equal(preset.requiredConfigFields.length > 0, true, `${id} should declare required config fields`);
+  }
+
+  for (const id of localPresetIds) {
+    const preset = byId.get(id);
+    assert.ok(preset, `missing local preset ${id}`);
+    assert.equal(preset.category, 'local');
+    assert.equal(preset.transport, 'openai-compatible');
+    assert.equal(preset.auth.scheme, 'none');
+    assert.equal(preset.implementationStatus, 'runnable');
+    assert.match(preset.baseUrl, /^http:\/\/localhost:/);
+  }
+
+  assert.deepEqual(byId.get('openai').envVarNames, ['OPENAI_API_KEY']);
+  assert.equal(byId.get('google_gemini').baseUrl, 'https://generativelanguage.googleapis.com/v1beta/openai');
+  assert.deepEqual(byId.get('huggingface').envVarNames, ['HF_TOKEN', 'HUGGINGFACE_API_KEY']);
+  assert.deepEqual(byId.get('azure_openai').requiredConfigFields, ['resource', 'deployment', 'api_version']);
+  assert.equal(byId.get('cohere').implementationStatus, 'profile-only');
+  assert.equal(byId.get('replicate').transport, 'native-replicate');
 });
 
 test('anthropic-compatible provider uses anthropic headers and messages endpoint', async () => {

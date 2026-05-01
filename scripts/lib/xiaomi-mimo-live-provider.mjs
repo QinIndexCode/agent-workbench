@@ -4,16 +4,24 @@ import process from 'node:process';
 
 export const XIAOMI_MIMO_FLASH_PROVIDER_ID = 'xiaomi-mimo-v2-flash';
 export const XIAOMI_MIMO_FLASH_SECRET_ID = 'xiaomi-mimo-live-provider';
-export const XIAOMI_MIMO_FAST_MODEL = 'mimo-v2-flash';
 export const XIAOMI_MIMO_STRONG_MODEL = 'mimo-v2.5';
-export const XIAOMI_MIMO_FLASH_MODEL = XIAOMI_MIMO_FAST_MODEL;
+export const XIAOMI_MIMO_PRO_MODEL = 'mimo-v2.5-pro';
+export const XIAOMI_MIMO_COMPAT_MODEL = 'mimo-v2-pro';
+export const XIAOMI_MIMO_FAST_MODEL = XIAOMI_MIMO_COMPAT_MODEL;
+export const XIAOMI_MIMO_FLASH_MODEL = 'mimo-v2-flash';
 export const XIAOMI_MIMO_FLASH_DOC_FILENAME = 'dont_touch_(APIKEY).md';
 
-const XIAOMI_MIMO_FAST_TIMEOUT_MS = '45000';
-const XIAOMI_MIMO_STRONG_TIMEOUT_MS = '90000';
+const XIAOMI_MIMO_COMPAT_TIMEOUT_MS = '60000';
+const XIAOMI_MIMO_TEXT_AGENT_TIMEOUT_MS = '90000';
 const XIAOMI_MIMO_DEFAULT_MAX_RETRIES = '2';
 const XIAOMI_MIMO_DEFAULT_RETRY_BACKOFF_MS = '1000';
 const TOKEN_PLAN_HOSTNAME = 'token-plan-cn.xiaomimimo.com';
+const XIAOMI_MIMO_TEXT_AGENT_MODELS = new Set([
+  XIAOMI_MIMO_STRONG_MODEL,
+  XIAOMI_MIMO_PRO_MODEL,
+  XIAOMI_MIMO_COMPAT_MODEL,
+  'mimo-v2-omni',
+]);
 const TOKEN_PLAN_SUPPORTED_MODELS = new Set([
   'mimo-v2-omni',
   'mimo-v2-pro',
@@ -47,11 +55,14 @@ function extractOptionalMatch(section, pattern) {
 }
 
 function formatProviderLabel(model) {
-  if (model === XIAOMI_MIMO_FAST_MODEL) {
-    return 'Xiaomi Mimo V2 Flash';
-  }
   if (model === XIAOMI_MIMO_STRONG_MODEL) {
     return 'Xiaomi Mimo V2.5';
+  }
+  if (model === XIAOMI_MIMO_PRO_MODEL) {
+    return 'Xiaomi Mimo V2.5 Pro';
+  }
+  if (model === XIAOMI_MIMO_COMPAT_MODEL) {
+    return 'Xiaomi Mimo V2 Pro';
   }
   return `Xiaomi Mimo ${model}`;
 }
@@ -65,9 +76,9 @@ export function resolveXiaomiMimoLiveModel(overrideModel = null, env = process.e
 export function resolveXiaomiMimoLiveProviderPolicy(options = {}) {
   const env = options.env ?? process.env;
   const model = resolveXiaomiMimoLiveModel(options.model, env);
-  const defaultTimeoutMs = model === XIAOMI_MIMO_STRONG_MODEL
-    ? XIAOMI_MIMO_STRONG_TIMEOUT_MS
-    : XIAOMI_MIMO_FAST_TIMEOUT_MS;
+  const defaultTimeoutMs = model === XIAOMI_MIMO_COMPAT_MODEL
+    ? XIAOMI_MIMO_COMPAT_TIMEOUT_MS
+    : XIAOMI_MIMO_TEXT_AGENT_TIMEOUT_MS;
   return {
     model,
     requestTimeoutMs: env.BACKEND_NEW_PROVIDER_REQUEST_TIMEOUT_MS?.trim() || defaultTimeoutMs,
@@ -111,7 +122,7 @@ function resolveCompatibleLiveModel(baseUrl, model, options = {}) {
   if (!compatibility.tokenPlan || compatibility.supported) {
     return model;
   }
-  if (options.allowCompatibleModelFallback && model === XIAOMI_MIMO_FAST_MODEL) {
+  if (options.allowCompatibleModelFallback && model === XIAOMI_MIMO_FLASH_MODEL) {
     return XIAOMI_MIMO_STRONG_MODEL;
   }
   throw new Error(
@@ -182,6 +193,12 @@ export async function readXiaomiMimoFlashProviderSource(repoRoot = process.cwd()
 
   const requestedModel = resolveXiaomiMimoLiveModel(options.model, options.env);
   const model = resolveCompatibleLiveModel(baseUrl, requestedModel, options);
+  if (options.requireTextAgentModel && !XIAOMI_MIMO_TEXT_AGENT_MODELS.has(model)) {
+    throw new Error(
+      `Xiaomi Mimo model ${model} is not part of the text-agent validation matrix. `
+      + `Use one of: ${Array.from(XIAOMI_MIMO_TEXT_AGENT_MODELS).join(', ')}.`
+    );
+  }
   return {
     providerId: XIAOMI_MIMO_FLASH_PROVIDER_ID,
     label: formatProviderLabel(model),
@@ -196,7 +213,10 @@ export async function readXiaomiMimoFlashProviderSource(repoRoot = process.cwd()
 }
 
 export async function buildXiaomiMimoFlashLiveEnv(repoRoot = process.cwd(), options = {}) {
-  const source = await readXiaomiMimoFlashProviderSource(repoRoot, options);
+  const source = await readXiaomiMimoFlashProviderSource(repoRoot, {
+    ...options,
+    requireTextAgentModel: options.requireTextAgentModel !== false,
+  });
   const policy = resolveXiaomiMimoLiveProviderPolicy({ ...options, model: source.model });
   const manifestPath = await writeRuntimeProviderManifest(repoRoot, source);
   const currentNodeOptions = process.env.NODE_OPTIONS?.trim() ?? '';

@@ -1,4 +1,9 @@
-import { ProviderProfile } from '../../foundation/providers/types';
+import {
+  ProviderCapabilityMetadata,
+  ProviderImplementationStatus,
+  ProviderPresetCategory,
+  ProviderProfile
+} from '../../foundation/providers/types';
 import {
   PlatformActionType,
   PlatformAuditRecord,
@@ -35,6 +40,8 @@ export type CapabilityReadiness =
   | 'missing-runtime'
   | 'missing-client'
   | 'metadata-only'
+  | 'profile-only'
+  | 'external-auth-required'
   | 'disabled';
 
 export type CapabilityScope =
@@ -107,6 +114,8 @@ export interface ProviderProfileView {
   hasSecret: boolean;
   readiness: CapabilityReadiness;
   authSource: ProviderAuthSource;
+  implementationStatus: ProviderImplementationStatus;
+  capabilities: ProviderCapabilityMetadata;
   adapter: ProviderAdapter;
   model: ModelDescriptor;
   variant: ModelVariantDescriptor;
@@ -121,6 +130,12 @@ export interface ProviderPresetView {
   defaultModel: string;
   requiresApiKey: boolean;
   supportsQuickAdd: boolean;
+  category: ProviderPresetCategory;
+  envVarNames: string[];
+  requiredConfigFields: string[];
+  implementationStatus: ProviderImplementationStatus;
+  capabilities: ProviderCapabilityMetadata;
+  notes: string | null;
 }
 
 export interface ProviderTestResult {
@@ -655,6 +670,11 @@ export interface ToolCapabilityEntry {
   } | null;
   readiness: EcosystemReadiness;
   visibleByDefault: boolean;
+  healthCheck: {
+    status: EcosystemReadiness;
+    checks: string[];
+    diagnostics: string[];
+  };
 }
 
 export interface ScenarioPackSummary {
@@ -662,8 +682,19 @@ export interface ScenarioPackSummary {
   label: string;
   focus: string;
   qualityProfileId: string | null;
+  qualityGateId?: string | null;
   artifactAudit: string;
+  surfaceChecks: string[];
   cleanupHints: string[];
+  modelPolicy: {
+    defaultModelClass: 'fast' | 'strong' | 'provider-default';
+    reason: string;
+  };
+  timeoutPolicy: {
+    maxTurns: number;
+    maxIdleCorrections: number;
+    maxRuntimeMs: number;
+  };
   status: EcosystemReadiness;
 }
 
@@ -675,6 +706,17 @@ export interface ExperienceHealthSummary {
   selectedReusableTaskIds: string[];
   failedReuseTaskIds: string[];
   lastValidatedAt: number | null;
+  approvedDetails: Array<{
+    proposalId: string;
+    title: string;
+    patternKey: string;
+    materializedPath: string | null;
+    validationStatus: 'monitoring' | 'promotable' | 'conflicted';
+    successfulReuseTaskIds: string[];
+    failedReuseTaskIds: string[];
+    limitations: string[];
+    confidence: number;
+  }>;
 }
 
 export interface EcosystemSummaryView {

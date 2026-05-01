@@ -43,23 +43,10 @@ import type { SummaryStripItem } from '../lib/workbench';
 import type {
   ImprovementProposal,
   McpCatalogEntry,
-  ProviderProfileView,
   SkillCatalogEntry,
-  ProviderTransport,
-  ProviderVendor
 } from '../types';
 
 type SettingsPageKey = 'general' | 'connections' | 'capabilities' | 'ecosystem' | 'skills' | 'state' | 'improvements';
-
-interface ProviderDraft {
-  id: string;
-  label: string;
-  transport: ProviderTransport;
-  vendor: ProviderVendor;
-  baseUrl: string;
-  model: string;
-  apiKeySecretId: string;
-}
 
 interface McpDraft {
   id: string;
@@ -70,26 +57,12 @@ interface McpDraft {
   url: string;
 }
 
-interface SecretDraft {
-  secretId: string;
-  provider: string;
-  label: string;
-  apiKey: string;
-}
-
 interface SkillEditorDraft {
   id: string;
   name: string;
   description: string;
   kind: 'runtime-skill' | 'instruction-skill';
   content: string;
-}
-
-interface ProviderDeleteIntent {
-  providerId: string;
-  providerLabel: string;
-  isDefault: boolean;
-  hasSecret: boolean;
 }
 
 interface SkillImportDraft {
@@ -111,7 +84,6 @@ interface DeleteIntent {
   label: string;
 }
 
-const CONNECTIONS_PAGE_SIZE = 10;
 const MANAGEMENT_PAGE_SIZE = 10;
 const SETTINGS_NOTICE_TTL_MS = 3_200;
 const SETTINGS_NOTICE_DEDUPE_WINDOW_MS = 1_800;
@@ -132,84 +104,7 @@ const SETTINGS_TABS: Array<{
   { key: 'improvements', to: '/settings/improvements', label: 'Improvements', icon: ImprovementsIcon },
 ];
 
-const PROVIDER_TRANSPORTS: ProviderTransport[] = [
-  'openai-compatible',
-  'deepseek-compatible',
-  'anthropic-compatible',
-  'local-stdio',
-];
-
-const PROVIDER_VENDORS: ProviderVendor[] = [
-  'custom',
-  'openai',
-  'anthropic',
-  'deepseek',
-  'huggingface',
-  'ollama',
-  'lmstudio',
-];
-
 const MCP_TRANSPORTS: Array<McpDraft['transport']> = ['stdio', 'http', 'ws'];
-
-const PROVIDER_TEMPLATES: Array<{
-  key: string;
-  label: string;
-  vendor: ProviderVendor;
-  transport: ProviderTransport;
-  baseUrl: string;
-  defaultModel: string;
-}> = [
-  {
-    key: 'openai',
-    label: 'OpenAI-compatible',
-    vendor: 'openai',
-    transport: 'openai-compatible',
-    baseUrl: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-5.4',
-  },
-  {
-    key: 'anthropic',
-    label: 'Anthropic-compatible',
-    vendor: 'anthropic',
-    transport: 'anthropic-compatible',
-    baseUrl: 'https://api.anthropic.com/v1',
-    defaultModel: 'claude-sonnet-4.5',
-  },
-  {
-    key: 'deepseek',
-    label: 'DeepSeek-compatible',
-    vendor: 'deepseek',
-    transport: 'deepseek-compatible',
-    baseUrl: 'https://api.deepseek.com/v1',
-    defaultModel: 'deepseek-chat',
-  },
-  {
-    key: 'ollama',
-    label: 'Ollama local',
-    vendor: 'ollama',
-    transport: 'local-stdio',
-    baseUrl: 'http://127.0.0.1:11434/v1',
-    defaultModel: 'llama3.1',
-  },
-  {
-    key: 'lmstudio',
-    label: 'LM Studio local',
-    vendor: 'lmstudio',
-    transport: 'openai-compatible',
-    baseUrl: 'http://127.0.0.1:1234/v1',
-    defaultModel: 'local-model',
-  },
-];
-
-const EMPTY_PROVIDER_DRAFT: ProviderDraft = {
-  id: '',
-  label: '',
-  transport: 'openai-compatible',
-  vendor: 'custom',
-  baseUrl: '',
-  model: '',
-  apiKeySecretId: '',
-};
 
 const EMPTY_SKILL_DRAFT: SkillEditorDraft = {
   id: '',
@@ -255,18 +150,6 @@ function normalizeNameToId(value: string) {
     .replace(/^-+|-+$/g, '');
 }
 
-function createProviderDraft(profile: ProviderProfileView): ProviderDraft {
-  return {
-    id: profile.profile.id,
-    label: profile.profile.label,
-    transport: profile.profile.transport ?? profile.adapter.transport,
-    vendor: profile.profile.vendor ?? profile.adapter.vendor,
-    baseUrl: profile.profile.baseUrl ?? '',
-    model: profile.profile.model,
-    apiKeySecretId: profile.profile.apiKeySecretId ?? '',
-  };
-}
-
 function createMcpDraft(entry?: McpCatalogEntry | null): McpDraft {
   return {
     id: entry?.server.id ?? '',
@@ -286,50 +169,6 @@ function createSkillEditorDraft(entry?: SkillCatalogEntry | null): SkillEditorDr
     kind: entry?.kind ?? 'instruction-skill',
     content: entry?.content ?? '',
   };
-}
-
-function applyProviderTemplate(templateKey: string): ProviderDraft {
-  const template = PROVIDER_TEMPLATES.find((entry) => entry.key === templateKey) ?? PROVIDER_TEMPLATES[0];
-  return {
-    ...EMPTY_PROVIDER_DRAFT,
-    id: normalizeNameToId(template.label),
-    label: template.label,
-    vendor: template.vendor,
-    transport: template.transport,
-    baseUrl: template.baseUrl,
-    model: template.defaultModel,
-  };
-}
-
-function getProviderReadinessVariant(readiness: string) {
-  switch (readiness.toLowerCase()) {
-    case 'ready':
-    case 'stable':
-      return 'success' as const;
-    case 'warning':
-    case 'degraded':
-      return 'warning' as const;
-    case 'blocked':
-    case 'missing':
-      return 'error' as const;
-    default:
-      return 'outline' as const;
-  }
-}
-
-function sortProvidersForSettings(providers: ProviderProfileView[]) {
-  return [...providers].sort((left, right) => {
-    const leftOrder = typeof left.profile.metadata?.settingsOrder === 'number'
-      ? left.profile.metadata.settingsOrder
-      : Number.POSITIVE_INFINITY;
-    const rightOrder = typeof right.profile.metadata?.settingsOrder === 'number'
-      ? right.profile.metadata.settingsOrder
-      : Number.POSITIVE_INFINITY;
-    if (leftOrder !== rightOrder) {
-      return leftOrder - rightOrder;
-    }
-    return left.profile.label.localeCompare(right.profile.label);
-  });
 }
 
 function SectionLead({
@@ -525,17 +364,6 @@ export function SettingsPage({
   const [generalPermissionMode, setGeneralPermissionMode] = useState<'full' | 'ask' | 'read-only'>('full');
   const [generalSseFallback, setGeneralSseFallback] = useState(false);
   const [generalDelegationEnabled, setGeneralDelegationEnabled] = useState(false);
-  const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>({});
-  const [currentConnectionsPage, setCurrentConnectionsPage] = useState(1);
-  const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
-  const [providerModalOpen, setProviderModalOpen] = useState(false);
-  const [providerModalMode, setProviderModalMode] = useState<'create' | 'edit'>('create');
-  const [providerModalTemplate, setProviderModalTemplate] = useState(PROVIDER_TEMPLATES[0].key);
-  const [providerModalTargetId, setProviderModalTargetId] = useState<string | null>(null);
-  const [providerModalDraft, setProviderModalDraft] = useState<ProviderDraft>(EMPTY_PROVIDER_DRAFT);
-  const [providerModalSecret, setProviderModalSecret] = useState('');
-  const [providerDeleteIntent, setProviderDeleteIntent] = useState<ProviderDeleteIntent | null>(null);
-  const [secretDraft, setSecretDraft] = useState<SecretDraft>({ secretId: '', provider: '', label: '', apiKey: '' });
   const [mcpDrafts, setMcpDrafts] = useState<Record<string, McpDraft>>({});
   const [newMcpDraft, setNewMcpDraft] = useState<McpDraft>(createMcpDraft(null));
   const [currentMcpPage, setCurrentMcpPage] = useState(1);
@@ -562,7 +390,6 @@ export function SettingsPage({
   const [skillModalTargetId, setSkillModalTargetId] = useState<string | null>(null);
   const [skillModalDraft, setSkillModalDraft] = useState<SkillEditorDraft>(EMPTY_SKILL_DRAFT);
   const [skillDeleteIntent, setSkillDeleteIntent] = useState<DeleteIntent | null>(null);
-  const [providerTestResults, setProviderTestResults] = useState<Record<string, string>>({});
   const [mcpTestResults, setMcpTestResults] = useState<Record<string, string>>({});
   const [improvementFilter, setImprovementFilter] = useState<'all' | 'pending' | 'approved' | 'rejected' | 'conflicted' | 'duplicates' | 'archive-eligible'>('all');
   const [expandedImprovementId, setExpandedImprovementId] = useState<string | null>(null);
@@ -579,13 +406,6 @@ export function SettingsPage({
     );
     setGeneralSseFallback(readConfigBoolean(data.configState.current, ['server', 'enableSseFallback'], false));
     setGeneralDelegationEnabled(readConfigBoolean(data.configState.current, ['runtime', 'delegation', 'enabled'], false));
-    setProviderDrafts(Object.fromEntries(data.providers.map((item) => [item.profile.id, createProviderDraft(item)])));
-    setSecretDraft((previous) => ({
-      secretId: previous.secretId,
-      provider: previous.provider || data.providers[0]?.profile.id || '',
-      label: previous.label || `${data.providers[0]?.profile.label ?? 'Provider'} secret`,
-      apiKey: '',
-    }));
     setMcpDrafts(Object.fromEntries(data.mcpServers.map((entry) => [entry.server.id, createMcpDraft(entry)])));
   }, [data]);
 
@@ -650,30 +470,6 @@ export function SettingsPage({
     } finally {
       setBusyKey(null);
     }
-  };
-
-  const openCreateProviderModal = () => {
-    const draft = applyProviderTemplate(providerModalTemplate);
-    setProviderModalMode('create');
-    setProviderModalTargetId(null);
-    setProviderModalDraft(draft);
-    setProviderModalSecret('');
-    setProviderModalOpen(true);
-  };
-
-  const openEditProviderModal = (provider: ProviderProfileView) => {
-    const draft = providerDrafts[provider.profile.id] ?? createProviderDraft(provider);
-    setProviderModalMode('edit');
-    setProviderModalTargetId(provider.profile.id);
-    setProviderModalDraft(draft);
-    setProviderModalSecret('');
-    setProviderModalOpen(true);
-  };
-
-  const closeProviderModal = () => {
-    setProviderModalOpen(false);
-    setProviderModalTargetId(null);
-    setProviderModalSecret('');
   };
 
   const openCreateMcpModal = () => {
@@ -818,23 +614,6 @@ export function SettingsPage({
     return runtimeDefaultProviderId;
   }, [configuredDefaultProviderId, data?.configState.savedDefaultProviderId, data?.providers, runtimeDefaultProviderId]);
   const effectiveProviders = useMemo(() => data?.providers ?? [], [data?.providers]);
-  const orderedProviders = useMemo(() => sortProvidersForSettings(effectiveProviders), [effectiveProviders]);
-  const totalConnectionsPages = useMemo(
-    () => Math.max(1, Math.ceil(orderedProviders.length / CONNECTIONS_PAGE_SIZE)),
-    [orderedProviders.length]
-  );
-  const pagedProviders = useMemo(() => {
-    const start = (currentConnectionsPage - 1) * CONNECTIONS_PAGE_SIZE;
-    return orderedProviders.slice(start, start + CONNECTIONS_PAGE_SIZE);
-  }, [currentConnectionsPage, orderedProviders]);
-  const editingProvider = useMemo(
-    () => orderedProviders.find((provider) => provider.profile.id === editingProviderId) ?? null,
-    [editingProviderId, orderedProviders]
-  );
-  const editingProviderDraft = useMemo(
-    () => (editingProvider ? providerDrafts[editingProvider.profile.id] ?? createProviderDraft(editingProvider) : null),
-    [editingProvider, providerDrafts]
-  );
   const orderedMcpServers = useMemo(
     () => [...(data?.mcpServers ?? [])].sort((left, right) => left.server.name.localeCompare(right.server.name)),
     [data?.mcpServers]
@@ -924,26 +703,12 @@ export function SettingsPage({
   }, [data?.configState.restartRequired, effectiveProviders, resolvedDefaultProviderId, runtimeDefaultProviderId]);
 
   useEffect(() => {
-    setCurrentConnectionsPage((current) => Math.min(current, totalConnectionsPages));
-  }, [totalConnectionsPages]);
-
-  useEffect(() => {
     setCurrentMcpPage((current) => Math.min(current, totalMcpPages));
   }, [totalMcpPages]);
 
   useEffect(() => {
     setCurrentSkillsPage((current) => Math.min(current, totalSkillPages));
   }, [totalSkillPages]);
-
-  useEffect(() => {
-    if (!pagedProviders.length) {
-      setEditingProviderId(null);
-      return;
-    }
-    if (editingProviderId && !pagedProviders.some((provider) => provider.profile.id === editingProviderId)) {
-      setEditingProviderId(null);
-    }
-  }, [editingProviderId, pagedProviders]);
 
   const renderGeneralPanel = () => (
     <Card className="rounded-lg border-border-subtle bg-surface/30">
@@ -1014,418 +779,6 @@ export function SettingsPage({
         </div>
       </CardContent>
     </Card>
-  );
-  const renderConnectionsPanel = () => (
-    <div className="space-y-4">
-      <Card className="rounded-lg border-border-subtle bg-surface/26">
-        <CardHeader className="py-3.5">
-          <SectionLead
-            eyebrow="Connections"
-            title="Connection roster"
-            description="Read the connection posture first, then edit only the provider you actually need to touch."
-          />
-        </CardHeader>
-        <CardContent className="pt-0">
-          <SummaryStrip items={providerSummaryItems} />
-        </CardContent>
-      </Card>
-
-      <Card className="rounded-lg border-border-subtle bg-surface/30">
-        <CardHeader className="py-3.5">
-          <SectionLead
-            eyebrow="Connections"
-            title="Provider list"
-            description="Page through providers, enable exactly one default connection, and open a single inline editor only when you need to change it."
-          />
-        </CardHeader>
-        <CardContent className="space-y-4 pt-0">
-          {orderedProviders.length ? (
-            <>
-              <div className="rounded-lg border border-border-subtle bg-surface/24">
-                <div className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_auto] gap-3 border-b border-border-subtle px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-text-muted">
-                  <span>Provider</span>
-                  <span>Connection</span>
-                  <span className="text-right">Actions</span>
-                </div>
-                <div className="divide-y divide-border-subtle">
-                  {pagedProviders.map((provider) => {
-                    const isEditing = editingProviderId === provider.profile.id;
-                    return (
-                      <div
-                        key={provider.profile.id}
-                        data-testid={`settings-connections-provider-card-${provider.profile.id}`}
-                        className={`px-4 py-3 transition duration-fast ${isEditing ? 'bg-surface/42' : ''}`}
-                      >
-                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="truncate text-sm font-semibold text-text-primary">{provider.profile.label}</p>
-                              {provider.isDefault ? <Badge variant="success">enabled provider</Badge> : null}
-                              <Badge variant={getProviderReadinessVariant(provider.readiness)}>{provider.readiness}</Badge>
-                              {!provider.hasSecret ? <Badge variant="warning">missing secret</Badge> : null}
-                            </div>
-                          </div>
-
-                          <div className="flex flex-wrap items-center justify-end gap-3">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-medium uppercase tracking-[0.18em] text-text-muted">Enabled</span>
-                              <EnableSwitch
-                                checked={provider.isDefault}
-                                disabled={busyKey !== null || provider.isDefault}
-                                label={provider.isDefault ? `${provider.profile.label} is the enabled provider` : `Enable ${provider.profile.label}`}
-                                testId={`settings-connections-provider-default-${provider.profile.id}`}
-                                onToggle={() => void runAction(
-                                  `provider-default-${provider.profile.id}`,
-                                  () => api.setDefaultProvider(provider.profile.id),
-                                  `${provider.profile.id} is now the enabled provider.`
-                                )}
-                              />
-                            </div>
-                            <IconButton
-                              label={`${isEditing ? 'Close' : 'Edit'} ${provider.profile.label}`}
-                              disabled={busyKey !== null}
-                              testId={`settings-connections-provider-edit-${provider.profile.id}`}
-                              onClick={() => setEditingProviderId((current) => (
-                                current === provider.profile.id ? null : provider.profile.id
-                              ))}
-                            >
-                              <EditIcon />
-                            </IconButton>
-                            <IconButton
-                              label={`Delete ${provider.profile.label}`}
-                              disabled={busyKey !== null}
-                              testId={`settings-connections-provider-delete-${provider.profile.id}`}
-                              onClick={() => setProviderDeleteIntent({
-                                providerId: provider.profile.id,
-                                providerLabel: provider.profile.label,
-                                isDefault: provider.isDefault,
-                                hasSecret: provider.hasSecret,
-                              })}
-                            >
-                              <DeleteIcon />
-                            </IconButton>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border-subtle bg-surface/24 px-4 py-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.2em] text-text-muted">Pagination</p>
-                  <p className="mt-1 text-sm text-text-secondary">
-                    Page {currentConnectionsPage} of {totalConnectionsPages} · {orderedProviders.length} providers total
-                  </p>
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busyKey !== null || currentConnectionsPage <= 1}
-                    onClick={() => setCurrentConnectionsPage((current) => Math.max(1, current - 1))}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busyKey !== null || currentConnectionsPage >= totalConnectionsPages}
-                    onClick={() => setCurrentConnectionsPage((current) => Math.min(totalConnectionsPages, current + 1))}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-
-              {editingProvider && editingProviderDraft ? (
-                <Card className="rounded-lg border-border-subtle bg-surface/24">
-                  <CardHeader className="py-3.5">
-                    <SectionLead
-                      eyebrow="Edit provider"
-                      title={editingProvider.profile.label}
-                      description="Open the provider only when you need details, testing, or credential changes."
-                    />
-                  </CardHeader>
-                  <CardContent className="space-y-4 pt-0">
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <FieldLabel>Label</FieldLabel>
-                        <TextInput
-                          data-testid={`settings-connections-provider-label-${editingProvider.profile.id}`}
-                          value={editingProviderDraft.label}
-                          onChange={(event) => setProviderDrafts((current) => ({
-                            ...current,
-                            [editingProvider.profile.id]: { ...editingProviderDraft, label: event.target.value },
-                          }))}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <FieldLabel>Model</FieldLabel>
-                        <TextInput
-                          data-testid={`settings-connections-provider-model-${editingProvider.profile.id}`}
-                          value={editingProviderDraft.model}
-                          onChange={(event) => setProviderDrafts((current) => ({
-                            ...current,
-                            [editingProvider.profile.id]: { ...editingProviderDraft, model: event.target.value },
-                          }))}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <FieldLabel>Transport</FieldLabel>
-                        <SelectInput
-                          data-testid={`settings-connections-provider-transport-${editingProvider.profile.id}`}
-                          value={editingProviderDraft.transport}
-                          onChange={(event) => setProviderDrafts((current) => ({
-                            ...current,
-                            [editingProvider.profile.id]: { ...editingProviderDraft, transport: event.target.value as ProviderTransport },
-                          }))}
-                        >
-                          {PROVIDER_TRANSPORTS.map((transport) => (
-                            <option key={transport} value={transport}>{transport}</option>
-                          ))}
-                        </SelectInput>
-                      </div>
-                      <div className="space-y-2">
-                        <FieldLabel>Vendor</FieldLabel>
-                        <SelectInput
-                          data-testid={`settings-connections-provider-vendor-${editingProvider.profile.id}`}
-                          value={editingProviderDraft.vendor}
-                          onChange={(event) => setProviderDrafts((current) => ({
-                            ...current,
-                            [editingProvider.profile.id]: { ...editingProviderDraft, vendor: event.target.value as ProviderVendor },
-                          }))}
-                        >
-                          {PROVIDER_VENDORS.map((vendor) => (
-                            <option key={vendor} value={vendor}>{vendor}</option>
-                          ))}
-                        </SelectInput>
-                      </div>
-                      <div className="space-y-2 md:col-span-2">
-                        <FieldLabel>Base URL</FieldLabel>
-                        <TextInput
-                          data-testid={`settings-connections-provider-base-url-${editingProvider.profile.id}`}
-                          value={editingProviderDraft.baseUrl}
-                          onChange={(event) => setProviderDrafts((current) => ({
-                            ...current,
-                            [editingProvider.profile.id]: { ...editingProviderDraft, baseUrl: event.target.value },
-                          }))}
-                        />
-                      </div>
-                      <div className="space-y-2 md:col-span-2">
-                        <FieldLabel>Secret ID</FieldLabel>
-                        <TextInput
-                          data-testid={`settings-connections-provider-secret-id-${editingProvider.profile.id}`}
-                          value={editingProviderDraft.apiKeySecretId}
-                          onChange={(event) => setProviderDrafts((current) => ({
-                            ...current,
-                            [editingProvider.profile.id]: { ...editingProviderDraft, apiKeySecretId: event.target.value },
-                          }))}
-                        />
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        data-testid={`settings-connections-provider-save-${editingProvider.profile.id}`}
-                        disabled={busyKey !== null}
-                        onClick={() => void runAction(
-                          `provider-save-${editingProvider.profile.id}`,
-                          () => api.updateProvider(editingProvider.profile.id, {
-                            ...editingProvider.profile,
-                            label: editingProviderDraft.label,
-                            transport: editingProviderDraft.transport,
-                            vendor: editingProviderDraft.vendor,
-                            baseUrl: editingProviderDraft.baseUrl || undefined,
-                            model: editingProviderDraft.model,
-                            apiKeySecretId: editingProviderDraft.apiKeySecretId || undefined,
-                          }),
-                          `Saved provider ${editingProvider.profile.id}.`
-                        )}
-                      >
-                        Save
-                      </Button>
-                      <Button
-                        data-testid={`settings-connections-provider-test-${editingProvider.profile.id}`}
-                        size="sm"
-                        variant="secondary"
-                        disabled={busyKey !== null}
-                        onClick={() => void runAction(
-                          `provider-test-${editingProvider.profile.id}`,
-                          async () => {
-                            const result = await api.testProvider(editingProvider.profile.id);
-                            setProviderTestResults((current) => ({
-                              ...current,
-                              [editingProvider.profile.id]: result.message,
-                            }));
-                            return result;
-                          },
-                          `Tested provider ${editingProvider.profile.id}.`,
-                          { reload: false }
-                        )}
-                      >
-                        Test connection
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={busyKey !== null}
-                        onClick={() => setProviderDrafts((current) => ({
-                          ...current,
-                          [editingProvider.profile.id]: createProviderDraft(editingProvider),
-                        }))}
-                      >
-                        Reset
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={busyKey !== null}
-                        onClick={() => setEditingProviderId(null)}
-                      >
-                        Close editor
-                      </Button>
-                    </div>
-                    {providerTestResults[editingProvider.profile.id] ? (
-                      <p className="text-sm text-text-secondary">{providerTestResults[editingProvider.profile.id]}</p>
-                    ) : null}
-                  </CardContent>
-                </Card>
-              ) : null}
-            </>
-          ) : (
-            <EmptyState
-              title="No provider profiles yet"
-              description="Providers will appear here as soon as the runtime registers them."
-            />
-          )}
-          <ConfirmDialog
-            open={providerDeleteIntent !== null}
-            title={providerDeleteIntent ? `Delete provider "${providerDeleteIntent.providerLabel}"?` : 'Delete provider?'}
-            description="This removes the provider profile from Settings. The delete does not affect other providers, but any linked secret will stop being usable for this connection."
-            details={providerDeleteIntent ? [
-              providerDeleteIntent.isDefault
-                ? 'This provider is currently enabled. Deleting it will leave the workspace without an enabled provider until another connection is enabled.'
-                : 'Only this provider profile will be removed.',
-              providerDeleteIntent.hasSecret
-                ? 'A linked secret exists for this provider and will no longer be usable by this connection.'
-                : 'No saved secret is linked to this provider.',
-            ] : []}
-            confirmLabel="Delete provider"
-            cancelLabel="Keep provider"
-            tone="danger"
-            busy={busyKey !== null}
-            testId="settings-connections-delete-dialog"
-            confirmTestId="settings-connections-delete-confirm"
-            cancelTestId="settings-connections-delete-cancel"
-            onCancel={() => setProviderDeleteIntent(null)}
-            onConfirm={() => {
-              if (!providerDeleteIntent) {
-                return;
-              }
-              void runAction(
-                `provider-delete-${providerDeleteIntent.providerId}`,
-                async () => {
-                  const result = await api.deleteProvider(providerDeleteIntent.providerId);
-                  setProviderTestResults((current) => {
-                    const next = { ...current };
-                    delete next[providerDeleteIntent.providerId];
-                    return next;
-                  });
-                  setProviderDrafts((current) => {
-                    const next = { ...current };
-                    delete next[providerDeleteIntent.providerId];
-                    return next;
-                  });
-                  if (editingProviderId === providerDeleteIntent.providerId) {
-                    setEditingProviderId(null);
-                  }
-                  setProviderDeleteIntent(null);
-                  return result;
-                },
-                `Deleted provider ${providerDeleteIntent.providerId}.`
-              );
-            }}
-          />
-        </CardContent>
-      </Card>
-
-      <Card className="rounded-lg border-border-subtle bg-surface/24">
-        <CardHeader className="py-3.5">
-          <SectionLead
-            eyebrow="Secrets"
-            title="Save provider secrets"
-            description="Keep secrets scoped to the provider profile that will use them."
-          />
-        </CardHeader>
-        <CardContent className="grid gap-3 pt-0 md:grid-cols-2">
-          <div className="space-y-2">
-            <FieldLabel>Provider</FieldLabel>
-            <SelectInput
-              data-testid="settings-secret-provider"
-              value={secretDraft.provider}
-              onChange={(event) => setSecretDraft((current) => ({
-                ...current,
-                provider: event.target.value,
-              }))}
-            >
-              {data?.providers.map((provider) => (
-                <option key={provider.profile.id} value={provider.profile.id}>{provider.profile.id}</option>
-              ))}
-            </SelectInput>
-          </div>
-          <div className="space-y-2">
-            <FieldLabel>Label</FieldLabel>
-            <TextInput
-              data-testid="settings-secret-label"
-              value={secretDraft.label}
-              onChange={(event) => setSecretDraft((current) => ({
-                ...current,
-                label: event.target.value,
-              }))}
-            />
-          </div>
-          <div className="space-y-2 md:col-span-2">
-            <FieldLabel>API key</FieldLabel>
-            <TextInput
-              data-testid="settings-secret-api-key"
-              type="password"
-              value={secretDraft.apiKey}
-              onChange={(event) => setSecretDraft((current) => ({
-                ...current,
-                apiKey: event.target.value,
-              }))}
-            />
-          </div>
-          <div className="md:col-span-2">
-            <Button
-              data-testid="settings-secret-save"
-              disabled={busyKey !== null || !secretDraft.provider || !secretDraft.label || !secretDraft.apiKey}
-              onClick={() => void runAction(
-                'secret-save',
-                async () => {
-                  const result = await api.setProviderSecret({
-                    secretId: secretDraft.secretId || undefined,
-                    provider: secretDraft.provider,
-                    label: secretDraft.label,
-                    apiKey: secretDraft.apiKey,
-                  });
-                  setSecretDraft((current) => ({
-                    ...current,
-                    secretId: result.resource.id,
-                    apiKey: '',
-                  }));
-                  return result;
-                },
-                'Provider secret saved.'
-              )}
-            >
-              Save secret
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
   );
   const renderCapabilitiesPanel = () => (
     <div className="space-y-4">
@@ -1902,13 +1255,37 @@ export function SettingsPage({
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-text-primary">{tool.name}</p>
                       <p className="mt-1 line-clamp-2 text-xs text-text-secondary">{tool.evidenceShape}</p>
+                      <p className="mt-1 text-xs text-text-muted">
+                        Health: {tool.healthCheck.status}
+                        {tool.healthCheck.diagnostics.length > 0 ? ` · ${tool.healthCheck.diagnostics.slice(0, 2).join(', ')}` : ''}
+                      </p>
                     </div>
-                    <Badge variant={tool.acceptanceEvidence ? 'success' : 'outline'}>
-                      {tool.acceptanceEvidence ? 'evidence' : tool.readiness}
+                    <Badge variant={tool.healthCheck.status === 'ready' ? 'success' : tool.healthCheck.status === 'blocked' ? 'warning' : 'outline'}>
+                      {tool.acceptanceEvidence ? 'evidence' : tool.healthCheck.status}
                     </Badge>
                   </div>
                 ))}
               </div>
+              {(ecosystem?.experiences.approvedDetails.length ?? 0) > 0 ? (
+                <div className="space-y-2">
+                  {(ecosystem?.experiences.approvedDetails ?? []).slice(0, 4).map((experience) => (
+                    <div key={experience.proposalId} className="rounded-lg border border-border-subtle bg-surface/18 px-4 py-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-text-primary">{experience.title}</p>
+                          <p className="mt-1 text-xs text-text-secondary">
+                            {experience.successfulReuseTaskIds.length} successful reuse · {experience.failedReuseTaskIds.length} failed reuse
+                          </p>
+                        </div>
+                        <Badge variant={experience.validationStatus === 'promotable' ? 'success' : experience.validationStatus === 'conflicted' ? 'warning' : 'outline'}>
+                          {experience.validationStatus}
+                        </Badge>
+                      </div>
+                      <p className="mt-2 truncate text-xs text-text-muted">{experience.materializedPath ?? experience.patternKey}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         </div>
@@ -1932,7 +1309,10 @@ export function SettingsPage({
                   <Badge variant={pack.status === 'ready' ? 'success' : 'outline'}>{pack.status}</Badge>
                 </div>
                 <p className="mt-3 text-xs text-text-muted">
-                  Quality: {pack.qualityProfileId ?? 'generic'} · Cleanup: {pack.cleanupHints.join(', ')}
+                  Core quality: {pack.qualityProfileId ?? 'none'} · Scenario gate: {pack.qualityGateId ?? 'none'} · Model: {pack.modelPolicy.defaultModelClass} · Turns: {pack.timeoutPolicy.maxTurns}
+                </p>
+                <p className="mt-1 line-clamp-2 text-xs text-text-secondary">
+                  Checks: {pack.surfaceChecks.join(', ')}
                 </p>
               </div>
             ))}

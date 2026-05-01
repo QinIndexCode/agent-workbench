@@ -11,6 +11,9 @@ const {
   validateStageSemanticContract,
   validateTaskDefinitionPreflight
 } = require('../dist');
+const {
+  mapFallbackTurnOutcome
+} = require('../dist/application/tasks/turns/turn-outcome-mapper.js');
 
 test('acceptParsedTurn accepts valid explicit output and tracker for current unit', () => {
   const parsed = parseTurn(
@@ -29,6 +32,44 @@ test('acceptParsedTurn accepts valid explicit output and tracker for current uni
   assert.equal(result.failureCategory, null);
   assert.equal(result.acceptedOutput.unitId, 'AGENT-001');
   assert.equal(result.acceptedTracker.currentUnit, 'AGENT-001');
+});
+
+test('fallback turn outcome treats accepted tool responses that only miss tracker as in-progress tool steps', () => {
+  const parsed = parseTurn(
+    '[AGENT-001_OUTPUT]{"summary":"I will inspect the input before finalizing."}[/AGENT-001_OUTPUT]\n'
+    + '{"tool":"read_file","arguments":{"path":"inputs/a.md"}}'
+  );
+
+  const outcome = mapFallbackTurnOutcome({
+    currentUnitId: 'AGENT-001',
+    parsed,
+    outputContract: '{"summary":"string"}',
+    trackerPolicy: {
+      requireToolEvidence: true,
+      emittedToolEvidenceCount: 0,
+    },
+    plannedTools: {
+      acceptedInvocationIds: ['tool_1'],
+      approvalInvocationIds: [],
+      rejected: [],
+    },
+    runtime: {
+      pendingToolBatches: [],
+      consolidationState: {
+        status: 'IDLE',
+        stageIndex: null,
+        lastCompletedAt: null,
+        lastResult: null,
+        lastIssueCodes: [],
+      },
+    },
+  });
+
+  assert.equal(outcome.orchestrated.acceptance.ok, true);
+  assert.equal(outcome.orchestrated.acceptance.pendingCorrection, 'NONE');
+  assert.equal(outcome.acceptedTrackers.length, 1);
+  assert.equal(outcome.acceptedTrackers[0].status, 'IN_PROGRESS');
+  assert.equal(outcome.acceptedTrackers[0].decision, 'CONTINUE');
 });
 
 test('parseTurn recovers the first explicit output JSON object when providers omit the closing output wrapper before tool calls', () => {
@@ -82,6 +123,24 @@ test('acceptParsedTurn demands output correction when contract keys are missing'
   assert.equal(result.pendingCorrection, 'AWAITING_OUTPUT_CORRECTION');
   assert.equal(result.failureCategory, 'output_contract_mismatch');
   assert.match(result.issues[0].message, /contract key "issues"/);
+});
+
+test('acceptParsedTurn demands output correction when contract value types are wrong', () => {
+  const parsed = parseTurn(
+    '[AGENT-001_OUTPUT]{"summary":"ok","risks":"none"}[/AGENT-001_OUTPUT]\n'
+    + '{"current_unit":"AGENT-001","status":"COMPLETE","progress_percent":100,"decision":"CONTINUE","reason":"done","next_unit":null,"files_created":[]}'
+  );
+
+  const result = acceptParsedTurn({
+    currentUnitId: 'AGENT-001',
+    parsed,
+    outputContract: '{"summary":"string","risks":["string"]}'
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.pendingCorrection, 'AWAITING_OUTPUT_CORRECTION');
+  assert.equal(result.failureCategory, 'output_contract_mismatch');
+  assert.match(result.issues[0].message, /must be array/);
 });
 
 test('acceptParsedTurn demands tracker correction when output is valid but tracker is missing', () => {
@@ -207,7 +266,7 @@ test('acceptParsedTurn rejects early terminate when downstream required work rem
 test('acceptParsedTurn rejects COMPLETE tracker when progress is not full', () => {
   const parsed = parseTurn(
     '[AGENT-001_OUTPUT]{"summary":"partial work","issues":[]}[/AGENT-001_OUTPUT]\n'
-    + '{"current_unit":"AGENT-001","status":"COMPLETE","progress_percent":80,"decision":"CONTINUE","reason":"still need the remaining module batch next turn","next_unit":null,"files_created":["database-lab/prototype/src/storage-engine.js"]}'
+    + '{"current_unit":"AGENT-001","status":"COMPLETE","progress_percent":80,"decision":"CONTINUE","reason":"still need the remaining module batch next turn","next_unit":null,"files_created":["workspace-demo/prototype/src/processor.js"]}'
   );
 
   const result = acceptParsedTurn({
@@ -365,8 +424,8 @@ test('acceptParsedTurn rejects verify completion when explicit output appears be
 
 test('acceptParsedTurn reuses the prior accepted output for tool-action corrections when the new turn emits tool calls and a tracker only', () => {
   const parsed = parseTurn(
-    '{"tool":"write_file","arguments":{"path":"database-lab/prototype/package.json","content_json":{"name":"database-lab-prototype","private":true}}}\n'
-    + '{"current_unit":"AGENT-001","status":"IN_PROGRESS","progress_percent":45,"decision":"CONTINUE","reason":"package manifest written","next_unit":null,"files_created":["database-lab/prototype/package.json"]}'
+    '{"tool":"write_file","arguments":{"path":"workspace-demo/prototype/package.json","content_json":{"name":"workspace-demo-prototype","private":true}}}\n'
+    + '{"current_unit":"AGENT-001","status":"IN_PROGRESS","progress_percent":45,"decision":"CONTINUE","reason":"package manifest written","next_unit":null,"files_created":["workspace-demo/prototype/package.json"]}'
   );
 
   const result = acceptParsedTurn({
@@ -378,11 +437,11 @@ test('acceptParsedTurn reuses the prior accepted output for tool-action correcti
       priorAcceptedOutput: {
         unitId: 'AGENT-001',
         wrapper: 'square',
-        raw: '{"summary":"prototype scaffold in progress","details":"design docs finished","producedFiles":["database-lab/design/README.md"],"issues":[]}',
+        raw: '{"summary":"prototype scaffold in progress","details":"design docs finished","producedFiles":["workspace-demo/design/README.md"],"issues":[]}',
         parsedJson: {
           summary: 'prototype scaffold in progress',
           details: 'design docs finished',
-          producedFiles: ['database-lab/design/README.md'],
+          producedFiles: ['workspace-demo/design/README.md'],
           issues: []
         }
       },
@@ -1150,6 +1209,82 @@ test('orchestrateTurn blocks completion when any tool call was rejected during v
   assert.equal(result.acceptance.issues[0].code, 'invalid_tool_protocol');
 });
 
+test('parseTurn flags malformed JSON tool objects instead of silently accepting later tools only', () => {
+  const parsed = parseTurn(
+    'Creating files now.\n'
+    + '{"tool":"write_file","arguments":{"path":"D:\\\\AAA\\\\index.html","content":"<span class="broken">bad</span>"}}\n'
+    + '{"tool":"write_file","arguments":{"path":"quality/web-audit.json","content_json":{"profile":"web_experience"}}}\n'
+    + '[AGENT-001_OUTPUT]{"summary":"done","details":"claimed","artifactDestination":"D:\\\\AAA","issues":[]}[/AGENT-001_OUTPUT]\n'
+    + '{"current_unit":"AGENT-001","status":"COMPLETE","progress_percent":100,"decision":"CONTINUE","reason":"done","next_unit":null,"files_created":["D:\\\\AAA\\\\index.html"]}'
+  );
+
+  assert.equal(parsed.toolCalls.length, 1);
+  assert.equal(parsed.toolCalls[0].parameters.path, 'quality/web-audit.json');
+  assert.equal(parsed.warnings.length, 1);
+  assert.match(parsed.warnings[0], /invalid_tool_json/);
+
+  const result = orchestrateTurn({
+    currentUnitId: 'AGENT-001',
+    parsed,
+    outputContract: '{"summary":"string","details":"string","artifactDestination":"string","issues":[]}',
+    plannedTools: {
+      acceptedInvocationIds: [],
+      approvalInvocationIds: [],
+      rejectedToolCalls: parsed.warnings
+    }
+  });
+
+  assert.equal(result.acceptance.ok, false);
+  assert.equal(result.acceptance.pendingCorrection, 'AWAITING_TOOL_ACTION');
+  assert.equal(result.acceptance.issues.some((issue) => issue.code === 'invalid_tool_request'), true);
+
+  const noTrackerResult = orchestrateTurn({
+    currentUnitId: 'AGENT-001',
+    parsed: parseTurn(
+      '{"tool":"write_file","arguments":{"path":"docs/a.md","content":"# A"}}\n'
+      + '{"tool":"write_file","arguments":{"path":"docs/b.md","content":"bad "quote"}}'
+    ),
+    outputContract: '{"summary":"string","details":"string","issues":[]}',
+    plannedTools: {
+      acceptedInvocationIds: [],
+      approvalInvocationIds: [],
+      rejectedToolCalls: ['invalid_tool_json: detected malformed write_file JSON']
+    }
+  });
+  assert.equal(noTrackerResult.acceptance.ok, false);
+  assert.equal(noTrackerResult.acceptance.pendingCorrection, 'AWAITING_TOOL_ACTION');
+  assert.equal(noTrackerResult.acceptance.failureCategory, 'tool_action_required_but_not_emitted');
+  assert.equal(noTrackerResult.acceptance.issues[0].code, 'invalid_tool_request');
+});
+
+test('parseTurn repairs markdown bullet leakage inside write_file content_lines arrays', () => {
+  const parsed = parseTurn(
+    '{"tool":"write_file","arguments":{"path":"notes/plan.md","content_lines":["# Plan","",- "Overview","",- "Next step"]}}\n'
+    + '{"current_unit":"AGENT-001","status":"IN_PROGRESS","progress_percent":60,"decision":"CONTINUE","reason":"wrote plan","next_unit":null,"files_created":["notes/plan.md"]}'
+  );
+
+  assert.equal(parsed.toolCalls.length, 1);
+  assert.equal(parsed.toolCalls[0].toolName, 'write_file');
+  assert.equal(parsed.toolCalls[0].parameters.path, 'notes/plan.md');
+  assert.deepEqual(parsed.toolCalls[0].parameters.content_lines, ['# Plan', '', 'Overview', '', 'Next step']);
+  assert.equal(parsed.warnings.length, 0);
+  assert.equal(parsed.trackers.length, 1);
+});
+
+test('parseTurn repairs quoted comma separator leakage inside write_file content_lines arrays', () => {
+  const parsed = parseTurn(
+    '{"tool":"write_file","arguments":{"path":"notes/plan.md","content_lines":["# Plan","Intro.",","## Next","done"]}}\n'
+    + '{"current_unit":"AGENT-001","status":"IN_PROGRESS","progress_percent":60,"decision":"CONTINUE","reason":"wrote plan","next_unit":null,"files_created":["notes/plan.md"]}'
+  );
+
+  assert.equal(parsed.toolCalls.length, 1);
+  assert.equal(parsed.toolCalls[0].toolName, 'write_file');
+  assert.equal(parsed.toolCalls[0].parameters.path, 'notes/plan.md');
+  assert.deepEqual(parsed.toolCalls[0].parameters.content_lines, ['# Plan', 'Intro.', '## Next', 'done']);
+  assert.equal(parsed.warnings.length, 0);
+  assert.equal(parsed.trackers.length, 1);
+});
+
 test('parseTurn infers bare command JSON blocks as run_command tool calls', () => {
   const parsed = parseTurn(
     '{"command":"powershell.exe -NoProfile -Command \\"Get-Process | Select-Object -First 3\\"","description":"Inspect top processes"}'
@@ -1174,16 +1309,16 @@ test('parseTurn infers bare command JSON blocks with timeout aliases as run_comm
 
 test('parseTurn recovers concatenated tool objects that are missing the outer closing brace before the next tool block', () => {
   const parsed = parseTurn(
-    '{"tool":"write_file","arguments":{"path":"database-lab/prototype/package.json","content":"{\\n  \\"name\\": \\"near-mysql-prototype\\"\\n}"}}'.replace('}}', '}')
-    + ',{"tool":"write_file","arguments":{"path":"database-lab/prototype/README.md","content":"# Prototype\\n\\nThis file is grounded in the real scaffold."}}'.replace('}}', '}')
-    + '{"current_unit":"AGENT-001","status":"IN_PROGRESS","progress_percent":70,"decision":"CONTINUE","reason":"prototype top-level files were written","next_unit":null,"files_created":["database-lab/prototype/package.json","database-lab/prototype/README.md"]}'
+    '{"tool":"write_file","arguments":{"path":"workspace-demo/prototype/package.json","content":"{\\n  \\"name\\": \\"workspace-demo-prototype\\"\\n}"}}'.replace('}}', '}')
+    + ',{"tool":"write_file","arguments":{"path":"workspace-demo/prototype/README.md","content":"# Prototype\\n\\nThis file is grounded in the real scaffold."}}'.replace('}}', '}')
+    + '{"current_unit":"AGENT-001","status":"IN_PROGRESS","progress_percent":70,"decision":"CONTINUE","reason":"prototype top-level files were written","next_unit":null,"files_created":["workspace-demo/prototype/package.json","workspace-demo/prototype/README.md"]}'
   );
 
   assert.equal(parsed.toolCalls.length, 2);
   assert.deepEqual(parsed.toolCalls.map((call) => call.toolName), ['write_file', 'write_file']);
-  assert.equal(parsed.toolCalls[0].parameters.path, 'database-lab/prototype/package.json');
-  assert.match(parsed.toolCalls[0].parameters.content, /near-mysql-prototype/);
-  assert.equal(parsed.toolCalls[1].parameters.path, 'database-lab/prototype/README.md');
+  assert.equal(parsed.toolCalls[0].parameters.path, 'workspace-demo/prototype/package.json');
+  assert.match(parsed.toolCalls[0].parameters.content, /workspace-demo-prototype/);
+  assert.equal(parsed.toolCalls[1].parameters.path, 'workspace-demo/prototype/README.md');
   assert.match(parsed.toolCalls[1].parameters.content, /# Prototype/);
   assert.equal(parsed.trackers.length, 1);
   assert.equal(parsed.trackers[0].currentUnit, 'AGENT-001');

@@ -1081,6 +1081,11 @@ function createGeneralComplexScenarioDefinitions(): GeneralComplexScenarioDefini
       family: 'long-running-correction-churn',
       description: 'Drive a task through repeated correction turns before it converges and completes.',
       intent: 'Write reports/correction-churn.md, survive repeated tracker corrections, and complete only after the final valid tracker is emitted.',
+      taskMetadata: {
+        artifactRouting: {
+          pathPolicy: 'task_workspace'
+        }
+      },
       units: [
         createUnit({ id: 'AGENT-001', role: 'Correction Writer', goal: 'Write the report and converge after repeated tracker corrections.', profile: 'implement', dependencies: [], taskScope: 'reports/correction-churn.md' })
       ],

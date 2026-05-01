@@ -22,6 +22,15 @@ import {
 import { projectTaskDiagnostics } from '../chat/protocol/diagnostics-projection';
 import { runTaskChatSession } from './tasks-chat';
 
+function getOptionalPositiveIntFlag(args: Parameters<typeof getFlagString>[0], name: string): number | undefined {
+  const value = getFlagString(args, name);
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export const tasksCommandModule: CliCommandModule = {
   group: 'tasks',
   usage: [
@@ -77,7 +86,11 @@ export const tasksCommandModule: CliCommandModule = {
         const taskId = submitted.command.taskId;
         await requestJson(fetchImpl, `${serverUrl}/tasks/${taskId}/start`, {
           method: 'POST',
-          body: JSON.stringify({ userMessage: getFlagString(args, 'message') })
+          body: JSON.stringify({
+            userMessage: getFlagString(args, 'message'),
+            autoRun: !hasFlag(args, 'no-auto-run'),
+            maxTurns: getOptionalPositiveIntFlag(args, 'max-turns')
+          })
         });
         await runTaskFlowStream({
           taskId,
@@ -178,9 +191,14 @@ export const tasksCommandModule: CliCommandModule = {
       return 0;
     }
     if (['start', 'continue', 'pause', 'resume', 'restart'].includes(action ?? '')) {
+      const supportsAutoRun = action === 'start' || action === 'continue' || action === 'restart';
       writeJson(io, await requestJson(fetchImpl, `${serverUrl}/tasks/${rest[0]}/${action}`, {
         method: 'POST',
-        body: JSON.stringify({ userMessage: getFlagString(args, 'message') })
+        body: JSON.stringify({
+          userMessage: getFlagString(args, 'message'),
+          autoRun: supportsAutoRun && hasFlag(args, 'auto-run') ? true : undefined,
+          maxTurns: supportsAutoRun ? getOptionalPositiveIntFlag(args, 'max-turns') : undefined
+        })
       }));
       return 0;
     }

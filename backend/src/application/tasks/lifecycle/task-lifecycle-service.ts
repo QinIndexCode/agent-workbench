@@ -126,6 +126,8 @@ export class TaskLifecycleService {
       actor: input.actor,
       reason: input.reason,
       message: input.userMessage,
+      autoRun: input.autoRun,
+      maxTurns: input.maxTurns,
       metadata: input.metadata
     });
   }
@@ -137,6 +139,8 @@ export class TaskLifecycleService {
       actor: input.actor,
       reason: input.reason,
       message: input.userMessage,
+      autoRun: input.autoRun,
+      maxTurns: input.maxTurns,
       metadata: input.metadata
     });
   }
@@ -159,6 +163,8 @@ export class TaskLifecycleService {
       actor: input.actor,
       reason: input.reason,
       message: input.userMessage,
+      autoRun: input.autoRun,
+      maxTurns: input.maxTurns,
       metadata: input.metadata
     });
   }
@@ -170,6 +176,8 @@ export class TaskLifecycleService {
       actor: input.actor,
       reason: input.reason,
       message: input.userMessage,
+      autoRun: input.autoRun,
+      maxTurns: input.maxTurns,
       metadata: input.metadata
     });
   }

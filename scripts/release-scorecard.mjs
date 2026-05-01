@@ -256,20 +256,22 @@ async function loadSuiteFromCommandOrReport(params) {
       validator: params.validator
     });
     const payload = reportParse.payload;
-    return {
-      command: {
-        label: params.label,
-        command: `reuse-report ${params.reportPath}`,
-        status: payload ? 0 : 1,
-        stdout: payload ? JSON.stringify(payload, null, 2) : '',
-        stderr: reportParse.issues.join('; ')
-      },
-      parse: {
-        payload,
-        issues: reportParse.issues
-      },
-      source: 'report'
-    };
+    if (payload || params.runCommandWhenReportUnavailable !== true) {
+      return {
+        command: {
+          label: params.label,
+          command: `reuse-report ${params.reportPath}`,
+          status: payload ? 0 : 1,
+          stdout: payload ? JSON.stringify(payload, null, 2) : '',
+          stderr: reportParse.issues.join('; ')
+        },
+        parse: {
+          payload,
+          issues: reportParse.issues
+        },
+        source: 'report'
+      };
+    }
   }
 
   const command = runCommand(params.label, params.command, params.args, params.options);
@@ -1763,6 +1765,16 @@ function summarizePostgresStatus(result) {
   };
 }
 
+function isBlockingScorecardCommandFailure(result) {
+  if (!result || result.status === 0) {
+    return false;
+  }
+  if (result.label === 'postgres-test') {
+    return summarizePostgresStatus(result).status === 'open_gap';
+  }
+  return true;
+}
+
 async function main() {
   if (scorecardForceRerun) {
     await assertLiveCostGuard({
@@ -1831,6 +1843,7 @@ async function main() {
     options: { env: liveEnv },
     reportPath: benchmarkReportPath,
     forceRerun: scorecardForceRerun,
+    runCommandWhenReportUnavailable: true,
     validator: (payload) => Boolean(payload?.syntheticBaseline || payload?.realisticComplexDag)
   });
   commands.push(benchmarkSource.command);
@@ -1839,7 +1852,7 @@ async function main() {
   const smoke = runCommand('frontend-smoke', 'npm', ['run', 'smoke:frontend'], { env: neutralEnv });
 
   const failed =
-    commands.find((result) => result.status !== 0)
+    commands.find(isBlockingScorecardCommandFailure)
     ?? ((smoke && smoke.status !== 0) ? smoke : null)
     ?? (postgres.status !== 0 && summarizePostgresStatus(postgres).status === 'open_gap' ? postgres : null);
   const backendTests = parseBackendTestCounts(commands.find((result) => result.label === 'backend-test')?.stdout ?? '');
@@ -2668,6 +2681,7 @@ if (isDirectExecution) {
 }
 
 export {
+  isBlockingScorecardCommandFailure,
   isFreshReport,
   loadSuiteFromCommandOrReport,
   parseReportFile,

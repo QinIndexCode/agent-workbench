@@ -1854,6 +1854,11 @@ test('platform REST surfaces channels schedules memories statistics and system v
     const statistics = await fetch(`${serverUrl}/statistics`).then((response) => response.json());
     const system = await fetch(`${serverUrl}/system/startup`).then((response) => response.json());
     const diagnostics = await fetch(`${serverUrl}/tasks/diagnostics`).then((response) => response.json());
+    const ecosystem = await fetch(`${serverUrl}/ecosystem`).then((response) => response.json());
+    const toolsHealth = await fetch(`${serverUrl}/tools/health`).then((response) => response.json());
+    const scenarioPacks = await fetch(`${serverUrl}/scenario-packs`).then((response) => response.json());
+    const ecosystemSkills = await fetch(`${serverUrl}/ecosystem/skills`).then((response) => response.json());
+    const ecosystemMcp = await fetch(`${serverUrl}/ecosystem/mcp`).then((response) => response.json());
 
     assert.equal(createdChannel.resource.name, 'Primary Channel');
     assert.equal(createdSchedule.resource.name, 'Daily');
@@ -1861,6 +1866,12 @@ test('platform REST surfaces channels schedules memories statistics and system v
     assert.equal(typeof statistics.channels, 'number');
     assert.equal(system.storage.driver, 'file');
     assert.equal(typeof diagnostics.totals.tasks, 'number');
+    assert.equal(Array.isArray(ecosystem.tools), true);
+    assert.equal(ecosystem.tools.every((tool) => tool.healthCheck && Array.isArray(tool.healthCheck.checks)), true);
+    assert.equal(toolsHealth.every((tool) => tool.healthCheck && typeof tool.healthCheck.status === 'string'), true);
+    assert.equal(scenarioPacks.every((pack) => pack.modelPolicy && pack.timeoutPolicy && Array.isArray(pack.surfaceChecks)), true);
+    assert.equal(Array.isArray(ecosystemSkills), true);
+    assert.equal(Array.isArray(ecosystemMcp), true);
   } finally {
     server.close();
     removeDir(root);
@@ -1876,13 +1887,7 @@ test('cli platform commands operate through the stable REST interface', async ()
       }
     }
   });
-  foundation.providers.register({
-    id: 'provider-main',
-    label: 'Provider Main',
-    transport: 'openai-compatible',
-    baseUrl: 'https://provider.example.com',
-    model: 'mock-model'
-  });
+  registerProvider(foundation, ['OK']);
   const server = createBackendNewHttpServer(runtime);
 
   try {
@@ -1944,6 +1949,33 @@ test('cli platform commands operate through the stable REST interface', async ()
     const presets = JSON.parse(presetsCapture.stdout.join(''));
     assert.equal(Array.isArray(presets), true);
     assert.equal(presets.some((item) => item.id === 'openai' && item.supportsQuickAdd === true), true);
+    assert.equal(presets.some((item) => item.id === 'azure_openai' && item.category === 'enterprise-cloud' && item.implementationStatus === 'external-auth-required'), true);
+    assert.equal(presets.some((item) => item.id === 'ollama' && item.category === 'local' && item.requiresApiKey === false), true);
+    assert.equal(presets.some((item) => item.id === 'cohere' && item.implementationStatus === 'profile-only'), true);
+    assert.equal(presets.some((item) => item.capabilities && Array.isArray(item.capabilities.inputModalities)), true);
+
+    const providerFile = path.join(root, 'provider-cli.json');
+    fs.writeFileSync(providerFile, JSON.stringify({
+      id: 'provider-cli',
+      label: 'Provider CLI',
+      transport: 'openai-compatible',
+      vendor: 'custom',
+      baseUrl: 'https://provider-cli.example.com/v1',
+      model: 'cli-model',
+      metadata: {
+        presetId: 'custom-openai-compatible',
+        implementationStatus: 'runnable'
+      }
+    }), 'utf8');
+
+    const upsertProviderCapture = createIoCapture();
+    const upsertProviderExit = await runBackendNewCli({
+      argv: ['platform', 'providers', 'upsert', providerFile, '--server', serverUrl],
+      io: upsertProviderCapture.io
+    });
+    assert.equal(upsertProviderExit, 0);
+    const upsertProvider = JSON.parse(upsertProviderCapture.stdout.join(''));
+    assert.equal(upsertProvider.resource.id, 'provider-cli');
 
     const secretCapture = createIoCapture();
     const secretExit = await runBackendNewCli({
@@ -1960,6 +1992,7 @@ test('cli platform commands operate through the stable REST interface', async ()
       io: secretCapture.io
     });
     assert.equal(secretExit, 0);
+    assert.equal(secretCapture.stdout.join('').includes('secret-value'), false);
 
     const secretListCapture = createIoCapture();
     const secretListExit = await runBackendNewCli({
@@ -1969,6 +2002,35 @@ test('cli platform commands operate through the stable REST interface', async ()
     assert.equal(secretListExit, 0);
     const secrets = JSON.parse(secretListCapture.stdout.join(''));
     assert.equal(secrets.some((item) => item.provider === 'provider-main' && item.label === 'Primary Key'), true);
+    assert.equal(secretListCapture.stdout.join('').includes('secret-value'), false);
+
+    const providerTestCapture = createIoCapture();
+    const providerTestExit = await runBackendNewCli({
+      argv: ['platform', 'providers', 'test', 'provider-main', '--server', serverUrl],
+      io: providerTestCapture.io
+    });
+    assert.equal(providerTestExit, 0);
+    const providerTest = JSON.parse(providerTestCapture.stdout.join(''));
+    assert.equal(providerTest.ok, true);
+    assert.equal(providerTest.providerId, 'provider-main');
+
+    const setDefaultCapture = createIoCapture();
+    const setDefaultExit = await runBackendNewCli({
+      argv: ['platform', 'providers', 'set-default', 'provider-main', '--server', serverUrl],
+      io: setDefaultCapture.io
+    });
+    assert.equal(setDefaultExit, 0);
+    const setDefault = JSON.parse(setDefaultCapture.stdout.join(''));
+    assert.equal(setDefault.resource.isSavedDefault, true);
+
+    const deleteProviderCapture = createIoCapture();
+    const deleteProviderExit = await runBackendNewCli({
+      argv: ['platform', 'providers', 'delete', 'provider-cli', '--server', serverUrl],
+      io: deleteProviderCapture.io
+    });
+    assert.equal(deleteProviderExit, 0);
+    const deletedProvider = JSON.parse(deleteProviderCapture.stdout.join(''));
+    assert.equal(deletedProvider.resource.ok, true);
 
     const configCapture = createIoCapture();
     const configExit = await runBackendNewCli({
@@ -1978,6 +2040,41 @@ test('cli platform commands operate through the stable REST interface', async ()
     assert.equal(configExit, 0);
     const config = JSON.parse(configCapture.stdout.join(''));
     assert.equal(config.current.server.port > 0, true);
+
+    const toolsHealthCapture = createIoCapture();
+    const toolsHealthExit = await runBackendNewCli({
+      argv: ['platform', 'tools', 'health', '--server', serverUrl],
+      io: toolsHealthCapture.io
+    });
+    assert.equal(toolsHealthExit, 0);
+    const toolsHealth = JSON.parse(toolsHealthCapture.stdout.join(''));
+    assert.equal(Array.isArray(toolsHealth), true);
+    assert.equal(toolsHealth.every((tool) => tool.healthCheck && typeof tool.healthCheck.status === 'string'), true);
+
+    const ecosystemSkillsCapture = createIoCapture();
+    const ecosystemSkillsExit = await runBackendNewCli({
+      argv: ['platform', 'skills', 'status', '--server', serverUrl],
+      io: ecosystemSkillsCapture.io
+    });
+    assert.equal(ecosystemSkillsExit, 0);
+    assert.equal(Array.isArray(JSON.parse(ecosystemSkillsCapture.stdout.join(''))), true);
+
+    const ecosystemMcpCapture = createIoCapture();
+    const ecosystemMcpExit = await runBackendNewCli({
+      argv: ['platform', 'mcp', 'status', '--server', serverUrl],
+      io: ecosystemMcpCapture.io
+    });
+    assert.equal(ecosystemMcpExit, 0);
+    assert.equal(Array.isArray(JSON.parse(ecosystemMcpCapture.stdout.join(''))), true);
+
+    const scenariosCapture = createIoCapture();
+    const scenariosExit = await runBackendNewCli({
+      argv: ['platform', 'scenarios', 'list', '--server', serverUrl],
+      io: scenariosCapture.io
+    });
+    assert.equal(scenariosExit, 0);
+    const scenarios = JSON.parse(scenariosCapture.stdout.join(''));
+    assert.equal(scenarios.some((pack) => pack.id === 'database-design' && pack.timeoutPolicy), true);
   } finally {
     server.close();
     removeDir(root);

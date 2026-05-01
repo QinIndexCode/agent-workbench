@@ -22,128 +22,21 @@ function writeJson(root, relativePath, value) {
   writeText(root, relativePath, JSON.stringify(value, null, 2));
 }
 
-function evaluate(root, qualityProfileId, toolInvocations = []) {
+function evaluate(root, qualityProfileId, toolInvocations = [], overrides = {}) {
   return evaluateTaskQuality({
+    taskId: 'task-test',
+    title: 'Quality test',
+    intent: 'Evaluate task quality',
+    unitId: 'AGENT-001',
+    executionProfileId: 'implement',
     qualityProfileId,
     workspaceDir: root,
+    artifactPaths: [],
+    artifactDestinationPaths: [],
+    artifactDestinationDir: null,
     toolInvocations,
+    ...overrides,
   });
-}
-
-function makeSuccessfulBenchInvocation(invocationId = 'tool-bench-success') {
-  return {
-    invocationId,
-    toolId: 'run_command',
-    unitId: 'AGENT-001',
-    status: 'SUCCEEDED',
-    startedAt: 1000,
-    endedAt: 2000,
-    arguments: {
-      command: 'npm run bench -- --dry-run',
-      workingDirectory: 'database-lab/prototype',
-    },
-    result: {
-      stdout: JSON.stringify({
-        status: 'success',
-        summary: 'dry run complete',
-        metrics: {
-          pagesWritten: 12,
-          pagesRead: 12,
-          writeDurationMs: 4,
-          readDurationMs: 3,
-          totalDurationMs: 12,
-        },
-      }),
-    },
-    error: null,
-    metadata: {
-      workingDirectory: 'database-lab/prototype',
-      command: 'npm run bench -- --dry-run',
-    },
-  };
-}
-
-const DATABASE_CORE_MODULE_PATHS = [
-  'database-lab/prototype/src/storage-engine.js',
-  'database-lab/prototype/src/buffer-pool.js',
-  'database-lab/prototype/src/b-plus-tree-index.js',
-  'database-lab/prototype/src/wal-manager.js',
-  'database-lab/prototype/src/transaction-manager.js',
-];
-
-function writeDatabaseCoreModules(root, overrides = {}) {
-  const defaultBodies = {
-    'database-lab/prototype/src/storage-engine.js': [
-      'class StorageEngine {',
-      '  constructor(baseDir = ".tmp"){ this.baseDir = baseDir; this.pages = new Map(); }',
-      '  initialize(){ return this; }',
-      '  writePage(id, payload){ this.pages.set(id, payload); return payload; }',
-      '  readPage(id){ return this.pages.get(id) ?? null; }',
-      '  updateRow(id, payload){ this.pages.set(id, payload); return payload; }',
-      '  close(){ return true; }',
-      '}',
-      'module.exports = { StorageEngine };',
-    ].join('\n'),
-    'database-lab/prototype/src/buffer-pool.js': [
-      'class BufferPool {',
-      '  constructor(storageEngine = null){ this.storageEngine = storageEngine; this.pages = new Map(); }',
-      '  writePage(id, payload){ this.pages.set(id, payload); if (this.storageEngine?.writePage) { this.storageEngine.writePage(id, payload); } return payload; }',
-      '  readPage(id){ return this.pages.get(id) ?? this.storageEngine?.readPage?.(id) ?? null; }',
-      '  flush(){ return true; }',
-      '}',
-      'module.exports = { BufferPool };',
-    ].join('\n'),
-    'database-lab/prototype/src/b-plus-tree-index.js': [
-      'class BPlusTreeIndex {',
-      '  constructor(){ this.rows = new Map(); }',
-      '  insert(key, rowId){ this.rows.set(key, rowId); return rowId; }',
-      '  lookup(key){ return this.rows.get(key) ?? null; }',
-      '  scan(){ return Array.from(this.rows.entries()); }',
-      '}',
-      'module.exports = { BPlusTreeIndex };',
-    ].join('\n'),
-    'database-lab/prototype/src/wal-manager.js': [
-      'class WALManager {',
-      '  constructor(baseDir = ".tmp"){ this.baseDir = baseDir; this.entries = []; }',
-      '  appendEntry(entry){ this.entries.push(entry); return this.entries.length; }',
-      '  replay(){ return [...this.entries]; }',
-      '  close(){ return true; }',
-      '}',
-      'module.exports = { WALManager };',
-    ].join('\n'),
-    'database-lab/prototype/src/transaction-manager.js': [
-      'class TransactionManager {',
-      '  constructor(){ this.nextId = 1; this.active = new Map(); }',
-      '  beginTransaction(){ const tx = { id: this.nextId++, writes: [] }; this.active.set(tx.id, tx); return tx; }',
-      '  commitTransaction(id){ const tx = this.active.get(id?.id ?? id); this.active.delete(id?.id ?? id); return tx ?? null; }',
-      '  rollbackTransaction(id){ this.active.delete(id?.id ?? id); return true; }',
-      '}',
-      'module.exports = { TransactionManager };',
-    ].join('\n'),
-  };
-  for (const relativePath of DATABASE_CORE_MODULE_PATHS) {
-    writeText(root, relativePath, overrides[relativePath] ?? defaultBodies[relativePath]);
-  }
-  return [...DATABASE_CORE_MODULE_PATHS];
-}
-
-function makeSuccessfulWriteInvocation(relativePath, invocationId = `tool-write-${relativePath}`) {
-  return {
-    invocationId,
-    toolId: 'write_file',
-    unitId: 'AGENT-001',
-    status: 'SUCCEEDED',
-    startedAt: 3000,
-    endedAt: 4000,
-    arguments: {
-      path: relativePath,
-    },
-    result: {
-      path: relativePath,
-    },
-    error: null,
-    metadata: {},
-  };
 }
 
 test('web_experience rejects placeholder web artifacts and accepts grounded interactive static sites', () => {
@@ -182,7 +75,7 @@ test('web_experience rejects placeholder web artifacts and accepts grounded inte
     assert.equal(syntaxFailed.failedChecks.some((check) => check.startsWith('placeholder_copy:')), false);
     assert.equal(syntaxFailed.failedChecks.some((check) => check.startsWith('javascript_syntax_error:')), true);
 
-    writeText(root, 'site/index.html', '<h1>Field Notes on Runtime Quality Gates</h1><button id="theme-toggle">Toggle contrast</button>');
+    writeText(root, 'site/index.html', '<h1>Field Notes on Runtime Quality Gates</h1><input placeholder="Email address"><button id="theme-toggle">Toggle contrast</button>');
     writeText(root, 'site/app.js', 'document.querySelector("#theme-toggle").addEventListener("click", () => document.body.classList.toggle("high-contrast"));');
     writeJson(root, 'quality/web-audit.json', {
       profile: 'web_experience',
@@ -195,8 +88,42 @@ test('web_experience rejects placeholder web artifacts and accepts grounded inte
 
     const passed = evaluate(root, 'web_experience');
     assert.equal(passed.verdict, 'passed', JSON.stringify(passed, null, 2));
+
+    writeText(root, 'site/index.html', '<h1>Field Notes on Runtime Quality Gates</h1>textarea id="message" name="message" placeholder="What is on your mind?"></textarea><button id="theme-toggle">Toggle contrast</button>');
+    const malformed = evaluate(root, 'web_experience');
+    assert.equal(malformed.verdict, 'failed');
+    assert.ok(malformed.failedChecks.some((check) => check.startsWith('html_malformed_tag_fragment:')));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('web_experience resolves relative audit paths through delivered artifact evidence', () => {
+  const root = createTempRoot();
+  const externalRoot = createTempRoot();
+  try {
+    writeText(externalRoot, 'index.html', '<h1>Field Notes on Runtime Quality Gates</h1><button id="theme-toggle">Toggle contrast</button>');
+    writeText(externalRoot, 'script.js', 'document.querySelector("#theme-toggle").addEventListener("click", () => document.body.classList.toggle("high-contrast"));');
+    writeJson(root, 'quality/web-audit.json', {
+      profile: 'web_experience',
+      artifactKind: 'static_site',
+      entryFiles: ['index.html'],
+      supportingFiles: ['script.js'],
+      interactionSelectors: ['#theme-toggle'],
+      brandingTitle: 'Runtime Quality Notes',
+    });
+
+    const passed = evaluate(root, 'web_experience', [], {
+      artifactDestinationPaths: [
+        path.join(externalRoot, 'index.html'),
+        path.join(externalRoot, 'script.js'),
+      ],
+    });
+    assert.equal(passed.verdict, 'passed', JSON.stringify(passed, null, 2));
+    assert.ok(passed.passedChecks.includes('visible_interaction_detected'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(externalRoot, { recursive: true, force: true });
   }
 });
 
@@ -475,6 +402,59 @@ test('system_audit gives actionable repair evidence when facts cite the wrong to
   }
 });
 
+test('system_audit suggests candidate invocation ids when regex evidence cites the wrong tool output', () => {
+  const root = createTempRoot();
+  const invocations = [
+    {
+      invocationId: 'tool-os',
+      toolId: 'run_command',
+      unitId: 'AGENT-001',
+      status: 'SUCCEEDED',
+      result: { stdout: 'Version        : 10.0.26200\nBuildNumber    : 26200\nOSArchitecture : 64-bit\n' },
+      error: null,
+      metadata: {},
+    },
+    {
+      invocationId: 'tool-cpu',
+      toolId: 'run_command',
+      unitId: 'AGENT-001',
+      status: 'SUCCEEDED',
+      result: { stdout: 'NumberOfCores             : 16\nNumberOfLogicalProcessors : 24\nMaxClockSpeed             : 2000\n' },
+      error: null,
+      metadata: {},
+    },
+  ];
+
+  try {
+    writeText(root, 'reports/system-health.md', '# System Health\nVersion 10.0.26200\nCores 16');
+    writeJson(root, 'quality/system-audit.json', {
+      profile: 'system_audit',
+      reportFile: 'reports/system-health.md',
+      facts: [
+        {
+          name: 'os_version',
+          reportedValue: '10.0.26200',
+          sourceInvocationId: 'tool-cpu',
+          sourceRegex: 'Version\\s*:\\s*(10\\.0\\.26200)',
+        },
+        {
+          name: 'cpu_cores',
+          reportedValue: 16,
+          sourceInvocationId: 'tool-os',
+          sourceRegex: 'NumberOfCores\\s*:\\s*(16)',
+        },
+      ],
+    });
+
+    const failed = evaluate(root, 'system_audit', invocations);
+    assert.equal(failed.verdict, 'failed');
+    assert.ok(failed.requiredNextEvidence.some((entry) => /os_version.*tool-os/i.test(entry)));
+    assert.ok(failed.requiredNextEvidence.some((entry) => /cpu_cores.*tool-cpu/i.test(entry)));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('system_audit tolerates localized source labels when the reported value is grounded in tool output', () => {
   const root = createTempRoot();
   const invocation = {
@@ -506,6 +486,52 @@ test('system_audit tolerates localized source labels when the reported value is 
     assert.equal(passed.verdict, 'passed');
     assert.ok(passed.passedChecks.includes('source_contains_value_grounded:os_version'));
     assert.ok(!passed.failedChecks.includes('tool_output_mismatch:os_version'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('system_audit accepts full-match regex evidence when sourceContains and reportedValue are grounded', () => {
+  const root = createTempRoot();
+  const invocation = {
+    invocationId: 'tool-system',
+    toolId: 'run_command',
+    unitId: 'AGENT-001',
+    status: 'SUCCEEDED',
+    result: {
+      stdout: 'Version               : 10.0.26200\nBuildNumber           : 26200\nTotalPhysicalMemoryMb : 32499.32\n',
+    },
+    error: null,
+    metadata: {},
+  };
+
+  try {
+    writeText(root, 'reports/system-health.md', '# System Health\nVersion 10.0.26200\nTotal memory 32499.32');
+    writeJson(root, 'quality/system-audit.json', {
+      profile: 'system_audit',
+      reportFile: 'reports/system-health.md',
+      facts: [
+        {
+          name: 'os_version',
+          reportedValue: '10.0.26200',
+          sourceInvocationId: 'tool-system',
+          sourceRegex: 'Version\\s*:\\s*10\\.0\\.26200',
+          sourceContains: ['Version', '10.0.26200'],
+        },
+        {
+          name: 'total_physical_memory_mb',
+          reportedValue: 32499.32,
+          sourceInvocationId: 'tool-system',
+          sourceRegex: 'TotalPhysicalMemoryMb\\s*:\\s*32499\\.32',
+          sourceContains: ['TotalPhysicalMemoryMb', '32499.32'],
+        },
+      ],
+    });
+
+    const passed = evaluate(root, 'system_audit', [invocation]);
+    assert.equal(passed.verdict, 'passed');
+    assert.ok(passed.passedChecks.includes('source_regex_full_match_grounded:os_version'));
+    assert.ok(passed.passedChecks.includes('source_regex_full_match_grounded:total_physical_memory_mb'));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -626,915 +652,40 @@ test('desktop_observation requires real desktop process evidence and source mapp
   }
 });
 
-test('database_near_mysql_design rejects README-only stubs and accepts runnable module depth', () => {
+test('desktop_observation accepts full-match regex evidence when the observation value is grounded', () => {
   const root = createTempRoot();
-  const designText = [
-    'storage page segment layout',
-    'index btree hash strategy',
-    'transaction concurrency lock mvcc model',
-    'wal recovery checkpoint process',
-    'buffer cache policy',
-    'sql parser planner scope',
-    'benchmark latency throughput tps plan',
-    'current dry-run benchmark result remains unproven against real MySQL measurements',
-  ].join('\n');
+  const invocation = {
+    invocationId: 'tool-desktop',
+    toolId: 'run_command',
+    unitId: 'AGENT-001',
+    status: 'SUCCEEDED',
+    arguments: {
+      command: 'Get-Process chrome | Select-Object -First 1 ProcessName,Responding,MainWindowTitle',
+    },
+    result: {
+      stdout: 'ProcessName     : chrome\nResponding      : True\nMainWindowTitle : SCC Batch Console\n',
+    },
+    error: null,
+    metadata: {},
+  };
 
   try {
-    writeText(root, 'database-lab/design/README.md', designText);
-    writeText(root, 'database-lab/prototype/package.json', '{"scripts":{"bench":"node scripts/bench.js --dry-run"}}');
-    writeText(root, 'database-lab/prototype/README.md', 'no actual database functionality is implemented');
-    writeText(
-      root,
-      'database-lab/prototype/scripts/bench.js',
-      [
-        "const { PageStore } = require('../src/storage');",
-        "const { TransactionManager } = require('../src/transactions');",
-        'function dryRun() {',
-        '  const store = new PageStore();',
-        '  const tx = new TransactionManager();',
-        "  return { status: 'ok', summary: 'dry run complete', metrics: { pagesWritten: 12, pagesRead: 12, writeDurationMs: 4, readDurationMs: 3, totalDurationMs: 12, latencyP95Ms: 3, throughputTps: 1200 }, storeReady: Boolean(store), txReady: Boolean(tx) };",
-        '}',
-        'module.exports = { dryRun };',
-      ].join('\n')
-    );
-    writeText(root, 'database-lab/prototype/src/storage.js', '// TODO stub');
-    writeJson(root, 'quality/database-design.json', {
-      profile: 'database_near_mysql_design',
-      designFiles: ['database-lab/design/README.md'],
-      prototypeFiles: ['database-lab/prototype/package.json', 'database-lab/prototype/README.md', 'database-lab/prototype/scripts/bench.js'],
-      implementedModules: ['database-lab/prototype/src/storage.js'],
-      claimBoundaries: ['target profile only'],
+    writeText(root, 'reports/desktop-observation.md', '# Desktop Observation\nChrome responding: True');
+    writeJson(root, 'quality/desktop-observation.json', {
+      profile: 'desktop_observation',
+      reportFile: 'reports/desktop-observation.md',
+      observations: [{
+        name: 'chrome_responding',
+        reportedValue: 'True',
+        sourceInvocationId: 'tool-desktop',
+        sourceRegex: 'Responding\\s*:\\s*True',
+        sourceContains: ['ProcessName', 'chrome', 'Responding', 'True'],
+      }],
     });
 
-    const failed = evaluate(root, 'database_near_mysql_design');
-    assert.equal(failed.verdict, 'failed');
-    assert.ok(failed.failedChecks.includes('insufficient_implemented_modules'));
-    assert.ok(failed.failedChecks.includes('stub_module:database-lab/prototype/src/storage.js'));
-
-    for (const file of [
-      'database-lab/design/architecture.md',
-      'database-lab/design/storage-engine.md',
-      'database-lab/design/sql-compatibility.md',
-      'database-lab/design/benchmark-plan.md',
-    ]) {
-      writeText(root, file, designText);
-    }
-    const moduleBody = 'class PageStore { constructor(){ this.pages = new Map(); } writePage(id, row){ this.pages.set(id, { row, committed: true }); } readPage(id){ return this.pages.get(id) ?? null; } scan(){ return Array.from(this.pages.values()); } } module.exports = { PageStore };';
-    writeText(root, 'database-lab/prototype/src/storage.js', moduleBody);
-    writeText(root, 'database-lab/prototype/src/transactions.js', 'class TransactionManager { constructor(){ this.nextId = 1; this.active = new Map(); } begin(){ const id = this.nextId++; this.active.set(id, { writes: [] }); return id; } record(id, write){ this.active.get(id).writes.push(write); } commit(id){ const txn = this.active.get(id); this.active.delete(id); return txn.writes.length; } } module.exports = { TransactionManager };');
-    const coreModules = writeDatabaseCoreModules(root);
-    writeText(root, 'database-lab/prototype/README.md', 'Runnable prototype with page storage, transaction manager, and benchmark dry run. MySQL nearness remains an unproven target profile.');
-    writeJson(root, 'quality/database-design.json', {
-      profile: 'database_near_mysql_design',
-      designFiles: [
-        'database-lab/design/README.md',
-        'database-lab/design/architecture.md',
-        'database-lab/design/storage-engine.md',
-        'database-lab/design/sql-compatibility.md',
-        'database-lab/design/benchmark-plan.md',
-      ],
-      prototypeFiles: [
-        'database-lab/prototype/package.json',
-        'database-lab/prototype/README.md',
-        'database-lab/prototype/scripts/bench.js',
-      ],
-      implementedModules: [
-        ...coreModules,
-        'database-lab/prototype/src/storage.js',
-        'database-lab/prototype/src/transactions.js',
-      ],
-      claimBoundaries: ['target profile only', 'not measured against MySQL'],
-    });
-
-    const passed = evaluate(root, 'database_near_mysql_design', [makeSuccessfulBenchInvocation()]);
+    const passed = evaluate(root, 'desktop_observation', [invocation]);
     assert.equal(passed.verdict, 'passed');
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('database_near_mysql_design prompt section example reflects the full core module set', () => {
-  const prompt = getQualityProfilePromptSection('database_near_mysql_design').join('\n');
-  assert.match(prompt, /database-lab\/prototype\/src\/storage-engine\.js/);
-  assert.match(prompt, /database-lab\/prototype\/src\/buffer-pool\.js/);
-  assert.match(prompt, /database-lab\/prototype\/src\/b-plus-tree-index\.js/);
-  assert.match(prompt, /database-lab\/prototype\/src\/wal-manager\.js/);
-  assert.match(prompt, /database-lab\/prototype\/src\/transaction-manager\.js/);
-});
-
-test('database_near_mysql_design rejects benchmark scaffolds with worker spread-push stack risk', () => {
-  const root = createTempRoot();
-  const designText = [
-    'storage page segment layout',
-    'index btree hash strategy',
-    'transaction concurrency lock mvcc model',
-    'wal recovery checkpoint process',
-    'buffer cache policy',
-    'sql parser planner scope',
-    'benchmark latency throughput tps plan',
-    'current dry-run benchmark result remains unproven against real MySQL measurements',
-  ].join('\n');
-
-  try {
-    for (const file of [
-      'database-lab/design/README.md',
-      'database-lab/design/architecture.md',
-      'database-lab/design/storage-engine.md',
-      'database-lab/design/sql-compatibility.md',
-      'database-lab/design/benchmark-plan.md',
-    ]) {
-      writeText(root, file, designText);
-    }
-    writeText(root, 'database-lab/prototype/package.json', '{"scripts":{"bench":"node scripts/bench.js --dry-run"}}');
-    writeText(root, 'database-lab/prototype/README.md', 'Prototype with worker-backed dry-run benchmark scaffold.');
-    const coreModules = writeDatabaseCoreModules(root);
-    writeText(
-      root,
-      'database-lab/prototype/src/storage.js',
-      [
-        'class PageStore {',
-        '  constructor() {',
-        '    this.pages = new Map();',
-        '  }',
-        '  writePage(id, row) {',
-        '    const record = { id, row, updatedAt: Date.now(), committed: true };',
-        '    this.pages.set(id, record);',
-        '    return record;',
-        '  }',
-        '  readPage(id) {',
-        '    return this.pages.get(id) ?? null;',
-        '  }',
-        '  scanPages() {',
-        '    return Array.from(this.pages.values());',
-        '  }',
-        '}',
-        'module.exports = { PageStore };',
-      ].join('\n')
-    );
-    writeText(
-      root,
-      'database-lab/prototype/src/transactions.js',
-      [
-        'class TransactionManager {',
-        '  constructor() {',
-        '    this.nextId = 1;',
-        '    this.active = new Map();',
-        '  }',
-        '  begin() {',
-        '    const id = this.nextId++;',
-        '    this.active.set(id, { writes: [], begunAt: Date.now() });',
-        '    return id;',
-        '  }',
-        '  recordWrite(id, write) {',
-        '    const txn = this.active.get(id);',
-        '    txn.writes.push(write);',
-        '    return txn.writes.length;',
-        '  }',
-        '  commit(id) {',
-        '    const txn = this.active.get(id);',
-        '    this.active.delete(id);',
-        '    return { committed: true, writes: txn?.writes.length ?? 0 };',
-        '  }',
-        '}',
-        'module.exports = { TransactionManager };',
-      ].join('\n')
-    );
-    writeText(
-      root,
-      'database-lab/prototype/scripts/bench.js',
-      [
-        "const { Worker } = require('worker_threads');",
-        "const { PageStore } = require('../src/storage');",
-        "const { TransactionManager } = require('../src/transactions');",
-        'function aggregate(results) {',
-          '  const allLatencies = [];',
-          '  for (const result of results) {',
-          '    allLatencies.push(...result.latencies);',
-          '  }',
-        '  return { status: \'ok\', summary: \'dry run complete\', metrics: { pagesWritten: 4, pagesRead: 4, writeDurationMs: 2, readDurationMs: 2, totalDurationMs: 12 }, storeType: typeof PageStore, txType: typeof TransactionManager };',
-        '}',
-        'module.exports = { aggregate, Worker };',
-      ].join('\n')
-    );
-    writeJson(root, 'quality/database-design.json', {
-      profile: 'database_near_mysql_design',
-      designFiles: [
-        'database-lab/design/README.md',
-        'database-lab/design/architecture.md',
-        'database-lab/design/storage-engine.md',
-        'database-lab/design/sql-compatibility.md',
-        'database-lab/design/benchmark-plan.md',
-      ],
-      prototypeFiles: [
-        'database-lab/prototype/package.json',
-        'database-lab/prototype/README.md',
-        'database-lab/prototype/scripts/bench.js',
-      ],
-      implementedModules: [
-        ...coreModules,
-        'database-lab/prototype/src/storage.js',
-        'database-lab/prototype/src/transactions.js',
-      ],
-      claimBoundaries: ['target profile only', 'not measured against MySQL'],
-    });
-
-    const failed = evaluate(root, 'database_near_mysql_design');
-    assert.equal(failed.verdict, 'failed');
-    assert.ok(failed.failedChecks.includes('benchmark_scaffold_stack_risk'));
-
-    writeText(
-      root,
-      'database-lab/prototype/scripts/bench.js',
-      [
-        "const { Worker } = require('worker_threads');",
-        "const { PageStore } = require('../src/storage');",
-        "const { TransactionManager } = require('../src/transactions');",
-        'function aggregate(results) {',
-        '  let totalSamples = 0;',
-        '  let minLatencyMs = Number.POSITIVE_INFINITY;',
-        '  let maxLatencyMs = 0;',
-        '  for (const result of results) {',
-        '    const latencies = Array.isArray(result.latencies) ? result.latencies : [];',
-        '    totalSamples += latencies.length;',
-        '    for (const latency of latencies) {',
-        '      if (latency < minLatencyMs) minLatencyMs = latency;',
-        '      if (latency > maxLatencyMs) maxLatencyMs = latency;',
-        '    }',
-        '  }',
-        '  return { status: \'ok\', summary: \'dry run complete\', metrics: { totalSamples, minLatencyMs, maxLatencyMs, pagesWritten: 6, pagesRead: 6, writeDurationMs: 2, readDurationMs: 3, totalDurationMs: 12 }, storeType: typeof PageStore, txType: typeof TransactionManager };',
-        '}',
-        'module.exports = { aggregate, Worker };',
-      ].join('\n')
-    );
-
-    const passed = evaluate(root, 'database_near_mysql_design', [makeSuccessfulBenchInvocation()]);
-    assert.equal(passed.verdict, 'passed', JSON.stringify(passed, null, 2));
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('database_near_mysql_design does not treat explanatory comments as stub modules', () => {
-  const root = createTempRoot();
-  const designText = [
-    'storage page segment layout',
-    'index btree hash strategy',
-    'transaction concurrency lock mvcc model',
-    'wal recovery checkpoint process',
-    'buffer cache policy',
-    'sql parser planner scope',
-    'benchmark latency throughput tps plan',
-    'current dry-run benchmark result remains unproven against real MySQL measurements',
-  ].join('\n');
-
-  try {
-    for (const file of [
-      'database-lab/design/README.md',
-      'database-lab/design/architecture.md',
-      'database-lab/design/storage-engine.md',
-      'database-lab/design/sql-compatibility.md',
-      'database-lab/design/benchmark-plan.md',
-    ]) {
-      writeText(root, file, designText);
-    }
-    writeText(root, 'database-lab/prototype/package.json', '{"scripts":{"bench":"node scripts/bench.js --dry-run"}}');
-    writeText(root, 'database-lab/prototype/README.md', 'Prototype with real modules and dry-run benchmark. MySQL parity remains unproven.');
-    const coreModules = writeDatabaseCoreModules(root);
-    writeText(
-      root,
-      'database-lab/prototype/scripts/bench.js',
-      [
-        "const { IndexManager } = require('../src/index-manager');",
-        "const { TransactionManager } = require('../src/transactions');",
-        'function dryRun() {',
-        '  const index = new IndexManager();',
-        '  const tx = new TransactionManager();',
-        "  index.insert('pk:1', { pageId: 1, slotIndex: 0 });",
-        '  return { status: "ok", summary: "dry run complete", metrics: { pagesWritten: 12, pagesRead: 12, writeDurationMs: 4, readDurationMs: 3, totalDurationMs: 12 }, indexReady: Boolean(index), txReady: Boolean(tx) };',
-        '}',
-        'module.exports = { dryRun };',
-      ].join('\n')
-    );
-    writeText(
-      root,
-      'database-lab/prototype/src/index-manager.js',
-      [
-        '/**',
-        ' * Persistence-backed leaf linking is not implemented here yet.',
-        ' * This comment should not cause a stub failure by itself.',
-        ' */',
-        'class IndexManager {',
-        '  constructor(){ this.rows = new Map(); }',
-        '  insert(key, payload){ this.rows.set(key, payload); return payload; }',
-        '  lookup(key){ return this.rows.get(key) ?? null; }',
-        '  rangeScan(prefix){ return Array.from(this.rows.entries()).filter(([key]) => key.startsWith(prefix)); }',
-        '  delete(key){ return this.rows.delete(key); }',
-        '}',
-        'module.exports = { IndexManager };',
-      ].join('\n')
-    );
-    writeText(
-      root,
-      'database-lab/prototype/src/transactions.js',
-      'class TransactionManager { constructor(){ this.nextId = 1; this.active = new Map(); } begin(){ const id = this.nextId++; this.active.set(id, []); return id; } commit(id){ const writes = this.active.get(id) ?? []; this.active.delete(id); return writes.length; } rollback(id){ this.active.delete(id); return true; } } module.exports = { TransactionManager };'
-    );
-    writeJson(root, 'quality/database-design.json', {
-      profile: 'database_near_mysql_design',
-      designFiles: [
-        'database-lab/design/README.md',
-        'database-lab/design/architecture.md',
-        'database-lab/design/storage-engine.md',
-        'database-lab/design/sql-compatibility.md',
-        'database-lab/design/benchmark-plan.md',
-      ],
-      prototypeFiles: [
-        'database-lab/prototype/package.json',
-        'database-lab/prototype/README.md',
-        'database-lab/prototype/scripts/bench.js',
-      ],
-      implementedModules: [
-        ...coreModules,
-        'database-lab/prototype/src/index-manager.js',
-        'database-lab/prototype/src/transactions.js',
-      ],
-      claimBoundaries: ['target profile only', 'not measured against MySQL'],
-    });
-
-    const result = evaluate(root, 'database_near_mysql_design', [makeSuccessfulBenchInvocation()]);
-    assert.equal(result.verdict, 'passed', JSON.stringify(result, null, 2));
-    assert.ok(!result.failedChecks.includes('stub_module:database-lab/prototype/src/index-manager.js'));
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('database_near_mysql_design aligns bench dependencies with real src modules and manifest truth', () => {
-  const root = createTempRoot();
-  const designText = [
-    'storage page segment layout',
-    'index btree hash strategy',
-    'transaction concurrency lock mvcc model',
-    'wal recovery checkpoint process',
-    'buffer cache policy',
-    'sql parser planner scope',
-    'benchmark latency throughput tps plan',
-    'current dry-run benchmark result remains unproven against real MySQL measurements',
-  ].join('\n');
-
-  try {
-    for (const file of [
-      'database-lab/design/README.md',
-      'database-lab/design/architecture.md',
-      'database-lab/design/storage-engine.md',
-      'database-lab/design/sql-compatibility.md',
-      'database-lab/design/benchmark-plan.md',
-    ]) {
-      writeText(root, file, designText);
-    }
-    writeText(root, 'database-lab/prototype/package.json', '{"scripts":{"bench":"node scripts/bench.js --dry-run"}}');
-    writeText(root, 'database-lab/prototype/README.md', 'Prototype with benchmark scaffold and unproven MySQL-nearness.');
-    writeText(
-      root,
-      'database-lab/prototype/scripts/bench.js',
-      [
-        "const { BufferPool } = require('../src/buffer-pool');",
-        "const { StorageEngine } = require('../src/storage-engine');",
-        'function dryRun() {',
-        '  const pool = new BufferPool();',
-        '  const engine = new StorageEngine(pool);',
-        "  return { status: 'ok', summary: 'dry run complete', metrics: { pagesWritten: 10, pagesRead: 10, writeDurationMs: 4, readDurationMs: 4, totalDurationMs: 12, latencyP95Ms: 3, throughputTps: 1200 }, engineReady: Boolean(engine) };",
-        '}',
-        'module.exports = { dryRun };',
-      ].join('\n')
-    );
-    writeText(
-      root,
-      'database-lab/prototype/src/storage-engine.js',
-      [
-        'class StorageEngine {',
-        '  constructor(bufferPool) {',
-        '    this.bufferPool = bufferPool;',
-        '    this.pages = new Map();',
-        '  }',
-        '  writePage(id, payload) {',
-        '    const page = { id, payload, committed: true, updatedAt: Date.now() };',
-        '    this.pages.set(id, page);',
-        '    return page;',
-        '  }',
-        '  readPage(id) {',
-        '    return this.pages.get(id) ?? null;',
-        '  }',
-        '}',
-        'module.exports = { StorageEngine };',
-      ].join('\n')
-    );
-    writeJson(root, 'quality/database-design.json', {
-      profile: 'database_near_mysql_design',
-      designFiles: [
-        'database-lab/design/README.md',
-        'database-lab/design/architecture.md',
-        'database-lab/design/storage-engine.md',
-        'database-lab/design/sql-compatibility.md',
-        'database-lab/design/benchmark-plan.md',
-      ],
-      prototypeFiles: [
-        'database-lab/prototype/package.json',
-        'database-lab/prototype/README.md',
-        'database-lab/prototype/scripts/bench.js',
-      ],
-      implementedModules: [
-        'database-lab/prototype/src/storage-engine.js',
-      ],
-      claimBoundaries: ['target profile only', 'not measured against MySQL'],
-    });
-
-    const missingDependency = evaluate(root, 'database_near_mysql_design');
-    assert.equal(missingDependency.verdict, 'failed');
-    assert.ok(missingDependency.failedChecks.includes('benchmark_dependency_missing:database-lab/prototype/src/buffer-pool.js'));
-
-    writeText(
-      root,
-      'database-lab/prototype/src/buffer-pool.js',
-      [
-        'class BufferPool {',
-        '  constructor() {',
-        '    this.frames = new Map();',
-        '  }',
-        '  pin(pageId, value) {',
-        '    this.frames.set(pageId, { pageId, value, pinned: true });',
-        '    return this.frames.get(pageId);',
-        '  }',
-        '  unpin(pageId) {',
-        '    const frame = this.frames.get(pageId);',
-        '    if (frame) frame.pinned = false;',
-        '    return frame ?? null;',
-        '  }',
-        '}',
-        'module.exports = { BufferPool };',
-      ].join('\n')
-    );
-
-    const untrackedDependency = evaluate(root, 'database_near_mysql_design');
-    assert.equal(untrackedDependency.verdict, 'failed');
-    assert.ok(untrackedDependency.failedChecks.includes('benchmark_dependency_untracked:database-lab/prototype/src/buffer-pool.js'));
-
-    const coreModules = writeDatabaseCoreModules(root);
-
-    writeJson(root, 'quality/database-design.json', {
-      profile: 'database_near_mysql_design',
-      designFiles: [
-        'database-lab/design/README.md',
-        'database-lab/design/architecture.md',
-        'database-lab/design/storage-engine.md',
-        'database-lab/design/sql-compatibility.md',
-        'database-lab/design/benchmark-plan.md',
-      ],
-      prototypeFiles: [
-        'database-lab/prototype/package.json',
-        'database-lab/prototype/README.md',
-        'database-lab/prototype/scripts/bench.js',
-      ],
-      implementedModules: [
-        ...coreModules,
-      ],
-      claimBoundaries: ['target profile only', 'not measured against MySQL'],
-    });
-
-    const passed = evaluate(root, 'database_near_mysql_design', [makeSuccessfulBenchInvocation()]);
-    assert.equal(passed.verdict, 'passed', JSON.stringify(passed, null, 2));
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('database_near_mysql_design rejects benchmark scaffolds that never call real prototype modules', () => {
-  const root = createTempRoot();
-  const designText = [
-    'storage page segment layout',
-    'index btree hash strategy',
-    'transaction concurrency lock mvcc model',
-    'wal recovery checkpoint process',
-    'buffer cache policy',
-    'sql parser planner scope',
-    'benchmark latency throughput tps plan',
-    'current dry-run benchmark result remains unproven against real MySQL measurements',
-  ].join('\n');
-
-  try {
-    for (const file of [
-      'database-lab/design/README.md',
-      'database-lab/design/architecture.md',
-      'database-lab/design/storage-engine.md',
-      'database-lab/design/sql-compatibility.md',
-      'database-lab/design/benchmark-plan.md',
-    ]) {
-      writeText(root, file, designText);
-    }
-    writeText(root, 'database-lab/prototype/package.json', '{"scripts":{"bench":"node scripts/bench.js --dry-run"}}');
-    writeText(root, 'database-lab/prototype/README.md', 'Prototype with two runnable modules but a placeholder benchmark harness.');
-    writeText(
-      root,
-      'database-lab/prototype/scripts/bench.js',
-      [
-        'class PlaceholderStore {',
-        '  constructor() {',
-        '    this.rows = new Map();',
-        '  }',
-        '}',
-        "function dryRun() { return { status: 'ok', summary: 'placeholder only', metrics: { pagesWritten: 0, pagesRead: 0, writeDurationMs: 0, readDurationMs: 0, totalDurationMs: 12 } }; }",
-        'module.exports = { dryRun, PlaceholderStore };',
-      ].join('\n')
-    );
-    writeText(root, 'database-lab/prototype/src/storage.js', 'class PageStore { constructor(){ this.rows = new Map(); } writePage(id, row){ this.rows.set(id, row); } readPage(id){ return this.rows.get(id) ?? null; } } module.exports = { PageStore };');
-    writeText(root, 'database-lab/prototype/src/transactions.js', 'class TransactionManager { constructor(){ this.active = new Map(); this.nextId = 1; } begin(){ const id = this.nextId++; this.active.set(id, []); return id; } commit(id){ const writes = this.active.get(id) ?? []; this.active.delete(id); return writes.length; } } module.exports = { TransactionManager };');
-    const coreModules = writeDatabaseCoreModules(root);
-    writeJson(root, 'quality/database-design.json', {
-      profile: 'database_near_mysql_design',
-      designFiles: [
-        'database-lab/design/README.md',
-        'database-lab/design/architecture.md',
-        'database-lab/design/storage-engine.md',
-        'database-lab/design/sql-compatibility.md',
-        'database-lab/design/benchmark-plan.md',
-      ],
-      prototypeFiles: [
-        'database-lab/prototype/package.json',
-        'database-lab/prototype/README.md',
-        'database-lab/prototype/scripts/bench.js',
-      ],
-      implementedModules: [
-        ...coreModules,
-        'database-lab/prototype/src/storage.js',
-        'database-lab/prototype/src/transactions.js',
-      ],
-      claimBoundaries: ['target profile only', 'not measured against MySQL'],
-    });
-
-    const failed = evaluate(root, 'database_near_mysql_design', [makeSuccessfulBenchInvocation()]);
-    assert.equal(failed.verdict, 'failed');
-    assert.ok(failed.failedChecks.includes('benchmark_not_wired_to_prototype_modules'));
-    assert.ok(failed.failedChecks.includes('benchmark_self_check_not_grounded'));
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('database_near_mysql_design treats invented manifest module paths as manifest drift, not missing required scaffold files', () => {
-  const root = createTempRoot();
-  const designText = [
-    'storage page segment layout',
-    'index btree hash strategy',
-    'transaction concurrency lock mvcc model',
-    'wal recovery checkpoint process',
-    'buffer cache policy',
-    'sql parser planner scope',
-    'benchmark latency throughput tps plan',
-    'current dry-run benchmark result remains unproven against real MySQL measurements',
-  ].join('\n');
-
-  try {
-    for (const file of [
-      'database-lab/design/README.md',
-      'database-lab/design/architecture.md',
-      'database-lab/design/storage-engine.md',
-      'database-lab/design/sql-compatibility.md',
-      'database-lab/design/benchmark-plan.md',
-    ]) {
-      writeText(root, file, designText);
-    }
-    writeText(root, 'database-lab/prototype/package.json', '{"scripts":{"bench":"node scripts/bench.js --dry-run"}}');
-    writeText(root, 'database-lab/prototype/README.md', 'Prototype with real modules and dry-run benchmark.');
-    writeText(
-      root,
-      'database-lab/prototype/scripts/bench.js',
-      [
-        "const BufferPool = require('../src/buffer-pool');",
-        "const StorageEngine = require('../src/storage-engine');",
-        'function dryRun() {',
-        '  const storage = new StorageEngine();',
-        '  const bufferPool = new BufferPool();',
-        '  bufferPool.putPage(1, storage.insertRow ? storage : { id: 1 });',
-        '  return { status: "ok", summary: "dry run complete", metrics: { pagesWritten: 1, pagesRead: 1, writeDurationMs: 1, readDurationMs: 1, totalDurationMs: 2 } };',
-        '}',
-        'module.exports = { dryRun };',
-      ].join('\n'),
-    );
-    writeText(root, 'database-lab/prototype/src/buffer-pool.js', 'class BufferPool { constructor(){ this.pages = new Map(); } putPage(id, payload){ this.pages.set(id, payload); return payload; } getPage(id){ return this.pages.get(id) ?? null; } } module.exports = BufferPool;');
-    writeText(root, 'database-lab/prototype/src/storage-engine.js', 'class StorageEngine { constructor(){ this.rows = new Map(); } insertRow(id, payload){ this.rows.set(id, payload); return payload; } updateRow(id, payload){ this.rows.set(id, payload); return payload; } close(){ return true; } } module.exports = StorageEngine;');
-    writeJson(root, 'quality/database-design.json', {
-      profile: 'database_near_mysql_design',
-      designFiles: [
-        'database-lab/design/README.md',
-        'database-lab/design/architecture.md',
-        'database-lab/design/storage-engine.md',
-        'database-lab/design/sql-compatibility.md',
-        'database-lab/design/benchmark-plan.md',
-      ],
-      prototypeFiles: [
-        'database-lab/prototype/package.json',
-        'database-lab/prototype/README.md',
-        'database-lab/prototype/scripts/bench.js',
-        'database-lab/prototype/src/engine.js',
-      ],
-      implementedModules: [
-        'database-lab/prototype/src/storage-engine.js',
-        'database-lab/prototype/src/buffer-pool.js',
-        'database-lab/prototype/src/engine.js',
-      ],
-      claimBoundaries: ['target profile only', 'not measured against MySQL'],
-    });
-
-    const failed = evaluate(root, 'database_near_mysql_design', [makeSuccessfulBenchInvocation()]);
-    assert.equal(failed.verdict, 'failed');
-    assert.ok(failed.failedChecks.includes('manifest_references_missing_file:database-lab/prototype/src/engine.js'));
-    assert.ok(failed.failedChecks.includes('manifest_references_missing_implemented_module:database-lab/prototype/src/engine.js'));
-    assert.ok(!failed.failedChecks.includes('missing_required_file:database-lab/prototype/src/engine.js'));
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('database_near_mysql_design requires successful benchmark self-check evidence', () => {
-  const root = createTempRoot();
-  const designText = [
-    'storage page segment layout',
-    'index btree hash strategy',
-    'transaction concurrency lock mvcc model',
-    'wal recovery checkpoint process',
-    'buffer cache policy',
-    'sql parser planner scope',
-    'benchmark latency throughput tps plan',
-    'current dry-run benchmark result remains unproven against real MySQL measurements',
-  ].join('\n');
-
-  try {
-    for (const file of [
-      'database-lab/design/README.md',
-      'database-lab/design/architecture.md',
-      'database-lab/design/storage-engine.md',
-      'database-lab/design/sql-compatibility.md',
-      'database-lab/design/benchmark-plan.md',
-    ]) {
-      writeText(root, file, designText);
-    }
-    writeText(root, 'database-lab/prototype/package.json', '{"scripts":{"bench":"node scripts/bench.js --dry-run"}}');
-    writeText(root, 'database-lab/prototype/README.md', 'Prototype with real modules and dry-run benchmark.');
-    writeText(
-      root,
-      'database-lab/prototype/scripts/bench.js',
-      [
-        "const { PageStore } = require('../src/storage');",
-        "const { TransactionManager } = require('../src/transactions');",
-        'function dryRun() {',
-        '  const store = new PageStore();',
-        '  const tx = new TransactionManager();',
-        "  return { status: 'ok', summary: 'dry run complete', metrics: { pagesWritten: 12, pagesRead: 12, writeDurationMs: 4, readDurationMs: 3, totalDurationMs: 12, latencyP95Ms: 3, throughputTps: 1200 }, storeReady: Boolean(store), txReady: Boolean(tx) };",
-        '}',
-        'module.exports = { dryRun };',
-      ].join('\n')
-    );
-    writeText(root, 'database-lab/prototype/src/storage.js', 'class PageStore { constructor(){ this.rows = new Map(); } writePage(id, row){ this.rows.set(id, row); } readPage(id){ return this.rows.get(id) ?? null; } } module.exports = { PageStore };');
-    writeText(root, 'database-lab/prototype/src/transactions.js', 'class TransactionManager { constructor(){ this.active = new Map(); this.nextId = 1; } begin(){ const id = this.nextId++; this.active.set(id, []); return id; } commit(id){ const writes = this.active.get(id) ?? []; this.active.delete(id); return writes.length; } } module.exports = { TransactionManager };');
-    const coreModules = writeDatabaseCoreModules(root);
-    writeJson(root, 'quality/database-design.json', {
-      profile: 'database_near_mysql_design',
-      designFiles: [
-        'database-lab/design/README.md',
-        'database-lab/design/architecture.md',
-        'database-lab/design/storage-engine.md',
-        'database-lab/design/sql-compatibility.md',
-        'database-lab/design/benchmark-plan.md',
-      ],
-      prototypeFiles: [
-        'database-lab/prototype/package.json',
-        'database-lab/prototype/README.md',
-        'database-lab/prototype/scripts/bench.js',
-      ],
-      implementedModules: [
-        ...coreModules,
-        'database-lab/prototype/src/storage.js',
-        'database-lab/prototype/src/transactions.js',
-      ],
-      claimBoundaries: ['target profile only', 'not measured against MySQL'],
-    });
-
-    const missingEvidence = evaluate(root, 'database_near_mysql_design');
-    assert.equal(missingEvidence.verdict, 'failed');
-    assert.ok(missingEvidence.failedChecks.includes('missing_benchmark_self_check'));
-
-    const passed = evaluate(root, 'database_near_mysql_design', [makeSuccessfulBenchInvocation()]);
-    assert.equal(passed.verdict, 'passed', JSON.stringify(passed, null, 2));
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('database_near_mysql_design rejects stale benchmark evidence after later scaffold writes', () => {
-  const root = createTempRoot();
-  const designText = [
-    'storage page segment layout',
-    'index btree hash strategy',
-    'transaction concurrency lock mvcc model',
-    'wal recovery checkpoint process',
-    'buffer cache policy',
-    'sql parser planner scope',
-    'benchmark latency throughput tps plan',
-    'current dry-run benchmark result remains unproven against real MySQL measurements',
-  ].join('\n');
-
-  try {
-    for (const file of [
-      'database-lab/design/README.md',
-      'database-lab/design/architecture.md',
-      'database-lab/design/storage-engine.md',
-      'database-lab/design/sql-compatibility.md',
-      'database-lab/design/benchmark-plan.md',
-    ]) {
-      writeText(root, file, designText);
-    }
-    writeText(root, 'database-lab/prototype/package.json', '{"scripts":{"bench":"node scripts/bench.js --dry-run"}}');
-    writeText(root, 'database-lab/prototype/README.md', 'Prototype with real modules and dry-run benchmark.');
-    writeText(
-      root,
-      'database-lab/prototype/scripts/bench.js',
-      [
-        "const { PageStore } = require('../src/storage');",
-        "const { TransactionManager } = require('../src/transactions');",
-        'function dryRun() {',
-        '  const store = new PageStore();',
-        '  const tx = new TransactionManager();',
-        "  return { status: 'ok', summary: 'dry run complete', metrics: { pagesWritten: 12, pagesRead: 12, writeDurationMs: 4, readDurationMs: 3, totalDurationMs: 12, latencyP95Ms: 3, throughputTps: 1200 }, storeReady: Boolean(store), txReady: Boolean(tx) };",
-        '}',
-        'module.exports = { dryRun };',
-      ].join('\n')
-    );
-    writeText(root, 'database-lab/prototype/src/storage.js', 'class PageStore { constructor(){ this.rows = new Map(); } writePage(id, row){ this.rows.set(id, row); } readPage(id){ return this.rows.get(id) ?? null; } } module.exports = { PageStore };');
-    writeText(root, 'database-lab/prototype/src/transactions.js', 'class TransactionManager { constructor(){ this.active = new Map(); this.nextId = 1; } begin(){ const id = this.nextId++; this.active.set(id, []); return id; } commit(id){ const writes = this.active.get(id) ?? []; this.active.delete(id); return writes.length; } } module.exports = { TransactionManager };');
-    writeJson(root, 'quality/database-design.json', {
-      profile: 'database_near_mysql_design',
-      designFiles: [
-        'database-lab/design/README.md',
-        'database-lab/design/architecture.md',
-        'database-lab/design/storage-engine.md',
-        'database-lab/design/sql-compatibility.md',
-        'database-lab/design/benchmark-plan.md',
-      ],
-      prototypeFiles: [
-        'database-lab/prototype/package.json',
-        'database-lab/prototype/README.md',
-        'database-lab/prototype/scripts/bench.js',
-      ],
-      implementedModules: [
-        'database-lab/prototype/src/storage.js',
-        'database-lab/prototype/src/transactions.js',
-      ],
-      claimBoundaries: ['target profile only', 'not measured against MySQL'],
-    });
-
-    const result = evaluate(root, 'database_near_mysql_design', [
-      makeSuccessfulBenchInvocation('tool-bench-success'),
-      makeSuccessfulWriteInvocation('database-lab/prototype/scripts/bench.js'),
-    ]);
-    assert.equal(result.verdict, 'failed');
-    assert.ok(result.failedChecks.includes('benchmark_self_check_stale'));
-    assert.ok(result.requiredNextEvidence.some((entry) => entry.includes('rerun a successful dry-run benchmark command')));
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('system_audit reports invalid quality json explicitly instead of collapsing to missing evidence', () => {
-  const root = createTempRoot();
-  try {
-    writeText(root, 'quality/system-audit.json', '{"profile":"system_audit","facts":[{"name":"free_memory","sourceRegex":"FreePhysicalMemory\\s*:\\s*(\\d+)"}]}');
-
-    const result = evaluate(root, 'system_audit', []);
-    assert.equal(result.verdict, 'failed');
-    assert.ok(result.failedChecks.includes('invalid_system_audit_json'));
-    assert.ok(result.requiredNextEvidence.some((entry) => entry.includes('quality/system-audit.json')));
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('database_near_mysql_verify requires real prototype src modules and valid benchmark json', () => {
-  const root = createTempRoot();
-  const designText = [
-    'storage page segment layout',
-    'index btree hash strategy',
-    'transaction concurrency lock mvcc model',
-    'wal recovery checkpoint process',
-    'buffer cache policy',
-    'sql parser planner scope',
-    'benchmark latency throughput tps plan',
-    'current dry-run benchmark result remains unproven against real MySQL measurements',
-  ].join('\n');
-
-  try {
-    for (const file of [
-      'database-lab/design/README.md',
-      'database-lab/design/architecture.md',
-      'database-lab/design/storage-engine.md',
-      'database-lab/design/sql-compatibility.md',
-      'database-lab/design/benchmark-plan.md',
-    ]) {
-      writeText(root, file, designText);
-    }
-    writeText(root, 'database-lab/prototype/package.json', '{"scripts":{"bench":"node scripts/bench.js --dry-run"}}');
-    writeText(root, 'database-lab/prototype/README.md', 'Runnable prototype with unproven MySQL-nearness.');
-    writeText(
-      root,
-      'database-lab/prototype/scripts/bench.js',
-      [
-        "const { PageStore } = require('../src/storage');",
-        "const { TransactionManager } = require('../src/transactions');",
-        'function dryRun() {',
-        '  const store = new PageStore();',
-        '  const tx = new TransactionManager();',
-        "  return { status: 'ok', summary: 'dry run complete', metrics: { pagesWritten: 12, pagesRead: 12, writeDurationMs: 4, readDurationMs: 3, totalDurationMs: 12, latencyP95Ms: 3, throughputTps: 1200 }, storeReady: Boolean(store), txReady: Boolean(tx) };",
-        '}',
-        'module.exports = { dryRun };',
-      ].join('\n')
-    );
-    writeJson(root, 'quality/database-design.json', {
-      profile: 'database_near_mysql_design',
-      designFiles: [
-        'database-lab/design/README.md',
-        'database-lab/design/architecture.md',
-        'database-lab/design/storage-engine.md',
-        'database-lab/design/sql-compatibility.md',
-        'database-lab/design/benchmark-plan.md',
-      ],
-      prototypeFiles: [
-        'database-lab/prototype/package.json',
-        'database-lab/prototype/README.md',
-        'database-lab/prototype/scripts/bench.js',
-      ],
-      implementedModules: [
-        'database-lab/prototype/src/storage.js',
-        'database-lab/prototype/src/transactions.js',
-      ],
-      claimBoundaries: ['target profile only', 'not measured against MySQL'],
-    });
-    writeJson(root, 'quality/database-benchmark-result.json', {
-      profile: 'database_near_mysql_verify',
-      benchmarkCommand: 'npm run bench -- --dry-run',
-      sourceInvocationId: 'tool-1',
-      resultFile: 'database-lab/prototype/results/bench-dry-run.json',
-      updatedDocs: ['database-lab/design/benchmark-plan.md'],
-      implementedModules: ['database-lab/prototype/src/storage.js', 'database-lab/prototype/src/transactions.js'],
-      verificationSummary: 'Dry-run benchmark completed; MySQL-nearness remains unproven.',
-    });
-    writeJson(root, 'database-lab/prototype/results/bench-dry-run.json', {
-      status: 'ok',
-      summary: 'dry run complete',
-    });
-
-    const failed = evaluate(root, 'database_near_mysql_verify', [makeSuccessfulBenchInvocation('tool-1')]);
-    assert.equal(failed.verdict, 'failed');
-    assert.ok(failed.failedChecks.includes('missing_prototype_src_modules'));
-
-    const moduleBody = 'class PageStore { constructor(){ this.pages = new Map(); } writePage(id, row){ this.pages.set(id, { row, committed: true }); } readPage(id){ return this.pages.get(id) ?? null; } scan(){ return Array.from(this.pages.values()); } } module.exports = { PageStore };';
-    writeText(root, 'database-lab/prototype/src/storage.js', moduleBody);
-    writeText(root, 'database-lab/prototype/src/transactions.js', 'class TransactionManager { constructor(){ this.nextId = 1; this.active = new Map(); } begin(){ const id = this.nextId++; this.active.set(id, { writes: [] }); return id; } record(id, write){ this.active.get(id).writes.push(write); } commit(id){ const txn = this.active.get(id); this.active.delete(id); return txn.writes.length; } } module.exports = { TransactionManager };');
-    const coreModules = writeDatabaseCoreModules(root);
-    writeJson(root, 'quality/database-design.json', {
-      profile: 'database_near_mysql_design',
-      designFiles: [
-        'database-lab/design/README.md',
-        'database-lab/design/architecture.md',
-        'database-lab/design/storage-engine.md',
-        'database-lab/design/sql-compatibility.md',
-        'database-lab/design/benchmark-plan.md',
-      ],
-      prototypeFiles: [
-        'database-lab/prototype/package.json',
-        'database-lab/prototype/README.md',
-        'database-lab/prototype/scripts/bench.js',
-      ],
-      implementedModules: [
-        ...coreModules,
-        'database-lab/prototype/src/storage.js',
-        'database-lab/prototype/src/transactions.js',
-      ],
-      claimBoundaries: ['target profile only', 'not measured against MySQL'],
-    });
-    writeJson(root, 'quality/database-benchmark-result.json', {
-      profile: 'database_near_mysql_verify',
-      benchmarkCommand: 'npm run bench -- --dry-run',
-      sourceInvocationId: 'tool-1',
-      resultFile: 'database-lab/prototype/results/bench-dry-run.json',
-      updatedDocs: ['database-lab/design/benchmark-plan.md'],
-      implementedModules: [
-        ...coreModules,
-        'database-lab/prototype/src/storage.js',
-        'database-lab/prototype/src/transactions.js',
-      ],
-      verificationSummary: 'Dry-run benchmark completed; MySQL-nearness remains unproven.',
-    });
-
-    const passed = evaluate(root, 'database_near_mysql_verify', [makeSuccessfulBenchInvocation('tool-1')]);
-    assert.equal(passed.verdict, 'passed', JSON.stringify(passed, null, 2));
+    assert.ok(passed.passedChecks.includes('source_regex_full_match_grounded:chrome_responding'));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

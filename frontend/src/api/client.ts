@@ -15,6 +15,7 @@ import type {
   RuntimeEvent,
   SkillCatalogEntry,
   SubmitTaskPayload,
+  TaskActionOptions,
   TaskActionResponse,
   TaskCommandPayload,
   TaskDebugResponse,
@@ -308,10 +309,18 @@ class ApiClient {
     });
   }
 
-  async startTask(taskId: string, userMessage?: string): Promise<TaskActionResponse> {
+  private taskActionBody(userMessage?: string, options?: TaskActionOptions): string {
+    return JSON.stringify({
+      userMessage,
+      autoRun: options?.autoRun,
+      maxTurns: options?.maxTurns,
+    });
+  }
+
+  async startTask(taskId: string, userMessage?: string, options?: TaskActionOptions): Promise<TaskActionResponse> {
     return this.request<TaskActionResponse>(`/tasks/${taskId}/start`, {
       method: 'POST',
-      body: JSON.stringify({ userMessage }),
+      body: this.taskActionBody(userMessage, options),
     });
   }
 
@@ -322,24 +331,24 @@ class ApiClient {
     });
   }
 
-  async resumeTask(taskId: string, userMessage?: string): Promise<TaskActionResponse> {
+  async resumeTask(taskId: string, userMessage?: string, options?: TaskActionOptions): Promise<TaskActionResponse> {
     return this.request<TaskActionResponse>(`/tasks/${taskId}/resume`, {
       method: 'POST',
-      body: JSON.stringify({ userMessage }),
+      body: this.taskActionBody(userMessage, options),
     });
   }
 
-  async restartTask(taskId: string, userMessage?: string): Promise<TaskActionResponse> {
+  async restartTask(taskId: string, userMessage?: string, options?: TaskActionOptions): Promise<TaskActionResponse> {
     return this.request<TaskActionResponse>(`/tasks/${taskId}/restart`, {
       method: 'POST',
-      body: JSON.stringify({ userMessage }),
+      body: this.taskActionBody(userMessage, options),
     });
   }
 
-  async continueTask(taskId: string, userMessage?: string): Promise<TaskActionResponse> {
+  async continueTask(taskId: string, userMessage?: string, options?: TaskActionOptions): Promise<TaskActionResponse> {
     return this.request<TaskActionResponse>(`/tasks/${taskId}/continue`, {
       method: 'POST',
-      body: JSON.stringify({ userMessage }),
+      body: this.taskActionBody(userMessage, options),
     });
   }
 

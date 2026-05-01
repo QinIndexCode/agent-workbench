@@ -27,8 +27,19 @@ const SCENARIO_PACKS: ScenarioPackSummary[] = [
     label: 'Web/App Creation',
     focus: 'External-path delivery, browser-verifiable UI, build or DOM quality checks.',
     qualityProfileId: 'web_experience',
+    qualityGateId: 'web_experience',
     artifactAudit: 'Checks generated files, no placeholder content, visible interaction, and build or browser smoke evidence.',
+    surfaceChecks: ['web-inspector', 'human-cli-diagnostics', 'agent-cli-ndjson', 'browser-preview'],
     cleanupHints: ['workspace', 'external-delivery-path'],
+    modelPolicy: {
+      defaultModelClass: 'fast',
+      reason: 'Web creation is artifact-heavy but usually does not require the strong long-context model.'
+    },
+    timeoutPolicy: {
+      maxTurns: 10,
+      maxIdleCorrections: 2,
+      maxRuntimeMs: 20 * 60 * 1000
+    },
     status: 'ready'
   },
   {
@@ -36,8 +47,19 @@ const SCENARIO_PACKS: ScenarioPackSummary[] = [
     label: 'Document Normalize',
     focus: 'Batch rename, hierarchy cleanup, source-preserving trace, and cross-reference repair.',
     qualityProfileId: 'docs_normalize',
+    qualityGateId: 'docs_normalize',
     artifactAudit: 'Checks source-to-output trace, preserved phrases, consistent names, and non-template output.',
+    surfaceChecks: ['web-inspector', 'human-cli-diagnostics', 'agent-cli-ndjson'],
     cleanupHints: ['workspace/incoming', 'workspace/normalized'],
+    modelPolicy: {
+      defaultModelClass: 'fast',
+      reason: 'The quality gate depends on source grounding, not high-cost reasoning by default.'
+    },
+    timeoutPolicy: {
+      maxTurns: 8,
+      maxIdleCorrections: 2,
+      maxRuntimeMs: 15 * 60 * 1000
+    },
     status: 'ready'
   },
   {
@@ -45,8 +67,19 @@ const SCENARIO_PACKS: ScenarioPackSummary[] = [
     label: 'Document Synthesis',
     focus: 'Handbook, summary, index, and decision-log synthesis with claim-level sources.',
     qualityProfileId: 'docs_synthesize',
+    qualityGateId: 'docs_synthesize',
     artifactAudit: 'Checks claim/source trace, no unsupported generic claims, and coherent handbook structure.',
+    surfaceChecks: ['web-inspector', 'human-cli-diagnostics', 'agent-cli-ndjson'],
     cleanupHints: ['workspace/source', 'workspace/handbook'],
+    modelPolicy: {
+      defaultModelClass: 'fast',
+      reason: 'The pack tests claim-level grounding before it tests model depth.'
+    },
+    timeoutPolicy: {
+      maxTurns: 9,
+      maxIdleCorrections: 2,
+      maxRuntimeMs: 18 * 60 * 1000
+    },
     status: 'ready'
   },
   {
@@ -54,8 +87,19 @@ const SCENARIO_PACKS: ScenarioPackSummary[] = [
     label: 'System Audit',
     focus: 'Host observation, fact/source binding, unit normalization, and actionable recommendations.',
     qualityProfileId: 'system_audit',
+    qualityGateId: 'system_audit',
     artifactAudit: 'Checks source invocation ids, reported values, units, and recommendation grounding.',
+    surfaceChecks: ['web-inspector', 'human-cli-diagnostics', 'agent-cli-ndjson', 'host-snapshot-audit'],
     cleanupHints: ['workspace/reports', 'workspace/quality'],
+    modelPolicy: {
+      defaultModelClass: 'fast',
+      reason: 'Correct host observation and evidence binding matter more than long-context generation.'
+    },
+    timeoutPolicy: {
+      maxTurns: 8,
+      maxIdleCorrections: 2,
+      maxRuntimeMs: 15 * 60 * 1000
+    },
     status: 'ready'
   },
   {
@@ -63,17 +107,39 @@ const SCENARIO_PACKS: ScenarioPackSummary[] = [
     label: 'Codebase Work',
     focus: 'Repo-local implementation, bug fix, verification command evidence, and follow-up diagnosis.',
     qualityProfileId: null,
+    qualityGateId: null,
     artifactAudit: 'Checks changed files, command results, tool evidence, and failure recovery traces.',
+    surfaceChecks: ['web-inspector', 'human-cli-diagnostics', 'agent-cli-ndjson', 'command-evidence'],
     cleanupHints: ['workspace', 'repo-diff'],
+    modelPolicy: {
+      defaultModelClass: 'provider-default',
+      reason: 'Codebase tasks should follow the selected provider unless a scenario pack explicitly escalates.'
+    },
+    timeoutPolicy: {
+      maxTurns: 12,
+      maxIdleCorrections: 3,
+      maxRuntimeMs: 25 * 60 * 1000
+    },
     status: 'ready'
   },
   {
     id: 'database-design',
     label: 'Database Design',
     focus: 'High-complexity system design, runnable prototype scaffold, benchmark plan, and dry-run evidence.',
-    qualityProfileId: 'database_near_mysql_design',
+    qualityProfileId: null,
+    qualityGateId: 'database_near_mysql_design',
     artifactAudit: 'Checks design coverage, prototype modules, manifest, benchmark script, and dry-run result.',
+    surfaceChecks: ['web-inspector', 'human-cli-diagnostics', 'agent-cli-ndjson', 'benchmark-artifact-audit'],
     cleanupHints: ['workspace/database-lab'],
+    modelPolicy: {
+      defaultModelClass: 'strong',
+      reason: 'Database design intentionally exercises long-context architecture and prototype repair.'
+    },
+    timeoutPolicy: {
+      maxTurns: 18,
+      maxIdleCorrections: 3,
+      maxRuntimeMs: 45 * 60 * 1000
+    },
     status: 'ready'
   }
 ];
@@ -125,11 +191,40 @@ function failureTaxonomyFor(toolName: string): string[] {
   }
 }
 
+function healthCheckFor(tool: AgentToolDefinition, executorRegistered: boolean): ToolCapabilityEntry['healthCheck'] {
+  const toolName = normalizeToolName(tool);
+  const checks = [
+    'input_schema_registered',
+    'executor_registered',
+    'evidence_shape_declared',
+    'failure_taxonomy_declared'
+  ];
+  const diagnostics: string[] = [];
+  if (tool.inputSchema.length === 0) {
+    diagnostics.push('input_schema_empty');
+  }
+  if (!executorRegistered) {
+    diagnostics.push('executor_missing');
+  }
+  if (!failureTaxonomyFor(toolName).length) {
+    diagnostics.push('failure_taxonomy_empty');
+  }
+  if (!evidenceShapeFor(toolName)) {
+    diagnostics.push('evidence_shape_missing');
+  }
+  return {
+    status: diagnostics.length === 0 ? 'ready' : executorRegistered ? 'partial' : 'blocked',
+    checks,
+    diagnostics
+  };
+}
+
 function buildToolCapabilityEntries(foundation: BackendNewFoundation): ToolCapabilityEntry[] {
   return foundation.extensions.snapshot().tools
     .map((tool) => {
       const toolName = normalizeToolName(tool);
       const capability = foundation.toolExecutors.resolveCapability(tool);
+      const executorRegistered = Boolean(capability);
       return {
         id: tool.id,
         name: tool.name,
@@ -141,7 +236,7 @@ function buildToolCapabilityEntries(foundation: BackendNewFoundation): ToolCapab
         evidenceShape: evidenceShapeFor(toolName),
         failureTaxonomy: failureTaxonomyFor(toolName),
         acceptanceEvidence: ACCEPTANCE_TOOL_NAMES.has(toolName),
-        executorRegistered: Boolean(capability),
+        executorRegistered,
         capability: capability
           ? {
             supportsApprovalResume: capability.supportsApprovalResume,
@@ -151,7 +246,8 @@ function buildToolCapabilityEntries(foundation: BackendNewFoundation): ToolCapab
           }
           : null,
         readiness: capability ? 'ready' as const : 'partial' as const,
-        visibleByDefault: VISIBLE_TOOL_NAMES.has(toolName)
+        visibleByDefault: VISIBLE_TOOL_NAMES.has(toolName),
+        healthCheck: healthCheckFor(tool, executorRegistered)
       };
     })
     .sort((left, right) => left.name.localeCompare(right.name));
@@ -190,7 +286,18 @@ function buildExperienceHealth(proposals: ImprovementProposal[]): EcosystemSumma
     conflicted: approvedExperienceProposals.filter((proposal) => proposal.experienceProposal?.validationStatus === 'conflicted').length,
     selectedReusableTaskIds: [...successfulReuseTaskIds].sort(),
     failedReuseTaskIds: [...failedReuseTaskIds].sort(),
-    lastValidatedAt
+    lastValidatedAt,
+    approvedDetails: approvedExperienceProposals.map((proposal) => ({
+      proposalId: proposal.proposalId,
+      title: proposal.experienceProposal?.title ?? proposal.title,
+      patternKey: proposal.patternKey,
+      materializedPath: proposal.experienceProposal?.materializedPath ?? null,
+      validationStatus: proposal.experienceProposal?.validationStatus ?? 'monitoring',
+      successfulReuseTaskIds: [...(proposal.experienceProposal?.successfulReuseTaskIds ?? [])],
+      failedReuseTaskIds: [...(proposal.experienceProposal?.failedReuseTaskIds ?? [])],
+      limitations: [...(proposal.experienceProposal?.limitations ?? [])],
+      confidence: proposal.experienceProposal?.confidence ?? proposal.qualityScore
+    })).sort((left, right) => left.title.localeCompare(right.title))
   };
 }
 

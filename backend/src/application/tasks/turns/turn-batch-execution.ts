@@ -38,7 +38,8 @@ export class TurnBatchExecution {
       toolCallFormat: params.toolCallFormat,
       allowedToolIdsByUnitId: params.allowedToolIdsByUnitId,
       plannedBatches: params.plannedToolBatches,
-      parsedToolCalls: params.parsed.toolCalls
+      parsedToolCalls: params.parsed.toolCalls,
+      parseWarnings: params.parsed.warnings
     });
   }
 }

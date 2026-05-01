@@ -30,7 +30,7 @@ function createOpenAiCompatiblePolicy(vendorLabel = 'OpenAI-compatible'): Provid
     toolCallFormat: 'json',
     guidanceLines: [
       'Return explicit output first. If tool actions are needed, emit JSON tool call objects next, then end with one tracker JSON block.',
-      'Use only canonical JSON tool names such as read_file, write_file, create_folder, list_files, search_files, run_command, and delegate_subtask. Do not use XML tool wrappers.'
+      'Use only canonical JSON tool names such as read_file, inspect_file, write_file, create_folder, list_files, search_files, run_command, and delegate_subtask. Do not use XML tool wrappers.'
     ]
   });
 }

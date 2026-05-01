@@ -26,6 +26,8 @@ import {
 import type { ToolInvocationRecord } from '../../foundation/repository/types';
 import { shouldMarkInvocationAsVerification } from './tools/tool-verification';
 import { evaluateTaskQuality } from '../../domain/quality/task-quality';
+import { parseTurn } from '../../domain/parser/unit-output-parser';
+import { validateExplicitOutput } from '../../domain/validation/validate-explicit-output';
 
 const UNIT_END_EVENT_TYPES = new Set([
   'TURN_ANALYZED',
@@ -1402,6 +1404,25 @@ function extractOutputContractKeys(outputContract?: string | null): string[] {
   return parsed ? Object.keys(parsed) : [];
 }
 
+function findLatestExplicitOutputEnvelope(task: TaskQueryResponse, unitId: string | null) {
+  if (!unitId) {
+    return null;
+  }
+  const assistantMessages = task.conversations
+    .filter((message) => message.role === 'assistant' && typeof message.content === 'string')
+    .reverse();
+  for (const message of assistantMessages) {
+    const parsed = parseTurn(message.content);
+    const output = [...parsed.explicitOutputs]
+      .reverse()
+      .find((entry) => entry.unitId === unitId && isRecord(entry.parsedJson));
+    if (output) {
+      return output;
+    }
+  }
+  return null;
+}
+
 function getAcceptanceUnit(task: TaskQueryResponse): {
   unitId: string | null;
   profileId: TaskExecutionSummary['acceptance']['deterministic']['profileId'];
@@ -1486,11 +1507,43 @@ function isVerificationTool(invocation: Pick<ToolInvocationRecord, 'toolId' | 'm
   });
 }
 
+function isFailedInspectionVerificationTool(invocation: Pick<ToolInvocationRecord, 'toolId' | 'status'>): boolean {
+  if (invocation.status !== 'FAILED') {
+    return false;
+  }
+  const normalized = invocation.toolId.trim().toLowerCase().replace(/-/g, '_');
+  return normalized === 'read_file'
+    || normalized === 'inspect_file'
+    || normalized === 'search_files'
+    || normalized === 'list_files';
+}
+
+function isAcknowledgedFailedInspectionEvidence(
+  invocation: Pick<ToolInvocationRecord, 'toolId' | 'status' | 'arguments' | 'result'>,
+  outputText: string
+): boolean {
+  if (!isFailedInspectionVerificationTool(invocation)) {
+    return false;
+  }
+  const normalizedOutput = outputText.toLowerCase();
+  if (!/\b(missing|not found|does not exist|enoent|absent|unavailable)\b/i.test(outputText)) {
+    return false;
+  }
+  const evidencePaths = collectInvocationEvidencePaths(invocation)
+    .map((entry) => entry.toLowerCase())
+    .filter(Boolean);
+  return evidencePaths.length === 0 || evidencePaths.some((entry) => normalizedOutput.includes(entry));
+}
+
 function isBlockingVerificationFailure(
   invocation: Pick<ToolInvocationRecord, 'toolId' | 'metadata' | 'arguments' | 'result' | 'status'>,
-  profileId: TaskExecutionSummary['acceptance']['deterministic']['profileId']
+  profileId: TaskExecutionSummary['acceptance']['deterministic']['profileId'],
+  outputText = ''
 ): boolean {
   if (invocation.status !== 'FAILED' || !isVerificationTool(invocation)) {
+    return false;
+  }
+  if (isAcknowledgedFailedInspectionEvidence(invocation, outputText)) {
     return false;
   }
   if (profileId === 'verify') {
@@ -1519,6 +1572,7 @@ function hasFailedVerification(
   options: {
     qualityPassed?: boolean;
     unitId?: string | null;
+    outputText?: string;
   } = {}
 ): boolean {
   const blockingFailures = task.toolInvocations
@@ -1527,7 +1581,7 @@ function hasFailedVerification(
       if (options.unitId && invocation.unitId !== options.unitId) {
         return false;
       }
-      return isBlockingVerificationFailure(invocation, profileId);
+      return isBlockingVerificationFailure(invocation, profileId, options.outputText ?? '');
     });
   if (blockingFailures.length === 0) {
     return false;
@@ -1602,6 +1656,17 @@ function buildAcceptanceSummary(
   const acceptanceUnit = getAcceptanceUnit(task);
   const outputContractKeys = extractOutputContractKeys(acceptanceUnit.outputContract);
   const latestOutput = task.latestVisibleOutput;
+  const latestExplicitOutputEnvelope = findLatestExplicitOutputEnvelope(task, acceptanceUnit.unitId);
+  const latestExplicitOutputRecord = isRecord(latestExplicitOutputEnvelope?.parsedJson)
+    ? latestExplicitOutputEnvelope.parsedJson
+    : null;
+  const explicitOutputValidation = latestExplicitOutputEnvelope
+    ? validateExplicitOutput({
+      currentUnitId: acceptanceUnit.unitId ?? latestExplicitOutputEnvelope.unitId,
+      explicitOutputs: [latestExplicitOutputEnvelope],
+      outputContract: acceptanceUnit.outputContract ?? undefined
+    })
+    : null;
   const latestTracker = task.runtime.progressHistory.at(-1) ?? null;
   const diagnostics = task.runtime.contractDiagnostics ?? null;
   const acceptanceIssueCodes = [...(diagnostics?.lastAcceptanceIssueCodes ?? [])];
@@ -1621,15 +1686,18 @@ function buildAcceptanceSummary(
     producedFiles: latestOutput?.artifactPaths ?? [],
     artifactDestination: latestOutput?.artifactDestinationDir ?? null
   };
-  const serializedVisibleOutput = JSON.stringify(visibleOutputRecord).toLowerCase();
-  const missingContractKeys = outputContractKeys.filter((key) => !serializedVisibleOutput.includes(`"${key.toLowerCase()}"`));
+  const contractOutputRecord = latestExplicitOutputRecord ?? visibleOutputRecord;
+  const missingContractKeys = outputContractKeys.filter((key) => !Object.prototype.hasOwnProperty.call(contractOutputRecord, key));
+  const contractShapeIssues = explicitOutputValidation?.issues
+    .filter((issue) => issue.code === 'contract_type_mismatch')
+    .map((issue) => issue.message) ?? [];
   const explicitOutput = {
-    present: latestOutput?.source === 'validated_output',
-    source: latestOutput?.source ?? 'missing',
+    present: latestOutput?.source === 'validated_output' || Boolean(latestExplicitOutputRecord),
+    source: latestOutput?.source ?? (latestExplicitOutputRecord ? 'assistant_fallback' : 'missing'),
     contractKeys: outputContractKeys,
     missingContractKeys,
-    invalidJson: latestOutput?.source !== 'validated_output' && outputContractKeys.length > 0,
-    summary: latestOutput?.source === 'validated_output'
+    invalidJson: !latestExplicitOutputRecord && latestOutput?.source !== 'validated_output' && outputContractKeys.length > 0,
+    summary: latestOutput?.source === 'validated_output' || latestExplicitOutputRecord
       ? 'Validated explicit output is available.'
       : latestOutput
         ? `Visible output is coming from ${latestOutput.source}, not a validated explicit output envelope.`
@@ -1645,7 +1713,10 @@ function buildAcceptanceSummary(
       : 'No accepted progress tracker is available.'
   } satisfies TaskExecutionSummary['acceptance']['evidence']['progressTracker'];
   const successfulToolInvocations = task.toolInvocations.filter((invocation) => invocation.status === 'SUCCEEDED');
-  const verificationInvocations = successfulToolInvocations.filter((invocation) => isVerificationTool(invocation));
+  const verificationInvocations = task.toolInvocations.filter((invocation) => (
+    (invocation.status === 'SUCCEEDED' && isVerificationTool(invocation))
+    || isFailedInspectionVerificationTool(invocation)
+  ));
   const persistentWriteEvidenceCount = successfulToolInvocations.filter((invocation) => (
     isArtifactWriteEvidenceTool(invocation.toolId) && collectInvocationEvidencePaths(invocation).length > 0
   )).length;
@@ -1661,8 +1732,8 @@ function buildAcceptanceSummary(
     toolIds: Array.from(new Set(task.toolInvocations.map((invocation) => invocation.toolId))).sort((left, right) => left.localeCompare(right)),
     summary: toolEvidenceRequired
       ? (verificationInvocations.length > 0
-        ? `Verification evidence found in ${verificationInvocations.length} successful tool invocation(s).`
-        : 'No successful verification evidence was recorded.')
+        ? `Verification evidence found in ${verificationInvocations.length} tool invocation(s).`
+        : 'No verification evidence was recorded.')
       : (task.toolInvocations.length > 0 ? `${task.toolInvocations.length} tool invocation(s) recorded.` : 'No tool evidence required for this task.')
   } satisfies TaskExecutionSummary['acceptance']['evidence']['toolEvidence'];
   const artifactEvidence = {
@@ -1719,6 +1790,14 @@ function buildAcceptanceSummary(
   } else if (outputContractKeys.length > 0) {
     contractFailedChecks.push(`missing_contract_keys:${missingContractKeys.join(',')}`);
     contractRequiredNextEvidence.push(`include_contract_keys:${missingContractKeys.join(',')}`);
+  }
+  if (contractShapeIssues.length === 0) {
+    if (explicitOutputValidation) {
+      contractPassedChecks.push('output_contract_shape_satisfied');
+    }
+  } else {
+    contractFailedChecks.push('contract_shape_mismatch');
+    contractRequiredNextEvidence.push('satisfy_output_contract_shape');
   }
   const contract = createAcceptanceLayer(
     contractFailedChecks.length === 0 ? 'passed' : 'failed',
@@ -1831,7 +1910,8 @@ function buildAcceptanceSummary(
   }
   const blockingVerificationFailure = hasFailedVerification(task, acceptanceUnit.profileId, {
     unitId: acceptanceUnit.unitId,
-    qualityPassed: quality.profileId !== null && quality.verdict === 'passed'
+    qualityPassed: quality.profileId !== null && quality.verdict === 'passed',
+    outputText
   });
   if (blockingVerificationFailure) {
     evidenceFailedChecks.push('known_verification_failure');

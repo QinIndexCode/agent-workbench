@@ -9,6 +9,7 @@ export const platformCommandModule: CliCommandModule = {
     'tools',
     'skills',
     'mcp',
+    'scenarios',
     'workspace',
     'improvements',
     'channels',
@@ -23,9 +24,10 @@ export const platformCommandModule: CliCommandModule = {
     'providers list|presets|get|test|set-default|upsert|delete|secrets',
     'capabilities status',
     'ecosystem status',
-    'tools list',
+    'tools list|health',
     'skills list|get|status|refresh|import|import-marketplace',
-    'mcp list|get|test|upsert|delete',
+    'mcp list|status|get|test|upsert|delete',
+    'scenarios list|status',
     'workspace status|init|commands list|docs import',
     'improvements list|get|approve|reject|archive|report',
     'channels list|get|create|update|delete|test',
@@ -90,6 +92,10 @@ export const platformCommandModule: CliCommandModule = {
     }
 
     if (resource === 'tools') {
+      if (subaction === 'health') {
+        writeJson(io, await requestJson(fetchImpl, `${serverUrl}/tools/health`, { method: 'GET', headers: {} }));
+        return 0;
+      }
       if (!subaction || subaction === 'list' || subaction === 'status') {
         writeJson(io, await requestJson(fetchImpl, `${serverUrl}/tools`, { method: 'GET', headers: {} }));
         return 0;
@@ -99,6 +105,7 @@ export const platformCommandModule: CliCommandModule = {
     if (resource === 'skills') {
       if (subaction === 'list') { writeJson(io, await requestJson(fetchImpl, `${serverUrl}/skills`, { method: 'GET', headers: {} })); return 0; }
       if (subaction === 'get') { writeJson(io, await requestJson(fetchImpl, `${serverUrl}/skills/${id}`, { method: 'GET', headers: {} })); return 0; }
+      if (!subaction || (subaction === 'status' && !id)) { writeJson(io, await requestJson(fetchImpl, `${serverUrl}/ecosystem/skills`, { method: 'GET', headers: {} })); return 0; }
       if (subaction === 'status') { writeJson(io, await requestJson(fetchImpl, `${serverUrl}/skills/${id}/status`, { method: 'GET', headers: {} })); return 0; }
       if (subaction === 'refresh') { writeJson(io, await requestJson(fetchImpl, `${serverUrl}/skills/refresh`, { method: 'POST', body: JSON.stringify({}) })); return 0; }
       if (subaction === 'import') {
@@ -128,6 +135,7 @@ export const platformCommandModule: CliCommandModule = {
 
     if (resource === 'mcp') {
       if (subaction === 'list') { writeJson(io, await requestJson(fetchImpl, `${serverUrl}/mcp`, { method: 'GET', headers: {} })); return 0; }
+      if (!subaction || (subaction === 'status' && !id)) { writeJson(io, await requestJson(fetchImpl, `${serverUrl}/ecosystem/mcp`, { method: 'GET', headers: {} })); return 0; }
       if (subaction === 'get') { writeJson(io, await requestJson(fetchImpl, `${serverUrl}/mcp/${id}`, { method: 'GET', headers: {} })); return 0; }
       if (subaction === 'test') { writeJson(io, await requestJson(fetchImpl, `${serverUrl}/mcp/${id}/test`, { method: 'POST', body: JSON.stringify({}) })); return 0; }
       if (subaction === 'upsert') {
@@ -138,6 +146,13 @@ export const platformCommandModule: CliCommandModule = {
         return 0;
       }
       if (subaction === 'delete') { writeJson(io, await requestJson(fetchImpl, `${serverUrl}/mcp/${id}`, { method: 'DELETE', body: JSON.stringify({}) })); return 0; }
+    }
+
+    if (resource === 'scenarios') {
+      if (!subaction || subaction === 'list' || subaction === 'status') {
+        writeJson(io, await requestJson(fetchImpl, `${serverUrl}/scenario-packs`, { method: 'GET', headers: {} }));
+        return 0;
+      }
     }
 
     if (resource === 'workspace') {

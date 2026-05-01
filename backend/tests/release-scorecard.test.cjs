@@ -315,3 +315,52 @@ test('loadSuiteFromCommandOrReport does not rerun a live suite when the reusable
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test('loadSuiteFromCommandOrReport can run deterministic suites when the reusable report is missing', async () => {
+  const { loadSuiteFromCommandOrReport } = await loadScorecardModule();
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'scorecard-load-suite-'));
+  const missingReportPath = path.join(tempDir, 'benchmark.json');
+
+  try {
+    const result = await loadSuiteFromCommandOrReport({
+      label: 'benchmark',
+      command: 'node',
+      args: ['-e', 'process.stdout.write(JSON.stringify({realisticComplexDag:{objectives:{tokenReductionTargetSatisfied:true}}}))'],
+      reportPath: missingReportPath,
+      forceRerun: false,
+      runCommandWhenReportUnavailable: true,
+      validator: (payload) => Boolean(payload?.realisticComplexDag)
+    });
+
+    assert.equal(result.source, 'command');
+    assert.equal(result.command.status, 0);
+    assert.equal(result.parse.payload.realisticComplexDag.objectives.tokenReductionTargetSatisfied, true);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('scorecard command failure filter treats missing postgres env as non-blocking external integration', async () => {
+  const { isBlockingScorecardCommandFailure } = await loadScorecardModule();
+
+  assert.equal(isBlockingScorecardCommandFailure({
+    label: 'postgres-test',
+    status: 1,
+    stdout: 'Missing BACKEND_NEW_PG_TEST_URL or BACKEND_NEW_DATABASE_URL',
+    stderr: ''
+  }), false);
+
+  assert.equal(isBlockingScorecardCommandFailure({
+    label: 'postgres-test',
+    status: 1,
+    stdout: 'password authentication failed for user scc_batch',
+    stderr: ''
+  }), true);
+
+  assert.equal(isBlockingScorecardCommandFailure({
+    label: 'benchmark',
+    status: 1,
+    stdout: '',
+    stderr: 'benchmark failed'
+  }), true);
+});

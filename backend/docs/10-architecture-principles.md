@@ -82,3 +82,11 @@ If an operation cannot be replayed from those anchors plus stored facts, the des
 ## 8. Extensions must be registered before use
 
 Providers, tools, skills, and MCP servers must be registered first, then consumed through registries and capability views. Runtime code must not scan arbitrary files or invent extension definitions on the fly.
+
+## 9. Scenario and harness boundaries
+
+The core runtime must remain aligned with the `DigDeeper` design: semantic contracts, planner/batch DAG execution, minimal context, tool evidence, correction loops, and verifiable completion.
+
+Operator, ecosystem, and validation harness features may grow around the runtime, but they must not redefine generic runtime semantics. Database-lab rules, provider-specific live checks, benchmark repair heuristics, real-task-wave continuation policies, and scenario artifact audits belong behind scenario-pack or harness boundaries.
+
+Promote behavior into the generic runtime only when it is scenario-neutral and supported by cross-scenario evidence. Acceptable generic promotions include structured tool result feedback, invalid tool JSON correction, truth-preserving context compression, replayable evidence, three-surface consistency, and operator guidance that cannot weaken runtime correction.

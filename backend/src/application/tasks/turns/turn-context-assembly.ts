@@ -23,6 +23,8 @@ import {
 } from '../delegation/delegation';
 import { getExecutionProfile } from '../../runtime/execution-profiles';
 import { gateProviderRequestContext } from './request-context-gating';
+import { protectOperatorGuidanceForCorrection } from './operator-guidance';
+import { buildCurrentTurnToolContextMessages } from './turn-runtime-state-builder';
 
 function normalizeRuntimeCollections(
   runtime: TaskRuntimeRecord['runtime'],
@@ -183,13 +185,30 @@ export async function assembleTurnContext(params: {
   const guardrailReasons = deriveContextGatingGuardrailReasons(runtime);
   const queuedOperatorAdditions = pendingOperatorInputs.map((entry) => createLlmContextMessage({
     role: 'user',
-    content: entry.content,
+    content: protectOperatorGuidanceForCorrection(entry.content, runtime.pendingCorrection),
     metadata: {
       unitId: currentUnitId,
       operatorMessageId: entry.messageId,
       source: 'operator_message'
     }
   }));
+  const knownToolContextInvocationIds = new Set(
+    runtime.llmContextMessages
+      .map((message) => message.metadata?.invocationId)
+      .filter((value): value is string => typeof value === 'string' && value.length > 0)
+  );
+  const postApprovalToolResultAdditions = runtime.latestTurnId
+    ? buildCurrentTurnToolContextMessages({
+      invocations: latestInvocations,
+      currentUnitId,
+      turnId: runtime.latestTurnId,
+      maxContentChars: Math.max(1200, Math.floor(foundation.config.runtime.promptSectionCharacterLimit * 2.5)),
+      maxMessages: 6
+    }).filter((message) => {
+      const invocationId = message.metadata?.invocationId;
+      return typeof invocationId !== 'string' || !knownToolContextInvocationIds.has(invocationId);
+    })
+    : [];
   const promptResult = buildTurnPrompt({
     config: foundation.config,
     definition: runtimeRecord.definition,
@@ -240,12 +259,13 @@ export async function assembleTurnContext(params: {
     config: foundation.config,
     current: runtime.llmContextMessages,
     additions: [
+      ...postApprovalToolResultAdditions,
       ...queuedOperatorAdditions,
       ...(userMessage?.trim()
         ? [
           createLlmContextMessage({
             role: 'user',
-            content: userMessage.trim(),
+            content: protectOperatorGuidanceForCorrection(userMessage, runtime.pendingCorrection),
             metadata: {
               unitId: currentUnitId
             }

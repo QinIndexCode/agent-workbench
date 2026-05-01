@@ -15,7 +15,9 @@ export function registerDefaultRuntimeAdapters(foundation: BackendNewFoundation)
       new OpenAiCompatibleProviderClient(),
       {
         supportsTools: true,
-        supportsJsonMode: true
+        supportsJsonMode: true,
+        inputModalities: ['text'],
+        outputModalities: ['text']
       }
     );
   }
@@ -26,7 +28,9 @@ export function registerDefaultRuntimeAdapters(foundation: BackendNewFoundation)
       new DeepSeekCompatibleProviderClient(),
       {
         supportsTools: true,
-        supportsJsonMode: true
+        supportsJsonMode: true,
+        inputModalities: ['text'],
+        outputModalities: ['text']
       }
     );
   }
@@ -37,7 +41,11 @@ export function registerDefaultRuntimeAdapters(foundation: BackendNewFoundation)
       new AnthropicCompatibleProviderClient(),
       {
         supportsTools: true,
-        supportsJsonMode: false
+        supportsJsonMode: false,
+        supportsVision: true,
+        inputModalities: ['text', 'image'],
+        outputModalities: ['text'],
+        supportedFileExtensions: ['.png', '.jpg', '.jpeg', '.webp', '.gif']
       }
     );
   }

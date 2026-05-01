@@ -145,6 +145,15 @@ export class BackendNewPlatformApplication {
   async listToolCapabilities(): Promise<EcosystemSummaryView['tools']> {
     return (await this.getEcosystemSummary()).tools;
   }
+  async listScenarioPacks(): Promise<EcosystemSummaryView['scenarioPacks']> {
+    return (await this.getEcosystemSummary()).scenarioPacks;
+  }
+  async listEcosystemSkills(): Promise<EcosystemSummaryView['skills']> {
+    return (await this.getEcosystemSummary()).skills;
+  }
+  async listEcosystemMcpServers(): Promise<EcosystemSummaryView['mcpServers']> {
+    return (await this.getEcosystemSummary()).mcpServers;
+  }
   getWorkspaceWorkflow(): Promise<WorkspaceWorkflowView> { return this.workspace.getView(); }
   initWorkspaceWorkflow() { return this.workspace.initWorkspace(); }
   importWorkspaceDocs(): Promise<import('./types').PlatformActionResult<WorkspaceDocsImportSummary>> { return this.workspace.importDocs(); }

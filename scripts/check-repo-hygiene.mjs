@@ -45,13 +45,39 @@ const forbiddenPatterns = [
   ['"sources": [', ']'].join('')
 ];
 
+const genericRunnerSpecializedPatterns = [
+  'database-lab',
+  'bench.js',
+  'docs_normalize',
+  'docs_synthesize',
+  'system-health',
+  'incoming/',
+  'source/product-strategy'
+];
+
+const coreBoundaryPaths = [
+  'backend/src/domain',
+  'backend/src/application/tasks',
+  'backend/src/application/runtime',
+  'backend/src/foundation/tools'
+];
+
+const coreBoundaryForbiddenPatterns = [
+  'database-lab',
+  'database_near_mysql',
+  'XIAOMI_MIMO',
+  'xiaomi-mimo',
+  'real-task-wave'
+];
+
 const includedPaths = [
   'README.md',
   'package.json',
   '.gitignore',
   '.scc',
   'scripts',
-  'backend/docs'
+  'backend/docs',
+  'docs'
 ];
 
 async function exists(targetPath) {
@@ -99,6 +125,8 @@ function normalizeForSearch(content) {
 async function main() {
   const issues = [];
   const runtimeResidueWarnings = [];
+  const genericRunnerWarnings = [];
+  const coreBoundaryIssues = [];
 
   for (const requiredPath of requiredPaths) {
     if (!await exists(requiredPath)) {
@@ -139,6 +167,7 @@ async function main() {
   for (const file of files) {
     const content = normalizeForSearch(await fs.readFile(file, 'utf8'));
     const lines = content.split('\n');
+    const relativeFile = path.relative(rootDir, file).replace(/\\/g, '/');
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
       const matched = forbiddenPatterns.find((pattern) => line.includes(pattern));
@@ -147,11 +176,64 @@ async function main() {
       }
       issues.push({
         kind: 'forbidden_pattern',
-        file: path.relative(rootDir, file).replace(/\\/g, '/'),
+        file: relativeFile,
         line: index + 1,
         pattern: matched,
         text: line.trim()
       });
+    }
+  }
+
+  const coreBoundaryFiles = (await Promise.all(coreBoundaryPaths.map((target) => collectFiles(target)))).flat();
+  for (const file of coreBoundaryFiles) {
+    const content = normalizeForSearch(await fs.readFile(file, 'utf8'));
+    const lines = content.split('\n');
+    const relativeFile = path.relative(rootDir, file).replace(/\\/g, '/');
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const matched = coreBoundaryForbiddenPatterns.find((pattern) => line.includes(pattern));
+      if (!matched) {
+        continue;
+      }
+      const issue = {
+        kind: 'core_boundary_specialization',
+        file: relativeFile,
+        line: index + 1,
+        pattern: matched,
+        text: line.trim()
+      };
+      coreBoundaryIssues.push(issue);
+      issues.push(issue);
+    }
+  }
+
+  const realTaskWavePath = path.resolve(rootDir, 'scripts', 'run-real-task-wave.mjs');
+  const realTaskWaveContent = normalizeForSearch(await fs.readFile(realTaskWavePath, 'utf8'));
+  const realTaskWaveLines = realTaskWaveContent.split('\n');
+  let legacyScenarioSpecDepth = 0;
+  for (let index = 0; index < realTaskWaveLines.length; index += 1) {
+    const line = realTaskWaveLines[index];
+    if (line.includes('function buildLegacyScenarioSpecsLive')) {
+      legacyScenarioSpecDepth = 1;
+    } else if (legacyScenarioSpecDepth > 0) {
+      legacyScenarioSpecDepth += (line.match(/{/g) ?? []).length;
+      legacyScenarioSpecDepth -= (line.match(/}/g) ?? []).length;
+      continue;
+    }
+    const matched = genericRunnerSpecializedPatterns.find((pattern) => line.includes(pattern));
+    if (!matched) {
+      continue;
+    }
+    const warning = {
+      kind: 'generic_runner_specialized_logic',
+      file: 'scripts/run-real-task-wave.mjs',
+      line: index + 1,
+      pattern: matched,
+      text: line.trim()
+    };
+    genericRunnerWarnings.push(warning);
+    if (process.env.SCC_HYGIENE_STRICT_GENERIC_RUNNER === '1') {
+      issues.push(warning);
     }
   }
 
@@ -163,7 +245,12 @@ async function main() {
     requiredGitignoreEntries,
     forbiddenRuntimeResiduePaths,
     runtimeResidueWarnings,
+    genericRunnerWarnings,
+    coreBoundaryIssues,
     forbiddenPatterns,
+    genericRunnerSpecializedPatterns,
+    coreBoundaryPaths,
+    coreBoundaryForbiddenPatterns,
     issues
   };
 

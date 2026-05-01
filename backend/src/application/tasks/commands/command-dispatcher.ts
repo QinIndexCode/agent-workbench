@@ -18,6 +18,8 @@ export class CommandDispatcher implements TaskCommandDispatcher {
       return this.lifecycle.startTask({
         taskId: input.taskId,
         userMessage: input.message ?? undefined,
+        autoRun: input.autoRun,
+        maxTurns: input.maxTurns,
         actor: input.actor,
         reason: input.reason,
         metadata: input.metadata
@@ -27,6 +29,8 @@ export class CommandDispatcher implements TaskCommandDispatcher {
       return this.lifecycle.continueTask({
         taskId: input.taskId,
         userMessage: input.message ?? undefined,
+        autoRun: input.autoRun,
+        maxTurns: input.maxTurns,
         actor: input.actor,
         reason: input.reason,
         metadata: input.metadata
@@ -44,6 +48,8 @@ export class CommandDispatcher implements TaskCommandDispatcher {
       return this.lifecycle.resumeTask({
         taskId: input.taskId,
         userMessage: input.message ?? undefined,
+        autoRun: input.autoRun,
+        maxTurns: input.maxTurns,
         actor: input.actor,
         reason: input.reason,
         metadata: input.metadata
@@ -53,6 +59,8 @@ export class CommandDispatcher implements TaskCommandDispatcher {
       return this.lifecycle.restartTask({
         taskId: input.taskId,
         userMessage: input.message ?? undefined,
+        autoRun: input.autoRun,
+        maxTurns: input.maxTurns,
         actor: input.actor,
         reason: input.reason,
         metadata: input.metadata

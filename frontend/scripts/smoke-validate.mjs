@@ -43,6 +43,89 @@ const SETTINGS_PAGES = [
   { page: "settings-improvements", route: "/settings/improvements", navTestId: "settings-improvements-page" },
 ];
 
+const TEXT_PROVIDER_CAPABILITY = {
+  inputModalities: ["text"],
+  outputModalities: ["text"],
+  supportsVision: false,
+  supportsFiles: false,
+  supportedFileExtensions: [],
+};
+
+const VISION_PROVIDER_CAPABILITY = {
+  inputModalities: ["text", "image"],
+  outputModalities: ["text"],
+  supportsVision: true,
+  supportsFiles: false,
+  supportedFileExtensions: [".png", ".jpg", ".jpeg", ".webp", ".gif"],
+};
+
+const PROVIDER_PRESET_FIXTURES = [
+  {
+    id: "openai",
+    label: "OpenAI Provider With A Very Long Environment Variable Hint",
+    vendor: "openai",
+    transport: "openai-compatible",
+    baseUrl: "https://api.openai.com/v1",
+    defaultModel: "gpt-5.4",
+    requiresApiKey: true,
+    supportsQuickAdd: true,
+    category: "api-key",
+    envVarNames: ["OPENAI_API_KEY", "OPENAI_ORGANIZATION_WITH_EXTRA_LONG_NAME"],
+    requiredConfigFields: [],
+    implementationStatus: "runnable",
+    capabilities: VISION_PROVIDER_CAPABILITY,
+    notes: null,
+  },
+  {
+    id: "cohere",
+    label: "Cohere Profile Only",
+    vendor: "cohere",
+    transport: "native-cohere",
+    baseUrl: "https://api.cohere.com/v2",
+    defaultModel: "command-a-03-2025",
+    requiresApiKey: true,
+    supportsQuickAdd: false,
+    category: "api-key",
+    envVarNames: ["COHERE_API_KEY"],
+    requiredConfigFields: [],
+    implementationStatus: "profile-only",
+    capabilities: TEXT_PROVIDER_CAPABILITY,
+    notes: "Native Cohere adapter is not registered in this release.",
+  },
+  {
+    id: "azure_openai",
+    label: "Azure OpenAI Enterprise Cloud",
+    vendor: "azure_openai",
+    transport: "enterprise-cloud",
+    baseUrl: null,
+    defaultModel: "deployment-name",
+    requiresApiKey: true,
+    supportsQuickAdd: false,
+    category: "enterprise-cloud",
+    envVarNames: ["AZURE_OPENAI_API_KEY"],
+    requiredConfigFields: ["resource", "deployment", "api_version"],
+    implementationStatus: "external-auth-required",
+    capabilities: VISION_PROVIDER_CAPABILITY,
+    notes: "Requires Azure resource, deployment, and API version.",
+  },
+  {
+    id: "ollama",
+    label: "Ollama Local Service",
+    vendor: "ollama",
+    transport: "openai-compatible",
+    baseUrl: "http://localhost:11434/v1",
+    defaultModel: "llama3.1",
+    requiresApiKey: false,
+    supportsQuickAdd: true,
+    category: "local",
+    envVarNames: [],
+    requiredConfigFields: [],
+    implementationStatus: "runnable",
+    capabilities: TEXT_PROVIDER_CAPABILITY,
+    notes: null,
+  },
+];
+
 function resolveChromeExecutable() {
   const candidates = [
     process.env.CHROME_EXECUTABLE,
@@ -547,6 +630,8 @@ function buildPlatformFixtureState(state) {
         hasSecret: !warningPresent,
         readiness: warningPresent ? "missing-secret" : "ready",
         authSource: warningPresent ? "missing-secret" : "secret-store",
+        implementationStatus: "runnable",
+        capabilities: VISION_PROVIDER_CAPABILITY,
         adapter: {
           providerId: "xiaomi-mimo-v2-flash",
           transport: "openai-compatible",
@@ -588,6 +673,8 @@ function buildPlatformFixtureState(state) {
         hasSecret: true,
         readiness: "ready",
         authSource: "none",
+        implementationStatus: "runnable",
+        capabilities: TEXT_PROVIDER_CAPABILITY,
         adapter: {
           providerId: "local-file",
           transport: "local-stdio",
@@ -623,7 +710,8 @@ function buildPlatformFixtureState(state) {
           updatedAt: now - 300_000,
           hasValue: true,
           metadata: {},
-        }],
+      }],
+    providerPresets: PROVIDER_PRESET_FIXTURES,
     improvements: improvementFixtures.improvements,
     archive: improvementFixtures.archive,
     complexReport: improvementFixtures.complexReport,
@@ -1362,6 +1450,51 @@ async function registerPlatformFixtureRoutes(page, stateName) {
       await fulfill(state.providers);
       return;
     }
+    if (pathname === "/providers/presets" && method === "GET") {
+      await fulfill(state.providerPresets);
+      return;
+    }
+    if (pathname === "/providers/secrets" && method === "GET") {
+      await fulfill(state.providerSecrets);
+      return;
+    }
+    if (pathname === "/providers/secrets" && method === "POST") {
+      const nextSecret = {
+        id: body?.secretId ?? `secret_${Date.now()}`,
+        provider: body?.provider ?? state.providers[0]?.profile.id ?? "fixture-provider",
+        label: body?.label ?? "Fixture secret",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        hasValue: true,
+        metadata: body?.metadata ?? {},
+      };
+      const existingIndex = state.providerSecrets.findIndex((entry) => entry.id === nextSecret.id);
+      if (existingIndex >= 0) {
+        state.providerSecrets[existingIndex] = nextSecret;
+      } else {
+        state.providerSecrets.push(nextSecret);
+      }
+      state.providers = state.providers.map((provider) => provider.profile.id === nextSecret.provider
+        ? {
+            ...provider,
+            hasSecret: true,
+            readiness: provider.implementationStatus === "external-auth-required"
+              ? "external-auth-required"
+              : provider.implementationStatus === "profile-only"
+                ? "profile-only"
+                : "ready",
+            authSource: "secret-store",
+            profile: {
+              ...provider.profile,
+              apiKeySecretId: nextSecret.id,
+            },
+          }
+        : provider);
+      state.capabilities.warnings = state.capabilities.warnings.filter((warning) => warning.code !== "missing-provider-secret");
+      state.configHealth.issues = [];
+      await fulfill(createPlatformAction("PROVIDER", nextSecret.provider, "SET_SECRET", nextSecret));
+      return;
+    }
     if (pathname.startsWith("/providers/")) {
       const segments = pathname.split("/").filter(Boolean);
       const providerId = segments[1];
@@ -1378,12 +1511,55 @@ async function registerPlatformFixtureRoutes(page, stateName) {
           ...(body ?? {}),
           id: providerId,
         };
+        const metadata = nextProfile.metadata && typeof nextProfile.metadata === "object" ? nextProfile.metadata : {};
+        const preset = state.providerPresets.find((entry) => entry.id === metadata.presetId || entry.vendor === nextProfile.vendor) ?? null;
+        const implementationStatus =
+          metadata.implementationStatus ?? preset?.implementationStatus ?? currentProvider?.implementationStatus ?? "runnable";
+        const capabilities =
+          metadata.capabilities ?? preset?.capabilities ?? currentProvider?.capabilities ?? TEXT_PROVIDER_CAPABILITY;
+        const authSource = nextProfile.apiKeySecretId ? (currentProvider?.hasSecret ? "secret-store" : "missing-secret") : "none";
+        const readiness = implementationStatus === "external-auth-required"
+          ? "external-auth-required"
+          : implementationStatus === "profile-only"
+            ? "profile-only"
+            : authSource === "missing-secret"
+              ? "missing-secret"
+              : "ready";
         const nextProvider = {
           ...(currentProvider ?? {}),
           isDefault: currentProvider?.isDefault ?? false,
           isSavedDefault: currentProvider?.isSavedDefault ?? false,
           isRuntimeDefault: currentProvider?.isRuntimeDefault ?? false,
           profile: nextProfile,
+          hasRegisteredClient: implementationStatus === "runnable",
+          hasSecret: currentProvider?.hasSecret ?? false,
+          readiness,
+          authSource,
+          implementationStatus,
+          capabilities,
+          adapter: {
+            providerId,
+            transport: nextProfile.transport ?? preset?.transport ?? "openai-compatible",
+            vendor: nextProfile.vendor ?? preset?.vendor ?? "custom",
+            baseUrl: nextProfile.baseUrl ?? preset?.baseUrl ?? null,
+            timeoutMs: 30000,
+          },
+          model: {
+            providerId,
+            modelId: nextProfile.model,
+            label: nextProfile.model,
+            reasoning: null,
+            verbosity: null,
+            thinkingBudget: null,
+          },
+          variant: {
+            providerId,
+            variantId: "default",
+            label: "default",
+            isDefault: true,
+            isSmallModel: false,
+            taskPreference: null,
+          },
         };
         if (index >= 0) {
           state.providers[index] = nextProvider;
@@ -1394,6 +1570,24 @@ async function registerPlatformFixtureRoutes(page, stateName) {
         return;
       }
       if (segments[2] === "test" && method === "POST") {
+        if (currentProvider?.implementationStatus === "external-auth-required") {
+          await fulfill({
+            ok: false,
+            providerId,
+            message: "Provider preset requires external cloud authentication/configuration and has no runnable adapter registered.",
+            capability: {},
+          });
+          return;
+        }
+        if (currentProvider?.implementationStatus === "profile-only") {
+          await fulfill({
+            ok: false,
+            providerId,
+            message: "Provider preset is cataloged as profile-only; no runnable adapter is registered in this release.",
+            capability: {},
+          });
+          return;
+        }
         const result = {
           ok: true,
           providerId,
@@ -1421,43 +1615,6 @@ async function registerPlatformFixtureRoutes(page, stateName) {
         await fulfill(createPlatformAction("PROVIDER", providerId, "SET_DEFAULT", updatedProvider));
         return;
       }
-    }
-    if (pathname === "/providers/secrets" && method === "GET") {
-      await fulfill(state.providerSecrets);
-      return;
-    }
-    if (pathname === "/providers/secrets" && method === "POST") {
-      const nextSecret = {
-        id: body?.secretId ?? `secret_${Date.now()}`,
-        provider: body?.provider ?? state.providers[0]?.profile.id ?? "fixture-provider",
-        label: body?.label ?? "Fixture secret",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        hasValue: true,
-        metadata: body?.metadata ?? {},
-      };
-      const existingIndex = state.providerSecrets.findIndex((entry) => entry.id === nextSecret.id);
-      if (existingIndex >= 0) {
-        state.providerSecrets[existingIndex] = nextSecret;
-      } else {
-        state.providerSecrets.push(nextSecret);
-      }
-      state.providers = state.providers.map((provider) => provider.profile.id === nextSecret.provider
-        ? {
-            ...provider,
-            hasSecret: true,
-            readiness: "ready",
-            authSource: "secret-store",
-            profile: {
-              ...provider.profile,
-              apiKeySecretId: nextSecret.id,
-            },
-          }
-        : provider);
-      state.capabilities.warnings = state.capabilities.warnings.filter((warning) => warning.code !== "missing-provider-secret");
-      state.configHealth.issues = [];
-      await fulfill(createPlatformAction("PROVIDER", nextSecret.provider, "SET_SECRET", nextSecret));
-      return;
     }
     if (pathname === "/improvements/proposals" && method === "GET") {
       await fulfill(state.improvements);
@@ -2516,9 +2673,31 @@ async function verifySettingsConnectionsForm(page) {
     value: node.value,
     label: node.textContent?.trim() ?? '',
   })));
-  const alternatePreset = presetOptions.find((option) => option.value && option.value !== presetOptions[0]?.value) ?? presetOptions[0] ?? null;
-  assertCondition(Boolean(alternatePreset?.value), 'Connections quick-add preset list is empty.');
-  await presetSelect.selectOption(alternatePreset.value);
+  assertCondition(
+    presetOptions.some((option) => option.value === "openai" && /runnable/i.test(option.label)),
+    `Connections preset list is missing runnable API key preset details: ${JSON.stringify(presetOptions)}`,
+  );
+  assertCondition(
+    presetOptions.some((option) => option.value === "azure_openai" && /external-auth-required/i.test(option.label)),
+    `Connections preset list is missing enterprise non-runnable preset details: ${JSON.stringify(presetOptions)}`,
+  );
+  assertCondition(
+    presetOptions.some((option) => option.value === "ollama" && /runnable/i.test(option.label)),
+    `Connections preset list is missing local runnable preset details: ${JSON.stringify(presetOptions)}`,
+  );
+  assertCondition(
+    presetOptions.some((option) => option.value === "cohere" && /profile-only/i.test(option.label)),
+    `Connections preset list is missing profile-only preset details: ${JSON.stringify(presetOptions)}`,
+  );
+  await presetSelect.selectOption("azure_openai");
+  const enterpriseNotice = await waitForSettingsNotice(page, /loaded /i);
+  await page.waitForSelector('[data-testid="settings-connections-provider-non-runnable"]', { timeout: 10_000 });
+  const nonRunnableText = await page.locator('[data-testid="settings-connections-provider-non-runnable"]').innerText();
+  assertCondition(/external cloud authentication/i.test(nonRunnableText), `Enterprise preset did not explain external auth: ${nonRunnableText}`);
+  await page.locator('[data-testid="settings-connections-provider-config-field-resource"]').fill("resource-name");
+  await page.locator('[data-testid="settings-connections-provider-config-field-deployment"]').fill("deployment-name");
+  await page.locator('[data-testid="settings-connections-provider-config-field-api_version"]').fill("2024-10-21");
+  await presetSelect.selectOption("ollama");
   const templateNotice = await waitForSettingsNotice(page, /loaded /i);
   const headerAfter = await modalHeader.boundingBox();
   assertCondition(Boolean(headerAfter?.height), 'Connections modal header lost its measurable height after switching templates.');
@@ -2526,7 +2705,10 @@ async function verifySettingsConnectionsForm(page) {
     Math.abs((headerAfter?.height ?? 0) - (headerBefore?.height ?? 0)) <= 2,
     `Connections modal header height shifted while switching templates. Before=${headerBefore?.height ?? 0} After=${headerAfter?.height ?? 0}`,
   );
-  await page.locator('[data-testid="settings-connections-provider-modal-header"]').getByRole('button', { name: /close dialog/i }).click();
+  await page.locator('[data-testid="settings-connections-provider-secret-value-new"]').fill("");
+  await page.locator('[data-testid="settings-connections-provider-create-submit"]').click();
+  const createNotice = await waitForSettingsNotice(page, /created provider/i);
+  await page.waitForFunction(() => !document.querySelector('[data-testid="settings-connections-provider-modal"]'));
   const editButton = page.locator('[data-testid^="settings-connections-provider-edit-"]').first();
   await editButton.waitFor({ timeout: 10_000 });
   const editBaseline = await captureViewportContentRect(page);
@@ -2598,7 +2780,9 @@ async function verifySettingsConnectionsForm(page) {
   await page.locator('[data-testid="settings-connections-delete-cancel"]').click();
   await page.waitForFunction(() => !document.querySelector('[data-testid="settings-connections-delete-dialog"]'));
   return {
+    enterprisePreset: enterpriseNotice,
     templated: templateNotice,
+    createdLocal: createNotice,
     saved: saveNotice,
     tested: testNotice,
     defaulted: defaultNotice,

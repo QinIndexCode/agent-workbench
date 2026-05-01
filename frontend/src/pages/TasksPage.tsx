@@ -2044,7 +2044,7 @@ export function TasksPage() {
 
   async function submitContinue() {
     await runAction('continue', async () => {
-      await api.continueTask(selectedTaskId!, continueMessage || undefined);
+      await api.continueTask(selectedTaskId!, continueMessage || undefined, { autoRun: true });
       setContinueMessage('');
       setComposerFocused(false);
       setLatchedComposerModel(null);
@@ -2064,21 +2064,21 @@ export function TasksPage() {
 
     if (composerModel.submitKind === 'start') {
       await runAction('start', async () => {
-        await api.startTask(selectedTaskId);
+        await api.startTask(selectedTaskId, undefined, { autoRun: true });
       });
       return;
     }
 
     if (composerModel.submitKind === 'resume') {
       await runAction('resume', async () => {
-        await api.resumeTask(selectedTaskId);
+        await api.resumeTask(selectedTaskId, undefined, { autoRun: true });
       });
       return;
     }
 
     if (composerModel.submitKind === 'restart') {
       await runAction('restart', async () => {
-        await api.restartTask(selectedTaskId);
+        await api.restartTask(selectedTaskId, undefined, { autoRun: true });
       });
     }
   }
@@ -3473,7 +3473,7 @@ export function TasksPage() {
                 <p className="text-[10px] uppercase tracking-[0.24em] text-text-muted">Thread controls</p>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {showPause && <Button data-testid="task-action-pause" size="sm" variant="secondary" disabled={!selectedTaskId || busyAction !== null} onClick={() => void runAction('pause', async () => { await api.pauseTask(selectedTaskId!); })}>Pause</Button>}
-                  {selectedTaskId ? <Button data-testid="task-action-restart" size="sm" variant="ghost" disabled={busyAction !== null} onClick={() => void runAction('restart', async () => { await api.restartTask(selectedTaskId); })}>Restart</Button> : null}
+                  {selectedTaskId ? <Button data-testid="task-action-restart" size="sm" variant="ghost" disabled={busyAction !== null} onClick={() => void runAction('restart', async () => { await api.restartTask(selectedTaskId, undefined, { autoRun: true }); })}>Restart</Button> : null}
                   {task?.isArchived ? <Button data-testid="task-action-unarchive" size="sm" variant="secondary" disabled={!selectedTaskId || busyAction !== null} onClick={() => void unarchiveSelectedTask()}>Unarchive</Button> : null}
                   {!task?.isArchived && task?.canArchive ? <Button data-testid="task-action-archive" size="sm" variant="secondary" disabled={!selectedTaskId || busyAction !== null} onClick={() => void archiveSelectedTask()}>Archive</Button> : null}
                   {task?.canDelete ? <Button data-testid="task-action-delete" size="sm" variant="ghost" disabled={!selectedTaskId || busyAction !== null} onClick={requestDeleteSelectedTask}>Delete</Button> : null}

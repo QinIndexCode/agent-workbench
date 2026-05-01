@@ -137,12 +137,17 @@ export const taskRoutes: HttpRouteModule = {
       return true;
     }
 
-    if (request.method === 'POST' && ['start', 'continue', 'pause', 'resume', 'restart'].includes(segments[2] ?? '')) {
-      const body = await readJsonBody<Omit<TaskActionRequest, 'taskId'>>(request);
-      const actionInput = {
-        taskId,
-        userMessage: body.userMessage
-      };
+      if (request.method === 'POST' && ['start', 'continue', 'pause', 'resume', 'restart'].includes(segments[2] ?? '')) {
+        const body = await readJsonBody<Omit<TaskActionRequest, 'taskId'>>(request);
+        const actionInput = {
+          taskId,
+          userMessage: body.userMessage,
+          autoRun: body.autoRun,
+          maxTurns: body.maxTurns,
+          actor: body.actor,
+          reason: body.reason,
+          metadata: body.metadata
+        };
       if (segments[2] === 'start') {
         sendJson(response, 200, await runtime.tasks.startTask(actionInput));
         return true;

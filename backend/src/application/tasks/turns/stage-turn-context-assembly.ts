@@ -20,6 +20,7 @@ import { loadWorkspaceWorkflowPromptContext } from '../../runtime/workspace-work
 import { filterAllowedToolIdsForDelegation, getActiveDelegatedChildrenForParent } from '../delegation/delegation';
 import { getExecutionProfile } from '../../runtime/execution-profiles';
 import { gateProviderRequestContext } from './request-context-gating';
+import { protectOperatorGuidanceForCorrection } from './operator-guidance';
 
 function normalizeRuntimeCollections(
   runtime: TaskRuntimeRecord['runtime'],
@@ -193,7 +194,7 @@ export async function assembleStageTurnContext(params: {
   });
   const queuedOperatorAdditions = pendingOperatorInputs.map((entry) => createLlmContextMessage({
     role: 'user',
-    content: entry.content,
+    content: protectOperatorGuidanceForCorrection(entry.content, runtime.pendingCorrection),
     metadata: {
       unitIds: stageUnitIds,
       operatorMessageId: entry.messageId,
@@ -244,7 +245,7 @@ export async function assembleStageTurnContext(params: {
         ? [
           createLlmContextMessage({
             role: 'user',
-            content: userMessage.trim(),
+            content: protectOperatorGuidanceForCorrection(userMessage, runtime.pendingCorrection),
             metadata: {
               unitIds: stageUnitIds
             }

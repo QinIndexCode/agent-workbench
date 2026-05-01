@@ -372,7 +372,10 @@ async function resolveDnsDiagnostics(hostname) {
 
 async function main() {
   const probeModel = process.env.XIAOMI_MIMO_LIVE_MODEL?.trim() || XIAOMI_MIMO_STRONG_MODEL;
-  const source = await readXiaomiMimoFlashProviderSource(rootDir, { model: probeModel });
+  const source = await readXiaomiMimoFlashProviderSource(rootDir, {
+    model: probeModel,
+    requireTextAgentModel: true,
+  });
   const client = new OpenAiCompatibleProviderClient();
   const dnsDiagnostics = await resolveDnsDiagnostics(new URL(source.baseUrl).hostname);
   const firstPrompt = buildTurnPrompt(createPromptInput({}, {

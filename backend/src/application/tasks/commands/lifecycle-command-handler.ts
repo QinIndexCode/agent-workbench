@@ -5,8 +5,19 @@ import { TaskActionInput, TaskActionResponse } from '../types';
 import { TaskCommandHandlerServices, TaskLifecycleCommandHandler } from './command-handler-types';
 import { deriveTaskArtifactRoutingSummary } from '../artifact-routing';
 
+const DEFAULT_DIRECT_AUTO_RUN_MAX_TURNS = 6;
+const MAX_DIRECT_AUTO_RUN_MAX_TURNS = 12;
+const ACTIVE_QUEUE_STATES = new Set(['QUEUED', 'CLAIMED', 'RUNNING', 'RETRY_WAITING']);
+
 function now(): number {
   return Date.now();
+}
+
+function normalizeAutoRunMaxTurns(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_DIRECT_AUTO_RUN_MAX_TURNS;
+  }
+  return Math.max(1, Math.min(MAX_DIRECT_AUTO_RUN_MAX_TURNS, Math.floor(value)));
 }
 
 export class LifecycleCommandHandler implements TaskLifecycleCommandHandler {
@@ -46,7 +57,113 @@ export class LifecycleCommandHandler implements TaskLifecycleCommandHandler {
           runAfter: record.runAfter
         }
       })
-    );
+      );
+  }
+
+  private getDirectAutoRunBlocker(response: TaskActionResponse): string | null {
+    const task = response.task;
+    const runtime = task.runtime;
+
+    if (runtime.lifecycleStatus !== 'RUNNING') {
+      return `lifecycle:${runtime.lifecycleStatus}`;
+    }
+    if (runtime.executionLease?.active) {
+      return 'execution_lease_active';
+    }
+    if (task.queue?.state && ACTIVE_QUEUE_STATES.has(task.queue.state)) {
+      return `queue:${task.queue.state}`;
+    }
+    if (task.pendingApprovals.length > 0 || runtime.awaitingApprovalInvocations.length > 0) {
+      return 'approval_required';
+    }
+    if (runtime.awaitingToolDispatch.length > 0) {
+      return 'tool_dispatch_pending';
+    }
+    if (runtime.pendingOperatorInputs.length > 0) {
+      return 'operator_input_pending';
+    }
+    if (
+      runtime.interrupt.pauseRequested
+      || runtime.interrupt.interruptRequested
+      || runtime.interrupt.cancelRequested
+    ) {
+      return 'interrupt_pending';
+    }
+    if (runtime.contractDiagnostics?.correctionLoopNonConvergent) {
+      return 'correction_loop_non_convergent';
+    }
+
+    const artifactRouting = deriveTaskArtifactRoutingSummary({
+      definition: task.definition,
+      invocations: task.toolInvocations,
+      commands: task.commands
+    });
+    if (artifactRouting.needsExplicitDestination) {
+      return 'artifact_destination_required';
+    }
+    if (task.delegationSummary?.activeChildTask) {
+      return 'delegated_child_active';
+    }
+    if (task.primaryAction.kind !== 'continue_thread') {
+      return `primary_action:${task.primaryAction.kind}`;
+    }
+
+    return null;
+  }
+
+  private async runDirectTurn(input: TaskActionInput, userMessage: string | undefined): Promise<TaskActionResponse> {
+    let response = await this.services.turns.runTurn(input.taskId, userMessage);
+    if (!input.autoRun) {
+      return response;
+    }
+
+    const maxTurns = normalizeAutoRunMaxTurns(input.maxTurns);
+    let turnsRun = 1;
+    let blocker = this.getDirectAutoRunBlocker(response);
+    while (!blocker && turnsRun < maxTurns) {
+      turnsRun += 1;
+      await this.services.foundation.logs.recordAudit({
+        timestamp: now(),
+        severity: 'INFO',
+        event: 'direct_auto_run_continue',
+        taskId: input.taskId,
+        details: {
+          turnIndex: turnsRun,
+          maxTurns
+        }
+      });
+      response = await this.services.turns.runTurn(input.taskId, undefined);
+      blocker = this.getDirectAutoRunBlocker(response);
+    }
+
+    if (!blocker) {
+      blocker = 'max_turns_reached';
+      await this.services.foundation.logs.recordAudit({
+        timestamp: now(),
+        severity: 'WARN',
+        event: 'direct_auto_run_stopped',
+        taskId: input.taskId,
+        details: {
+          reason: blocker,
+          turnsRun,
+          maxTurns
+        }
+      });
+    } else if (turnsRun > 1) {
+      await this.services.foundation.logs.recordAudit({
+        timestamp: now(),
+        severity: 'INFO',
+        event: 'direct_auto_run_stopped',
+        taskId: input.taskId,
+        details: {
+          reason: blocker,
+          turnsRun,
+          maxTurns
+        }
+      });
+    }
+
+    return response;
   }
 
   private async startLike(
@@ -87,7 +204,7 @@ export class LifecycleCommandHandler implements TaskLifecycleCommandHandler {
       };
     }
 
-    return this.services.turns.runTurn(input.taskId, input.userMessage);
+    return this.runDirectTurn(input, input.userMessage);
   }
 
   async startTask(input: TaskActionInput): Promise<TaskActionResponse> {
@@ -189,7 +306,7 @@ export class LifecycleCommandHandler implements TaskLifecycleCommandHandler {
         task: await this.services.queries.getTask(input.taskId)
       };
     }
-    return this.services.turns.runTurn(input.taskId, trimmedMessage || undefined);
+    return this.runDirectTurn(input, trimmedMessage || undefined);
   }
 
   async pauseTask(input: TaskActionInput, commandId: string | null): Promise<TaskActionResponse> {

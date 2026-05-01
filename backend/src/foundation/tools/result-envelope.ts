@@ -22,12 +22,13 @@ export function createToolSuccessResult(params: {
 export function createToolFailureResult(params: {
   kind: ToolErrorKind;
   message: string;
+  output?: Record<string, unknown> | null;
   metadata?: Record<string, unknown>;
 }): ToolFailureResultEnvelope {
   return {
     ok: false,
     kind: params.kind,
-    output: null,
+    output: params.output ?? null,
     message: params.message,
     metadata: params.metadata ?? {}
   };

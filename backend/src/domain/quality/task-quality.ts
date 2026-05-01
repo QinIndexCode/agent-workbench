@@ -14,9 +14,7 @@ export const QUALITY_EVIDENCE_FILES: Record<QualityProfileId, string> = {
   docs_normalize: 'quality/docs-normalize-trace.json',
   docs_synthesize: 'quality/docs-synthesize-trace.json',
   system_audit: 'quality/system-audit.json',
-  desktop_observation: 'quality/desktop-observation.json',
-  database_near_mysql_design: 'quality/database-design.json',
-  database_near_mysql_verify: 'quality/database-benchmark-result.json'
+  desktop_observation: 'quality/desktop-observation.json'
 };
 
 export interface TaskQualityEvaluationInput {
@@ -171,160 +169,17 @@ const PROMPT_SPECS: Record<QualityProfileId, PromptSpec> = {
         }
       ]
     }
-  },
-  database_near_mysql_design: {
-    label: 'database_near_mysql_design',
-    requiredEvidenceFile: QUALITY_EVIDENCE_FILES.database_near_mysql_design,
-    instructions: [
-      'Design a MySQL-like OLTP database with real module depth, not a README-only scaffold.',
-      'Before claiming completion, write quality/database-design.json describing the actual delivered design files and prototype modules.',
-      'Write quality/database-design.json with designFiles, prototypeFiles, implementedModules, and claimBoundaries.',
-      'Before claiming completion, run a real benchmark dry-run from database-lab/prototype and keep the successful tool evidence.',
-      'Implemented modules must point to real prototype source files. Do not claim MySQL-level performance as proven.',
-      'The design corpus must cover storage layout, indexing, transactions or concurrency control, WAL or recovery, cache or buffer behavior, SQL compatibility, and benchmark planning.'
-    ],
-    jsonExample: {
-      profile: 'database_near_mysql_design',
-      designFiles: [
-        'database-lab/design/README.md',
-        'database-lab/design/architecture.md',
-        'database-lab/design/storage-engine.md',
-        'database-lab/design/sql-compatibility.md',
-        'database-lab/design/benchmark-plan.md',
-      ],
-      prototypeFiles: [
-        'database-lab/prototype/package.json',
-        'database-lab/prototype/README.md',
-        'database-lab/prototype/scripts/bench.js',
-        'database-lab/prototype/src/storage-engine.js',
-        'database-lab/prototype/src/buffer-pool.js',
-        'database-lab/prototype/src/b-plus-tree-index.js',
-        'database-lab/prototype/src/wal-manager.js',
-        'database-lab/prototype/src/transaction-manager.js',
-      ],
-      implementedModules: [
-        'database-lab/prototype/src/storage-engine.js',
-        'database-lab/prototype/src/buffer-pool.js',
-        'database-lab/prototype/src/b-plus-tree-index.js',
-        'database-lab/prototype/src/wal-manager.js',
-        'database-lab/prototype/src/transaction-manager.js',
-      ],
-      claimBoundaries: [
-        'Implemented: logical page layout, index and WAL skeletons, transaction flow, and benchmark scaffold',
-        'Unproven: performance parity with MySQL'
-      ]
-    }
-  },
-  database_near_mysql_verify: {
-    label: 'database_near_mysql_verify',
-    requiredEvidenceFile: QUALITY_EVIDENCE_FILES.database_near_mysql_verify,
-    instructions: [
-      'Verify the database prototype with a real benchmark scaffold or dry-run command.',
-      'Before claiming completion, write quality/database-benchmark-result.json and the referenced benchmark result file.',
-      'Write quality/database-benchmark-result.json with benchmarkCommand, sourceInvocationId, resultFile, updatedDocs, implementedModules, and verificationSummary.',
-      'The benchmark command must actually run through a successful tool invocation, and the resultFile must exist.',
-      'Updated docs must distinguish implemented prototype behavior from any MySQL-parity goal that is still unproven.'
-    ],
-    jsonExample: {
-      profile: 'database_near_mysql_verify',
-      benchmarkCommand: 'npm run bench -- --dry-run',
-      sourceInvocationId: 'tool_invocation_id',
-      resultFile: 'database-lab/prototype/results/bench-dry-run.json',
-      updatedDocs: ['database-lab/design/benchmark-plan.md'],
-      implementedModules: [
-        'database-lab/prototype/src/storage-engine.js',
-        'database-lab/prototype/src/buffer-pool.js',
-      ],
-      verificationSummary: 'Dry-run benchmark completed; MySQL-nearness remains unproven.'
-    }
   }
 };
 
 const MOJIBAKE_PATTERN = /(?:\uFFFD|Ã.|Â.|â.|鈥|锟|�)/;
 const PLACEHOLDER_COPY_PATTERN = /\b(?:lorem ipsum|sample copy|placeholder|my blog|feature\s+\d+|requirement\s+[A-Z])\b/i;
-const STUB_CODE_PATTERN = /\b(?:todo|stub|not implemented|placeholder implementation|throw new Error\(['"`]not implemented)/i;
+const MALFORMED_HTML_CONTROL_PATTERN = /(^|[^<])\b(?:input|textarea|select|option)\s+[^<>\n]*(?:id|name|class|placeholder)=/i;
 const GENERIC_SYNTHESIS_PATTERN = /\b(?:user-centric design|scalable architecture|best-in-class|enterprise-grade|robust platform)\b/i;
-const BENCH_STACK_RISK_PATTERN = /push\(\s*\.\.\.[^)]*latenc|Math\.(?:min|max)\(\s*\.\.\.[^)]+\)/i;
-const DATABASE_LAB_CORE_IMPLEMENTED_MODULES = [
-  'database-lab/prototype/src/storage-engine.js',
-  'database-lab/prototype/src/buffer-pool.js',
-  'database-lab/prototype/src/b-plus-tree-index.js',
-  'database-lab/prototype/src/wal-manager.js',
-  'database-lab/prototype/src/transaction-manager.js',
-];
 const TOKEN_STOP_WORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'from', 'in', 'is', 'it', 'of', 'on', 'or', 'that',
   'the', 'to', 'was', 'were', 'with', 'this', 'these', 'those', 'into', 'than', 'then'
 ]);
-
-function stripJavaScriptComments(sourceText: string): string {
-  let result = '';
-  let index = 0;
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
-  let inTemplateLiteral = false;
-  let inLineComment = false;
-  let inBlockComment = false;
-  while (index < sourceText.length) {
-    const current = sourceText[index];
-    const next = sourceText[index + 1] ?? '';
-
-    if (inLineComment) {
-      if (current === '\n') {
-        inLineComment = false;
-        result += current;
-      }
-      index += 1;
-      continue;
-    }
-
-    if (inBlockComment) {
-      if (current === '*' && next === '/') {
-        inBlockComment = false;
-        index += 2;
-        continue;
-      }
-      if (current === '\n') {
-        result += '\n';
-      }
-      index += 1;
-      continue;
-    }
-
-    if (!inSingleQuote && !inDoubleQuote && !inTemplateLiteral && current === '/' && next === '/') {
-      inLineComment = true;
-      index += 2;
-      continue;
-    }
-    if (!inSingleQuote && !inDoubleQuote && !inTemplateLiteral && current === '/' && next === '*') {
-      inBlockComment = true;
-      index += 2;
-      continue;
-    }
-
-    result += current;
-
-    if (current === '\\') {
-      if (index + 1 < sourceText.length) {
-        result += sourceText[index + 1];
-        index += 2;
-        continue;
-      }
-      index += 1;
-      continue;
-    }
-
-    if (!inDoubleQuote && !inTemplateLiteral && current === '\'') {
-      inSingleQuote = !inSingleQuote;
-    } else if (!inSingleQuote && !inTemplateLiteral && current === '"') {
-      inDoubleQuote = !inDoubleQuote;
-    } else if (!inSingleQuote && !inDoubleQuote && current === '`') {
-      inTemplateLiteral = !inTemplateLiteral;
-    }
-    index += 1;
-  }
-  return result;
-}
 
 function extractVisibleWebText(filePath: string, content: string): string {
   const extension = path.extname(filePath).toLowerCase();
@@ -332,6 +187,9 @@ function extractVisibleWebText(filePath: string, content: string): string {
     return content
       .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
       .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<textarea\b[^>]*>[\s\S]*?<\/textarea>/gi, ' ')
+      .replace(/<input\b[^>]*>/gi, ' ')
+      .replace(/\b(?:input|textarea|select|option)\b[^<>\n]*\bplaceholder\s*=\s*["'][^"']*["'][^<>\n]*>?/gi, ' ')
       .replace(/<[^>]+>/g, ' ')
       .replace(/&nbsp;/gi, ' ')
       .replace(/&amp;/gi, '&')
@@ -355,22 +213,6 @@ function getJavaScriptSyntaxError(content: string): string | null {
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
-}
-
-function getImplementationCodeForQualityChecks(content: string): string {
-  return stripJavaScriptComments(content).trim();
-}
-
-function hasStubLikeImplementation(content: string): boolean {
-  const codeOnly = getImplementationCodeForQualityChecks(content);
-  if (STUB_CODE_PATTERN.test(codeOnly)) {
-    return true;
-  }
-  return codeOnly.length === 0 && STUB_CODE_PATTERN.test(content);
-}
-
-function isShallowImplementation(content: string, minimumLength = 180): boolean {
-  return getImplementationCodeForQualityChecks(content).length < minimumLength;
 }
 
 function addUnique(target: string[], values: Array<string | null | undefined>): void {
@@ -448,6 +290,42 @@ function resolveFilePath(workspaceDir: string, filePath: string): string {
     : path.resolve(workspaceDir, filePath);
 }
 
+function getQualityEvidencePaths(input: TaskQualityEvaluationInput): string[] {
+  const paths = [
+    ...(Array.isArray(input.artifactPaths) ? input.artifactPaths : []),
+    ...(Array.isArray(input.artifactDestinationPaths) ? input.artifactDestinationPaths : []),
+  ];
+  return paths.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
+}
+
+function evidencePathMatchesReferencedFile(referencedPath: string, evidencePath: string): boolean {
+  const normalizedReference = normalizeRelativePath(referencedPath).replace(/^\.\//, '');
+  const normalizedEvidence = normalizeRelativePath(evidencePath);
+  if (!normalizedReference || !normalizedEvidence) {
+    return false;
+  }
+  if (normalizedEvidence === normalizedReference || normalizedEvidence.endsWith(`/${normalizedReference}`)) {
+    return true;
+  }
+  return !normalizedReference.includes('/')
+    && path.basename(normalizedEvidence).toLowerCase() === normalizedReference.toLowerCase();
+}
+
+function resolveQualityArtifactPath(input: TaskQualityEvaluationInput, filePath: string): string {
+  const candidates = [resolveFilePath(input.workspaceDir, filePath)];
+  if (!path.isAbsolute(filePath)) {
+    if (typeof input.artifactDestinationDir === 'string' && input.artifactDestinationDir.trim()) {
+      candidates.push(resolveFilePath(input.artifactDestinationDir, filePath));
+    }
+    for (const evidencePath of getQualityEvidencePaths(input)) {
+      if (evidencePathMatchesReferencedFile(filePath, evidencePath)) {
+        candidates.push(path.resolve(evidencePath));
+      }
+    }
+  }
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
+}
+
 function listFilesRecursive(rootDir: string): string[] {
   try {
     if (!fs.existsSync(rootDir)) {
@@ -473,35 +351,6 @@ function getStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0).map((entry) => entry.trim())
     : [];
-}
-
-function extractBenchPrototypeModuleDependencies(benchScript: string): string[] {
-  const dependencies: string[] = [];
-  const scriptsDir = 'database-lab/prototype/scripts';
-  const patterns = [
-    /require\(\s*['"`](\.\.?\/[^'"`]+)['"`]\s*\)/g,
-    /from\s+['"`](\.\.?\/[^'"`]+)['"`]/g,
-    /import\(\s*['"`](\.\.?\/[^'"`]+)['"`]\s*\)/g,
-  ];
-  for (const pattern of patterns) {
-    pattern.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(benchScript)) !== null) {
-      const specifier = match[1]?.trim();
-      if (!specifier) {
-        continue;
-      }
-      let normalizedPath = normalizeRelativePath(path.posix.normalize(path.posix.join(scriptsDir, specifier)));
-      if (!normalizedPath.startsWith('database-lab/prototype/src/')) {
-        continue;
-      }
-      if (!path.posix.extname(normalizedPath)) {
-        normalizedPath = `${normalizedPath}.js`;
-      }
-      addUnique(dependencies, [normalizedPath]);
-    }
-  }
-  return dependencies;
 }
 
 function extractToolText(invocation: Pick<ToolInvocationRecord, 'result' | 'error'>): string {
@@ -580,17 +429,108 @@ function isReportedValueGroundedInToolText(reportedValue: unknown, toolText: str
   return matchingTextTokens.length >= 2 || matchingTextTokens.some((token) => token.length >= 8);
 }
 
-function isDatabaseLabBenchmarkInvocation(
-  invocation: Pick<ToolInvocationRecord, 'toolId' | 'metadata' | 'result' | 'error'>
+function isFullRegexMatchGrounded(
+  reportedValue: unknown,
+  matchedText: string,
+  sourceContains: string[],
+  sourceContainsMatched: boolean
 ): boolean {
-  if (invocation.toolId !== 'run_command') {
+  if (isReportedValueGroundedInToolText(reportedValue, matchedText)) {
+    return true;
+  }
+  if (sourceContains.length === 0 || !sourceContainsMatched) {
     return false;
   }
-  const metadataText = invocation.metadata && typeof invocation.metadata === 'object'
-    ? JSON.stringify(invocation.metadata)
+  const reportedText = Array.isArray(reportedValue)
+    ? reportedValue.filter((entry): entry is string | number => typeof entry === 'string' || typeof entry === 'number').join(' ')
+    : typeof reportedValue === 'string' || typeof reportedValue === 'number' || typeof reportedValue === 'boolean'
+      ? String(reportedValue)
+      : '';
+  const normalizedReportedText = normalizeAuditEvidenceText(reportedText);
+  return normalizedReportedText.length > 0
+    && normalizeAuditEvidenceText(matchedText).includes(normalizedReportedText);
+}
+
+function regexMatchSupportsReportedValue(
+  regexSource: string,
+  reportedValue: unknown,
+  toolText: string,
+  sourceContains: string[],
+  sourceContainsMatched: boolean
+): boolean {
+  try {
+    const match = new RegExp(regexSource, 'm').exec(toolText);
+    if (!match) {
+      return false;
+    }
+    const capturedValue = match[1];
+    if (typeof capturedValue !== 'string') {
+      return isFullRegexMatchGrounded(reportedValue, match[0], sourceContains, sourceContainsMatched);
+    }
+    if (typeof reportedValue === 'number') {
+      const observed = Number.parseFloat(capturedValue);
+      const tolerance = Math.max(Math.abs(reportedValue) * 0.05, 1);
+      return Number.isFinite(observed) && Math.abs(observed - reportedValue) <= tolerance;
+    }
+    if (typeof reportedValue === 'string') {
+      return capturedValue.trim() === reportedValue.trim();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function findCandidateSourceInvocationIds(
+  input: TaskQualityEvaluationInput,
+  params: {
+    currentInvocationId: string;
+    sourceRegex?: string;
+    sourceContains: string[];
+    reportedValue: unknown;
+    textForInvocation?: (invocation: TaskQualityEvaluationInput['toolInvocations'][number]) => string;
+  }
+): string[] {
+  const candidates: string[] = [];
+  for (const invocation of input.toolInvocations) {
+    if (
+      invocation.invocationId === params.currentInvocationId
+      || invocation.toolId !== 'run_command'
+      || invocation.status !== 'SUCCEEDED'
+    ) {
+      continue;
+    }
+    const toolText = params.textForInvocation ? params.textForInvocation(invocation) : extractToolText(invocation);
+    const normalizedToolText = normalizeAuditEvidenceText(toolText);
+    const sourceContainsMatched = params.sourceContains.length === 0
+      || params.sourceContains.every((needle) => normalizedToolText.includes(normalizeAuditEvidenceText(needle)));
+    const regexMatched = params.sourceRegex
+      ? regexMatchSupportsReportedValue(
+        params.sourceRegex,
+        params.reportedValue,
+        toolText,
+        params.sourceContains,
+        sourceContainsMatched
+      )
+      : false;
+    if (
+      regexMatched
+      || (params.sourceContains.length > 0 && sourceContainsMatched)
+      || isReportedValueGroundedInToolText(params.reportedValue, toolText)
+    ) {
+      candidates.push(invocation.invocationId);
+    }
+    if (candidates.length >= 3) {
+      break;
+    }
+  }
+  return candidates;
+}
+
+function formatCandidateSourceInvocationHint(candidateIds: string[]): string {
+  return candidateIds.length > 0
+    ? ` Candidate sourceInvocationId values with matching evidence: ${candidateIds.join(', ')}.`
     : '';
-  const combined = `${extractToolText(invocation)}\n${metadataText}`.toLowerCase();
-  return /(database-lab[\\/]prototype|npm run (bench|dry-run|build)|node scripts[\\/]bench\.js|bench\.js --dry-run|dry-run benchmark|dry run benchmark)/i.test(combined);
 }
 
 function tokenize(value: string): string[] {
@@ -669,124 +609,6 @@ function findSuccessfulInvocation(
   return input.toolInvocations.find((invocation) => invocation.invocationId === invocationId && invocation.status === 'SUCCEEDED') ?? null;
 }
 
-function getInvocationCompletedAt(
-  invocation: TaskQualityEvaluationInput['toolInvocations'][number]
-): number {
-  if (typeof invocation.endedAt === 'number' && Number.isFinite(invocation.endedAt)) {
-    return invocation.endedAt;
-  }
-  if (typeof invocation.startedAt === 'number' && Number.isFinite(invocation.startedAt)) {
-    return invocation.startedAt;
-  }
-  return 0;
-}
-
-function tryParseJsonFromCommandStdout(stdoutText: string | null | undefined): {
-  parsed: Record<string, unknown> | null;
-  parseError: string | null;
-} {
-  const trimmed = typeof stdoutText === 'string' ? stdoutText.trim() : '';
-  if (!trimmed) {
-    return { parsed: null, parseError: 'stdout_empty' };
-  }
-  const braceIndexes: number[] = [];
-  for (let index = 0; index < trimmed.length; index += 1) {
-    if (trimmed[index] === '{') {
-      braceIndexes.push(index);
-    }
-  }
-  for (const index of braceIndexes) {
-    const candidate = trimmed.slice(index);
-    try {
-      const parsed = JSON.parse(candidate);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return {
-          parsed: parsed as Record<string, unknown>,
-          parseError: null,
-        };
-      }
-    } catch {
-      // Try the next candidate.
-    }
-  }
-  return { parsed: null, parseError: 'stdout_json_parse_failed' };
-}
-
-function evaluateSuccessfulBenchmarkInvocation(
-  invocation: TaskQualityEvaluationInput['toolInvocations'][number]
-): {
-  passed: boolean;
-  parseError: string | null;
-  hasRequiredMetrics: boolean;
-} {
-  const result = invocation.result && typeof invocation.result === 'object'
-    ? invocation.result as Record<string, unknown>
-    : null;
-  const stdout = typeof result?.stdout === 'string' ? result.stdout : null;
-  const stderr = typeof result?.stderr === 'string' ? result.stderr : null;
-  const { parsed, parseError } = tryParseJsonFromCommandStdout(stdout);
-  const metrics = parsed && typeof parsed.metrics === 'object' && parsed.metrics
-    ? parsed.metrics as Record<string, unknown>
-    : null;
-  const hasRequiredMetrics =
-    !!metrics
-    && ['pagesWritten', 'pagesRead', 'writeDurationMs', 'readDurationMs', 'totalDurationMs']
-      .every((key) => typeof metrics[key] === 'number' && Number.isFinite(metrics[key] as number));
-  const status = typeof parsed?.status === 'string' ? parsed.status.trim().toLowerCase() : null;
-  const statusAcceptable =
-    status === null
-    || status === 'ok'
-    || status === 'passed'
-    || status === 'success'
-    || status === 'completed';
-  const stderrLooksFatal = /(?:^|\b)(TypeError|SyntaxError|ReferenceError|RangeError|Error:)/i.test(stderr ?? '');
-  const stdoutLooksFatal = /(?:^|\b)(TypeError|SyntaxError|ReferenceError|RangeError|Error:)/i.test(stdout ?? '');
-  return {
-    passed: invocation.status === 'SUCCEEDED' && !stderrLooksFatal && !stdoutLooksFatal && statusAcceptable && hasRequiredMetrics,
-    parseError,
-    hasRequiredMetrics,
-  };
-}
-
-function normalizeRelativeToolPath(value: string): string {
-  return value.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/^\/+/, '');
-}
-
-function getWriteFileTargetPath(
-  invocation: TaskQualityEvaluationInput['toolInvocations'][number]
-): string | null {
-  if (invocation.toolId !== 'write_file' || invocation.status !== 'SUCCEEDED') {
-    return null;
-  }
-  const resultPath = invocation.result && typeof invocation.result.path === 'string'
-    ? invocation.result.path
-    : null;
-  const argumentPath = invocation.arguments && typeof invocation.arguments.path === 'string'
-    ? invocation.arguments.path
-    : null;
-  const resolved = resultPath ?? argumentPath;
-  return resolved ? normalizeRelativeToolPath(resolved) : null;
-}
-
-function getLatestSuccessfulWriteCompletedAt(
-  input: TaskQualityEvaluationInput,
-  relativePaths: string[]
-): number | null {
-  const pathSet = new Set(relativePaths.map((entry) => normalizeRelativeToolPath(entry)));
-  let latest: number | null = null;
-  for (const invocation of input.toolInvocations) {
-    const targetPath = getWriteFileTargetPath(invocation);
-    if (!targetPath || !pathSet.has(targetPath)) {
-      continue;
-    }
-    const completedAt = getInvocationCompletedAt(invocation);
-    if (latest === null || completedAt > latest) {
-      latest = completedAt;
-    }
-  }
-  return latest;
-}
-
 function createNotApplicableResult(): TaskQualityEvaluationResult {
   return {
     profileId: null,
@@ -850,7 +672,7 @@ function evaluateWebExperience(input: TaskQualityEvaluationInput): TaskQualityEv
     failedChecks.push('missing_interaction_selectors');
     requiredNextEvidence.push('record at least one visible interaction in quality/web-audit.json');
   }
-  const filesToInspect = [...entryFiles, ...supportingFiles].map((filePath) => resolveFilePath(input.workspaceDir, filePath));
+  const filesToInspect = [...entryFiles, ...supportingFiles].map((filePath) => resolveQualityArtifactPath(input, filePath));
   let hasInteractiveCode = false;
   for (const filePath of filesToInspect) {
     const content = readTextIfExists(filePath);
@@ -860,6 +682,10 @@ function evaluateWebExperience(input: TaskQualityEvaluationInput): TaskQualityEv
     }
     if (MOJIBAKE_PATTERN.test(content)) {
       failedChecks.push(`encoding_issue:${normalizeRelativePath(filePath)}`);
+    }
+    if (/\.(?:html|htm)$/i.test(filePath) && MALFORMED_HTML_CONTROL_PATTERN.test(content)) {
+      failedChecks.push(`html_malformed_tag_fragment:${normalizeRelativePath(filePath)}`);
+      requiredNextEvidence.push(`repair malformed HTML form/control tag syntax in ${normalizeRelativePath(filePath)}`);
     }
     const visibleCopy = extractVisibleWebText(filePath, content);
     if (visibleCopy && PLACEHOLDER_COPY_PATTERN.test(visibleCopy)) {
@@ -1129,8 +955,13 @@ function evaluateSystemAudit(input: TaskQualityEvaluationInput): TaskQualityEval
     const sourceContainsMatched = sourceContains.length === 0
       || sourceContains.every((needle) => normalizedToolText.includes(normalizeAuditEvidenceText(needle)));
     if (!sourceContainsMatched && !isReportedValueGroundedInToolText(fact.reportedValue, toolText)) {
+      const candidateIds = findCandidateSourceInvocationIds(input, {
+        currentInvocationId: sourceInvocationId,
+        sourceContains,
+        reportedValue: fact.reportedValue
+      });
       failedChecks.push(`tool_output_mismatch:${factName}`);
-      requiredNextEvidence.push(`repair quality/system-audit.json fact ${factName} so sourceInvocationId points to a successful run_command output containing: ${sourceContains.join(', ')}`);
+      requiredNextEvidence.push(`repair quality/system-audit.json fact ${factName} so sourceInvocationId points to a successful run_command output containing: ${sourceContains.join(', ')}.${formatCandidateSourceInvocationHint(candidateIds)}`);
       continue;
     } else if (!sourceContainsMatched) {
       passedChecks.push(`source_contains_value_grounded:${factName}`);
@@ -1139,14 +970,28 @@ function evaluateSystemAudit(input: TaskQualityEvaluationInput): TaskQualityEval
     if (regexSource) {
       try {
         const match = new RegExp(regexSource, 'm').exec(toolText);
-        if (!match || !match[1]) {
+        if (!match) {
+          const candidateIds = findCandidateSourceInvocationIds(input, {
+            currentInvocationId: sourceInvocationId,
+            sourceRegex: regexSource,
+            sourceContains,
+            reportedValue: fact.reportedValue
+          });
           failedChecks.push(`tool_regex_unmatched:${factName}`);
-          requiredNextEvidence.push(`repair sourceRegex or sourceInvocationId for ${factName} so the regex matches the cited successful tool output`);
+          requiredNextEvidence.push(`repair sourceRegex or sourceInvocationId for ${factName} so the regex matches the cited successful tool output.${formatCandidateSourceInvocationHint(candidateIds)}`);
           continue;
         }
         const reportedValue = fact.reportedValue;
-        if (typeof reportedValue === 'number') {
-          const observed = Number.parseFloat(match[1]);
+        const capturedValue = match[1];
+        if (typeof capturedValue !== 'string') {
+          if (!isFullRegexMatchGrounded(reportedValue, match[0], sourceContains, sourceContainsMatched)) {
+            failedChecks.push(`tool_regex_missing_capture:${factName}`);
+            requiredNextEvidence.push(`repair sourceRegex for ${factName} so it captures or fully matches the reported value from the cited tool output`);
+            continue;
+          }
+          passedChecks.push(`source_regex_full_match_grounded:${factName}`);
+        } else if (typeof reportedValue === 'number') {
+          const observed = Number.parseFloat(capturedValue);
           if (!Number.isFinite(observed)) {
             failedChecks.push(`tool_value_invalid:${factName}`);
             requiredNextEvidence.push(`repair sourceRegex for ${factName} so it captures a numeric value from the cited tool output`);
@@ -1158,7 +1003,7 @@ function evaluateSystemAudit(input: TaskQualityEvaluationInput): TaskQualityEval
             requiredNextEvidence.push(`repair reportedValue for ${factName} to equal the observed value captured from the cited tool output`);
             continue;
           }
-        } else if (typeof reportedValue === 'string' && match[1].trim() !== reportedValue.trim()) {
+        } else if (typeof reportedValue === 'string' && capturedValue.trim() !== reportedValue.trim()) {
           failedChecks.push(`fact_value_mismatch:${factName}`);
           requiredNextEvidence.push(`repair reportedValue for ${factName} to equal the observed value captured from the cited tool output`);
           continue;
@@ -1262,8 +1107,17 @@ function evaluateDesktopObservation(input: TaskQualityEvaluationInput): TaskQual
     const sourceContainsMatched = sourceContains.length === 0
       || sourceContains.every((needle) => normalizedToolText.includes(normalizeAuditEvidenceText(needle)));
     if (!sourceContainsMatched && !isReportedValueGroundedInToolText(observation.reportedValue, combinedToolText)) {
+      const candidateIds = findCandidateSourceInvocationIds(input, {
+        currentInvocationId: sourceInvocationId,
+        sourceContains,
+        reportedValue: observation.reportedValue,
+        textForInvocation: (candidate) => {
+          const candidateCommand = typeof candidate.arguments?.command === 'string' ? candidate.arguments.command : '';
+          return `${candidateCommand}\n${extractToolText(candidate)}`;
+        }
+      });
       failedChecks.push(`tool_output_mismatch:${observationName}`);
-      requiredNextEvidence.push(`repair quality/desktop-observation.json observation ${observationName} so sourceInvocationId points to a successful run_command output containing: ${sourceContains.join(', ')}`);
+      requiredNextEvidence.push(`repair quality/desktop-observation.json observation ${observationName} so sourceInvocationId points to a successful run_command output containing: ${sourceContains.join(', ')}.${formatCandidateSourceInvocationHint(candidateIds)}`);
       continue;
     } else if (!sourceContainsMatched) {
       passedChecks.push(`source_contains_value_grounded:${observationName}`);
@@ -1273,14 +1127,32 @@ function evaluateDesktopObservation(input: TaskQualityEvaluationInput): TaskQual
     if (regexSource) {
       try {
         const match = new RegExp(regexSource, 'm').exec(combinedToolText);
-        if (!match || !match[1]) {
+        if (!match) {
+          const candidateIds = findCandidateSourceInvocationIds(input, {
+            currentInvocationId: sourceInvocationId,
+            sourceRegex: regexSource,
+            sourceContains,
+            reportedValue: observation.reportedValue,
+            textForInvocation: (candidate) => {
+              const candidateCommand = typeof candidate.arguments?.command === 'string' ? candidate.arguments.command : '';
+              return `${candidateCommand}\n${extractToolText(candidate)}`;
+            }
+          });
           failedChecks.push(`tool_regex_unmatched:${observationName}`);
-          requiredNextEvidence.push(`repair sourceRegex or sourceInvocationId for ${observationName} so the regex matches the cited successful tool output`);
+          requiredNextEvidence.push(`repair sourceRegex or sourceInvocationId for ${observationName} so the regex matches the cited successful tool output.${formatCandidateSourceInvocationHint(candidateIds)}`);
           continue;
         }
         const reportedValue = observation.reportedValue;
-        if (typeof reportedValue === 'number') {
-          const observed = Number.parseFloat(match[1]);
+        const capturedValue = match[1];
+        if (typeof capturedValue !== 'string') {
+          if (!isFullRegexMatchGrounded(reportedValue, match[0], sourceContains, sourceContainsMatched)) {
+            failedChecks.push(`tool_regex_missing_capture:${observationName}`);
+            requiredNextEvidence.push(`repair sourceRegex for ${observationName} so it captures or fully matches the reported value from the cited tool output`);
+            continue;
+          }
+          passedChecks.push(`source_regex_full_match_grounded:${observationName}`);
+        } else if (typeof reportedValue === 'number') {
+          const observed = Number.parseFloat(capturedValue);
           if (!Number.isFinite(observed)) {
             failedChecks.push(`tool_value_invalid:${observationName}`);
             requiredNextEvidence.push(`repair sourceRegex for ${observationName} so it captures a numeric value from the cited tool output`);
@@ -1292,7 +1164,7 @@ function evaluateDesktopObservation(input: TaskQualityEvaluationInput): TaskQual
             requiredNextEvidence.push(`repair reportedValue for ${observationName} to equal the observed value captured from the cited tool output`);
             continue;
           }
-        } else if (typeof reportedValue === 'string' && match[1].trim() !== reportedValue.trim()) {
+        } else if (typeof reportedValue === 'string' && capturedValue.trim() !== reportedValue.trim()) {
           failedChecks.push(`fact_value_mismatch:${observationName}`);
           requiredNextEvidence.push(`repair reportedValue for ${observationName} to equal the observed value captured from the cited tool output`);
           continue;
@@ -1330,355 +1202,6 @@ function evaluateDesktopObservation(input: TaskQualityEvaluationInput): TaskQual
   });
 }
 
-function evaluateDatabaseDesign(input: TaskQualityEvaluationInput): TaskQualityEvaluationResult {
-  const passedChecks: string[] = [];
-  const failedChecks: string[] = [];
-  const requiredNextEvidence: string[] = [];
-  const auditPath = resolveFilePath(input.workspaceDir, QUALITY_EVIDENCE_FILES.database_near_mysql_design);
-  const auditRead = readJsonEvidence(auditPath);
-  if (auditRead.status === 'missing') {
-    return createResult({
-      profileId: 'database_near_mysql_design',
-      passedChecks,
-      failedChecks: ['missing_database_design_manifest'],
-      requiredNextEvidence: ['write quality/database-design.json with designFiles and implementedModules']
-    });
-  }
-  if (auditRead.status === 'invalid') {
-    return createResult({
-      profileId: 'database_near_mysql_design',
-      passedChecks,
-      failedChecks: ['invalid_database_design_manifest_json'],
-      requiredNextEvidence: [`repair quality/database-design.json so it is valid JSON (${auditRead.parseError ?? 'parse failure'})`]
-    });
-  }
-  const audit = auditRead.value!;
-  const designFiles = getStringArray(audit.designFiles);
-  const prototypeFiles = getStringArray(audit.prototypeFiles);
-  const implementedModules = getStringArray(audit.implementedModules);
-  const prototypeSrcFiles = listFilesRecursive(resolveFilePath(input.workspaceDir, 'database-lab/prototype/src'));
-  const requiredFiles = [
-    'database-lab/design/README.md',
-    'database-lab/design/architecture.md',
-    'database-lab/design/storage-engine.md',
-    'database-lab/design/sql-compatibility.md',
-    'database-lab/design/benchmark-plan.md',
-    'database-lab/prototype/package.json',
-    'database-lab/prototype/README.md',
-    'database-lab/prototype/scripts/bench.js'
-  ];
-  const manifestFileRefs = [...new Set([...designFiles, ...prototypeFiles])];
-  for (const relativePath of requiredFiles) {
-    if (!readTextIfExists(resolveFilePath(input.workspaceDir, relativePath))) {
-      addUnique(failedChecks, [`missing_required_file:${relativePath}`]);
-      addUnique(requiredNextEvidence, [`write required database lab file ${relativePath}`]);
-    }
-  }
-  for (const relativePath of manifestFileRefs) {
-    if (requiredFiles.includes(relativePath)) {
-      continue;
-    }
-    if (!readTextIfExists(resolveFilePath(input.workspaceDir, relativePath))) {
-      addUnique(failedChecks, [`manifest_references_missing_file:${relativePath}`]);
-      addUnique(requiredNextEvidence, [`repair quality/database-design.json so it stops claiming missing file ${relativePath}, or write that file if it is truly required`]);
-    }
-  }
-  const designCorpus = [...new Set([...requiredFiles.filter((item) => item.startsWith('database-lab/design/')), ...designFiles])]
-    .map((relativePath) => readTextIfExists(resolveFilePath(input.workspaceDir, relativePath)) ?? '')
-    .join('\n');
-  const keywordGroups = [
-    ['storage', 'page', 'segment'],
-    ['index', 'btree', 'hash'],
-    ['transaction', 'concurrency', 'lock', 'mvcc'],
-    ['wal', 'recovery', 'checkpoint'],
-    ['buffer', 'cache'],
-    ['sql', 'parser', 'planner'],
-    ['benchmark', 'latency', 'throughput', 'tps']
-  ];
-  for (const [index, group] of keywordGroups.entries()) {
-    if (!group.some((token) => designCorpus.toLowerCase().includes(token))) {
-      failedChecks.push(`design_coverage_gap:${index + 1}`);
-      requiredNextEvidence.push(`cover database design topic group ${index + 1}: ${group.join('/')}`);
-    }
-  }
-  const benchScript = readTextIfExists(resolveFilePath(input.workspaceDir, 'database-lab/prototype/scripts/bench.js')) ?? '';
-  const requiredBenchMetricKeys = ['pagesWritten', 'pagesRead', 'writeDurationMs', 'readDurationMs', 'totalDurationMs'];
-  const benchRequiredModules = extractBenchPrototypeModuleDependencies(benchScript);
-  for (const modulePath of DATABASE_LAB_CORE_IMPLEMENTED_MODULES) {
-    const content = readTextIfExists(resolveFilePath(input.workspaceDir, modulePath));
-    if (!content) {
-      failedChecks.push(`missing_core_module:${modulePath}`);
-      requiredNextEvidence.push(`write the required database prototype core module ${modulePath}`);
-      continue;
-    }
-    if (!implementedModules.includes(modulePath)) {
-      failedChecks.push(`core_module_untracked:${modulePath}`);
-      requiredNextEvidence.push(`list ${modulePath} in quality/database-design.json implementedModules`);
-    }
-  }
-  if (implementedModules.length > 0 && benchRequiredModules.length === 0) {
-    failedChecks.push('benchmark_not_wired_to_prototype_modules');
-    requiredNextEvidence.push('wire database-lab/prototype/scripts/bench.js to real modules under database-lab/prototype/src/ instead of placeholder-only logic');
-  }
-  if (implementedModules.length < DATABASE_LAB_CORE_IMPLEMENTED_MODULES.length) {
-    failedChecks.push('insufficient_implemented_modules');
-    requiredNextEvidence.push(`ship the full core prototype module set and list it in implementedModules: ${DATABASE_LAB_CORE_IMPLEMENTED_MODULES.join(', ')}`);
-  }
-  if (prototypeSrcFiles.length === 0) {
-    failedChecks.push('missing_prototype_src_modules');
-    requiredNextEvidence.push('write real implementation files under database-lab/prototype/src/');
-  } else {
-    passedChecks.push('prototype_src_modules_present');
-  }
-  const implementedModuleSet = new Set(implementedModules);
-  for (const modulePath of benchRequiredModules) {
-    const content = readTextIfExists(resolveFilePath(input.workspaceDir, modulePath));
-    if (!content) {
-      failedChecks.push(`benchmark_dependency_missing:${modulePath}`);
-      requiredNextEvidence.push(`implement benchmark dependency module ${modulePath}`);
-      continue;
-    }
-    if (!implementedModuleSet.has(modulePath)) {
-      failedChecks.push(`benchmark_dependency_untracked:${modulePath}`);
-      requiredNextEvidence.push(`list ${modulePath} in quality/database-design.json implementedModules`);
-      continue;
-    }
-    if (hasStubLikeImplementation(content)) {
-      failedChecks.push(`stub_module:${modulePath}`);
-      requiredNextEvidence.push(`replace stub implementation in ${modulePath} with runnable logic`);
-      continue;
-    }
-    if (isShallowImplementation(content)) {
-      failedChecks.push(`module_too_shallow:${modulePath}`);
-      requiredNextEvidence.push(`expand ${modulePath} beyond a shallow placeholder`);
-      continue;
-    }
-    passedChecks.push(`benchmark_dependency_ready:${modulePath}`);
-  }
-  for (const modulePath of implementedModules) {
-    if (!modulePath.startsWith('database-lab/prototype/src/')) {
-      failedChecks.push(`implemented_module_outside_prototype_src:${modulePath}`);
-      requiredNextEvidence.push(`move or rewrite ${modulePath} under database-lab/prototype/src/`);
-      continue;
-    }
-    const content = readTextIfExists(resolveFilePath(input.workspaceDir, modulePath));
-    if (!content) {
-      addUnique(failedChecks, [`manifest_references_missing_implemented_module:${modulePath}`]);
-      addUnique(requiredNextEvidence, [`repair quality/database-design.json implementedModules so it matches real files under database-lab/prototype/src/, or write ${modulePath} if it is truly implemented`]);
-      continue;
-    }
-    if (hasStubLikeImplementation(content)) {
-      failedChecks.push(`stub_module:${modulePath}`);
-      requiredNextEvidence.push(`replace stub implementation in ${modulePath} with runnable logic`);
-      continue;
-    }
-    if (isShallowImplementation(content)) {
-      failedChecks.push(`module_too_shallow:${modulePath}`);
-      requiredNextEvidence.push(`expand ${modulePath} beyond a shallow placeholder`);
-      continue;
-    }
-    passedChecks.push(`implemented_module:${modulePath}`);
-  }
-  const prototypeReadme = readTextIfExists(resolveFilePath(input.workspaceDir, 'database-lab/prototype/README.md')) ?? '';
-  if (/no actual database functionality is implemented/i.test(prototypeReadme)) {
-    failedChecks.push('prototype_self_declares_stub_only');
-    requiredNextEvidence.push('update prototype README after implementing runnable database behavior');
-  }
-  if (!/result|metric|latency|throughput|benchmark/i.test(benchScript)) {
-    failedChecks.push('benchmark_scaffold_missing_metrics');
-    requiredNextEvidence.push('implement benchmark metrics in database-lab/prototype/scripts/bench.js');
-  } else {
-    passedChecks.push('benchmark_scaffold_present');
-  }
-  const missingRequiredBenchMetricKeys = requiredBenchMetricKeys.filter((token) => !benchScript.includes(token));
-  if (benchScript && missingRequiredBenchMetricKeys.length > 0) {
-    failedChecks.push('benchmark_scaffold_missing_required_metric_keys');
-    requiredNextEvidence.push(`ensure database-lab/prototype/scripts/bench.js emits metrics keys ${missingRequiredBenchMetricKeys.join(', ')}`);
-  }
-  if (/(new\s+Worker|worker_threads)/i.test(benchScript) && BENCH_STACK_RISK_PATTERN.test(benchScript)) {
-    failedChecks.push('benchmark_scaffold_stack_risk');
-    requiredNextEvidence.push('repair database-lab/prototype/scripts/bench.js so worker latency results are aggregated without spread-pushing large arrays');
-  }
-  const benchmarkInvocations = input.toolInvocations
-    .filter((invocation) => isDatabaseLabBenchmarkInvocation(invocation))
-    .sort((left, right) => getInvocationCompletedAt(right) - getInvocationCompletedAt(left));
-  const latestBenchmarkInvocation = benchmarkInvocations[0] ?? null;
-  const latestBenchmarkSensitiveWriteAt = getLatestSuccessfulWriteCompletedAt(input, [
-    'database-lab/prototype/package.json',
-    'database-lab/prototype/scripts/bench.js',
-    ...benchRequiredModules,
-    ...implementedModules,
-  ]);
-  const benchmarkSelfCheckGrounded =
-    prototypeSrcFiles.length >= 2
-    && benchRequiredModules.length > 0
-    && !failedChecks.includes('benchmark_not_wired_to_prototype_modules')
-    && !failedChecks.includes('missing_prototype_src_modules')
-    && !failedChecks.some((entry) => entry.startsWith('benchmark_dependency_missing:'))
-    && !failedChecks.some((entry) => entry.startsWith('benchmark_dependency_untracked:'))
-    && !failedChecks.some((entry) => entry.startsWith('implemented_module_outside_prototype_src:'))
-    && !failedChecks.some((entry) => entry.startsWith('stub_module:'))
-    && !failedChecks.some((entry) => entry.startsWith('module_too_shallow:'));
-  if (!latestBenchmarkInvocation) {
-    failedChecks.push('missing_benchmark_self_check');
-    requiredNextEvidence.push('run a successful dry-run benchmark command from database-lab/prototype and keep its tool evidence');
-  } else if (!benchmarkSelfCheckGrounded) {
-    failedChecks.push('benchmark_self_check_not_grounded');
-    requiredNextEvidence.push('rerun the dry-run benchmark only after database-lab/prototype/src contains real modules and database-lab/prototype/scripts/bench.js imports them directly');
-  } else if (
-    latestBenchmarkSensitiveWriteAt !== null
-    && getInvocationCompletedAt(latestBenchmarkInvocation) < latestBenchmarkSensitiveWriteAt
-  ) {
-    failedChecks.push('benchmark_self_check_stale');
-    requiredNextEvidence.push('rerun a successful dry-run benchmark command from database-lab/prototype after the latest bench.js or prototype/src changes');
-  } else if (latestBenchmarkInvocation.status === 'SUCCEEDED') {
-    const benchmarkEvaluation = evaluateSuccessfulBenchmarkInvocation(latestBenchmarkInvocation);
-    if (benchmarkEvaluation.passed) {
-      passedChecks.push('benchmark_self_check_evidence_present');
-    } else if (!benchmarkEvaluation.hasRequiredMetrics) {
-      failedChecks.push('benchmark_self_check_missing_required_metrics');
-      requiredNextEvidence.push('repair database-lab/prototype/scripts/bench.js so the successful dry-run stdout includes metrics keys pagesWritten, pagesRead, writeDurationMs, readDurationMs, totalDurationMs, then rerun the benchmark');
-    } else {
-      failedChecks.push('benchmark_self_check_output_invalid');
-      requiredNextEvidence.push(`repair database-lab/prototype/scripts/bench.js so the successful dry-run stdout is one parseable JSON object with top-level status, summary, and metrics keys, then rerun the benchmark (${benchmarkEvaluation.parseError ?? 'stdout parse failure'})`);
-    }
-  } else {
-    failedChecks.push('benchmark_self_check_failed');
-    requiredNextEvidence.push('repair the benchmark scaffold and rerun a successful dry-run benchmark command from database-lab/prototype');
-  }
-  return createResult({
-    profileId: 'database_near_mysql_design',
-    passedChecks,
-    failedChecks,
-    requiredNextEvidence
-  });
-}
-
-function evaluateDatabaseVerify(input: TaskQualityEvaluationInput): TaskQualityEvaluationResult {
-  const passedChecks: string[] = [];
-  const failedChecks: string[] = [];
-  const requiredNextEvidence: string[] = [];
-  const baseDesign = evaluateDatabaseDesign({
-    ...input,
-    qualityProfileId: 'database_near_mysql_design'
-  });
-  if (baseDesign.verdict === 'failed') {
-    addUnique(failedChecks, baseDesign.failedChecks);
-    addUnique(requiredNextEvidence, baseDesign.requiredNextEvidence);
-  } else {
-    addUnique(passedChecks, baseDesign.passedChecks);
-  }
-  const auditPath = resolveFilePath(input.workspaceDir, QUALITY_EVIDENCE_FILES.database_near_mysql_verify);
-  const auditRead = readJsonEvidence(auditPath);
-  if (auditRead.status === 'missing') {
-    addUnique(failedChecks, ['missing_database_benchmark_result']);
-    addUnique(requiredNextEvidence, ['write quality/database-benchmark-result.json with resultFile and sourceInvocationId']);
-    return createResult({
-      profileId: 'database_near_mysql_verify',
-      passedChecks,
-      failedChecks,
-      requiredNextEvidence
-    });
-  }
-  if (auditRead.status === 'invalid') {
-    addUnique(failedChecks, ['invalid_database_benchmark_result_json']);
-    addUnique(requiredNextEvidence, [`repair quality/database-benchmark-result.json so it is valid JSON (${auditRead.parseError ?? 'parse failure'})`]);
-    return createResult({
-      profileId: 'database_near_mysql_verify',
-      passedChecks,
-      failedChecks,
-      requiredNextEvidence
-    });
-  }
-  const audit = auditRead.value!;
-  const resultFile = typeof audit.resultFile === 'string' ? audit.resultFile : '';
-  const benchmarkCommand = typeof audit.benchmarkCommand === 'string' ? audit.benchmarkCommand : '';
-  const sourceInvocationId = typeof audit.sourceInvocationId === 'string' ? audit.sourceInvocationId : '';
-  const updatedDocs = getStringArray(audit.updatedDocs);
-  const implementedModules = getStringArray(audit.implementedModules);
-  const invocation = sourceInvocationId ? findSuccessfulInvocation(input, sourceInvocationId) : null;
-  if (!invocation) {
-    addUnique(failedChecks, ['missing_benchmark_tool_evidence']);
-    addUnique(requiredNextEvidence, ['run a successful benchmark or dry-run command and cite its invocation id']);
-  } else {
-    const toolText = extractToolText(invocation).toLowerCase();
-    if (!toolText.includes('bench') && !benchmarkCommand.toLowerCase().includes('bench')) {
-      addUnique(failedChecks, ['benchmark_command_not_observed']);
-    } else {
-      addUnique(passedChecks, ['benchmark_command_observed']);
-    }
-  }
-  const resultRead = resultFile ? readJsonEvidence(resolveFilePath(input.workspaceDir, resultFile)) : null;
-  if (!resultRead || resultRead.status === 'missing') {
-    addUnique(failedChecks, ['missing_benchmark_result_file']);
-    addUnique(requiredNextEvidence, ['write a parseable benchmark result file and reference it in quality/database-benchmark-result.json']);
-  } else if (resultRead.status === 'invalid') {
-    addUnique(failedChecks, ['invalid_benchmark_result_json']);
-    addUnique(requiredNextEvidence, [`repair ${resultFile} so it is valid JSON (${resultRead.parseError ?? 'parse failure'})`]);
-  } else {
-    const resultJson = resultRead.value ?? {};
-    if (!('metrics' in resultJson) && !('summary' in resultJson) && !('status' in resultJson)) {
-    addUnique(failedChecks, ['benchmark_result_missing_metrics']);
-    } else {
-      addUnique(passedChecks, ['benchmark_result_present']);
-    }
-  }
-  if (implementedModules.length === 0) {
-    addUnique(failedChecks, ['missing_verified_implemented_modules']);
-    addUnique(requiredNextEvidence, ['list the real prototype/src implementation modules in quality/database-benchmark-result.json']);
-  }
-  for (const modulePath of DATABASE_LAB_CORE_IMPLEMENTED_MODULES) {
-    const content = readTextIfExists(resolveFilePath(input.workspaceDir, modulePath));
-    if (!content) {
-      addUnique(failedChecks, [`missing_verified_core_module:${modulePath}`]);
-      addUnique(requiredNextEvidence, [`write the required verified core module ${modulePath}`]);
-      continue;
-    }
-    if (!implementedModules.includes(modulePath)) {
-      addUnique(failedChecks, [`verified_core_module_untracked:${modulePath}`]);
-      addUnique(requiredNextEvidence, [`list ${modulePath} in quality/database-benchmark-result.json implementedModules`]);
-    }
-  }
-  for (const modulePath of implementedModules) {
-    if (!modulePath.startsWith('database-lab/prototype/src/')) {
-      addUnique(failedChecks, [`verified_module_outside_prototype_src:${modulePath}`]);
-      continue;
-    }
-    const content = readTextIfExists(resolveFilePath(input.workspaceDir, modulePath));
-    if (!content) {
-      addUnique(failedChecks, [`missing_verified_module:${modulePath}`]);
-      continue;
-    }
-    if (hasStubLikeImplementation(content) || isShallowImplementation(content)) {
-      addUnique(failedChecks, [`verified_module_too_shallow:${modulePath}`]);
-      continue;
-    }
-    addUnique(passedChecks, [`verified_module:${modulePath}`]);
-  }
-  for (const docPath of updatedDocs) {
-    const content = readTextIfExists(resolveFilePath(input.workspaceDir, docPath));
-    if (!content) {
-      addUnique(failedChecks, [`missing_updated_doc:${docPath}`]);
-      continue;
-    }
-    if (!/unproven|validated|measured|result/i.test(content)) {
-      addUnique(failedChecks, [`doc_not_updated_with_benchmark:${docPath}`]);
-      continue;
-    }
-    addUnique(passedChecks, [`updated_doc:${docPath}`]);
-  }
-  if (updatedDocs.length === 0) {
-    addUnique(failedChecks, ['missing_updated_docs_reference']);
-    addUnique(requiredNextEvidence, ['list the updated benchmark/design docs in quality/database-benchmark-result.json']);
-  }
-  return createResult({
-    profileId: 'database_near_mysql_verify',
-    passedChecks,
-    failedChecks,
-    requiredNextEvidence
-  });
-}
-
 export function evaluateTaskQuality(input: TaskQualityEvaluationInput): TaskQualityEvaluationResult {
   switch (input.qualityProfileId ?? null) {
     case null:
@@ -1694,10 +1217,6 @@ export function evaluateTaskQuality(input: TaskQualityEvaluationInput): TaskQual
       return evaluateSystemAudit(input);
     case 'desktop_observation':
       return evaluateDesktopObservation(input);
-    case 'database_near_mysql_design':
-      return evaluateDatabaseDesign(input);
-    case 'database_near_mysql_verify':
-      return evaluateDatabaseVerify(input);
     default:
       return createNotApplicableResult();
   }

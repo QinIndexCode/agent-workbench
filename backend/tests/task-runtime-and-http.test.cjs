@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const { WebSocket } = require('ws');
 const fs = require('node:fs');
+const fsPromises = require('node:fs/promises');
 const path = require('node:path');
 const {
   applyToolInvocationTransition,
@@ -173,6 +174,71 @@ const completed = await runtime.tasks.continueTask({ taskId: submitted.command.t
     assert.equal(completed.task.runtime.lifecycleStatus, 'COMPLETED');
     assert.equal(completed.task.runtime.currentUnitId, null);
     assert.deepEqual(completed.task.runtime.completedUnits, ['AGENT-001', 'AGENT-002']);
+  } finally {
+    removeDir(root);
+  }
+});
+
+test('direct task actions can auto-run generic correction turns after tool evidence', async () => {
+  const root = createTempRoot();
+  try {
+    const { foundation, runtime } = createRuntimeWithFoundation({
+      config: {
+        paths: {
+          rootDir: root
+        },
+        tools: {
+          permissionMode: 'full'
+        }
+      }
+    });
+    let providerCalls = 0;
+    registerProviderHandler(foundation, async () => {
+      providerCalls += 1;
+      return {
+        responseId: `resp_auto_${providerCalls}`,
+        providerId: 'provider-main',
+        model: 'mock-model',
+        outputText: providerCalls === 1
+          ? '{"current_unit":"AGENT-001","tool_name":"read_file","arguments":{"path":"input/brief.md"}}'
+          : '[AGENT-001_OUTPUT]{"summary":"Brief summarized from tool evidence.","details":"The brief asks for a focused handoff.","risks":[]}' + '[/AGENT-001_OUTPUT]\n'
+            + '{"current_unit":"AGENT-001","status":"COMPLETE","progress_percent":100,"decision":"CONTINUE","reason":"tool evidence incorporated","files_created":[]}',
+        finishReason: 'stop',
+        usage: {
+          promptTokens: 10,
+          completionTokens: 10,
+          totalTokens: 20
+        },
+        metadata: {}
+      };
+    });
+
+    const submitted = await runtime.tasks.submitTask(createTaskInput([
+      {
+        id: 'AGENT-001',
+        role: 'Analyst',
+        goal: 'Read the brief and return a grounded handoff.',
+        outputContract: '{"summary":"string","details":"string","risks":[]}',
+        executionProfileId: 'analyze',
+        dependencies: []
+      }
+    ]));
+    const workspaceDir = path.join(root, 'workspace', submitted.command.taskId, 'input');
+    await fsPromises.mkdir(workspaceDir, { recursive: true });
+    await fsPromises.writeFile(path.join(workspaceDir, 'brief.md'), 'Focused handoff required.', 'utf8');
+
+    const started = await runtime.tasks.startTask({
+      taskId: submitted.command.taskId,
+      autoRun: true,
+      maxTurns: 4
+    });
+    const readInvocation = started.task.toolInvocations.find((record) => record.toolId === 'read_file');
+
+    assert.equal(providerCalls, 2);
+    assert.equal(started.task.runtime.lifecycleStatus, 'COMPLETED');
+    assert.equal(started.task.runtime.pendingCorrection, 'NONE');
+    assert.equal(readInvocation?.status, 'SUCCEEDED');
+    assert.equal(started.task.latestVisibleOutput?.summary, 'Brief summarized from tool evidence.');
   } finally {
     removeDir(root);
   }
@@ -943,6 +1009,81 @@ test('verify profile treats a failed read_file as resolved after the same path i
   }
 });
 
+test('verify profile treats failed inspection reads as evidence for missing-source blockers', async () => {
+  const root = createTempRoot();
+  try {
+    const { foundation, runtime } = createRuntimeWithFoundation({
+      config: {
+        paths: {
+          rootDir: root
+        }
+      }
+    });
+    registerProvider(foundation, [
+      '[AGENT-001_OUTPUT]{"summary":"source missing","details":"inputs/customer-escalation.md was not found","issues":["inputs/customer-escalation.md is missing"]}[/AGENT-001_OUTPUT]\n'
+        + '{"current_unit":"AGENT-001","status":"COMPLETE","progress_percent":100,"decision":"CONTINUE","reason":"missing source blocker reported","files_created":[]}'
+    ]);
+
+    const submitted = await runtime.tasks.submitTask(createTaskInput([
+      {
+        id: 'AGENT-001',
+        role: 'Verifier',
+        goal: 'Check whether the requested source exists',
+        executionProfileId: 'verify',
+        outputContract: '{"summary":"string","details":"string","issues":["string"]}',
+        dependencies: []
+      }
+    ]));
+    await runtime.tasks.startTask({ taskId: submitted.command.taskId });
+
+    const failedBase = createToolInvocationRecord({
+      correlationId: 'corr_missing_source_read',
+      sessionId: 'sess_missing_source_read',
+      turnId: 'turn_missing_source_read',
+      checkpointId: 'chk_missing_source_read',
+      request: {
+        taskId: submitted.command.taskId,
+        unitId: 'AGENT-001',
+        toolName: 'read_file',
+        arguments: {
+          path: 'inputs/customer-escalation.md'
+        }
+      },
+      startedAt: Date.now(),
+      metadata: {
+        source: 'test',
+        verification: true
+      }
+    });
+    const failedRunning = applyToolInvocationTransition(failedBase, {
+      type: 'START',
+      timestamp: failedBase.startedAt + 1
+    });
+    const failed = applyToolInvocationTransition(failedRunning, {
+      type: 'FAIL',
+      timestamp: failedBase.startedAt + 2,
+      result: createToolFailureResult({
+        kind: 'NOT_FOUND',
+        message: 'inputs/customer-escalation.md was not found'
+      })
+    });
+    for (const record of [failedBase, failedRunning, failed]) {
+      await foundation.toolInvocations.append(record);
+    }
+
+    const debug = await runtime.tasks.getTaskDebug(submitted.command.taskId);
+
+    assert.equal(debug.executionSummary.acceptance.deterministic.profileId, 'verify');
+    assert.equal(debug.executionSummary.acceptance.deterministic.evidence.verdict, 'passed');
+    assert.equal(
+      debug.executionSummary.acceptance.deterministic.evidence.failedChecks.includes('missing_verification_evidence'),
+      false
+    );
+  } finally {
+    removeDir(root);
+  }
+});
+
 test('successful read_file invocations surface in visible tool activities', async () => {
   const root = createTempRoot();
   try {
@@ -1079,6 +1220,72 @@ test('successful list and search invocations surface in visible tool activities'
     const task = await runtime.tasks.getTask(submitted.command.taskId);
     assert.ok(task.visibleToolActivities.some((activity) => activity.toolId === 'list_files' && activity.status === 'SUCCEEDED'));
     assert.ok(task.visibleToolActivities.some((activity) => activity.toolId === 'search_files' && activity.status === 'SUCCEEDED'));
+  } finally {
+    removeDir(root);
+  }
+});
+
+test('synchronous tool dispatch does not leave completed invocations awaiting dispatch', async () => {
+  const root = createTempRoot();
+  try {
+    const { foundation, runtime } = createRuntimeWithFoundation({
+      config: {
+        paths: {
+          rootDir: root
+        },
+        tools: {
+          permissionMode: 'full'
+        }
+      }
+    });
+    runtime.extensions.registerTool({
+      id: 'write-file',
+      name: 'write_file',
+      description: 'Write file',
+      source: 'builtin',
+      effect: 'WRITE',
+      riskLevel: 'MEDIUM',
+      inputSchema: [
+        { name: 'path', type: 'string', required: true },
+        { name: 'content', type: 'string', required: true }
+      ]
+    });
+    foundation.toolExecutors.register('write-file', {
+      async execute(request) {
+        return createToolSuccessResult({
+          output: {
+            path: request.invocation.arguments.path,
+            bytesWritten: String(request.invocation.arguments.content ?? '').length
+          }
+        });
+      }
+    });
+    registerProvider(foundation, [
+      '{"current_unit":"AGENT-001","tool_name":"write_file","arguments":{"path":"report.md","content":"# Report\\n"}}\n'
+        + '{"current_unit":"AGENT-001","status":"IN_PROGRESS","progress_percent":55,"decision":"CONTINUE","reason":"wrote report artifact; needs final output next","files_created":["report.md"]}'
+    ]);
+
+    const submitted = await runtime.tasks.submitTask(createTaskInput([
+      {
+        id: 'AGENT-001',
+        role: 'Writer',
+        goal: 'Write a report artifact',
+        outputContract: '{"summary":"string","details":"string","issues":[]}',
+        dependencies: [],
+        executionProfileId: 'implement'
+      }
+    ]));
+
+    await runtime.tasks.startTask({ taskId: submitted.command.taskId });
+
+    const runtimeRecord = await foundation.taskRuntimes.get(submitted.command.taskId);
+    assert.ok(runtimeRecord);
+    assert.deepEqual(runtimeRecord.runtime.awaitingToolDispatch, []);
+    assert.equal(runtimeRecord.runtime.pendingCorrection, 'AWAITING_OUTPUT_CORRECTION');
+
+    const task = await runtime.tasks.getTask(submitted.command.taskId);
+    assert.deepEqual(task.runtime.awaitingToolDispatch, []);
+    assert.ok(task.visibleToolActivities.some((activity) => activity.toolId === 'write_file' && activity.status === 'SUCCEEDED'));
   } finally {
     removeDir(root);
   }

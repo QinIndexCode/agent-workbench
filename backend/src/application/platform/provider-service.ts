@@ -2,7 +2,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BackendNewFoundation } from '../../foundation/bootstrap/types';
 import { ProviderProfile } from '../../foundation/providers/types';
-import { getProviderPreset } from '../../foundation/providers/presets';
+import { findProviderPresetDefinition, getProviderPreset, listProviderPresetDefinitions } from '../../foundation/providers';
 import { resolveProviderProfile } from '../../foundation/providers/resolver';
 import {
   PlatformActionResult,
@@ -14,71 +14,6 @@ import {
 import { PlatformMutationRecorder } from './platform-mutation-recorder';
 import { ConfigService } from './config-service';
 import { createProviderProfileView } from './capability-hub';
-
-const CURATED_PROVIDER_PRESETS: Array<{
-  id: string;
-  label: string;
-  vendor: NonNullable<ProviderProfile['vendor']>;
-  defaultModel: string;
-  supportsQuickAdd: boolean;
-}> = [
-  {
-    id: 'openai',
-    label: 'OpenAI',
-    vendor: 'openai',
-    defaultModel: 'gpt-5.4',
-    supportsQuickAdd: true
-  },
-  {
-    id: 'anthropic',
-    label: 'Anthropic',
-    vendor: 'anthropic',
-    defaultModel: 'claude-sonnet-4.5',
-    supportsQuickAdd: true
-  },
-  {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    vendor: 'deepseek',
-    defaultModel: 'deepseek-chat',
-    supportsQuickAdd: true
-  },
-  {
-    id: 'moonshot',
-    label: 'Moonshot / Kimi',
-    vendor: 'moonshot',
-    defaultModel: 'moonshot-v1-8k',
-    supportsQuickAdd: true
-  },
-  {
-    id: 'zhipu',
-    label: 'Zhipu / GLM',
-    vendor: 'zhipu',
-    defaultModel: 'glm-4.5',
-    supportsQuickAdd: true
-  },
-  {
-    id: 'ollama',
-    label: 'Ollama',
-    vendor: 'ollama',
-    defaultModel: 'llama3.1',
-    supportsQuickAdd: true
-  },
-  {
-    id: 'lmstudio',
-    label: 'LM Studio',
-    vendor: 'lmstudio',
-    defaultModel: 'local-model',
-    supportsQuickAdd: true
-  },
-  {
-    id: 'custom-openai-compatible',
-    label: 'Custom OpenAI-compatible',
-    vendor: 'custom',
-    defaultModel: '',
-    supportsQuickAdd: false
-  }
-];
 
 function requireNonEmpty(value: string | undefined | null, field: string): string {
   const normalized = value?.trim() ?? '';
@@ -128,7 +63,7 @@ export class ProviderService {
   }
 
   async listPresets(): Promise<ProviderPresetView[]> {
-    return CURATED_PROVIDER_PRESETS.map((entry) => {
+    return listProviderPresetDefinitions().map((entry) => {
       const preset = getProviderPreset(entry.vendor);
       return {
         id: entry.id,
@@ -138,7 +73,13 @@ export class ProviderService {
         baseUrl: preset.baseUrl,
         defaultModel: entry.defaultModel,
         requiresApiKey: preset.auth.scheme !== 'none',
-        supportsQuickAdd: entry.supportsQuickAdd
+        supportsQuickAdd: entry.supportsQuickAdd,
+        category: entry.category,
+        envVarNames: entry.envVarNames,
+        requiredConfigFields: entry.requiredConfigFields,
+        implementationStatus: entry.implementationStatus,
+        capabilities: entry.capabilities,
+        notes: entry.notes ?? null
       };
     });
   }
@@ -268,6 +209,28 @@ export class ProviderService {
   }
 
   async test(providerId: string): Promise<ProviderTestResult> {
+    const storedProfile = this.foundation.providers.get(providerId);
+    if (!storedProfile) {
+      throw new Error(`backend_new provider error: unknown provider "${providerId}".`);
+    }
+    const metadata = storedProfile.metadata && typeof storedProfile.metadata === 'object' ? storedProfile.metadata : {};
+    const preset = findProviderPresetDefinition(
+      typeof metadata.presetId === 'string' ? metadata.presetId : storedProfile.vendor
+    );
+    const presetImplementationStatus = typeof metadata.implementationStatus === 'string'
+      ? metadata.implementationStatus
+      : preset?.implementationStatus ?? 'runnable';
+    if (presetImplementationStatus === 'external-auth-required' || presetImplementationStatus === 'profile-only') {
+      const message = presetImplementationStatus === 'external-auth-required'
+        ? 'Provider preset requires external cloud authentication/configuration and has no runnable adapter registered.'
+        : 'Provider preset is cataloged as profile-only; no runnable adapter is registered in this release.';
+      return {
+        ok: false,
+        providerId,
+        message,
+        capability: {}
+      };
+    }
     const profile = await resolveProviderProfile(this.foundation.providers, this.foundation.apiKeys, providerId);
     const client = this.foundation.providerClients.resolve(profile);
     const capability = this.foundation.providerClients.resolveCapability(profile);
@@ -275,7 +238,7 @@ export class ProviderService {
       return {
         ok: false,
         providerId,
-        message: 'No provider client registered.',
+        message: 'Provider has no runnable adapter registered for its transport.',
         capability: capability ? { ...capability } : {}
       };
     }

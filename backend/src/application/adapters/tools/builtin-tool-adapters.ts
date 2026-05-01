@@ -1,4 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ExtensionRegistry } from '../../../foundation/extensions/registry';
@@ -26,6 +28,19 @@ const BUILTIN_TOOLS: AgentToolDefinition[] = [
       { name: 'max_chars', type: 'number', description: 'Optional maximum number of characters to return after line-range selection.' }
     ],
     tags: ['workspace', 'file']
+  },
+  {
+    id: 'inspect-file',
+    name: 'inspect_file',
+    description: 'Inspect a local file safely without assuming it is UTF-8 text. Returns size, extension, probable MIME type, hash, and a small text preview only when the content appears text-readable.',
+    source: 'builtin',
+    effect: 'READ',
+    riskLevel: 'LOW',
+    inputSchema: [
+      { name: 'path', type: 'string', required: true, description: 'Relative file path inside the task workspace, or an explicit local absolute path.' },
+      { name: 'max_chars', type: 'number', description: 'Optional maximum number of preview characters for text-readable files.' }
+    ],
+    tags: ['workspace', 'file', 'inspect']
   },
   {
     id: 'write-file',
@@ -259,6 +274,94 @@ export function buildReadFileToolOutput(params: {
       totalLines,
       maxChars
     }
+  };
+}
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.markdown': 'text/markdown',
+  '.json': 'application/json',
+  '.jsonl': 'application/x-ndjson',
+  '.csv': 'text/csv',
+  '.tsv': 'text/tab-separated-values',
+  '.html': 'text/html',
+  '.htm': 'text/html',
+  '.xml': 'application/xml',
+  '.yaml': 'application/yaml',
+  '.yml': 'application/yaml',
+  '.js': 'text/javascript',
+  '.mjs': 'text/javascript',
+  '.cjs': 'text/javascript',
+  '.ts': 'text/typescript',
+  '.tsx': 'text/typescript',
+  '.jsx': 'text/javascript',
+  '.css': 'text/css',
+  '.scss': 'text/x-scss',
+  '.sql': 'application/sql',
+  '.log': 'text/plain',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.zip': 'application/zip'
+};
+
+function looksTextReadable(buffer: Buffer): boolean {
+  if (buffer.length === 0) {
+    return true;
+  }
+  if (buffer.includes(0)) {
+    return false;
+  }
+  const decoded = buffer.toString('utf8');
+  const replacementCount = [...decoded].filter((char) => char === '\uFFFD').length;
+  return replacementCount / Math.max(decoded.length, 1) < 0.02;
+}
+
+function normalizePreviewLimit(value: unknown): number {
+  const parsed = typeof value === 'number'
+    ? value
+    : Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 1000;
+  }
+  return Math.min(Math.max(parsed, 1), 4000);
+}
+
+async function buildInspectFileToolOutput(params: {
+  path: string;
+  resolvedPath: string;
+  argumentsRecord: Record<string, unknown>;
+}) {
+  const stat = await fs.stat(params.resolvedPath);
+  if (!stat.isFile()) {
+    throw new Error(`Path is not a file: ${params.path}`);
+  }
+  const content = await fs.readFile(params.resolvedPath);
+  const extension = path.extname(params.resolvedPath).toLowerCase();
+  const previewLimit = normalizePreviewLimit(params.argumentsRecord.max_chars);
+  const sample = content.subarray(0, Math.min(content.length, 8192));
+  const textReadable = looksTextReadable(sample);
+  const decoded = textReadable ? content.toString('utf8') : '';
+  const preview = textReadable ? decoded.slice(0, previewLimit) : null;
+  return {
+    path: params.path,
+    sizeBytes: stat.size,
+    extension: extension || null,
+    probableMimeType: MIME_BY_EXTENSION[extension] ?? 'application/octet-stream',
+    textReadable,
+    sha256: createHash('sha256').update(content).digest('hex'),
+    preview,
+    previewChars: preview?.length ?? 0,
+    truncated: Boolean(preview && decoded.length > preview.length),
+    modifiedAt: stat.mtimeMs
   };
 }
 
@@ -640,6 +743,29 @@ function normalizePowerShellCommand(command: string): string {
   return trimmed;
 }
 
+function withPowerShellUtf8Output(command: string): string {
+  const trimmed = command.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  const prelude = '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding';
+  if (/\[Console\]::OutputEncoding|\$OutputEncoding/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `${prelude}; ${trimmed}`;
+}
+
+function withCmdUtf8Output(command: string): string {
+  const trimmed = command.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  if (/^chcp\s+65001\b/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `chcp 65001 >NUL & ${trimmed}`;
+}
+
 function resolveWindowsShellExecutable(kind: 'powershell' | 'cmd'): string {
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows';
   if (kind === 'cmd') {
@@ -674,6 +800,26 @@ async function executeReadFile(request: ToolExecutorRequest) {
         ? 'EXECUTION'
         : 'NOT_FOUND',
       message: error instanceof Error ? error.message : 'Unable to read file.'
+    });
+  }
+}
+
+async function executeInspectFile(request: ToolExecutorRequest) {
+  try {
+    const filePath = String(request.invocation.arguments.path ?? '');
+    const { workspaceRoot, resolvedPath, absolutePathRequested } = getAccessiblePath(request, filePath);
+    const normalizedPath = normalizePathForToolOutput(workspaceRoot, resolvedPath, { absolute: absolutePathRequested });
+    return createToolSuccessResult({
+      output: await buildInspectFileToolOutput({
+        path: normalizedPath,
+        resolvedPath,
+        argumentsRecord: request.invocation.arguments
+      })
+    });
+  } catch (error) {
+    return createToolFailureResult({
+      kind: 'NOT_FOUND',
+      message: error instanceof Error ? error.message : 'Unable to inspect file.'
     });
   }
 }
@@ -815,31 +961,41 @@ async function executeRunCommand(request: ToolExecutorRequest) {
   const initialCommand = getCommandArgument(invocationArgs);
   const safetyError = validateBuiltinRunCommandSafety(initialCommand);
   if (safetyError) {
+    const safetyOutput = {
+      originalCommand: initialCommand,
+      requestedCommand: initialCommand,
+      command: initialCommand,
+      effectiveCommand: initialCommand,
+      cwd: null,
+      timeoutMs: getCommandTimeoutMs(request.invocation.arguments.timeout_ms),
+      exitCode: null,
+      stdout: '',
+      stderr: safetyError,
+      durationMs: 0,
+      timedOut: false,
+      shell: null,
+      translatedCommand: false,
+      translatedFromCommand: null
+    };
     return createToolFailureResult({
       kind: /builtin run_command safety policy/i.test(safetyError) ? 'PERMISSION' : 'EXECUTION',
       message: safetyError,
-      metadata: {
-        originalCommand: initialCommand,
-        command: initialCommand,
-        effectiveCommand: initialCommand,
-        exitCode: null,
-        stdout: '',
-        stderr: safetyError,
-        durationMs: 0,
-        timedOut: false
-      }
+      output: safetyOutput,
+      metadata: safetyOutput
     });
   }
   const extractedInlineCwd = extractInlineCwd(initialCommand);
   const command = extractedInlineCwd.command;
+  const timeoutMs = getCommandTimeoutMs(request.invocation.arguments.timeout_ms);
+  let cwd = '';
+  let shellKind: 'cmd' | 'powershell' | 'sh' | null = process.platform === 'win32' ? 'cmd' : 'sh';
 
   try {
-    const cwd = resolveCommandCwd(request, getCommandCwdArgument(invocationArgs) ?? extractedInlineCwd.cwdOverride);
+    cwd = resolveCommandCwd(request, getCommandCwdArgument(invocationArgs) ?? extractedInlineCwd.cwdOverride);
     const workspaceRoot = getWorkspacePath(request, '.').workspaceRoot;
     if (path.resolve(cwd).startsWith(path.resolve(workspaceRoot))) {
       await fs.mkdir(cwd, { recursive: true });
     }
-    const timeoutMs = getCommandTimeoutMs(request.invocation.arguments.timeout_ms);
     const startedAt = Date.now();
     const translatedWindowsCommand = process.platform === 'win32'
       ? translateWindowsCommand(command)
@@ -848,7 +1004,7 @@ async function executeRunCommand(request: ToolExecutorRequest) {
     const usePowerShell = process.platform === 'win32'
       ? translatedWindowsCommand.usePowerShell || shouldUsePowerShellOnWindows(effectiveCommand)
       : false;
-    const shellKind = process.platform === 'win32'
+    shellKind = process.platform === 'win32'
       ? (usePowerShell ? 'powershell' : 'cmd')
       : 'sh';
 
@@ -864,10 +1020,12 @@ async function executeRunCommand(request: ToolExecutorRequest) {
       let timedOut = false;
       let settled = false;
 
-      let child;
+      let child: ChildProcessWithoutNullStreams;
       try {
         if (process.platform === 'win32') {
-          const shellCommand = usePowerShell ? normalizePowerShellCommand(effectiveCommand) : effectiveCommand;
+          const shellCommand = usePowerShell
+            ? withPowerShellUtf8Output(normalizePowerShellCommand(effectiveCommand))
+            : withCmdUtf8Output(effectiveCommand);
           child = spawn(
             resolveWindowsShellExecutable(usePowerShell ? 'powershell' : 'cmd'),
             usePowerShell
@@ -959,27 +1117,29 @@ async function executeRunCommand(request: ToolExecutorRequest) {
     });
 
     if (result.exitCode !== 0 || result.timedOut) {
+      const commandOutput = {
+        originalCommand: initialCommand,
+        requestedCommand: command,
+        command: effectiveCommand,
+        effectiveCommand,
+        cwd,
+        timeoutMs,
+        exitCode: result.exitCode,
+        stdout: truncateCommandText(result.stdout),
+        stderr: truncateCommandText(result.stderr),
+        durationMs: result.durationMs,
+        timedOut: result.timedOut,
+        shell: shellKind,
+        translatedCommand: effectiveCommand !== command,
+        translatedFromCommand: effectiveCommand !== command ? command : null
+      };
       return createToolFailureResult({
         kind: result.timedOut ? 'TIMEOUT' : 'EXECUTION',
         message: result.timedOut
           ? `Command timed out after ${timeoutMs}ms.`
           : `Command failed with exit code ${result.exitCode ?? 'unknown'}.`,
-        metadata: {
-          originalCommand: initialCommand,
-          requestedCommand: command,
-          command: effectiveCommand,
-          effectiveCommand,
-          cwd,
-          timeoutMs,
-          exitCode: result.exitCode,
-          stdout: truncateCommandText(result.stdout),
-          stderr: truncateCommandText(result.stderr),
-          durationMs: result.durationMs,
-          timedOut: result.timedOut,
-          shell: shellKind,
-          translatedCommand: effectiveCommand !== command,
-          translatedFromCommand: effectiveCommand !== command ? command : null
-        }
+        output: commandOutput,
+        metadata: commandOutput
       });
     }
 
@@ -1001,20 +1161,27 @@ async function executeRunCommand(request: ToolExecutorRequest) {
       }
     });
   } catch (error) {
+    const commandOutput = {
+      originalCommand: initialCommand,
+      requestedCommand: command,
+      command,
+      effectiveCommand: command,
+      cwd: cwd || null,
+      timeoutMs,
+      exitCode: null,
+      stdout: '',
+      stderr: error instanceof Error ? error.message : String(error),
+      durationMs: null,
+      timedOut: false,
+      shell: shellKind,
+      translatedCommand: false,
+      translatedFromCommand: null
+    };
     return createToolFailureResult({
       kind: 'EXECUTION',
       message: error instanceof Error ? error.message : 'Unable to run command.',
-      metadata: {
-        originalCommand: initialCommand,
-        requestedCommand: command,
-        command,
-        effectiveCommand: command,
-        exitCode: null,
-        stdout: '',
-        stderr: error instanceof Error ? error.message : String(error),
-        durationMs: null,
-        timedOut: false
-      }
+      output: commandOutput,
+      metadata: commandOutput
     });
   }
 }
@@ -1032,6 +1199,9 @@ export function registerBuiltinToolAdapters(
 
   if (!toolExecutors.has('read-file')) {
     toolExecutors.register('read-file', { execute: executeReadFile });
+  }
+  if (!toolExecutors.has('inspect-file')) {
+    toolExecutors.register('inspect-file', { execute: executeInspectFile });
   }
   if (!toolExecutors.has('write-file')) {
     toolExecutors.register('write-file', { execute: executeWriteFile });

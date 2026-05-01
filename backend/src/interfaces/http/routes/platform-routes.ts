@@ -17,6 +17,28 @@ export const platformRoutes: HttpRouteModule = {
       sendJson(response, 200, await runtime.platform.listToolCapabilities());
       return true;
     }
+    if (request.method === 'GET' && path === '/tools/health') {
+      sendJson(response, 200, (await runtime.platform.listToolCapabilities()).map((tool) => ({
+        id: tool.id,
+        name: tool.name,
+        readiness: tool.readiness,
+        healthCheck: tool.healthCheck,
+        acceptanceEvidence: tool.acceptanceEvidence
+      })));
+      return true;
+    }
+    if (request.method === 'GET' && path === '/scenario-packs') {
+      sendJson(response, 200, await runtime.platform.listScenarioPacks());
+      return true;
+    }
+    if (request.method === 'GET' && path === '/ecosystem/skills') {
+      sendJson(response, 200, await runtime.platform.listEcosystemSkills());
+      return true;
+    }
+    if (request.method === 'GET' && path === '/ecosystem/mcp') {
+      sendJson(response, 200, await runtime.platform.listEcosystemMcpServers());
+      return true;
+    }
     if (request.method === 'GET' && path === '/workspace/workflow') {
       sendJson(response, 200, await runtime.platform.getWorkspaceWorkflow());
       return true;
