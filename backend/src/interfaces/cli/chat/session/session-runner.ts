@@ -1,5 +1,12 @@
 import readline from 'node:readline';
-import { CliIo, CliRuntimeContext, ParsedCliArgs, writeJsonLine } from '../../shared';
+import {
+  CliIo,
+  CliRuntimeContext,
+  ParsedCliArgs,
+  formatTaskDiagnosticsHuman,
+  formatTaskSummaryHuman,
+  writeJsonLine
+} from '../../shared';
 import {
   ChatOutputFormat,
   WorkspaceChatEnvelope
@@ -39,180 +46,14 @@ function getRecordArrayValue(record: Record<string, unknown>, key: string): Arra
 }
 
 function formatHumanTaskSummary(task: Record<string, unknown>): string {
-  const title = getRecordString(task, 'title', 'Untitled task');
-  const taskId = getRecordString(task, 'taskId', 'unknown');
-  const statusSummary = getRecordValue(task, 'statusSummary');
-  const status = getRecordString(statusSummary ?? {}, 'label', 'Task truth unavailable');
-  const stageLabel = getRecordString(task, 'stageLabel', 'Stage not started');
-  const currentUnitId = getRecordString(task, 'currentUnitId', '-');
-  const blockingReason = getRecordString(
-    statusSummary ?? {},
-    'detail',
-    'Task query is missing statusSummary.'
-  );
-  const primaryAction = getRecordValue(task, 'primaryAction');
-  const nextAction = getRecordValue(task, 'nextActionSummary');
-  const completionSummary = getRecordValue(task, 'completionSummary');
-  const delegationSummary = getRecordValue(task, 'delegationSummary');
-  const visibleToolActivities = getRecordArrayValue(task, 'visibleToolActivities');
-  const pendingApprovals = getRecordArrayValue(task, 'pendingApprovals');
-  const approvalActions = getRecordValue(task, 'approvalActions');
-  const improvementProposals = getRecordArrayValue(task, 'improvementProposals');
-  const lines = [
-    `[task] ${title} (${taskId})`,
-    `Current status: ${status}`,
-    `Stage: ${stageLabel}`,
-    `Current unit: ${currentUnitId}`,
-    `Why: ${blockingReason}`,
-    `Primary action: ${getRecordString(primaryAction ?? {}, 'label', getRecordString(nextAction ?? {}, 'label', 'Wait'))}`,
-    `Action detail: ${getRecordString(primaryAction ?? {}, 'description', getRecordString(nextAction ?? {}, 'reason', 'Task query is missing nextActionSummary.'))}`
-  ];
-  const activeChild = getRecordValue(delegationSummary ?? {}, 'activeChildTask');
-  if (activeChild) {
-    lines.push(`Delegation: Waiting on delegated subtask "${getRecordString(activeChild, 'title', 'SubSccAgent')}"`);
-  } else if (delegationSummary && delegationSummary.missingRequiredDelegation === true) {
-    lines.push('Delegation: Delegation required before parent delivery');
-  }
-  const resultSummary = getRecordString(completionSummary ?? {}, 'summary', '');
-  if (resultSummary) {
-    lines.push(`Recent result: ${resultSummary}`);
-  }
-  const destinationPaths = getStringArrayValue(completionSummary, 'artifactDestinationPaths');
-  if (destinationPaths.length > 0) {
-    lines.push(`Delivered to: ${destinationPaths.join(', ')}`);
-  } else {
-    const destinationDir = getRecordString(completionSummary ?? {}, 'artifactDestinationDir', '');
-    if (destinationDir) {
-      lines.push(`Destination folder: ${destinationDir}`);
-    }
-  }
-  const artifactPaths = getStringArrayValue(completionSummary, 'artifactPaths');
-  if (artifactPaths.length > 0) {
-    lines.push(`Artifacts created: ${artifactPaths.join(', ')}`);
-  }
-  if (visibleToolActivities.length > 0) {
-    for (const activity of visibleToolActivities.slice(-2)) {
-      const toolId = getRecordString(activity, 'toolId', 'tool');
-      const toolStatus = getRecordString(activity, 'status', 'unknown');
-      const toolSummary = getRecordString(activity, 'summary', 'No summary');
-      const evidencePaths = Array.isArray(activity.evidencePaths)
-        ? activity.evidencePaths.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
-        : [];
-      lines.push(`Tool: ${toolId} [${toolStatus}] ${toolSummary}${evidencePaths[0] ? ` (${evidencePaths[0]})` : ''}`);
-    }
-  }
-  if (pendingApprovals.length > 0) {
-    const firstApproval = pendingApprovals[0];
-    const invocationId = getRecordString(firstApproval, 'invocationId', 'unknown');
-    const toolName = getRecordString(firstApproval, 'toolName', getRecordString(firstApproval, 'toolId', 'tool'));
-    lines.push(`Approval required: ${toolName} (${invocationId})`);
-    lines.push(`How to resolve: /approve ${invocationId} or /reject ${invocationId}`);
-    if (approvalActions) {
-      lines.push(`Approval guidance: ${getRecordString(approvalActions, 'guidance', 'Resolve the pending approval before continuing the thread.')}`);
-    }
-  }
-  if (improvementProposals.length > 0) {
-    const proposalSummary = improvementProposals
-      .slice(0, 3)
-      .map((proposal) => {
-        const title = getRecordString(proposal, 'title', 'Proposal');
-        const kind = getRecordString(proposal, 'kind', 'proposal');
-        const status = getRecordString(proposal, 'status', 'PENDING');
-        const archiveEligible = getRecordBoolean(proposal, 'archiveEligible', false);
-        const duplicateOfProposalId = getRecordString(proposal, 'duplicateOfProposalId', '');
-        const conflictsWith = getStringArrayValue(proposal, 'conflictsWithProposalIds');
-        const flags = [
-          archiveEligible ? 'archive eligible' : '',
-          duplicateOfProposalId ? 'duplicate proposal' : '',
-          conflictsWith.length > 0 ? 'conflicting lesson' : ''
-        ].filter(Boolean);
-        return `${kind}:${status.toLowerCase()} ${title}${flags.length > 0 ? ` [${flags.join(', ')}]` : ''}`;
-      });
-    lines.push(`Improvements: ${proposalSummary.join(' | ')}`);
-  }
-  const approvalCount = task.approvalCount;
-  if (typeof approvalCount === 'number') {
-    lines.push(`Approvals: ${approvalCount}`);
-  }
-  const failureSummary = task.failureSummary;
-  if (typeof failureSummary === 'string' && failureSummary.trim()) {
-    lines.push(`Failure: ${failureSummary}`);
-  }
-  const recoverySummary = task.recoverySummary;
-  if (typeof recoverySummary === 'string' && recoverySummary.trim()) {
-    lines.push(`Recovery: ${recoverySummary}`);
-  }
-  return `${lines.join('\n')}\n`;
+  return formatTaskSummaryHuman(task, { source: 'chat' });
 }
 
 function formatHumanDiagnostics(data: unknown): string {
   if (!data || typeof data !== 'object') {
     return `[diagnostics] ${JSON.stringify(data, null, 2)}\n`;
   }
-  const record = data as Record<string, unknown>;
-  const summary = record.summary && typeof record.summary === 'object'
-    ? record.summary as Record<string, unknown>
-    : null;
-  const statusSummary = summary ? getRecordValue(summary, 'statusSummary') : null;
-  const primaryAction = summary ? getRecordValue(summary, 'primaryAction') : null;
-  const nextAction = summary ? getRecordValue(summary, 'nextActionSummary') : null;
-  const problem = getRecordString(statusSummary ?? {}, 'label', getRecordString(record, 'lifecycleStatus', 'Task'));
-  const cause = getRecordString(statusSummary ?? {}, 'detail', getRecordString(record, 'providerFailure', 'No clear blocking reason recorded.'));
-  const suggestedAction = getRecordString(primaryAction ?? {}, 'label', getRecordString(nextAction ?? {}, 'label', 'Inspect diagnostics'));
-  const nextActionReason = getRecordString(primaryAction ?? {}, 'description', getRecordString(nextAction ?? {}, 'reason', 'Review technical evidence below.'));
-  const acceptance = record.acceptance && typeof record.acceptance === 'object'
-    ? record.acceptance as Record<string, unknown>
-    : null;
-  const deterministic = acceptance?.deterministic && typeof acceptance.deterministic === 'object'
-    ? acceptance.deterministic as Record<string, unknown>
-    : null;
-  const semanticReview = acceptance?.semanticReview && typeof acceptance.semanticReview === 'object'
-    ? acceptance.semanticReview as Record<string, unknown>
-    : null;
-  const quality = acceptance?.quality && typeof acceptance.quality === 'object'
-    ? acceptance.quality as Record<string, unknown>
-    : null;
-  const experienceSummary = record.experienceSummary && typeof record.experienceSummary === 'object'
-    ? record.experienceSummary as Record<string, unknown>
-    : null;
-  const selectedExperiences = Array.isArray(experienceSummary?.selected)
-    ? experienceSummary.selected.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
-    : [];
-  const lines = [
-    '[diagnostics]',
-    `Problem: ${problem}`,
-    `Cause: ${cause}`,
-    `Suggested action: ${suggestedAction}`,
-    `Why: ${nextActionReason}`
-  ];
-  if (record.providerFailure) {
-    lines.push(`Provider failure: ${JSON.stringify(record.providerFailure)}`);
-  }
-  if (record.contractDiagnostics) {
-    lines.push(`Contract diagnostics: ${JSON.stringify(record.contractDiagnostics)}`);
-  }
-  if (deterministic) {
-    lines.push(`Acceptance: ${String(deterministic.verdict ?? 'unknown')} (${String(deterministic.profileId ?? 'analyze')})`);
-  }
-  if (quality) {
-    lines.push(`Quality: ${String(quality.verdict ?? 'not_applicable')} (${String(quality.profileId ?? 'none')})`);
-  }
-  if (experienceSummary) {
-    lines.push(
-      `Experience: selected=${String(experienceSummary.selectedCount ?? selectedExperiences.length)} configured=${String(experienceSummary.configuredCount ?? 0)}`
-    );
-    for (const entry of selectedExperiences.slice(0, 2)) {
-      lines.push(
-        `- ${getRecordString(entry, 'title', getRecordString(entry, 'proposalId', 'experience'))} `
-        + `[${getRecordString(entry, 'selectedBy', 'heuristic')}] `
-        + `${getRecordString(entry, 'validationStatus', 'monitoring')}`
-      );
-    }
-  }
-  if (semanticReview) {
-    lines.push(`Semantic review: ${String(semanticReview.status ?? 'not_requested')} confidence=${String(semanticReview.confidence ?? 'n/a')}`);
-  }
-  return `${lines.join('\n')}\n`;
+  return formatTaskDiagnosticsHuman(data as Record<string, unknown>);
 }
 
 function writeHumanEnvelope(io: CliIo, payload: WorkspaceChatEnvelope): void {

@@ -68,7 +68,46 @@ const coreBoundaryForbiddenPatterns = [
   'database_near_mysql',
   'XIAOMI_MIMO',
   'xiaomi-mimo',
-  'real-task-wave'
+  'real-task-wave',
+  'web_experience',
+  'docs_normalize',
+  'docs_synthesize',
+  'system_audit',
+  'desktop_observation',
+  'quality/web-audit',
+  'docs-synthesize-trace'
+];
+
+const reviewScriptExpectations = [
+  {
+    scriptName: 'review:frontend:mainline',
+    requiredFragment: 'scripts/run-frontend-mainline-review-stack.mjs',
+    forbiddenFragments: ['scripts/run-frontend-live-review-stack.mjs', 'scripts/run-frontend-delegation-live-review-stack.mjs'],
+    plane: 'harness'
+  },
+  {
+    scriptName: 'review:frontend:live',
+    requiredFragment: 'scripts/run-frontend-live-review-stack.mjs',
+    forbiddenFragments: ['scripts/run-frontend-mainline-review-stack.mjs'],
+    plane: 'harness'
+  }
+];
+
+const workspaceReviewScriptExpectations = [
+  {
+    packagePath: 'frontend/package.json',
+    scriptName: 'mainline-review',
+    requiredFragment: 'scripts/mainline-task-review.mjs',
+    forbiddenFragments: ['scripts/live-task-review.mjs', 'scripts/delegation-live-review.mjs'],
+    plane: 'harness'
+  },
+  {
+    packagePath: 'frontend/package.json',
+    scriptName: 'live-review',
+    requiredFragment: 'scripts/live-task-review.mjs',
+    forbiddenFragments: ['scripts/mainline-task-review.mjs'],
+    plane: 'harness'
+  }
 ];
 
 const includedPaths = [
@@ -123,11 +162,16 @@ function normalizeForSearch(content) {
   return content.replace(/\r\n/g, '\n');
 }
 
+function normalizeScriptCommand(command) {
+  return typeof command === 'string' ? command.replace(/\\/g, '/') : '';
+}
+
 async function main() {
   const issues = [];
   const runtimeResidueWarnings = [];
   const genericRunnerWarnings = [];
   const coreBoundaryIssues = [];
+  const reviewScriptIssues = [];
 
   for (const requiredPath of requiredPaths) {
     if (!await exists(requiredPath)) {
@@ -148,6 +192,38 @@ async function main() {
         message: `missing required ignore entry: ${entry}`
       });
     }
+  }
+
+  const reviewScriptPackageChecks = [
+    ...reviewScriptExpectations.map((expectation) => ({
+      packagePath: 'package.json',
+      ...expectation
+    })),
+    ...workspaceReviewScriptExpectations
+  ];
+  for (const expectation of reviewScriptPackageChecks) {
+    const packageJson = JSON.parse(await fs.readFile(path.resolve(rootDir, expectation.packagePath), 'utf8'));
+    const packageScripts = packageJson && typeof packageJson === 'object' && packageJson.scripts && typeof packageJson.scripts === 'object'
+      ? packageJson.scripts
+      : {};
+    const command = normalizeScriptCommand(packageScripts[expectation.scriptName]);
+    const missingRequired = !command.includes(expectation.requiredFragment);
+    const forbiddenMatch = expectation.forbiddenFragments.find((fragment) => command.includes(fragment)) ?? null;
+    if (!missingRequired && !forbiddenMatch) {
+      continue;
+    }
+    const issue = {
+      kind: 'review_script_drift',
+      path: expectation.packagePath,
+      scriptName: expectation.scriptName,
+      plane: expectation.plane,
+      expected: expectation.requiredFragment,
+      forbidden: forbiddenMatch,
+      actual: command,
+      message: `${expectation.packagePath}:${expectation.scriptName} must run ${expectation.requiredFragment} without crossing into a different review stack.`
+    };
+    reviewScriptIssues.push(issue);
+    issues.push(issue);
   }
 
   for (const residuePath of forbiddenRuntimeResiduePaths) {
@@ -256,6 +332,9 @@ async function main() {
     runtimeResidueWarnings,
     genericRunnerWarnings,
     coreBoundaryIssues,
+    reviewScriptIssues,
+    reviewScriptExpectations,
+    workspaceReviewScriptExpectations,
     forbiddenPatterns,
     genericRunnerSpecializedPatterns,
     coreBoundaryPaths,

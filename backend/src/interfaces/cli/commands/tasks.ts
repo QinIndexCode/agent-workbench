@@ -14,8 +14,11 @@ import {
   getAfterEventId,
   getFlagString,
   hasFlag,
+  formatTaskDiagnosticsHuman,
+  formatTaskSummaryHuman,
   requestTaskDebug,
   summarizeTask,
+  writeText,
   writeJson,
   writeJsonLine
 } from '../shared';
@@ -29,6 +32,10 @@ function getOptionalPositiveIntFlag(args: Parameters<typeof getFlagString>[0], n
   }
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function wantsHumanFormat(args: Parameters<typeof getFlagString>[0]): boolean {
+  return getFlagString(args, 'format') === 'human';
 }
 
 export const tasksCommandModule: CliCommandModule = {
@@ -54,14 +61,29 @@ export const tasksCommandModule: CliCommandModule = {
       writeJson(io, await requestJson<TaskListApiResponse>(fetchImpl, listUrl, { method: 'GET', headers: {} }));
       return 0;
     }
-    if (action === 'get' || action === 'inspect') {
+    if (action === 'get') {
       writeJson(io, await requestJson<TaskQueryApiResponse>(fetchImpl, `${serverUrl}/tasks/${rest[0]}`, { method: 'GET', headers: {} }));
+      return 0;
+    }
+    if (action === 'inspect') {
+      const response = await requestJson<TaskQueryApiResponse>(fetchImpl, `${serverUrl}/tasks/${rest[0]}`, { method: 'GET', headers: {} });
+      if (wantsHumanFormat(args)) {
+        const debug = await requestTaskDebug(fetchImpl, serverUrl, rest[0]);
+        writeText(io, formatTaskSummaryHuman(summarizeTask(response, debug), { source: 'inspect' }));
+        return 0;
+      }
+      writeJson(io, response);
       return 0;
     }
     if (action === 'status') {
       const response = await requestJson<TaskQueryApiResponse>(fetchImpl, `${serverUrl}/tasks/${rest[0]}`, { method: 'GET', headers: {} });
       const debug = await requestTaskDebug(fetchImpl, serverUrl, rest[0]);
-      writeJson(io, summarizeTask(response, debug));
+      const summary = summarizeTask(response, debug);
+      if (wantsHumanFormat(args)) {
+        writeText(io, formatTaskSummaryHuman(summary, { source: 'status' }));
+        return 0;
+      }
+      writeJson(io, summary);
       return 0;
     }
     if (action === 'submit') {
@@ -209,7 +231,12 @@ export const tasksCommandModule: CliCommandModule = {
     if (action === 'diagnostics') {
       if (rest[0]) {
         const debug = await requestTaskDebug(fetchImpl, serverUrl, rest[0]);
-        writeJson(io, projectTaskDiagnostics(debug.task, debug));
+        const diagnostics = projectTaskDiagnostics(debug.task, debug);
+        if (wantsHumanFormat(args)) {
+          writeText(io, formatTaskDiagnosticsHuman(diagnostics));
+          return 0;
+        }
+        writeJson(io, diagnostics);
         return 0;
       }
       writeJson(io, await requestJson(fetchImpl, `${serverUrl}/tasks/diagnostics`, { method: 'GET', headers: {} }));

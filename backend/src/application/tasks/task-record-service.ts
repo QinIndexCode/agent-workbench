@@ -1076,7 +1076,7 @@ function buildTaskStatusSummary(params: {
 
   if (params.artifactRouting.artifactPathState === 'unresolved') {
     return {
-      label: 'Use recommended path',
+      label: params.artifactRouting.recommendedArtifactDir ? 'Use recommended path' : 'Choose custom path',
       detail: params.artifactRouting.recommendedArtifactDir
         ? `Artifacts are ready in the task workspace. Use ${params.artifactRouting.recommendedArtifactDir} or choose a custom destination.`
         : 'Artifacts are ready in the task workspace and still need a project-relative destination.',

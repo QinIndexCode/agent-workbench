@@ -71,15 +71,9 @@ export type ExecutionProfileId =
   | 'implement'
   | 'verify';
 
-export const TASK_QUALITY_PROFILE_IDS = [
-  'web_experience',
-  'docs_normalize',
-  'docs_synthesize',
-  'system_audit',
-  'desktop_observation'
-] as const;
+export const TASK_QUALITY_PROFILE_IDS: string[] = [];
 
-export type QualityProfileId = typeof TASK_QUALITY_PROFILE_IDS[number];
+export type QualityProfileId = string;
 
 export type OperatorCommandType =
   | 'START_TASK'

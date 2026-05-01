@@ -297,8 +297,15 @@ function createScenarioFailureResult(params: {
     clarificationMode: 'not-needed',
     assumptionDisclosure: { status: 'missing', summary: null },
     executionSummary: {
+      issuePlane: 'harness',
       issueCategory: 'recovery_inconsistency',
       issueSummary: params.message,
+      suggestedAction: {
+        type: 'inspect_diagnostics',
+        label: 'Inspect scenario failure',
+        reason: params.message,
+        command: null
+      },
       eventCounts: {},
       turnCount: 0,
       correctionDepth: 0,

@@ -13,6 +13,8 @@ const REPORT_PATH =
 const SCREENSHOT_DIR =
   process.env.FRONTEND_MAINLINE_REVIEW_SCREENSHOTS ??
   path.resolve(process.cwd(), "..", ".codex-run", "logs", "frontend-mainline-review");
+const VIEWPORT_WIDTH = Number.parseInt(process.env.FRONTEND_MAINLINE_REVIEW_VIEWPORT_WIDTH ?? "1440", 10);
+const VIEWPORT_HEIGHT = Number.parseInt(process.env.FRONTEND_MAINLINE_REVIEW_VIEWPORT_HEIGHT ?? "960", 10);
 
 function resolveChromeExecutable() {
   const candidates = [
@@ -193,12 +195,20 @@ async function openTask(page, taskId) {
   await page.goto(`${BASE_URL}/tasks?task=${taskId}`, { waitUntil: "networkidle" });
   await page.waitForSelector('[data-testid="tasks-page"]');
   await page.waitForSelector('[data-testid="task-detail-pane"]');
+  await page.waitForSelector('[data-testid="tasks-agent-shell"]');
+  await page.waitForSelector('[data-testid="task-conversation"]');
+  await page.waitForSelector('[data-testid="task-composer"]');
   await page.waitForTimeout(300);
 }
 
 async function captureScreenshot(page, name) {
   const filePath = path.join(SCREENSHOT_DIR, `${name}.png`);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await page.waitForFunction(
+    () => !document.querySelector('[data-testid="task-loading-shell"]'),
+    undefined,
+    { timeout: 5_000 },
+  ).catch(() => null);
   await page.screenshot({ path: filePath });
   return filePath;
 }
@@ -223,6 +233,10 @@ async function waitForEnabledSelector(page, selector, timeout = 20_000) {
 }
 
 async function openFollowUpComposer(page) {
+  const expandedComposer = page.locator('[data-testid="task-continue-message"]');
+  if (await expandedComposer.isVisible().catch(() => false)) {
+    return;
+  }
   const primaryButton = page.locator('[data-testid="task-action-open-follow-up"]');
   if (await primaryButton.isVisible().catch(() => false)) {
     await primaryButton.click();
@@ -265,6 +279,21 @@ async function collectChecklist(page, options = {}) {
       const node = document.querySelector(selector);
       return node instanceof HTMLElement && node.getClientRects().length > 0;
     }
+    function rect(selector) {
+      const node = document.querySelector(selector);
+      if (!(node instanceof HTMLElement) || node.getClientRects().length === 0) {
+        return null;
+      }
+      const value = node.getBoundingClientRect();
+      return {
+        top: value.top,
+        right: value.right,
+        bottom: value.bottom,
+        left: value.left,
+        width: value.width,
+        height: value.height,
+      };
+    }
 
     const bodyText = document.body.innerText;
     const resultCardText = (() => {
@@ -279,8 +308,50 @@ async function collectChecklist(page, options = {}) {
       isVisible('[data-testid="task-action-open-follow-up"]')
       || isVisible('[data-testid="task-action-expand-follow-up"]')
       || isVisible('[data-testid="task-action-continue"]');
+    const brandLogoVisible =
+      isVisible('[data-testid="app-brand-logo"]')
+      || isVisible('[data-testid="app-brand-logo-mobile"]');
+    const threadRailRect = rect('[data-testid="task-thread-rail"]');
+    const footerRect = rect('[data-testid="task-global-footer"]');
+    const composerRect = rect('[data-testid="task-composer-card"]');
+    const visibleTimelineGlyphs = Array.from(document.querySelectorAll('[data-testid^="task-timeline-glyph-"]'))
+      .filter((node) => node instanceof HTMLElement && window.getComputedStyle(node).display !== "none" && node.getClientRects().length > 0);
+    const firstTimelineNode = document.querySelector('[data-testid^="task-timeline-node-"]');
+    const timelineBeforeContent = firstTimelineNode instanceof HTMLElement
+      ? window.getComputedStyle(firstTimelineNode, "::before").content
+      : "none";
+    const desktopConceptLayout = window.innerWidth >= 1100
+      ? Boolean(
+        threadRailRect
+        && threadRailRect.top <= 2
+        && threadRailRect.left <= 2
+        && threadRailRect.width >= 280
+        && footerRect
+        && footerRect.height >= 36
+        && composerRect
+        && composerRect.bottom <= footerRect.top + 2
+      )
+      : true;
 
     const checklist = {
+      brandLogoVisible,
+      agentShellVisible: isVisible('[data-testid="tasks-agent-shell"]'),
+      threadRailVisible: isVisible('[data-testid="task-thread-rail"]') || Boolean(document.querySelector('[data-testid="task-thread-rail"]')),
+      conversationVisible: isVisible('[data-testid="task-conversation"]'),
+      truthInspectorReady: Boolean(document.querySelector('[data-testid="task-truth-inspector"]')),
+      conceptShellGeometry: desktopConceptLayout,
+      runtimeChipStripVisible: window.innerWidth >= 1100 ? isVisible('[data-testid="app-runtime-chip-strip"]') : true,
+      footerVisible: window.innerWidth >= 1100 ? isVisible('[data-testid="task-global-footer"]') : true,
+      typedTimelineGlyphsVisible: visibleTimelineGlyphs.length >= (config.minTimelineGlyphs ?? 1),
+      timelineNotPseudoOnly: visibleTimelineGlyphs.length > 0 && (timelineBeforeContent === "none" || timelineBeforeContent === "normal"),
+      agentTimelineIconVisible: isVisible('[data-testid="task-timeline-agent-icon"]'),
+      toolTimelineIconVisible: isVisible('[data-testid="task-timeline-tool-icon"]'),
+      artifactTimelineGlyphVisible: isVisible('[data-testid="task-timeline-glyph-artifact"]'),
+      decisionTimelineGlyphVisible: isVisible('[data-testid="task-timeline-glyph-decision"]'),
+      delegationTimelineGlyphVisible: isVisible('[data-testid="task-timeline-glyph-delegation"]'),
+      inspectorTabsVisible: bodyText.includes("Task truth") && bodyText.includes("Events"),
+      userIntentVisible: isVisible('[data-testid="task-timeline-entry-user"]'),
+      composerVisible: isVisible('[data-testid="task-composer"]'),
       resultCardVisible: isVisible('[data-testid="task-result-card"]'),
       summaryVisible: resultCardText.trim().length > 0,
       assistantNoteVisible: isVisible('[data-testid="task-assistant-note"]'),
@@ -307,6 +378,24 @@ async function collectChecklist(page, options = {}) {
     const requireSummary = config.expectSummary !== false;
     const passes =
       checklist.rawProtocolHidden
+      && checklist.brandLogoVisible
+      && checklist.agentShellVisible
+      && checklist.threadRailVisible
+      && checklist.conversationVisible
+      && checklist.truthInspectorReady
+      && checklist.conceptShellGeometry
+      && checklist.runtimeChipStripVisible
+      && checklist.footerVisible
+      && (config.expectTimelineGlyphs === false ? true : checklist.typedTimelineGlyphsVisible)
+      && (config.expectTimelineGlyphs === false ? true : checklist.timelineNotPseudoOnly)
+      && (config.expectAgentGlyph ? checklist.agentTimelineIconVisible : true)
+      && (config.expectToolGlyph ? checklist.toolTimelineIconVisible : true)
+      && (config.expectArtifactGlyph ? checklist.artifactTimelineGlyphVisible : true)
+      && (config.expectDecisionGlyph ? checklist.decisionTimelineGlyphVisible : true)
+      && (config.expectDelegationGlyph ? checklist.delegationTimelineGlyphVisible : true)
+      && checklist.inspectorTabsVisible
+      && checklist.userIntentVisible
+      && checklist.composerVisible
       && (requireResultCard ? checklist.resultCardVisible : true)
       && (requireSummary ? checklist.summaryVisible : true)
       && (config.expectArtifacts ? checklist.artifactVisible : true)
@@ -326,6 +415,9 @@ async function collectChecklist(page, options = {}) {
 }
 
 async function assertChecklist(page, options, label) {
+  if ((await page.locator('[data-testid="task-truth-inspector"]').count().catch(() => 0)) === 0) {
+    await setContextVisibility(page, true).catch(() => null);
+  }
   const checklist = await collectChecklist(page, options);
   assertCondition(checklist.passes, `${label} checklist failed: ${JSON.stringify(checklist)}`);
   return checklist;
@@ -368,10 +460,15 @@ async function runDeliverableOnlyScenario(page) {
   await openTask(page, taskId);
   await page.waitForSelector('[data-testid="task-result-card"]', { timeout: 20_000 });
   await waitForVisibleText(page, "Draft brief delivered");
+  await page.locator('[data-testid="task-result-card"]').scrollIntoViewIfNeeded();
   const checklist = await assertChecklist(page, {
     expectArtifacts: true,
     expectToolActivity: true,
     expectFollowUpEntry: true,
+    expectAgentGlyph: true,
+    expectToolGlyph: true,
+    expectArtifactGlyph: true,
+    minTimelineGlyphs: 4,
   }, "deliverable-only");
   const screenshotPath = await captureScreenshot(page, "deliverable-only");
 
@@ -389,6 +486,7 @@ async function runDeliverableOnlyScenario(page) {
 async function runArtifactRoutingDefaultPathScenario(page) {
   const artifactFileName = `mainline-artifact-default-path-${Date.now()}.md`;
   const artifactPath = `docs/${artifactFileName}`;
+  const selectedDestination = "backend/docs/mainline-artifacts";
   await patchConfig({
     tools: { permissionMode: "full" },
   });
@@ -410,7 +508,7 @@ async function runArtifactRoutingDefaultPathScenario(page) {
 
   const taskId = await submitTask({
     title: "Mainline artifact default path",
-    intent: "Create an artifact, wait for the operator, then finish after the recommended destination is applied.",
+    intent: "Create an artifact, wait for the operator, then finish after the selected destination is applied.",
     preferredProviderId: "mock-e2e",
     pathPolicy: "ask_if_unclear",
     units: [{
@@ -432,24 +530,30 @@ async function runArtifactRoutingDefaultPathScenario(page) {
     (debug) => debug.executionSummary?.artifactPathState === "unresolved",
   );
   const recommendedDestination = unresolvedDebug.executionSummary?.recommendedArtifactDir ?? null;
-  assertCondition(recommendedDestination, "Artifact default-path scenario did not expose a recommended destination.");
+  assertCondition(recommendedDestination === null, `Core artifact routing should not infer a scenario destination. recommended=${recommendedDestination}`);
 
   await openTask(page, taskId);
-  await page.waitForSelector('[data-testid="task-action-use-recommended-path"]', { timeout: 20_000 });
+  await page.waitForSelector('[data-testid="task-action-choose-custom-path"]', { timeout: 20_000 });
   await waitForVisibleText(page, "Artifact ready");
   await page.waitForSelector('[data-testid="task-assistant-note"]', { timeout: 20_000 });
   const unresolvedChecklist = await assertChecklist(page, {
     expectResultCard: false,
     expectSummary: false,
     expectArtifacts: false,
-    expectRecommendedPath: true,
+    expectRecommendedPath: false,
     expectCustomPath: true,
     expectToolActivity: true,
     expectAssistantNote: true,
+    expectToolGlyph: true,
+    expectArtifactGlyph: true,
+    expectDecisionGlyph: true,
+    minTimelineGlyphs: 4,
   }, "artifact-routing-default-path:unresolved");
   const unresolvedScreenshot = await captureScreenshot(page, "artifact-routing-default-path-unresolved");
 
-  await page.locator('[data-testid="task-action-use-recommended-path"]').click();
+  await page.locator('[data-testid="task-action-choose-custom-path"]').click();
+  await page.locator('[data-testid="task-artifact-dir"]').fill(selectedDestination);
+  await page.locator('[data-testid="task-action-apply-artifacts"]').click();
   const completedTask = await waitForTaskDetail(
     taskId,
     (nextTask) =>
@@ -462,8 +566,8 @@ async function runArtifactRoutingDefaultPathScenario(page) {
     (debug) => debug.executionSummary?.artifactPathState === "applied",
   );
   assertCondition(
-    appliedDebug.executionSummary?.lastArtifactApplyResult?.destinationDir === recommendedDestination,
-    `Artifact apply did not use the recommended destination. Recommended=${recommendedDestination} actual=${appliedDebug.executionSummary?.lastArtifactApplyResult?.destinationDir ?? "missing"}`,
+    appliedDebug.executionSummary?.lastArtifactApplyResult?.destinationDir === selectedDestination,
+    `Artifact apply did not use the selected destination. selected=${selectedDestination} actual=${appliedDebug.executionSummary?.lastArtifactApplyResult?.destinationDir ?? "missing"}`,
   );
   const completedDebug = await getTaskDebug(taskId);
   const destinationPath = completedDebug.executionSummary?.artifactDestinationPaths?.[0] ?? null;
@@ -476,12 +580,17 @@ async function runArtifactRoutingDefaultPathScenario(page) {
   await openTask(page, taskId);
   await page.waitForSelector('[data-testid="task-result-destination-section"]', { timeout: 20_000 });
   await waitForVisibleText(page, destinationPath);
+  await page.locator('[data-testid="task-result-card"]').scrollIntoViewIfNeeded();
   await setContextVisibility(page, true);
   const completedChecklist = await assertChecklist(page, {
     expectArtifacts: true,
     expectDestination: true,
     expectFollowUpEntry: true,
     expectToolActivity: true,
+    expectAgentGlyph: true,
+    expectToolGlyph: true,
+    expectArtifactGlyph: true,
+    minTimelineGlyphs: 4,
   }, "artifact-routing-default-path:completed");
   const completedScreenshot = await captureScreenshot(page, "artifact-routing-default-path-completed");
   await setContextVisibility(page, false);
@@ -594,10 +703,23 @@ async function runCompletedThreadContinueScenario(page) {
     `Completed thread continuation did not record a same_thread resume event. Events=${JSON.stringify(events.map((event) => ({ type: event.type, payload: event.payload })))}`,
   );
   await waitForVisibleText(page, "Continued thread delivery");
+  await page.locator('[data-testid="task-result-card"]').scrollIntoViewIfNeeded();
+  await page.waitForFunction(
+    () => {
+      const node = document.querySelector('[data-testid="task-action-continue"]');
+      return !(node instanceof HTMLElement) || !/continuing/i.test(node.textContent ?? "");
+    },
+    undefined,
+    { timeout: 10_000 },
+  ).catch(() => undefined);
   const checklist = await assertChecklist(page, {
     expectArtifacts: true,
     expectFollowUpEntry: true,
     expectToolActivity: true,
+    expectAgentGlyph: true,
+    expectToolGlyph: true,
+    expectArtifactGlyph: true,
+    minTimelineGlyphs: 4,
   }, "completed-thread-continue");
   const screenshotPath = await captureScreenshot(page, "completed-thread-continue");
 
@@ -611,6 +733,87 @@ async function runCompletedThreadContinueScenario(page) {
     screenshotPath,
     checklist,
   };
+}
+
+async function runVisualProofScenario(browser, desktopPage, completedTaskId, attachConsoleCapture) {
+  await desktopPage.goto(`${BASE_URL}/tasks?task=none`, { waitUntil: "networkidle" });
+  await desktopPage.waitForSelector('[data-testid="tasks-page"]');
+  await desktopPage.waitForSelector('[data-testid="task-empty-agent-state"]', { timeout: 20_000 });
+  const emptyChecklist = await desktopPage.evaluate(() => {
+    function visible(selector) {
+      const node = document.querySelector(selector);
+      if (!(node instanceof HTMLElement)) {
+        return false;
+      }
+      const style = window.getComputedStyle(node);
+      return style.display !== "none" && style.visibility !== "hidden" && node.getClientRects().length > 0;
+    }
+    return {
+      emptyStateVisible: visible('[data-testid="task-empty-agent-state"]'),
+      logoVisible: visible('[data-testid="task-empty-agent-state"] img'),
+      glyphRowVisible: visible('[data-testid="task-empty-glyph-row"]'),
+      agentGlyphVisible: visible('[data-testid="task-empty-glyph-agent"]'),
+      runtimeGlyphVisible: visible('[data-testid="task-empty-glyph-runtime"]'),
+      artifactGlyphVisible: visible('[data-testid="task-empty-glyph-artifact"]'),
+      createActionVisible: visible('[data-testid="task-empty-create"]'),
+      connectionsActionVisible: visible('[data-testid="task-empty-connections"]'),
+      ecosystemActionVisible: visible('[data-testid="task-empty-ecosystem"]'),
+    };
+  });
+  assertCondition(
+    Object.values(emptyChecklist).every(Boolean),
+    `Empty/new task state is missing flagship proof selectors: ${JSON.stringify(emptyChecklist)}`,
+  );
+  const emptyScreenshot = await captureScreenshot(desktopPage, "empty-new-task-state");
+
+  const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  attachConsoleCapture(mobilePage);
+  try {
+    await openTask(mobilePage, completedTaskId);
+    await mobilePage.waitForSelector('[data-testid="task-result-card"]', { timeout: 20_000 });
+    await mobilePage.locator('[data-testid="task-result-card"]').scrollIntoViewIfNeeded();
+    const mobileChecklist = await mobilePage.evaluate(() => {
+      function visible(selector) {
+        const nodes = Array.from(document.querySelectorAll(selector));
+        return nodes.some((node) => {
+          if (!(node instanceof HTMLElement)) {
+            return false;
+          }
+          const style = window.getComputedStyle(node);
+          return style.display !== "none" && style.visibility !== "hidden" && node.getClientRects().length > 0;
+        });
+      }
+      return {
+        mobileBrandVisible: visible('[data-testid="app-brand-logo-mobile"]') || visible('[data-testid="app-brand-logo"]'),
+        shellVisible: visible('[data-testid="tasks-agent-shell"]'),
+        conversationVisible: visible('[data-testid="task-conversation"]'),
+        composerVisible: visible('[data-testid="task-composer"]'),
+        inlineTimelineGlyphVisible: visible('[data-testid^="task-timeline-glyph-"]'),
+        agentGlyphVisible: visible('[data-testid="task-timeline-agent-icon"]'),
+        artifactGlyphVisible: visible('[data-testid="task-timeline-glyph-artifact"]'),
+        contextToggleVisible: visible('[data-testid="task-context-toggle"]'),
+      };
+    });
+    assertCondition(
+      Object.values(mobileChecklist).every(Boolean),
+      `Mobile task detail proof is missing required selectors: ${JSON.stringify(mobileChecklist)}`,
+    );
+    const mobileScreenshot = await captureScreenshot(mobilePage, "mobile-completed-thread");
+    return {
+      name: "visual-proof-mobile-empty",
+      status: "achieved",
+      screenshots: {
+        empty: emptyScreenshot,
+        mobile: mobileScreenshot,
+      },
+      checklists: {
+        empty: emptyChecklist,
+        mobile: mobileChecklist,
+      },
+    };
+  } finally {
+    await mobilePage.close().catch(() => null);
+  }
 }
 
 async function main() {
@@ -636,6 +839,10 @@ async function main() {
     backendUrl: BACKEND_URL,
     mockProviderUrl: MOCK_PROVIDER_URL,
     executablePath,
+    viewport: {
+      width: VIEWPORT_WIDTH,
+      height: VIEWPORT_HEIGHT,
+    },
     status: "open_gap",
     scenarios,
     screenshots: [],
@@ -644,26 +851,32 @@ async function main() {
   };
 
   try {
-    page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
-    consoleMessages = [];
-    page.on("console", (message) => {
-      if (message.type() === "error" || message.type() === "warning") {
-        consoleMessages.push({
-          type: message.type(),
-          text: message.text(),
-        });
-      }
-    });
-    page.on("pageerror", (error) => {
-      consoleMessages.push({
-        type: "pageerror",
-        text: error.message,
+    const attachConsoleCapture = (targetPage) => {
+      targetPage.on("console", (message) => {
+        if (message.type() === "error" || message.type() === "warning") {
+          consoleMessages.push({
+            type: message.type(),
+            text: message.text(),
+          });
+        }
       });
-    });
+      targetPage.on("pageerror", (error) => {
+        consoleMessages.push({
+          type: "pageerror",
+          text: error.message,
+        });
+      });
+    };
+
+    page = await browser.newPage({ viewport: { width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT } });
+    consoleMessages = [];
+    attachConsoleCapture(page);
 
     scenarios.push(await runDeliverableOnlyScenario(page));
     scenarios.push(await runArtifactRoutingDefaultPathScenario(page));
-    scenarios.push(await runCompletedThreadContinueScenario(page));
+    const completedThreadScenario = await runCompletedThreadContinueScenario(page);
+    scenarios.push(completedThreadScenario);
+    scenarios.push(await runVisualProofScenario(browser, page, completedThreadScenario.taskId, attachConsoleCapture));
 
     const consoleFailures = consoleMessages.filter((message) => {
       const normalized = message.text.toLowerCase();

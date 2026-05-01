@@ -40,6 +40,11 @@ async function listDirectorySafe(target) {
   }
 }
 
+function isInside(parent, child) {
+  const relative = path.relative(parent, child);
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
 export async function cleanHistoricalTestArtifacts(options = {}) {
   const cwd = options.cwd ?? process.cwd();
   const tmpDir = options.tmpDir ?? os.tmpdir();
@@ -54,6 +59,9 @@ export async function cleanHistoricalTestArtifacts(options = {}) {
     /^human-task-matrix$/,
     /^real-task-manual-review(?:\.[^.]+)?\.(?:json|md)$/,
     /^frontend-smoke-report(?:\.[^.]+)?\.json$/,
+    /^frontend-smoke-snapshots$/,
+    /^frontend-mainline-review(?:\.[^.]+)?\.json$/,
+    /^frontend-mainline-review$/,
     /^frontend-e2e-report(?:\.[^.]+)?\.json$/,
     /^frontend-e2e$/,
     /^workflow(?:\.[^.]+)?\.json$/,
@@ -72,6 +80,9 @@ export async function cleanHistoricalTestArtifacts(options = {}) {
     /^cli-interaction-transcript(?:\.[^.]+)?\.json$/,
     /^runtime-stress-validation(?:\.[^.]+)?\.json$/,
     /^benchmark(?:\.[^.]+)?\.json$/
+  ];
+  const projectArtifactPaths = options.projectArtifactPaths ?? [
+    'backend/docs/docs'
   ];
 
   const tempEntries = await listDirectorySafe(tmpDir);
@@ -111,11 +122,29 @@ export async function cleanHistoricalTestArtifacts(options = {}) {
   }
   await fs.mkdir(logsDir, { recursive: true });
 
+  const removedProjectArtifacts = [];
+  const skippedProjectArtifacts = [];
+  for (const relativePath of projectArtifactPaths) {
+    const target = path.resolve(cwd, relativePath);
+    if (!isInside(cwd, target)) {
+      skippedProjectArtifacts.push({ target, reason: 'outside_workspace' });
+      continue;
+    }
+    const result = await safeRemove(target);
+    if (result.removed) {
+      removedProjectArtifacts.push(target);
+      continue;
+    }
+    skippedProjectArtifacts.push({ target, reason: result.reason ?? 'unknown' });
+  }
+
   return {
     removedTempRoots,
     skippedTempRoots,
     removedLogs,
-    skippedLogs
+    skippedLogs,
+    removedProjectArtifacts,
+    skippedProjectArtifacts
   };
 }
 

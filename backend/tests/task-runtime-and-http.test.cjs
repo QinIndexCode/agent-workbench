@@ -999,6 +999,8 @@ test('verify profile treats a failed read_file as resolved after the same path i
     const debug = await runtime.tasks.getTaskDebug(submitted.command.taskId);
 
     assert.equal(debug.executionSummary.issueCategory, null);
+    assert.equal(debug.executionSummary.issuePlane, null);
+    assert.equal(debug.executionSummary.suggestedAction.type, 'continue');
     assert.equal(debug.executionSummary.acceptance.deterministic.profileId, 'verify');
     assert.equal(
       debug.executionSummary.acceptance.deterministic.evidence.failedChecks.includes('known_verification_failure'),
@@ -1409,7 +1411,7 @@ test('implement profile still blocks on real verification command failures after
   }
 });
 
-test('quality gate requests tool-action correction when new evidence files are required', async () => {
+test('generic quality contract stays in core and does not run scenario quality gates', async () => {
   const root = createTempRoot();
   try {
     const { foundation, runtime } = createRuntimeWithFoundation({
@@ -1456,16 +1458,20 @@ test('quality gate requests tool-action correction when new evidence files are r
     await runtime.tasks.startTask({ taskId: submitted.command.taskId });
     const debug = await runtime.tasks.getTaskDebug(submitted.command.taskId);
 
-    assert.equal(debug.task.runtime.lifecycleStatus, 'RUNNING');
-    assert.equal(debug.task.runtime.pendingCorrection, 'AWAITING_TOOL_ACTION');
+    assert.equal(debug.task.runtime.lifecycleStatus, 'COMPLETED');
+    assert.equal(debug.task.runtime.pendingCorrection, 'NONE');
     assert.equal(debug.executionSummary.acceptance.quality.profileId, 'docs_synthesize');
-    assert.equal(debug.executionSummary.acceptance.quality.verdict, 'failed');
+    assert.equal(debug.executionSummary.acceptance.quality.verdict, 'passed');
     assert.equal(
       debug.executionSummary.acceptance.quality.failedChecks.includes('missing_docs_synthesis_trace'),
-      true
+      false
     );
     assert.equal(
       debug.executionSummary.acceptance.quality.requiredNextEvidence.includes('write quality/docs-synthesize-trace.json with claim-level grounding'),
+      false
+    );
+    assert.equal(
+      debug.executionSummary.acceptance.quality.passedChecks.includes('generic_quality_contract_has_runtime_evidence'),
       true
     );
   } finally {
@@ -3094,6 +3100,8 @@ test('artifact path routing blocks continue when destination is unresolved and r
     assert.equal(started.task.runtime.lifecycleStatus, 'RUNNING');
     assert.equal(debug.executionSummary.artifactPathState, 'unresolved');
     assert.equal(debug.executionSummary.issueCategory, 'artifact_destination_unresolved');
+    assert.equal(debug.executionSummary.issuePlane, 'core');
+    assert.equal(debug.executionSummary.suggestedAction.type, 'select_artifact_destination');
     assert.equal(debug.executionSummary.turnContract.continueAllowed, false);
     assert.match(debug.executionSummary.turnContract.continueReason, /project-relative destination/i);
     assert.match(publicArtifactSummary?.content ?? '', /choose a project-relative destination/i);
@@ -3177,7 +3185,7 @@ test('artifact apply flow copies sandbox outputs into project destination and re
   }
 });
 
-test('artifact apply uses the recommended destination when the operator does not provide a custom path', async () => {
+test('artifact apply uses the configured destination when the operator does not provide a custom path', async () => {
   const root = createTempRoot();
   try {
     const { foundation, runtime } = createRuntimeWithFoundation({
@@ -3200,6 +3208,7 @@ test('artifact apply uses the recommended destination when the operator does not
       title: 'Recommended documentation destination apply task',
       intent: 'Draft release notes and wait for the operator to confirm the project docs location.',
       preferredProviderId: 'provider-main',
+      preferredArtifactDir: 'backend/docs',
       units: [
         {
           id: 'AGENT-001',
@@ -3213,8 +3222,9 @@ test('artifact apply uses the recommended destination when the operator does not
 
     await runtime.tasks.startTask({ taskId: submitted.command.taskId });
     const beforeApply = await runtime.tasks.getTaskDebug(submitted.command.taskId);
-    assert.equal(beforeApply.executionSummary.artifactPathState, 'unresolved');
-    assert.equal(beforeApply.executionSummary.recommendedArtifactDir, 'backend/docs');
+    assert.equal(beforeApply.executionSummary.artifactPathState, 'ready_to_apply');
+    assert.equal(beforeApply.executionSummary.recommendedArtifactDir, null);
+    assert.equal(beforeApply.executionSummary.selectedArtifactDir, 'backend/docs');
 
     const applied = await runtime.tasks.submitCommand({
       taskId: submitted.command.taskId,
@@ -3230,10 +3240,10 @@ test('artifact apply uses the recommended destination when the operator does not
     assert.equal(applied.commandMetadata.destinationDir, 'backend/docs');
     assert.equal(applied.task.runtime.lifecycleStatus, 'COMPLETED');
     assert.equal(debug.executionSummary.selectedArtifactDir, 'backend/docs');
-    assert.deepEqual(debug.executionSummary.artifactDestinationPaths, ['backend/docs/release-notes.md']);
-    assert.deepEqual(task.latestVisibleOutput?.artifactDestinationPaths, ['backend/docs/release-notes.md']);
-    assert.match(task.latestVisibleOutput?.summary ?? '', /delivered .*release-notes\.md to backend\/docs\/release-notes\.md/i);
-    assert.match(task.completionSummary?.summary ?? '', /delivered .*release-notes\.md to backend\/docs\/release-notes\.md/i);
+    assert.deepEqual(debug.executionSummary.artifactDestinationPaths, ['backend/docs/docs/release-notes.md']);
+    assert.deepEqual(task.latestVisibleOutput?.artifactDestinationPaths, ['backend/docs/docs/release-notes.md']);
+    assert.match(task.latestVisibleOutput?.summary ?? '', /delivered .*release-notes\.md to backend\/docs\/docs\/release-notes\.md/i);
+    assert.match(task.completionSummary?.summary ?? '', /delivered .*release-notes\.md to backend\/docs\/docs\/release-notes\.md/i);
   } finally {
     removeDir(root);
   }
@@ -3260,9 +3270,10 @@ test('artifact apply rewrites pre-delivery completion summaries that still say r
 
     const submitted = await runtime.tasks.submitTask({
       title: 'Artifact ready for delivery rewrite task',
-      intent: 'Create a deliverable artifact, apply the recommended destination, and synthesize a delivered summary.',
+      intent: 'Create a deliverable artifact, apply the selected destination, and synthesize a delivered summary.',
       preferredProviderId: 'provider-main',
       pathPolicy: 'ask_if_unclear',
+      preferredArtifactDir: 'backend/docs',
       units: [
         {
           id: 'AGENT-001',
@@ -3287,8 +3298,8 @@ test('artifact apply rewrites pre-delivery completion summaries that still say r
 
     assert.equal(applied.commandMetadata.artifactApplyStatus, 'APPLIED');
     assert.equal(applied.task.runtime.lifecycleStatus, 'COMPLETED');
-    assert.match(task.latestVisibleOutput?.summary ?? '', /delivered .*release-ready\.md to backend\/docs\/release-ready\.md/i);
-    assert.match(task.completionSummary?.summary ?? '', /delivered .*release-ready\.md to backend\/docs\/release-ready\.md/i);
+    assert.match(task.latestVisibleOutput?.summary ?? '', /delivered .*release-ready\.md to backend\/docs\/docs\/release-ready\.md/i);
+    assert.match(task.completionSummary?.summary ?? '', /delivered .*release-ready\.md to backend\/docs\/docs\/release-ready\.md/i);
     assert.doesNotMatch(task.completionSummary?.summary ?? '', /ready for delivery/i);
   } finally {
     removeDir(root);
@@ -3458,7 +3469,7 @@ test('artifact routing ignores create-folder directory placeholders and tracks o
 
     assert.deepEqual(debug.executionSummary.artifactPaths, ['reports/report.md']);
     assert.equal(debug.executionSummary.pendingArtifactCount, 1);
-    assert.equal(debug.executionSummary.recommendedArtifactDir, '.codex-run/logs');
+    assert.equal(debug.executionSummary.recommendedArtifactDir, null);
     assert.equal(debug.executionSummary.artifactPathState, 'unresolved');
     assert.equal(debug.executionSummary.turnContract.continueAllowed, false);
   } finally {
@@ -3502,7 +3513,7 @@ test('artifact routing keeps recommended documentation destinations unresolved u
     await runtime.tasks.startTask({ taskId: submitted.command.taskId });
     const debug = await runtime.tasks.getTaskDebug(submitted.command.taskId);
 
-    assert.equal(debug.executionSummary.recommendedArtifactDir, 'backend/docs');
+    assert.equal(debug.executionSummary.recommendedArtifactDir, null);
     assert.equal(debug.executionSummary.selectedArtifactDir, null);
     assert.equal(debug.executionSummary.artifactPathState, 'unresolved');
     assert.equal(debug.executionSummary.issueCategory, 'artifact_destination_unresolved');
@@ -4413,6 +4424,8 @@ test('required delegation blocks parent-only progress until a real child task is
       true
     );
     assert.equal(debug.executionSummary.issueCategory, 'required_delegation_missing');
+    assert.equal(debug.executionSummary.issuePlane, 'core');
+    assert.equal(debug.executionSummary.suggestedAction.type, 'continue');
     assert.match(debug.executionSummary.issueSummary ?? '', /delegation is required/i);
   } finally {
     removeDir(root);

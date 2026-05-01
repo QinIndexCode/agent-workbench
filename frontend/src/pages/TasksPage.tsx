@@ -1,7 +1,7 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { NavLink, useLocation, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { WebSocketClient } from '../api/websocket';
+import { WebSocketClient, type RealtimeTransportStatus } from '../api/websocket';
 import { Badge, lifecycleBadgeVariant } from '../components/ui/badge';
 import type { BadgeVariant } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -13,19 +13,31 @@ import {
   ClockIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  CapabilityIcon,
+  DashboardIcon,
   FileIcon,
   FolderIcon,
   LockIcon,
   PlusIcon,
   PlayIcon,
+  QueueIcon,
   RefreshIcon,
   ResumeIcon,
   RetryIcon,
   SearchIcon,
   SendIcon,
+  SettingsIcon,
   StateIcon,
+  TimelineAgentIcon,
+  TimelineArtifactIcon,
+  TimelineDecisionIcon,
+  TimelineDelegationIcon,
+  TimelineResultIcon,
+  TimelineRuntimeIcon,
+  TimelineUserIcon,
   ThreadsIcon,
   WarningIcon,
+  TasksIcon,
 } from '../components/ui/icons';
 import { useTaskDetail, useTasks } from '../hooks/useTasks';
 import { useAnimatedPresence } from '../hooks/useAnimatedPresence';
@@ -58,14 +70,10 @@ type ComposerButtonTone = 'accent' | 'warning' | 'danger' | 'muted';
 type ComposerButtonIcon = 'play' | 'resume' | 'send' | 'retry' | 'wait' | 'lock' | 'warning';
 type ComposerSubmitKind = 'start' | 'resume' | 'restart' | 'continue' | null;
 type TaskFamilyId =
-  | 'general'
   | 'analyze'
   | 'implement'
   | 'verify'
-  | 'document_work'
-  | 'web_app_creation'
-  | 'system_audit'
-  | 'codebase_work';
+  | 'multi_agent_delegation';
 type ComposerModel = {
   mode: ComposerMode;
   title: string;
@@ -172,34 +180,103 @@ type KnownArtifactState = {
   artifactApplyStatus: TaskVisibleOutputSummary['artifactApplyStatus'];
 };
 
-const DEFAULT_UNITS: AgentUnit[] = [
-  {
-    id: 'AGENT-001',
-    role: 'Generalist',
-    goal: 'Complete the task and leave a clear artifact.',
-    outputContract: '{"summary":"string","details":"string"}',
-    dependencies: [],
-  },
-];
+const TASK_FAMILY_UNITS: Record<TaskFamilyId, AgentUnit[]> = {
+  analyze: [
+    {
+      id: 'AGENT-001',
+      role: 'Analyst',
+      goal: 'Analyze the request, gather evidence, and return grounded findings.',
+      executionProfileId: 'analyze',
+      outputContract: '{"summary":"string","findings":["string"],"evidence":["string"],"issues":[]}',
+      dependencies: [],
+    },
+  ],
+  implement: [
+    {
+      id: 'AGENT-001',
+      role: 'Implementer',
+      goal: 'Implement the requested change and provide verification evidence.',
+      executionProfileId: 'implement',
+      outputContract: '{"summary":"string","changedFiles":["string"],"verification":["string"],"issues":[]}',
+      dependencies: [],
+    },
+  ],
+  verify: [
+    {
+      id: 'AGENT-001',
+      role: 'Verifier',
+      goal: 'Run checks, classify failures, and report exact pass/fail evidence.',
+      executionProfileId: 'verify',
+      outputContract: '{"summary":"string","checks":[{"name":"string","status":"passed|failed|blocked","evidence":"string"}],"issues":[]}',
+      dependencies: [],
+    },
+  ],
+  multi_agent_delegation: [
+    {
+      id: 'AGENT-001',
+      role: 'Coordinator',
+      goal: 'Plan the parent thread, delegate bounded subtasks when useful, and synthesize the final result.',
+      executionProfileId: 'implement',
+      outputContract: '{"summary":"string","delegations":["string"],"integration":"string","issues":[]}',
+      delegationRequired: true,
+      delegationContract: {
+        title: 'Scoped child task',
+        goal: 'Handle one bounded subtask and return evidence to the parent thread.',
+      },
+      dependencies: [],
+    },
+  ],
+};
 
-const QUALITY_PROFILE_OPTIONS: Array<{ value: '' | QualityProfileId; label: string }> = [
-  { value: '', label: 'None' },
-  { value: 'web_experience', label: 'Web experience' },
-  { value: 'docs_normalize', label: 'Docs normalize' },
-  { value: 'docs_synthesize', label: 'Docs synthesize' },
-  { value: 'system_audit', label: 'System audit' },
-  { value: 'desktop_observation', label: 'Desktop observation' },
-];
+const DEFAULT_UNITS: AgentUnit[] = TASK_FAMILY_UNITS.analyze;
+
+function formatUnitsTemplate(taskFamily: TaskFamilyId): string {
+  return JSON.stringify(TASK_FAMILY_UNITS[taskFamily], null, 2);
+}
+
+function validateComposerInput(input: {
+  title: string;
+  intent: string;
+  providerId: string;
+  unitsText: string;
+  pathPolicy: TaskPathPolicy;
+  outputDir: string;
+}): { units: AgentUnit[] | null; errors: string[] } {
+  const errors: string[] = [];
+  if (!input.title.trim()) {
+    errors.push('Add a title so the thread is identifiable.');
+  }
+  if (!input.intent.trim()) {
+    errors.push('Describe the intent before creating the task.');
+  }
+  if (!input.providerId.trim()) {
+    errors.push('Choose a provider id, or configure a runtime default in Connections first.');
+  }
+  if (input.pathPolicy === 'project_relative' && !input.outputDir.trim()) {
+    errors.push('Project-relative artifact delivery needs an output directory.');
+  }
+  try {
+    const parsed = JSON.parse(input.unitsText) as AgentUnit[];
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      errors.push('Units JSON must be a non-empty array.');
+      return { units: null, errors };
+    }
+    return { units: parsed, errors };
+  } catch {
+    errors.push('Units JSON is invalid. Fix the contract before creating the task.');
+    return { units: null, errors };
+  }
+}
 
 const TASK_FAMILY_OPTIONS: Array<{ value: TaskFamilyId; label: string; description: string }> = [
-  { value: 'general', label: 'General', description: 'Open-ended local task with standard evidence.' },
   { value: 'analyze', label: 'Analyze', description: 'Read context and return grounded findings.' },
-  { value: 'implement', label: 'Implement', description: 'Create or modify files with verification evidence.' },
+  { value: 'implement', label: 'Implement', description: 'Create or modify artifacts with verification evidence.' },
   { value: 'verify', label: 'Verify', description: 'Run checks and report exact pass/fail evidence.' },
-  { value: 'document_work', label: 'Document work', description: 'Organize, normalize, or synthesize documents.' },
-  { value: 'web_app_creation', label: 'Web/App creation', description: 'Build a user-facing site or app artifact.' },
-  { value: 'system_audit', label: 'System audit', description: 'Inspect host state and give traceable recommendations.' },
-  { value: 'codebase_work', label: 'Codebase work', description: 'Modify an existing repository safely.' },
+  {
+    value: 'multi_agent_delegation',
+    label: 'Multi-agent delegation',
+    description: 'Coordinate a parent thread with bounded child-task contracts.',
+  },
 ];
 
 const TASK_COMPOSER_FIELD_CLASS = 'w-full rounded-lg border border-border-subtle bg-surface-elevated/70 px-3.5 py-2.5 text-sm text-text-primary outline-none transition duration-fast placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-accent/25';
@@ -575,6 +652,97 @@ function renderToolActivityIcon(activity: VisibleToolActivity) {
   return <StateIcon className={iconClassName} />;
 }
 
+type TimelineNodeKind =
+  | 'user'
+  | 'runtime'
+  | 'tool'
+  | 'agent'
+  | 'artifact'
+  | 'decision'
+  | 'delegation'
+  | 'result';
+
+type TimelineNodeFrameProps = {
+  kind: TimelineNodeKind;
+  children: ReactNode;
+  activity?: VisibleToolActivity | null;
+  className?: string;
+};
+
+function getTimelineGlyphTone(kind: TimelineNodeKind): string {
+  switch (kind) {
+    case 'user':
+      return 'border-accent/36 bg-accent-muted/80 text-blue-100 shadow-[0_12px_28px_-18px_rgba(96,165,250,0.68)]';
+    case 'runtime':
+      return 'border-emerald-300/34 bg-emerald-400/10 text-emerald-100 shadow-[0_12px_28px_-18px_rgba(16,185,129,0.72)]';
+    case 'tool':
+      return 'border-violet-300/34 bg-violet-400/12 text-violet-100 shadow-[0_12px_28px_-18px_rgba(139,92,246,0.78)]';
+    case 'agent':
+      return 'border-cyan-300/36 bg-cyan-400/12 text-cyan-100 shadow-[0_12px_28px_-18px_rgba(34,211,238,0.72)]';
+    case 'artifact':
+      return 'border-sky-300/34 bg-sky-400/10 text-sky-100 shadow-[0_12px_28px_-18px_rgba(56,189,248,0.7)]';
+    case 'decision':
+      return 'border-amber-300/40 bg-amber-400/12 text-amber-100 shadow-[0_12px_28px_-18px_rgba(245,158,11,0.78)]';
+    case 'delegation':
+      return 'border-fuchsia-300/34 bg-fuchsia-400/12 text-fuchsia-100 shadow-[0_12px_28px_-18px_rgba(217,70,239,0.7)]';
+    case 'result':
+    default:
+      return 'border-emerald-300/34 bg-emerald-400/12 text-emerald-100 shadow-[0_12px_28px_-18px_rgba(16,185,129,0.72)]';
+  }
+}
+
+function renderTimelineGlyph(kind: TimelineNodeKind, activity?: VisibleToolActivity | null) {
+  const className = 'h-4 w-4';
+  switch (kind) {
+    case 'user':
+      return <TimelineUserIcon className={className} />;
+    case 'runtime':
+      return <TimelineRuntimeIcon className={className} />;
+    case 'tool':
+      return activity ? renderToolActivityIcon(activity) : <StateIcon className={className} />;
+    case 'agent':
+      return <TimelineAgentIcon className={className} />;
+    case 'artifact':
+      return <TimelineArtifactIcon className={className} />;
+    case 'decision':
+      return <TimelineDecisionIcon className={className} />;
+    case 'delegation':
+      return <TimelineDelegationIcon className={className} />;
+    case 'result':
+    default:
+      return <TimelineResultIcon className={className} />;
+  }
+}
+
+function getTimelineIconTestId(kind: TimelineNodeKind): string | undefined {
+  if (kind === 'agent' || kind === 'result') {
+    return 'task-timeline-agent-icon';
+  }
+  if (kind === 'tool') {
+    return 'task-timeline-tool-icon';
+  }
+  return undefined;
+}
+
+function TimelineNodeFrame({ kind, children, activity = null, className = '' }: TimelineNodeFrameProps) {
+  const iconTestId = getTimelineIconTestId(kind);
+  return (
+    <div data-testid={`task-timeline-node-${kind}`} className={`timeline-node ${className}`}>
+      <span
+        data-testid={`task-timeline-glyph-${kind}`}
+        className={`timeline-node-glyph ${getTimelineGlyphTone(kind)}`}
+      >
+        <span data-testid={iconTestId} className="inline-flex">
+          {renderTimelineGlyph(kind, activity)}
+        </span>
+      </span>
+      <div className="timeline-node-content">
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function truncateToolOutput(value: string, maxChars = 1200): string {
   if (!value) {
     return '';
@@ -701,7 +869,11 @@ function getVisibleIssueSummary(task: TaskDetail | null, debug: TaskDebugRespons
   if (task?.runtime.lifecycleStatus === 'COMPLETED' && hasDeliveredArtifacts(task, debug) && !task.diagnostics.lastError) {
     return null;
   }
-  return issueSummary;
+  const plane = debug?.executionSummary.issuePlane;
+  const category = debug?.executionSummary.issueCategory;
+  return [plane ? plane.toUpperCase() : null, category, issueSummary]
+    .filter(Boolean)
+    .join(' / ');
 }
 
 function buildTimeline(task: TaskDetail | null, events: RuntimeEvent[], debug: TaskDebugResponse | null): TimelineEntry[] {
@@ -829,7 +1001,22 @@ function buildTimeline(task: TaskDetail | null, events: RuntimeEvent[], debug: T
       label: 'Runtime',
     }));
 
-  return [...conversationItems, ...operatorItems, ...delegationItems, ...toolActivityItems, ...eventItems, ...resultItems, ...proposalItems, ...proposalNoteItems]
+  const hasHumanIntent = conversationItems.some((entry) => entry.kind === 'user' || entry.kind === 'operator')
+    || operatorItems.length > 0;
+  const allTimestamps = [...conversationItems, ...operatorItems, ...delegationItems, ...toolActivityItems, ...eventItems, ...resultItems]
+    .map((entry) => entry.timestamp)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const intentItems: TimelineEntry[] = !hasHumanIntent && task.definition.intent.trim()
+    ? [{
+      id: `intent_${task.definition.taskId}`,
+      kind: 'user',
+      content: task.definition.intent,
+      timestamp: (allTimestamps.length ? Math.min(...allTimestamps) : Date.now()) - 1,
+      label: 'You',
+    }]
+    : [];
+
+  return [...intentItems, ...conversationItems, ...operatorItems, ...delegationItems, ...toolActivityItems, ...eventItems, ...resultItems, ...proposalItems, ...proposalNoteItems]
     .sort((left, right) => left.timestamp - right.timestamp);
 }
 
@@ -1223,6 +1410,69 @@ function TaskExperiencePanel({ debug }: { debug: TaskDebugResponse | null }) {
   );
 }
 
+function buildCredibilitySummary(task: TaskDetail | null, execution: TaskDebugResponse['executionSummary'] | null) {
+  if (!task || !execution) {
+    return {
+      verdict: 'Waiting for task truth',
+      detail: 'Runtime, acceptance, artifact, and quality evidence are not loaded yet.',
+      toneClass: 'border-border-subtle bg-black/10 text-text-secondary',
+      gaps: ['debug snapshot'],
+    };
+  }
+  const suggestedAction = execution.suggestedAction ?? {
+    label: task.nextActionSummary.label,
+    reason: task.nextActionSummary.reason || task.primaryAction.description || 'Review runtime diagnostics before continuing.',
+  };
+  if (!execution.acceptance?.deterministic) {
+    return {
+      verdict: 'Contract truth pending',
+      detail: suggestedAction.reason,
+      toneClass: 'border-info/25 bg-info-muted/20 text-info',
+      gaps: ['acceptance truth'],
+    };
+  }
+  const deterministicVerdict = execution.acceptance.deterministic.contract.verdict;
+  const qualityVerdict = execution.acceptance.quality?.verdict ?? 'not_applicable';
+  const gaps: string[] = [];
+  if (deterministicVerdict === 'failed') {
+    gaps.push('acceptance contract');
+  }
+  if (qualityVerdict === 'failed') {
+    gaps.push('quality contract');
+  }
+  if (execution.artifactPathState === 'unresolved') {
+    gaps.push('artifact destination');
+  }
+  if (execution.acceptance.evidence?.toolEvidence?.required && !execution.acceptance.evidence.toolEvidence.satisfied) {
+    gaps.push('tool evidence');
+  }
+  if (task.runtime.lifecycleStatus === 'COMPLETED' && !task.completionSummary && !task.latestVisibleOutput) {
+    gaps.push('result card');
+  }
+  if (gaps.length > 0) {
+    return {
+      verdict: 'Not yet credible',
+      detail: `${suggestedAction.label}: ${suggestedAction.reason}`,
+      toneClass: 'border-warning/25 bg-warning-muted/20 text-warning',
+      gaps,
+    };
+  }
+  if (task.runtime.lifecycleStatus === 'COMPLETED') {
+    return {
+      verdict: 'Credible result',
+      detail: 'Acceptance, evidence, artifact state, and quality contract do not report blockers.',
+      toneClass: 'border-success/25 bg-success-muted/20 text-success',
+      gaps,
+    };
+  }
+  return {
+    verdict: 'Evidence building',
+    detail: suggestedAction.reason,
+    toneClass: 'border-info/25 bg-info-muted/20 text-info',
+    gaps,
+  };
+}
+
 function TaskDetailTabPanel({
   activeTab,
   task,
@@ -1251,8 +1501,18 @@ function TaskDetailTabPanel({
   }
 
   if (activeTab === 'summary') {
+    const credibility = buildCredibilitySummary(task, execution);
     return (
       <div className="space-y-3" data-testid="task-inspector-section-summary">
+        <div className={`rounded-lg border px-3 py-3 ${credibility.toneClass}`} data-testid="task-credibility-bar">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-semibold">{credibility.verdict}</p>
+            <p className="text-xs uppercase tracking-[0.18em] opacity-80">
+              {credibility.gaps.length ? `Missing ${credibility.gaps.join(', ')}` : 'Evidence complete'}
+            </p>
+          </div>
+          <p className="mt-1 text-sm leading-5 opacity-90">{credibility.detail}</p>
+        </div>
         <div className="grid gap-2 md:grid-cols-2">
           <DetailKeyValue label="Task" value={task?.definition.taskId} />
           <DetailKeyValue label="Lifecycle" value={task?.runtime.lifecycleStatus} />
@@ -1260,10 +1520,20 @@ function TaskDetailTabPanel({
           <DetailKeyValue label="Next action" value={task?.nextActionSummary.reason || task?.primaryAction.description} />
           <DetailKeyValue label="Provider" value={[execution?.providerSummary.providerId, execution?.providerSummary.modelId].filter(Boolean).join(' / ') || task?.definition.preferredProviderId} />
           <DetailKeyValue label="Quality" value={quality?.profileId ? `${quality.profileId}: ${quality.verdict}` : 'none'} />
+          <DetailKeyValue label="Failure plane" value={execution?.issuePlane ?? 'none'} />
+          <DetailKeyValue label="Suggested action" value={execution?.suggestedAction?.label} />
         </div>
         {execution?.issueSummary || task?.diagnostics.lastError ? (
           <div className="rounded-lg border border-error/24 bg-error-muted/10 px-3 py-2 text-sm leading-6 text-rose-100">
-            {execution?.issueSummary ?? task?.diagnostics.lastError}
+            {[execution?.issuePlane?.toUpperCase(), execution?.issueCategory, execution?.issueSummary ?? task?.diagnostics.lastError]
+              .filter(Boolean)
+              .join(' / ')}
+          </div>
+        ) : null}
+        {execution?.suggestedAction ? (
+          <div className="rounded-lg border border-border-subtle bg-black/10 px-3 py-2 text-sm leading-6 text-text-secondary" data-testid="task-suggested-action">
+            <span className="font-medium text-text-primary">{execution.suggestedAction.label}</span>
+            <span className="ml-2">{execution.suggestedAction.reason}</span>
           </div>
         ) : null}
       </div>
@@ -1285,6 +1555,9 @@ function TaskDetailTabPanel({
         <div className="grid gap-2 md:grid-cols-2">
           <DetailKeyValue label="Provider" value={diagnosticsPayload.provider} />
           <DetailKeyValue label="Model" value={diagnosticsPayload.model} />
+          <DetailKeyValue label="Failure plane" value={execution?.issuePlane ?? 'none'} />
+          <DetailKeyValue label="Issue category" value={execution?.issueCategory ?? 'none'} />
+          <DetailKeyValue label="Suggested action" value={execution?.suggestedAction?.label} />
           <DetailKeyValue label="Permission" value={execution?.permissionSummary.mode} />
           <DetailKeyValue label="Recovery" value={diagnosticsPayload.recovery} />
           <DetailKeyValue label="Turn contract" value={execution ? `${execution.turnContract.continueAllowed ? 'continue' : 'hold'}: ${execution.turnContract.continueReason}` : null} />
@@ -1444,7 +1717,7 @@ function mergeInspectorSnapshot(
   };
 }
 
-function getPrimaryStatusSummary(task: TaskDetail | null, debug: TaskDebugResponse | null, wsConnected: boolean) {
+function getPrimaryStatusSummary(task: TaskDetail | null, debug: TaskDebugResponse | null, realtimeStatus: RealtimeTransportStatus) {
   const providerLabel = [debug?.executionSummary.providerSummary.providerId, debug?.executionSummary.providerSummary.modelId]
     .filter(Boolean)
     .join(' / ') || task?.definition.preferredProviderId || null;
@@ -1457,7 +1730,7 @@ function getPrimaryStatusSummary(task: TaskDetail | null, debug: TaskDebugRespon
       blocker: 'Nothing is active yet.',
       nextAction: 'Pick a thread or create a new one.',
       providerLabel,
-      realtimeLabel: wsConnected ? 'Realtime connected' : 'Realtime degraded',
+      realtimeLabel: getRealtimeStatusLabel(realtimeStatus),
     };
   }
 
@@ -1470,8 +1743,23 @@ function getPrimaryStatusSummary(task: TaskDetail | null, debug: TaskDebugRespon
     blocker: task.statusSummary.detail?.trim() || 'Task query is missing statusSummary.',
     nextAction,
     providerLabel,
-    realtimeLabel: wsConnected ? 'Realtime connected' : 'Realtime degraded',
+    realtimeLabel: getRealtimeStatusLabel(realtimeStatus),
   };
+}
+
+function getRealtimeStatusLabel(status: RealtimeTransportStatus): string {
+  switch (status.mode) {
+    case 'live':
+      return 'Realtime live';
+    case 'polling':
+      return 'Realtime polling';
+    case 'reconnecting':
+      return 'Realtime reconnecting';
+    case 'blocked':
+      return 'Realtime blocked';
+    default:
+      return status.connected ? 'Realtime live' : 'Realtime degraded';
+  }
 }
 
 function getComposerButtonClass(tone: ComposerButtonTone) {
@@ -1726,6 +2014,7 @@ function getComposerModel(task: TaskDetail | null, debug: TaskDebugResponse | nu
 }
 
 export function TasksPage() {
+  const location = useLocation();
   const [showArchived, setShowArchived] = useState(false);
   const {
     tasks,
@@ -1750,7 +2039,7 @@ export function TasksPage() {
   const debugCacheRef = useRef<Map<string, TaskDebugResponse>>(new Map());
   const debugRequestSequence = useRef(0);
   const inspectorSnapshotCacheRef = useRef<Map<string, TaskInspectorSnapshot>>(new Map());
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 1024 : true));
   const [latchedAutoOpenTaskId, setLatchedAutoOpenTaskId] = useState<string | null>(null);
   const [dismissedAutoOpenTaskId, setDismissedAutoOpenTaskId] = useState<string | null>(null);
   const [threadsCollapsed, setThreadsCollapsed] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < 1024 : false));
@@ -1766,18 +2055,25 @@ export function TasksPage() {
   const [latchedComposerModel, setLatchedComposerModel] = useState<ComposerModel | null>(null);
   const [artifactDir, setArtifactDir] = useState('');
   const [customArtifactMode, setCustomArtifactMode] = useState(false);
-  const [wsConnected, setWsConnected] = useState(false);
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeTransportStatus>({
+    connected: false,
+    mode: 'reconnecting',
+    reason: 'Realtime transport has not connected yet.',
+    latestEventId: null,
+  });
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [expandedApprovalId, setExpandedApprovalId] = useState<string | null>(null);
   const [taskDeleteRequested, setTaskDeleteRequested] = useState(false);
   const [wideContextViewport, setWideContextViewport] = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 1024 : true));
 
-  const ws = useMemo(() => new WebSocketClient(), []);
+  const ws = useMemo(() => new WebSocketClient({
+    fetchEvents: (taskId, afterEventId) => api.getTaskEvents(taskId, afterEventId),
+  }), []);
   const requestedTaskId = searchParams.get('task');
   const explicitNoSelection = requestedTaskId === 'none';
   const task = loadedTask && selectedTaskId && loadedTask.definition.taskId === selectedTaskId ? loadedTask : null;
-  const shouldShowTaskLoadingShell = Boolean(selectedTaskId && (taskLoading || (!task && !taskError)));
+  const shouldShowTaskLoadingShell = Boolean(selectedTaskId && !task && !taskError);
 
   function commitDebugSnapshot(taskId: string, snapshot: TaskDebugResponse) {
     debugCacheRef.current.set(taskId, snapshot);
@@ -1920,7 +2216,7 @@ export function TasksPage() {
         applySnapshot(snapshot.task);
       }
     });
-    const unsubscribeStatus = ws.onStatusChange((status) => setWsConnected(status.connected));
+    const unsubscribeStatus = ws.onStatusChange((status) => setRealtimeStatus(status));
     return () => {
       unsubscribeEvent();
       unsubscribeSnapshot();
@@ -1937,7 +2233,7 @@ export function TasksPage() {
   }, [selectedTaskId, ws]);
 
   const timeline = buildTimeline(task, events, debug);
-  const primarySummary = getPrimaryStatusSummary(task, debug, wsConnected);
+  const primarySummary = getPrimaryStatusSummary(task, debug, realtimeStatus);
   const primaryLifecycleBadge = getDisplayLifecycleBadge(task, debug, primarySummary.lifecycle);
   const liveComposerModel = getComposerModel(task, debug);
   const keepLatchedComposerModel = Boolean(
@@ -2193,7 +2489,49 @@ export function TasksPage() {
   const compactThreadRail = wideContextViewport && threadsCollapsed;
   const showThreadRail = wideContextViewport || mobileThreadRailOpen;
   const archivedTaskCount = allTasks.filter((entry) => entry.isArchived).length;
-  const showCollapsedFollowUp = composerModel.collapsibleFollowUp && !composerExpanded && continueMessage.trim().length === 0;
+  const taskNavItems = useMemo(() => ([
+    {
+      key: 'tasks',
+      to: '/tasks',
+      label: 'Tasks',
+      icon: TasksIcon,
+      count: tasks.length || null,
+      active: location.pathname.startsWith('/tasks'),
+    },
+    {
+      key: 'dashboard',
+      to: '/dashboard',
+      label: 'Dashboard',
+      icon: DashboardIcon,
+      count: null,
+      active: location.pathname.startsWith('/dashboard'),
+    },
+    {
+      key: 'queue',
+      to: '/queue',
+      label: 'Queue',
+      icon: QueueIcon,
+      count: tasks.filter((entry) => !entry.isArchived && entry.lifecycleStatus !== 'COMPLETED').length || null,
+      active: location.pathname.startsWith('/queue'),
+    },
+    {
+      key: 'ecosystem',
+      to: '/settings/ecosystem',
+      label: 'Ecosystem',
+      icon: CapabilityIcon,
+      count: null,
+      active: location.pathname.startsWith('/settings/ecosystem'),
+    },
+    {
+      key: 'settings',
+      to: '/settings/general',
+      label: 'Settings',
+      icon: SettingsIcon,
+      count: null,
+      active: location.pathname.startsWith('/settings') && !location.pathname.startsWith('/settings/ecosystem'),
+    },
+  ]), [archivedTaskCount, location.pathname, tasks]);
+  const showCollapsedFollowUp = false;
   const showFooterActionRow = Boolean(
     showPause
     || showRefresh
@@ -2347,6 +2685,32 @@ export function TasksPage() {
         ? 'w-64 xl:w-[17rem]'
         : 'w-72 xl:w-[19rem]'
     : '';
+  const composerProviderLabel = [debug?.executionSummary.providerSummary.providerId, debug?.executionSummary.providerSummary.modelId]
+    .filter(Boolean)
+    .join(' / ') || task?.definition.preferredProviderId || 'No provider selected';
+  const composerDestinationLabel = debug?.executionSummary.selectedArtifactDir
+    ?? debug?.executionSummary.recommendedArtifactDir
+    ?? task?.primaryAction.destinationDir
+    ?? 'workspace';
+  const composerTruthLabel = debug?.executionSummary.acceptance?.deterministic?.contract?.verdict
+    ? `Acceptance ${debug.executionSummary.acceptance.deterministic.contract.verdict}`
+    : 'Acceptance pending';
+  const executionTruth = debug?.executionSummary ?? null;
+  const credibilitySummary = buildCredibilitySummary(task, executionTruth);
+  const confidenceScore = !task || !executionTruth
+    ? 24
+    : credibilitySummary.gaps.length === 0 && task.runtime.lifecycleStatus === 'COMPLETED'
+      ? 92
+      : Math.max(36, 78 - credibilitySummary.gaps.length * 14);
+  const acceptanceVerdict = executionTruth?.acceptance?.deterministic?.contract?.verdict ?? 'pending';
+  const qualityVerdict = executionTruth?.acceptance?.quality?.verdict ?? 'not_applicable';
+  const issuePlaneLabel = executionTruth?.issuePlane ?? 'none';
+  const issueSummaryLabel = executionTruth?.issueSummary ?? task?.diagnostics.lastError ?? 'No blocking issues detected.';
+  const suggestedActionLabel = executionTruth?.suggestedAction?.label ?? task?.primaryAction.label ?? 'Review task truth';
+  const suggestedActionReason = executionTruth?.suggestedAction?.reason ?? task?.nextActionSummary.reason ?? task?.primaryAction.description ?? 'Select a thread or create a task.';
+  const artifactPathStateLabel = executionTruth?.artifactPathState ?? 'sandbox_only';
+  const deliveredArtifactCount = executionTruth?.artifactDestinationPaths.length ?? 0;
+  const createdArtifactCount = executionTruth?.artifactPaths.length ?? 0;
 
   useEffect(() => {
     setComposerExpanded(false);
@@ -2368,8 +2732,18 @@ export function TasksPage() {
     setDetailsOpen(true);
   }
 
+  function focusThreadComposer() {
+    setComposerExpanded(true);
+    window.setTimeout(() => {
+      const node = document.querySelector('[data-testid="task-continue-message"]');
+      if (node instanceof HTMLTextAreaElement) {
+        node.focus();
+      }
+    }, 0);
+  }
+
   return (
-    <div className="relative flex h-full max-h-full min-h-0 min-w-0 overflow-hidden bg-[radial-gradient(circle_at_20%_0%,rgba(59,130,246,0.10),transparent_34%),linear-gradient(180deg,#0b0b0d_0%,#080809_100%)]" data-testid="tasks-page">
+    <div className="relative flex h-full max-h-full min-h-0 min-w-0 overflow-hidden bg-[radial-gradient(circle_at_30%_0%,rgba(59,130,246,0.12),transparent_28rem),radial-gradient(circle_at_72%_12%,rgba(139,92,246,0.10),transparent_30rem),linear-gradient(180deg,#0b0b0d_0%,#080809_100%)]" data-testid="tasks-page">
       {!wideContextViewport && mobileThreadRailOpen ? (
         <button
           type="button"
@@ -2384,9 +2758,10 @@ export function TasksPage() {
           wideContextViewport
             ? `${threadsCollapsed ? 'w-16' : expandedThreadRailWidthClass} relative`
             : `${showThreadRail ? 'translate-x-0' : '-translate-x-full'} absolute inset-y-0 left-0 z-40 w-[min(21rem,calc(100%-1.25rem))] max-w-[21rem] shadow-2xl`
-        } flex h-full min-h-0 flex-shrink-0 flex-col overflow-hidden border-r border-border-subtle bg-surface transition-all duration-normal`}
+        } flex h-full min-h-0 flex-shrink-0 flex-col overflow-hidden border-r border-border-subtle bg-[linear-gradient(180deg,rgba(17,17,20,0.98),rgba(11,11,13,0.98))] transition-all duration-normal lg:pb-10`}
         data-testid="tasks-explorer-scroll"
       >
+        <div data-testid="task-thread-rail" className="flex h-full min-h-0 flex-col overflow-hidden">
         {wideContextViewport && threadsCollapsed ? (
           <Button
             type="button"
@@ -2404,10 +2779,52 @@ export function TasksPage() {
         <div className={`flex-shrink-0 ${compactThreadRail ? 'px-2 pb-4 pt-14' : ultraCompactVerticalViewport ? 'px-3 py-3.5' : 'px-4 py-4'}`}>
           {!compactThreadRail ? (
             <div className={`flex flex-col ${ultraCompactVerticalViewport ? 'gap-2' : 'gap-3'}`}>
+              <div className="flex items-center gap-3 px-1">
+                <img
+                  src="/logo.png"
+                  alt="SCC Batch"
+                  data-testid="app-brand-logo"
+                  className="h-10 w-10 rounded-lg border border-white/10 object-cover shadow-[0_0_24px_rgba(99,102,241,0.34)]"
+                />
+                <div className="min-w-0">
+                  <p className="truncate text-[1.05rem] font-semibold leading-tight text-text-primary">SCC Batch</p>
+                  <p className="mt-0.5 text-[11px] leading-none text-text-muted">Agent Console</p>
+                </div>
+              </div>
+              <nav className="space-y-1 border-b border-border-subtle pb-3" aria-label="Primary task console navigation">
+                {taskNavItems.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <NavLink
+                      key={item.key}
+                      to={item.to}
+                      data-testid={`task-rail-nav-${item.key}`}
+                      data-active={item.active ? 'true' : 'false'}
+                      className={() =>
+                        `flex h-10 items-center justify-between rounded-md border px-3 text-sm transition duration-fast ${
+                          item.active
+                            ? 'border-border-default bg-surface-elevated text-text-primary shadow-[inset_3px_0_0_rgba(99,102,241,0.86)]'
+                            : 'border-transparent text-text-secondary hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary'
+                        }`
+                      }
+                    >
+                      <span className="inline-flex min-w-0 items-center gap-3">
+                        <Icon className="h-4 w-4 shrink-0" />
+                        <span className="truncate">{item.label}</span>
+                      </span>
+                      {item.count ? (
+                        <span className="rounded-md border border-border-default bg-black/20 px-1.5 py-0.5 text-[11px] leading-none text-text-secondary">
+                          {item.count}
+                        </span>
+                      ) : null}
+                    </NavLink>
+                  );
+                })}
+              </nav>
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs font-medium uppercase tracking-widest text-text-muted">Threads</p>
-                  <h1 className={`${ultraCompactVerticalViewport ? 'text-base' : 'text-lg'} font-semibold text-text-primary`}>Work threads</h1>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-text-muted">Threads</p>
+                  <h1 className={`${ultraCompactVerticalViewport ? 'text-sm' : 'text-base'} font-semibold text-text-primary`}>Today</h1>
                 </div>
                 {wideContextViewport ? (
                   <Button
@@ -2442,15 +2859,15 @@ export function TasksPage() {
                 >
                   <ArchiveIcon className="h-4 w-4" />
                   {archivedTaskCount === 0
-                    ? 'No archived'
+                    ? 'Archived'
                     : showArchived
-                      ? `Hide archived (${archivedTaskCount})`
-                      : `Show archived (${archivedTaskCount})`}
+                      ? `Hide (${archivedTaskCount})`
+                      : `Archived (${archivedTaskCount})`}
                 </Button>
                 <Button
                   data-testid="task-create-thread-inline"
                   size="sm"
-                  className={`min-w-0 justify-center ${ultraCompactVerticalViewport ? 'px-2.5 text-xs' : ''}`}
+                  className={`min-w-0 justify-center bg-gradient-to-r from-accent to-violet-500 text-white hover:from-accent-hover hover:to-violet-600 ${ultraCompactVerticalViewport ? 'px-2.5 text-xs' : ''}`}
                   onClick={() => setComposerOpen(true)}
                 >
                   <PlusIcon className="h-4 w-4" />
@@ -2544,9 +2961,28 @@ export function TasksPage() {
             </p>
           )}
         </div>
+        <div className={`${compactThreadRail ? 'hidden' : 'mx-3 mb-3 rounded-lg border border-violet-400/20 bg-violet-500/10 p-3'}`}>
+          <div className="flex items-center gap-3">
+            <img src="/logo.png" alt="" className="h-9 w-9 rounded-lg border border-white/10 object-cover" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-text-primary">New agent task</p>
+              <p className="mt-0.5 text-xs leading-5 text-text-secondary">Create a grounded task from scratch.</p>
+            </div>
+          </div>
+          <Button
+            data-testid="task-create-thread-brand"
+            size="sm"
+            className="mt-3 w-full justify-center bg-gradient-to-r from-accent to-violet-500 text-white hover:from-accent-hover hover:to-violet-600"
+            onClick={() => setComposerOpen(true)}
+          >
+            <PlusIcon className="h-4 w-4" />
+            New task
+          </Button>
+        </div>
+        </div>
       </aside>
 
-      <main className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
+      <main className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden lg:pt-10" data-testid="tasks-agent-shell">
         <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-testid="task-detail-pane">
           <div
             className={`sticky top-0 z-40 border-b border-border-subtle bg-surface/92 backdrop-blur-sm flex-shrink-0 ${
@@ -2574,9 +3010,15 @@ export function TasksPage() {
                 }`}>
                   {task?.definition.title ?? 'Select a thread'}
                 </h2>
-                {!reducedSummaryViewport && !effectiveDetailsOpen ? (
+                {!reducedSummaryViewport && task ? (
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-5 text-text-muted">
+                    <span>Task ID: {task.definition.taskId.slice(0, 12)}</span>
+                    <span>Updated {formatTime(task.runtime.updatedAt)}</span>
+                    <span>{primarySummary.providerLabel ?? 'Provider pending'}</span>
+                  </div>
+                ) : !reducedSummaryViewport && !effectiveDetailsOpen ? (
                   <p className="mt-1 max-w-3xl line-clamp-2 text-sm leading-5 text-text-secondary lg:line-clamp-1">
-                    {task?.definition.intent ?? 'Choose a thread on the left or create a new one to start working.'}
+                    Choose a thread on the left or create a new one to start working.
                   </p>
                 ) : null}
               </div>
@@ -2587,6 +3029,14 @@ export function TasksPage() {
                 >
                   {primaryLifecycleBadge.label}
                 </Badge>
+                <Badge
+                  variant={realtimeStatus.mode === 'live' ? 'success' : realtimeStatus.mode === 'blocked' ? 'error' : 'warning'}
+                  className={ultraCompactVerticalViewport ? 'px-2 py-0.5 text-[10px] opacity-75' : 'opacity-75'}
+                >
+                  <span data-testid="task-realtime-mode" title={realtimeStatus.reason ?? primarySummary.realtimeLabel}>
+                    {primarySummary.realtimeLabel}
+                  </span>
+                </Badge>
                 {task ? (
                   <span
                     data-testid="task-action-model-pill"
@@ -2594,6 +3044,37 @@ export function TasksPage() {
                   >
                     <span data-testid="task-action-model">{composerModel.actionLane}</span>
                   </span>
+                ) : null}
+                {task ? (
+                  <div className="hidden items-center gap-2 xl:flex">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={!showPause || !selectedTaskId || busyAction !== null}
+                      onClick={() => void runAction('pause', async () => { await api.pauseTask(selectedTaskId!); })}
+                    >
+                      Pause
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={!selectedTaskId || busyAction !== null}
+                      onClick={focusThreadComposer}
+                    >
+                      Continue
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={!selectedTaskId || busyAction !== null}
+                      onClick={() => void runAction('restart', async () => { await api.restartTask(selectedTaskId!, undefined, { autoRun: true }); })}
+                    >
+                      Restart
+                    </Button>
+                  </div>
                 ) : null}
                 <button
                   type="button"
@@ -2825,20 +3306,70 @@ export function TasksPage() {
             ) : !task ? (
               <div
                 data-testid="task-empty-state"
-                className="max-w-3xl rounded-lg border border-dashed border-border-default bg-surface/42 px-6 py-6"
+                className="mx-auto max-w-3xl rounded-lg border border-dashed border-violet-300/24 bg-surface/42 px-6 py-6 shadow-[0_18px_48px_-36px_rgba(99,102,241,0.48)]"
               >
-                <p className="text-xs uppercase tracking-[0.3em] text-text-muted">Thread workspace</p>
-                <h3 className="mt-3 text-xl font-semibold text-text-primary">Select a thread or start a new one</h3>
+                <div data-testid="task-empty-agent-state" className="flex flex-col gap-4 sm:flex-row sm:items-start">
+                  <img
+                    src="/logo.png"
+                    alt="SCC Batch"
+                    className="h-16 w-16 rounded-xl border border-white/10 object-cover shadow-[0_0_34px_rgba(99,102,241,0.26)]"
+                  />
+                  <div className="min-w-0 flex-1">
+                <p className="text-xs uppercase tracking-[0.3em] text-text-muted">Agent workspace</p>
+                <h3 className="mt-3 text-xl font-semibold text-text-primary">Start with a conversation, finish with evidence</h3>
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-text-secondary">
-                  The task workspace is ready. Pick a thread from the left rail to continue existing work, or create a new thread to start something fresh.
+                  The task workspace is ready. Connect a provider, check ecosystem readiness, or create a generic Agent task to start the main path.
                 </p>
+                <div data-testid="task-empty-glyph-row" className="mt-4 grid gap-2 sm:grid-cols-3">
+                  <span className="inline-flex items-center gap-2 rounded-lg border border-cyan-300/18 bg-cyan-400/8 px-3 py-2 text-xs text-cyan-100/86">
+                    <span data-testid="task-empty-glyph-agent" className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-cyan-300/22 bg-cyan-400/10">
+                      <TimelineAgentIcon className="h-3.5 w-3.5" />
+                    </span>
+                    Agent thread
+                  </span>
+                  <span className="inline-flex items-center gap-2 rounded-lg border border-emerald-300/18 bg-emerald-400/8 px-3 py-2 text-xs text-emerald-100/86">
+                    <span data-testid="task-empty-glyph-runtime" className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-emerald-300/22 bg-emerald-400/10">
+                      <TimelineRuntimeIcon className="h-3.5 w-3.5" />
+                    </span>
+                    Runtime truth
+                  </span>
+                  <span className="inline-flex items-center gap-2 rounded-lg border border-sky-300/18 bg-sky-400/8 px-3 py-2 text-xs text-sky-100/86">
+                    <span data-testid="task-empty-glyph-artifact" className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-sky-300/22 bg-sky-400/10">
+                      <TimelineArtifactIcon className="h-3.5 w-3.5" />
+                    </span>
+                    Evidence result
+                  </span>
+                </div>
+                <div className="mt-5 flex flex-wrap gap-2">
+                  <Button data-testid="task-empty-create" size="sm" onClick={() => setComposerOpen(true)}>
+                    <PlusIcon className="h-4 w-4" />
+                    Create Agent task
+                  </Button>
+                  <a
+                    data-testid="task-empty-connections"
+                    href="/settings/connections"
+                    className="inline-flex h-8 items-center rounded-md border border-border-default bg-surface-elevated px-3 text-sm text-text-primary transition duration-fast hover:bg-surface-hover"
+                  >
+                    Connections
+                  </a>
+                  <a
+                    data-testid="task-empty-ecosystem"
+                    href="/settings/ecosystem"
+                    className="inline-flex h-8 items-center rounded-md border border-border-default bg-surface-elevated px-3 text-sm text-text-primary transition duration-fast hover:bg-surface-hover"
+                  >
+                    Ecosystem readiness
+                  </a>
+                </div>
+                  </div>
+                </div>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="agent-conversation space-y-3" data-testid="task-conversation">
                 {timeline.map((entry) => {
                 if (entry.kind === 'delegation') {
                   const badgeVariant = lifecycleBadgeVariant(entry.childStatus) ?? (entry.active ? 'info' : 'outline');
                   return (
+                    <TimelineNodeFrame key={entry.id} kind="delegation">
                     <div
                       key={entry.id}
                       data-testid="task-delegation-card"
@@ -2846,6 +3377,9 @@ export function TasksPage() {
                     >
                       <div className="mb-2 flex items-center justify-between gap-3 text-xs text-text-muted">
                         <div className="flex items-center gap-2">
+                          <span data-testid="task-timeline-glyph-delegation-inline" className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-violet-300/24 bg-violet-400/10 text-violet-100">
+                            <TimelineDelegationIcon className="h-3.5 w-3.5" />
+                          </span>
                           <span>{entry.label}</span>
                           <Badge variant={badgeVariant}>{entry.active ? 'subtask running' : entry.childStatus.toLowerCase()}</Badge>
                         </div>
@@ -2875,6 +3409,7 @@ export function TasksPage() {
                         )}
                       </div>
                     </div>
+                    </TimelineNodeFrame>
                   );
                 }
 
@@ -2886,8 +3421,8 @@ export function TasksPage() {
                       ? `${entry.activity.evidencePaths[0]} +${entry.activity.evidencePaths.length - 1} more`
                       : null;
                   return (
+                    <TimelineNodeFrame key={entry.id} kind="tool" activity={entry.activity}>
                     <details
-                      key={entry.id}
                       data-testid="task-tool-activity"
                       className={`max-w-[52rem] rounded-lg border px-3.5 py-2.5 ${tone.shell}`}
                     >
@@ -2900,7 +3435,9 @@ export function TasksPage() {
                             data-testid="task-tool-activity-icon"
                             className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/8 bg-black/15 ${tone.meta}`}
                           >
-                            {renderToolActivityIcon(entry.activity)}
+                            <span data-testid="task-timeline-tool-icon" className="inline-flex">
+                              {renderToolActivityIcon(entry.activity)}
+                            </span>
                           </span>
                           <div className="min-w-0">
                             <div className={`flex flex-wrap items-center gap-2 text-xs ${tone.meta}`}>
@@ -2909,6 +3446,11 @@ export function TasksPage() {
                                 {getToolActivityStatusLabel(entry.activity.status)}
                               </span>
                               <span className="font-semibold text-text-primary">{entry.activity.toolId.replaceAll('_', ' ')}</span>
+                              {entry.activity.execution?.durationMs !== null && entry.activity.execution?.durationMs !== undefined ? (
+                                <span className="uppercase tracking-[0.18em] text-text-muted/85">
+                                  {entry.activity.execution.durationMs}ms
+                                </span>
+                              ) : null}
                               {entry.activity.approvalStatus ? (
                                 <span className="uppercase tracking-[0.18em] text-text-muted/85">
                                   approval {entry.activity.approvalStatus.toLowerCase()}
@@ -2989,6 +3531,7 @@ export function TasksPage() {
                         )}
                       </div>
                     </details>
+                    </TimelineNodeFrame>
                   );
                 }
 
@@ -3040,16 +3583,29 @@ export function TasksPage() {
                     };
 
                   return (
+                    <TimelineNodeFrame key={entry.id} kind={entry.kind === 'result' ? 'result' : 'agent'}>
                     <div
-                      key={entry.id}
                       data-testid={entry.kind === 'result' ? 'task-result-card' : 'task-assistant-update'}
                       className={`max-w-3xl rounded-lg border px-5 py-4 ${cardTone.shell}`}
                     >
                       <div className={`mb-3 flex items-center justify-between gap-3 text-xs ${cardTone.meta}`}>
                         <div className="flex items-center gap-2">
+                          <span
+                            data-testid="task-timeline-agent-icon"
+                            className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border bg-black/10 ${
+                              entry.kind === 'result'
+                                ? isFailureResult
+                                  ? 'border-rose-300/20 text-rose-100'
+                                  : 'border-emerald-300/24 text-emerald-100'
+                                : 'border-cyan-300/24 text-cyan-100'
+                            }`}
+                          >
+                            <TimelineAgentIcon className="h-4 w-4" />
+                          </span>
                           <span className={`rounded-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] ${cardTone.label}`}>
                             {entry.kind === 'result' ? (isFailureResult ? 'Failure' : 'Result') : 'Progress'}
                           </span>
+                          <span className="font-semibold text-text-primary">Assistant</span>
                           <span className="font-semibold">{entry.label}</span>
                         </div>
                         <span>{formatTime(entry.timestamp)}</span>
@@ -3082,9 +3638,12 @@ export function TasksPage() {
                                 data-testid={entry.kind === 'result' ? 'task-result-destination-section' : undefined}
                                 className={`rounded-2xl border px-4 py-3 ${cardTone.section}`}
                               >
-                                <p className={`text-[11px] uppercase tracking-[0.24em] ${cardTone.meta}`}>
-                                  {artifactState.artifactDestinationPaths.length > 0 ? 'Delivered to' : 'Destination folder'}
-                                </p>
+                                <div className={`flex items-center gap-2 text-[11px] uppercase tracking-[0.24em] ${cardTone.meta}`}>
+                                  <span data-testid="task-timeline-glyph-artifact" className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-sky-300/22 bg-sky-400/10 text-sky-100">
+                                    <TimelineArtifactIcon className="h-3.5 w-3.5" />
+                                  </span>
+                                  <span>{artifactState.artifactDestinationPaths.length > 0 ? 'Delivered to' : 'Destination folder'}</span>
+                                </div>
                                 {artifactState.artifactDestinationPaths.length > 0 ? (
                                   <div className="mt-2 flex flex-wrap gap-2">
                                     {artifactState.artifactDestinationPaths.map((artifactPath) => (
@@ -3109,9 +3668,12 @@ export function TasksPage() {
                             )}
                             {artifactState.artifactPaths.length > 0 && (
                               <div>
-                                <p className={`text-[11px] uppercase tracking-[0.24em] ${cardTone.meta}`}>
-                                  Artifacts created
-                                </p>
+                                <div className={`flex items-center gap-2 text-[11px] uppercase tracking-[0.24em] ${cardTone.meta}`}>
+                                  <span data-testid="task-timeline-glyph-artifact" className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-sky-300/22 bg-sky-400/10 text-sky-100">
+                                    <TimelineArtifactIcon className="h-3.5 w-3.5" />
+                                  </span>
+                                  <span>Artifacts created</span>
+                                </div>
                                 <div className="mt-2 flex flex-wrap gap-2">
                                   {artifactState.artifactPaths.map((artifactPath) => (
                                     <span
@@ -3146,6 +3708,7 @@ export function TasksPage() {
                         )}
                       </div>
                     </div>
+                    </TimelineNodeFrame>
                   );
                 }
 
@@ -3164,13 +3727,14 @@ export function TasksPage() {
                     providerLabel || null,
                   ].filter(Boolean);
                   return (
+                    <TimelineNodeFrame key={entry.id} kind="decision">
                     <div key={entry.id} data-testid="task-result-missing" className={`max-w-3xl rounded-lg border px-5 py-4 ${
                       isFailureLifecycle
                         ? 'border-rose-400/24 bg-rose-950/18'
                         : isCancelledLifecycle
                           ? 'border-slate-400/22 bg-slate-950/18'
                           : 'border-amber-400/24 bg-amber-950/16'
-                    }`}>
+                      }`}>
                       <div className={`mb-2 flex items-center justify-between gap-3 text-xs ${
                         isFailureLifecycle
                           ? 'text-rose-100/62'
@@ -3178,7 +3742,12 @@ export function TasksPage() {
                             ? 'text-slate-100/62'
                             : 'text-amber-100/62'
                       }`}>
-                        <span className="font-semibold">{entry.label}</span>
+                        <div className="flex items-center gap-2">
+                          <span data-testid="task-timeline-glyph-decision-inline" className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-amber-300/24 bg-amber-400/10 text-amber-100">
+                            <TimelineDecisionIcon className="h-3.5 w-3.5" />
+                          </span>
+                          <span className="font-semibold">{entry.label}</span>
+                        </div>
                         <span>{formatTime(entry.timestamp)}</span>
                       </div>
                       <p className={`text-sm font-medium ${
@@ -3210,11 +3779,14 @@ export function TasksPage() {
                             <div className={`rounded-2xl border bg-black/10 px-4 py-3 ${
                               isFailureLifecycle ? 'border-rose-400/20' : isCancelledLifecycle ? 'border-slate-400/20' : 'border-amber-400/20'
                             }`} data-testid="task-result-missing-destination-section">
-                              <p className={`text-xs uppercase tracking-[0.24em] ${
+                              <div className={`flex items-center gap-2 text-xs uppercase tracking-[0.24em] ${
                                 isFailureLifecycle ? 'text-rose-100/60' : isCancelledLifecycle ? 'text-slate-100/60' : 'text-amber-100/60'
                               }`}>
-                                {artifactState.artifactDestinationPaths.length > 0 ? 'Delivered to' : 'Destination folder'}
-                              </p>
+                                <span data-testid="task-timeline-glyph-artifact" className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-sky-300/22 bg-sky-400/10 text-sky-100">
+                                  <TimelineArtifactIcon className="h-3.5 w-3.5" />
+                                </span>
+                                <span>{artifactState.artifactDestinationPaths.length > 0 ? 'Delivered to' : 'Destination folder'}</span>
+                              </div>
                               {artifactState.artifactDestinationPaths.length > 0 ? (
                                 <div className="mt-2 flex flex-wrap gap-2">
                                   {artifactState.artifactDestinationPaths.map((artifactPath) => (
@@ -3238,9 +3810,14 @@ export function TasksPage() {
                           )}
                           {artifactState.artifactPaths.length > 0 && (
                             <div>
-                              <p className={`text-xs uppercase tracking-[0.24em] ${
+                              <div className={`flex items-center gap-2 text-xs uppercase tracking-[0.24em] ${
                                 isFailureLifecycle ? 'text-rose-100/60' : isCancelledLifecycle ? 'text-slate-100/60' : 'text-amber-100/60'
-                              }`}>Artifacts created</p>
+                              }`}>
+                                <span data-testid="task-timeline-glyph-artifact" className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-sky-300/22 bg-sky-400/10 text-sky-100">
+                                  <TimelineArtifactIcon className="h-3.5 w-3.5" />
+                                </span>
+                                <span>Artifacts created</span>
+                              </div>
                               <div className="mt-2 flex flex-wrap gap-2">
                                 {artifactState.artifactPaths.map((artifactPath) => (
                                   <span key={artifactPath} data-testid="task-result-missing-artifact-path" className={`rounded-md border bg-black/15 px-3 py-1 text-xs ${
@@ -3279,6 +3856,7 @@ export function TasksPage() {
                         </div>
                       )}
                     </div>
+                    </TimelineNodeFrame>
                   );
                 }
 
@@ -3303,9 +3881,13 @@ export function TasksPage() {
                       ? entry.proposal.instructionSkillProposal?.validationSummary
                       : entry.proposal.optimizationRecommendation?.category;
                   return (
+                    <TimelineNodeFrame key={entry.id} kind="decision">
                     <div key={entry.id} className={`max-w-3xl rounded-lg border px-4 py-4 ${tone}`} data-testid={`task-proposal-${entry.proposal.kind}`}>
                       <div className="mb-2 flex items-center justify-between gap-3 text-xs text-text-muted">
                         <div className="flex flex-wrap items-center gap-2">
+                          <span data-testid="task-timeline-glyph-decision-inline" className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-amber-300/24 bg-amber-400/10 text-amber-100">
+                            <TimelineDecisionIcon className="h-3.5 w-3.5" />
+                          </span>
                           <span>{entry.label}</span>
                           <span className={`rounded-md border px-2.5 py-0.5 text-[10px] uppercase tracking-[0.2em] ${badgeTone}`}>
                             {entry.proposal.kind.replace('_', ' ')} · {entry.proposal.status.toLowerCase()}
@@ -3350,22 +3932,30 @@ export function TasksPage() {
                         </div>
                       </div>
                     </div>
+                    </TimelineNodeFrame>
                   );
                 }
 
                 if (entry.kind === 'proposal-note') {
                   return (
+                    <TimelineNodeFrame key={entry.id} kind="decision">
                     <div
                       key={entry.id}
                       data-testid="task-proposal-note"
                       className="max-w-3xl rounded-lg border border-border-subtle bg-surface/26 px-4 py-3"
                     >
                       <div className="mb-2 flex items-center justify-between gap-3 text-xs text-text-muted">
-                        <span>{entry.label}</span>
+                        <div className="flex items-center gap-2">
+                          <span data-testid="task-timeline-glyph-decision-inline" className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-amber-300/24 bg-amber-400/10 text-amber-100">
+                            <TimelineDecisionIcon className="h-3.5 w-3.5" />
+                          </span>
+                          <span>{entry.label}</span>
+                        </div>
                         <span>{formatTime(entry.timestamp)}</span>
                       </div>
                       <p className="text-sm text-text-secondary">{entry.content}</p>
                     </div>
+                    </TimelineNodeFrame>
                   );
                 }
 
@@ -3393,15 +3983,44 @@ export function TasksPage() {
                       meta: 'text-text-muted'
                     };
                 const isOperatorCorrection = entry.kind === 'operator' && isMachineCorrectionText(entry.content);
+                const genericNodeKind: TimelineNodeKind = entry.kind === 'runtime'
+                  ? 'runtime'
+                  : entry.kind === 'assistant-note'
+                    ? requiresArtifactSelection(task)
+                      ? 'decision'
+                      : 'agent'
+                    : isOperatorCorrection
+                      ? 'decision'
+                      : 'user';
 
                 return (
+                  <TimelineNodeFrame key={entry.id} kind={genericNodeKind}>
                   <div
-                    key={entry.id}
                     data-testid={`task-timeline-entry-${entry.kind}`}
                     className={`max-w-[52rem] rounded-lg border px-3.5 py-3 ${timelineTone.shell}`}
                   >
                     <div className={`mb-2 flex items-center justify-between gap-3 text-xs ${timelineTone.meta}`}>
                       <div className="flex items-center gap-2">
+                        <span
+                          data-testid={
+                            genericNodeKind === 'agent'
+                              ? 'task-timeline-agent-icon'
+                              : genericNodeKind === 'decision'
+                                ? 'task-timeline-glyph-decision-inline'
+                                : undefined
+                          }
+                          className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border bg-black/10 ${
+                            genericNodeKind === 'runtime'
+                              ? 'border-emerald-300/20 text-emerald-100'
+                              : genericNodeKind === 'agent'
+                                ? 'border-cyan-300/20 text-cyan-100'
+                                : genericNodeKind === 'decision'
+                                  ? 'border-amber-300/24 text-amber-100'
+                                  : 'border-accent/22 text-blue-100'
+                          }`}
+                        >
+                          {renderTimelineGlyph(genericNodeKind)}
+                        </span>
                         <span>{entry.label}</span>
                         {entry.kind === 'assistant-note' ? (
                           <span className="rounded-md border border-sky-300/24 bg-sky-400/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-sky-100/80">
@@ -3411,6 +4030,14 @@ export function TasksPage() {
                         {isOperatorCorrection ? (
                           <span className="rounded-md border border-warning/24 bg-warning-muted/12 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-warning">
                             correction summary
+                          </span>
+                        ) : null}
+                        {entry.kind === 'assistant-note' && requiresArtifactSelection(task) ? (
+                          <span className="inline-flex items-center gap-1.5 rounded-md border border-sky-300/24 bg-sky-400/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-sky-100/80">
+                            <span data-testid="task-timeline-glyph-artifact" className="inline-flex">
+                              <TimelineArtifactIcon className="h-3.5 w-3.5" />
+                            </span>
+                            artifact destination
                           </span>
                         ) : null}
                       </div>
@@ -3434,6 +4061,7 @@ export function TasksPage() {
                       </p>
                     ) : null}
                   </div>
+                  </TimelineNodeFrame>
                 );
                 })}
                 {timeline.length === 0 && (
@@ -3452,7 +4080,7 @@ export function TasksPage() {
           </div>
 
           <div
-            className={`sticky bottom-0 z-10 border-t border-border-subtle bg-surface/95 backdrop-blur-sm flex-shrink-0 ${
+            className={`sticky bottom-0 z-10 border-t border-border-subtle bg-surface/95 backdrop-blur-sm flex-shrink-0 lg:bottom-10 ${
               ultraCompactVerticalViewport
                 ? 'px-4 py-0.5 sm:px-5 sm:py-0.5'
                 : compactVerticalViewport
@@ -3492,7 +4120,8 @@ export function TasksPage() {
                 </div>
               </div>
             ) : null}
-            <div className={`rounded-lg border border-border-subtle bg-surface-elevated/72 shadow-sm ${
+            <div data-testid="task-composer" className="mx-auto w-full max-w-[56rem]">
+            <div className={`rounded-lg border border-violet-300/28 bg-background/78 shadow-[0_0_0_1px_rgba(99,102,241,0.12),0_18px_52px_-36px_rgba(99,102,241,0.58)] ${
               ultraCompactVerticalViewport
                 ? 'px-3 py-1.5'
                 : compactVerticalViewport
@@ -3502,8 +4131,13 @@ export function TasksPage() {
               {showCollapsedFollowUp ? (
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <p data-testid="task-composer-mode" className="text-[11px] uppercase tracking-[0.28em] text-text-muted">follow_up</p>
+                    <p data-testid="task-composer-mode" className="text-[11px] uppercase tracking-[0.28em] text-violet-200/70">follow_up</p>
                     <p className="mt-1 text-sm font-medium text-text-primary">Keep working in this thread from the delivered result when you are ready.</p>
+                    <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-secondary">
+                      <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">Provider: {composerProviderLabel}</span>
+                      <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">Destination: {composerDestinationLabel}</span>
+                      <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">{composerTruthLabel}</span>
+                    </div>
                   </div>
                   <Button
                     data-testid="task-action-expand-follow-up"
@@ -3518,9 +4152,14 @@ export function TasksPage() {
                 <>
                   <div className="mb-3 flex items-start justify-between gap-3">
                     <div>
-                      <p data-testid="task-composer-mode" className="text-[11px] uppercase tracking-[0.28em] text-text-muted">{composerModel.actionLane}</p>
+                      <p data-testid="task-composer-mode" className="text-[11px] uppercase tracking-[0.28em] text-violet-200/70">{composerModel.actionLane}</p>
                       <p className="mt-1 text-sm font-medium text-text-primary">{composerModel.title}</p>
                       <p className="mt-1 text-sm text-text-secondary">{composerModel.description}</p>
+                      <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-secondary">
+                        <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">Provider: {composerProviderLabel}</span>
+                        <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">Destination: {composerDestinationLabel}</span>
+                        <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">{composerTruthLabel}</span>
+                      </div>
                     </div>
                   </div>
                   {composerModelChangedWhileEditing ? (
@@ -3549,7 +4188,7 @@ export function TasksPage() {
                         setContinueMessage(event.target.value);
                       }}
                       placeholder={composerModel.placeholder}
-                      className="min-h-[72px] w-full flex-1 resize-none rounded-lg border border-border-default bg-background/60 px-3.5 py-3 text-sm text-text-primary placeholder:text-text-muted outline-none transition duration-fast focus:border-accent focus:ring-1 focus:ring-accent/30 sm:min-h-[88px]"
+                      className="min-h-[48px] w-full flex-1 resize-none rounded-lg border border-border-default bg-black/35 px-3.5 py-3 text-sm text-text-primary placeholder:text-text-muted outline-none transition duration-fast focus:border-violet-300 focus:ring-1 focus:ring-violet-300/30 sm:min-h-[56px]"
                     />
                     <div className="flex w-full flex-col gap-2 sm:w-auto">
                       <Button
@@ -3568,7 +4207,7 @@ export function TasksPage() {
                           ? 'Continuing...'
                           : composerModel.buttonLabel}
                       </Button>
-                      {composerModel.mode === 'follow_up' ? (
+                      {composerModel.mode === 'follow_up' && composerExpanded ? (
                         <Button
                           type="button"
                           variant="ghost"
@@ -3589,9 +4228,14 @@ export function TasksPage() {
               ) : (
                 <div className={`flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${compactVerticalViewport ? '' : ''}`} data-testid="task-composer-blocked">
                   <div>
-                    <p data-testid="task-composer-mode" className="text-[11px] uppercase tracking-[0.26em] text-text-muted">{composerModel.actionLane}</p>
+                    <p data-testid="task-composer-mode" className="text-[11px] uppercase tracking-[0.26em] text-violet-200/70">{composerModel.actionLane}</p>
                     <p className="mt-1 text-sm font-medium text-text-primary">{composerModel.title}</p>
                     <p className="mt-1 text-sm leading-6 text-text-secondary">{composerModel.description}</p>
+                    <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-secondary">
+                      <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">Provider: {composerProviderLabel}</span>
+                      <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">Destination: {composerDestinationLabel}</span>
+                      <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">{composerTruthLabel}</span>
+                    </div>
                   </div>
                   <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
                     {autoOpenContext && !effectiveDetailsOpen ? (
@@ -3617,20 +4261,30 @@ export function TasksPage() {
                 </div>
               )}
             </div>
+            </div>
           </div>
         </section>
 
         {contextRailPresence.mounted ? (
         <aside
-          className={`motion-fade fixed inset-x-4 bottom-4 top-24 z-30 flex w-auto min-w-0 flex-col overflow-hidden rounded-xl border border-border-subtle bg-surface shadow-2xl transition-[opacity,transform] duration-normal ease-[var(--ease-out)] lg:static lg:inset-auto lg:z-auto lg:h-full lg:min-h-0 lg:w-[22rem] lg:rounded-none lg:border-y-0 lg:border-r-0 lg:border-l lg:shadow-none xl:w-[25rem] ${
+          className={`motion-fade fixed inset-x-4 bottom-4 top-24 z-30 flex w-auto min-w-0 flex-col overflow-hidden rounded-xl border border-border-subtle bg-surface/95 shadow-2xl transition-[opacity,transform] duration-normal ease-[var(--ease-out)] lg:static lg:inset-auto lg:z-auto lg:h-full lg:min-h-0 lg:w-[21rem] lg:rounded-none lg:border-y-0 lg:border-r-0 lg:border-l lg:shadow-none xl:w-[22rem] ${
             contextRailPresence.state === 'open'
               ? 'motion-rail-open opacity-100 translate-x-0'
               : 'motion-rail-closed pointer-events-none opacity-0 translate-x-4 lg:translate-x-2'
           }`}
           data-testid="task-inspector"
         >
-            <div className="flex items-center justify-between px-4 py-4 flex-shrink-0">
-              {effectiveDetailsOpen && <div><p className="text-xs uppercase tracking-[0.22em] text-text-muted font-medium">Inspector</p><h3 className="text-base font-semibold text-text-primary">Task truth</h3></div>}
+          <div data-testid="task-truth-inspector" className="flex h-full min-h-0 flex-col overflow-hidden">
+            <div className="flex items-start justify-between px-4 py-4 flex-shrink-0">
+              {effectiveDetailsOpen && (
+                <div>
+                  <div className="flex items-center gap-4 text-sm">
+                    <span className="border-b border-violet-300 pb-1 font-semibold text-text-primary">Task truth</span>
+                    <span className="pb-1 text-text-muted">Events</span>
+                  </div>
+                  <h3 className="mt-2 text-base font-semibold text-text-primary">Evidence inspector</h3>
+                </div>
+              )}
                 <Button
                   variant="ghost"
                   size="sm"
@@ -3671,6 +4325,93 @@ export function TasksPage() {
                   </CardContent>
                 </Card>
               )}
+              <div className="space-y-3" data-testid="task-truth-summary-cards">
+                <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-text-primary">Confidence & acceptance</p>
+                    <span className="text-sm font-semibold text-success">{confidenceScore}%</span>
+                  </div>
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/8">
+                    <div
+                      className={`h-full rounded-full ${
+                        credibilitySummary.gaps.length === 0 ? 'bg-success' : 'bg-warning'
+                      }`}
+                      style={{ width: `${confidenceScore}%` }}
+                    />
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <p className="text-text-muted">Acceptance</p>
+                      <p className="mt-1 font-medium text-text-primary">{acceptanceVerdict}</p>
+                    </div>
+                    <div>
+                      <p className="text-text-muted">Quality</p>
+                      <p className="mt-1 font-medium text-text-primary">{qualityVerdict}</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-text-primary">Failure plane</p>
+                    <span className={issuePlaneLabel === 'none' ? 'text-sm font-semibold text-success' : 'text-sm font-semibold text-warning'}>
+                      {issuePlaneLabel}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-text-secondary">{issueSummaryLabel}</p>
+                </div>
+                <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-text-primary">Provider readiness</p>
+                    <span className="text-sm font-semibold text-success">{composerProviderLabel === 'No provider selected' ? 'not selected' : 'ready'}</span>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-text-secondary">{composerProviderLabel}</p>
+                </div>
+                <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-text-primary">Artifact state</p>
+                    <span className={artifactPathStateLabel === 'unresolved' ? 'text-sm font-semibold text-warning' : 'text-sm font-semibold text-success'}>
+                      {artifactPathStateLabel}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                    <div>
+                      <p className="text-text-muted">Created</p>
+                      <p className="mt-1 font-medium text-text-primary">{createdArtifactCount}</p>
+                    </div>
+                    <div>
+                      <p className="text-text-muted">Delivered</p>
+                      <p className="mt-1 font-medium text-text-primary">{deliveredArtifactCount}</p>
+                    </div>
+                    <div>
+                      <p className="text-text-muted">Destination</p>
+                      <p className="mt-1 truncate font-medium text-text-primary">{composerDestinationLabel}</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-violet-300/35 bg-violet-950/18 px-3 py-3 shadow-[0_0_0_1px_rgba(139,92,246,0.10)]">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-violet-100">Suggested action</p>
+                    <Badge variant={credibilitySummary.gaps.length ? 'warning' : 'success'}>
+                      {credibilitySummary.gaps.length ? `${credibilitySummary.gaps.length} gap` : 'clear'}
+                    </Badge>
+                  </div>
+                  <p className="mt-2 text-sm font-medium text-text-primary">{suggestedActionLabel}</p>
+                  <p className="mt-1 text-sm leading-6 text-text-secondary">{suggestedActionReason}</p>
+                </div>
+                {credibilitySummary.gaps.length > 0 ? (
+                  <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-text-primary">Evidence gaps</p>
+                      <span className="text-sm font-semibold text-warning">{credibilitySummary.gaps.length}</span>
+                    </div>
+                    <div className="mt-2 space-y-1.5">
+                      {credibilitySummary.gaps.map((gap) => (
+                        <p key={gap} className="text-sm leading-5 text-text-secondary">{gap}</p>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
                 {approvalEntriesForInspector.length ? (
                   <Card className="workbench-panel border-border-subtle bg-surface-elevated">
                     <CardContent className="space-y-3 text-sm">
@@ -3804,7 +4545,7 @@ export function TasksPage() {
                               data-testid="task-artifact-dir"
                               value={artifactDir}
                               onChange={(event) => setArtifactDir(event.target.value)}
-                              placeholder={debug?.executionSummary.recommendedArtifactDir ?? 'backend/docs'}
+                              placeholder={debug?.executionSummary.recommendedArtifactDir ?? 'project-relative destination'}
                               className="w-full rounded-xl border border-border-default bg-surface px-3 py-2 text-sm text-text-primary outline-none transition duration-fast focus:border-accent focus:ring-1 focus:ring-accent/30"
                             />
                             <Button
@@ -3841,6 +4582,7 @@ export function TasksPage() {
               </div>
             </div>
           )}
+          </div>
         </aside>
         ) : null}
       </main>
@@ -3863,6 +4605,22 @@ export function TasksPage() {
         onCancel={() => setTaskDeleteRequested(false)}
         onConfirm={() => void deleteSelectedTask()}
       />
+
+      <div data-testid="task-global-footer" className="hidden border-t border-border-subtle bg-background/92 backdrop-blur-md lg:fixed lg:inset-x-0 lg:bottom-0 lg:z-50 lg:flex lg:h-10 lg:items-center lg:justify-between">
+        <div className="flex h-full w-72 items-center gap-3 border-r border-border-subtle px-3 xl:w-[19rem]">
+          <span className="text-xs text-text-secondary">Workspace</span>
+          <span className="rounded-md border border-border-default bg-black/20 px-2.5 py-1 text-xs text-text-primary">scc-batch</span>
+        </div>
+        <div className="flex min-w-0 flex-1 items-center gap-2 px-3 text-xs text-text-muted">
+          <span className="truncate">D:\MyCode\myApp_\Scc_batch_web</span>
+          <span className="status-dot text-success" />
+        </div>
+        <div className="flex h-full items-center gap-2 border-l border-border-subtle px-3">
+          <span className="rounded-md border border-border-default bg-surface-elevated px-2.5 py-1 text-xs text-text-primary">Backend healthy</span>
+          <span className="rounded-md border border-warning/30 bg-warning-muted/15 px-2.5 py-1 text-xs text-warning">Provider gated</span>
+          <span className="rounded-md border border-success/25 bg-success-muted/15 px-2.5 py-1 text-xs text-success">WS live</span>
+        </div>
+      </div>
 
       {composerPresence.mounted ? (
         <TaskComposer
@@ -3893,7 +4651,7 @@ function TaskComposer({
 }) {
   const [title, setTitle] = useState('');
   const [intent, setIntent] = useState('');
-  const [taskFamily, setTaskFamily] = useState<TaskFamilyId>('general');
+  const [taskFamily, setTaskFamily] = useState<TaskFamilyId>('analyze');
   const [providerId, setProviderId] = useState('');
   const [qualityProfileId, setQualityProfileId] = useState<'' | QualityProfileId>('');
   const [pathPolicy, setPathPolicy] = useState<TaskPathPolicy>('task_workspace');
@@ -3906,11 +4664,22 @@ function TaskComposer({
     event.preventDefault();
     try {
       setError(null);
-      const units = JSON.parse(unitsText) as AgentUnit[];
+      const preflight = validateComposerInput({
+        title,
+        intent,
+        providerId,
+        unitsText,
+        pathPolicy,
+        outputDir,
+      });
+      if (preflight.errors.length > 0 || !preflight.units) {
+        setError(preflight.errors.join('\n'));
+        return;
+      }
       const response = await api.submitTask({
         title,
         intent,
-        units,
+        units: preflight.units,
         defaultQualityProfileId: qualityProfileId || undefined,
         preferredProviderId: providerId || null,
         pathPolicy,
@@ -3923,6 +4692,12 @@ function TaskComposer({
   }
 
   const selectedFamily = TASK_FAMILY_OPTIONS.find((option) => option.value === taskFamily) ?? TASK_FAMILY_OPTIONS[0];
+  const errorMessages = error?.split('\n').filter(Boolean) ?? [];
+
+  function handleTaskFamilyChange(value: TaskFamilyId) {
+    setTaskFamily(value);
+    setUnitsText(formatUnitsTemplate(value));
+  }
 
   return (
     <div className={`motion-fade fixed inset-0 z-50 flex items-center justify-center p-4 md:p-6 ${state === 'open' ? 'motion-overlay-open bg-black/70 backdrop-blur-sm' : 'motion-overlay-closed bg-black/0 backdrop-blur-none'}`}>
@@ -3955,12 +4730,12 @@ function TaskComposer({
 
               <label className="space-y-2 text-sm">
                 <span className="text-text-secondary">Task type</span>
-                <select
-                  data-testid="task-composer-task-type"
-                  value={taskFamily}
-                  onChange={(event) => setTaskFamily(event.target.value as TaskFamilyId)}
-                  className={TASK_COMPOSER_FIELD_CLASS}
-                >
+                  <select
+                    data-testid="task-composer-task-type"
+                    value={taskFamily}
+                    onChange={(event) => handleTaskFamilyChange(event.target.value as TaskFamilyId)}
+                    className={TASK_COMPOSER_FIELD_CLASS}
+                  >
                   {TASK_FAMILY_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
@@ -4026,17 +4801,14 @@ function TaskComposer({
                 <summary className="cursor-pointer px-3 py-2.5 text-sm text-text-primary">Advanced contract</summary>
                 <div className="space-y-3 px-3 pb-3">
                   <label className="space-y-2 text-sm">
-                    <span className="text-text-secondary">Quality profile</span>
-                    <select
+                    <span className="text-text-secondary">Quality contract id</span>
+                    <input
                       data-testid="task-composer-quality-profile"
                       value={qualityProfileId}
                       onChange={(event) => setQualityProfileId(event.target.value as '' | QualityProfileId)}
+                      placeholder="Optional generic contract id"
                       className={TASK_COMPOSER_FIELD_CLASS}
-                    >
-                      {QUALITY_PROFILE_OPTIONS.map((option) => (
-                        <option key={option.value || 'none'} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
+                    />
                   </label>
                   <label className="space-y-2 text-sm">
                     <span className="text-text-secondary">Units JSON</span>
@@ -4056,7 +4828,21 @@ function TaskComposer({
           </div>
         </div>
 
-        {error ? <p className="border-t border-border-subtle px-5 pt-3 text-sm text-error">{error}</p> : null}
+        {errorMessages.length ? (
+          <div className="border-t border-border-subtle px-5 pt-3 text-sm text-error" data-testid="task-composer-preflight">
+            <p className="font-medium">Fix these before creating the task:</p>
+            <ul className="mt-2 space-y-1">
+              {errorMessages.map((message) => (
+                <li key={message}>{message}</li>
+              ))}
+            </ul>
+            {errorMessages.some((message) => /provider|Connections/i.test(message)) ? (
+              <a className="mt-2 inline-flex text-xs text-accent hover:underline" href="/settings/connections">
+                Open Connections
+              </a>
+            ) : null}
+          </div>
+        ) : null}
         <div className="flex justify-end gap-3 border-t border-border-subtle px-5 py-4">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button data-testid="task-composer-submit" type="submit">Create task</Button>

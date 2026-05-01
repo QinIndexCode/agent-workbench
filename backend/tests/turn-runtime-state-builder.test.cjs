@@ -239,7 +239,7 @@ test('buildTurnRuntimeState preserves accepted tracker history when quality gate
     assert.equal(nextRuntime.progressHistory[0].status, 'IN_PROGRESS');
     assert.match(
       nextRuntime.invalidOutputUnits['AGENT-001'].join(' '),
-      /quality_gate_failed:missing_docs_normalize_trace/
+      /quality_gate_failed:generic_quality_contract_missing_runtime_evidence/
     );
   } finally {
     removeDir(root);

@@ -233,6 +233,242 @@ export function writeJsonLine(io: CliIo, value: unknown): void {
   io.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
+export function writeText(io: CliIo, value: string): void {
+  io.stdout.write(value.endsWith('\n') ? value : `${value}\n`);
+}
+
+function getRecordValue(record: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
+  const value = record?.[key];
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function getRecordString(record: Record<string, unknown> | null | undefined, key: string, fallback: string): string {
+  const value = record?.[key];
+  return typeof value === 'string' && value.trim().length > 0 ? value : fallback;
+}
+
+function getRecordNumber(record: Record<string, unknown> | null | undefined, key: string, fallback: number): number {
+  const value = record?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function getRecordArray(record: Record<string, unknown> | null | undefined, key: string): Array<Record<string, unknown>> {
+  const value = record?.[key];
+  return Array.isArray(value)
+    ? value.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+    : [];
+}
+
+function getStringArray(record: Record<string, unknown> | null | undefined, key: string): string[] {
+  const value = record?.[key];
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    : [];
+}
+
+function formatOptionalJson(value: unknown): string {
+  if (value === null || value === undefined) {
+    return 'none';
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  return JSON.stringify(value);
+}
+
+function formatHumanAcceptance(summary: Record<string, unknown>): string[] {
+  const acceptance = getRecordValue(summary, 'acceptance');
+  const deterministic = getRecordValue(acceptance, 'deterministic');
+  const semanticReview = getRecordValue(acceptance, 'semanticReview');
+  const quality = getRecordValue(acceptance, 'quality') ?? getRecordValue(summary, 'quality');
+  const lines: string[] = [];
+  if (deterministic) {
+    lines.push(
+      `Acceptance: ${getRecordString(deterministic, 'verdict', 'unknown')} (${getRecordString(deterministic, 'profileId', 'contract')})`
+    );
+  } else {
+    lines.push('Acceptance: inspect diagnostics for contract truth');
+  }
+  if (quality) {
+    lines.push(`Quality: ${getRecordString(quality, 'verdict', 'not_applicable')} (${getRecordString(quality, 'profileId', 'none')})`);
+  }
+  if (semanticReview) {
+    lines.push(
+      `Semantic review: ${getRecordString(semanticReview, 'status', 'not_requested')} confidence=${formatOptionalJson(semanticReview.confidence)}`
+    );
+  }
+  return lines;
+}
+
+function formatHumanArtifactState(summary: Record<string, unknown>): string[] {
+  const completionSummary = getRecordValue(summary, 'completionSummary');
+  const artifactPathState = getRecordString(summary, 'artifactPathState', 'sandbox_only');
+  const pendingArtifactCount = getRecordNumber(summary, 'pendingArtifactCount', 0);
+  const selectedArtifactDir = getRecordString(summary, 'selectedArtifactDir', '');
+  const recommendedArtifactDir = getRecordString(summary, 'recommendedArtifactDir', '');
+  const lastApplyResult = getRecordValue(summary, 'lastArtifactApplyResult');
+  const destinationPaths = [
+    ...getStringArray(completionSummary, 'artifactDestinationPaths'),
+    ...getStringArray(summary, 'artifactDestinationPaths')
+  ];
+  const artifactPaths = [
+    ...getStringArray(completionSummary, 'artifactPaths'),
+    ...getStringArray(summary, 'artifactPaths')
+  ];
+  const lines = [
+    `Artifact state: ${artifactPathState} (${pendingArtifactCount} pending)`
+  ];
+  if (destinationPaths.length > 0) {
+    lines.push(`Delivered to: ${destinationPaths.join(', ')}`);
+  } else if (selectedArtifactDir) {
+    lines.push(`Selected destination: ${selectedArtifactDir}`);
+  } else if (recommendedArtifactDir) {
+    lines.push(`Recommended destination: ${recommendedArtifactDir}`);
+  }
+  if (artifactPaths.length > 0) {
+    lines.push(`Artifacts: ${artifactPaths.join(', ')}`);
+  }
+  if (lastApplyResult) {
+    lines.push(`Last apply: ${getRecordString(lastApplyResult, 'status', 'unknown')} ${getRecordString(lastApplyResult, 'destinationDir', '')}`.trim());
+  }
+  return lines;
+}
+
+export function formatTaskSummaryHuman(summary: Record<string, unknown>, options: { source?: 'status' | 'inspect' | 'chat' } = {}): string {
+  const statusSummary = getRecordValue(summary, 'statusSummary');
+  const primaryAction = getRecordValue(summary, 'primaryAction');
+  const nextActionSummary = getRecordValue(summary, 'nextActionSummary');
+  const suggestedAction = getRecordValue(summary, 'suggestedAction');
+  const providerSummary = getRecordValue(summary, 'providerSummary');
+  const completionSummary = getRecordValue(summary, 'completionSummary');
+  const latestVisibleOutput = getRecordValue(summary, 'latestVisibleOutput');
+  const visibleToolActivities = getRecordArray(summary, 'visibleToolActivities');
+  const pendingApprovals = getRecordArray(summary, 'pendingApprovals');
+  const issuePlane = getRecordString(summary, 'issuePlane', 'none');
+  const issueCategory = getRecordString(summary, 'issueCategory', 'none');
+  const title = getRecordString(summary, 'title', 'Untitled task');
+  const taskId = getRecordString(summary, 'taskId', 'unknown');
+  const actionLabel = getRecordString(
+    suggestedAction,
+    'label',
+    getRecordString(primaryAction, 'label', getRecordString(nextActionSummary, 'label', 'Inspect diagnostics'))
+  );
+  const actionReason = getRecordString(
+    suggestedAction,
+    'reason',
+    getRecordString(primaryAction, 'description', getRecordString(nextActionSummary, 'reason', 'Review task truth.'))
+  );
+  const lines = [
+    'SCC Batch Agent Console',
+    `Task: ${title}`,
+    `Task id: ${taskId}`,
+    `Current status: ${getRecordString(statusSummary, 'label', getRecordString(summary, 'lifecycleStatus', 'unknown'))}`,
+    `Stage: ${getRecordString(summary, 'stageLabel', 'Stage not started')}`,
+    `Failure plane: ${issuePlane} / ${issueCategory}`,
+    `Reason: ${getRecordString(statusSummary, 'detail', getRecordString(summary, 'blockingReason', 'Task truth is not available.'))}`,
+    '',
+    'Task truth',
+    `Primary action: ${getRecordString(primaryAction, 'label', getRecordString(nextActionSummary, 'label', actionLabel))}`,
+    `Suggested action: ${actionLabel}`,
+    `Action detail: ${actionReason}`,
+    `Next command: scc-batch tasks chat ${taskId} --format human`
+  ];
+  if (providerSummary) {
+    lines.push(
+      `Provider: ${getRecordString(providerSummary, 'providerId', 'unknown')} / ${getRecordString(providerSummary, 'readiness', 'unknown')}`
+    );
+  }
+  const resultSummary = getRecordString(completionSummary, 'summary', getRecordString(latestVisibleOutput, 'summary', ''));
+  if (resultSummary) {
+    lines.push(`Recent result: ${resultSummary}`);
+  }
+  lines.push('', 'Evidence');
+  lines.push(...formatHumanAcceptance(summary));
+  lines.push(...formatHumanArtifactState(summary));
+  if (visibleToolActivities.length > 0) {
+    for (const activity of visibleToolActivities.slice(-2)) {
+      lines.push(
+        `Tool evidence: ${getRecordString(activity, 'toolId', 'tool')} [${getRecordString(activity, 'status', 'unknown')}] ${getRecordString(activity, 'summary', 'No summary')}`
+      );
+    }
+  }
+  if (pendingApprovals.length > 0) {
+    const approval = pendingApprovals[0];
+    const invocationId = getRecordString(approval, 'invocationId', 'unknown');
+    lines.push(`Approval required: ${getRecordString(approval, 'toolName', getRecordString(approval, 'toolId', 'tool'))} (${invocationId})`);
+    lines.push(`Resolve: scc-batch tasks approve ${taskId} ${invocationId} APPROVED`);
+  }
+  const issueSummary = getRecordString(summary, 'issueSummary', '');
+  if (issueSummary) {
+    lines.push('', `Issue summary: ${issueSummary}`);
+  }
+  if (options.source === 'inspect') {
+    lines.push('', 'Inspector: open REST /tasks/:id/debug for raw contract truth.');
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+export function formatTaskDiagnosticsHuman(diagnostics: Record<string, unknown>): string {
+  const summary = getRecordValue(diagnostics, 'summary');
+  const statusSummary = getRecordValue(summary, 'statusSummary');
+  const primaryAction = getRecordValue(diagnostics, 'primaryAction') ?? getRecordValue(summary, 'primaryAction');
+  const nextActionSummary = getRecordValue(diagnostics, 'nextActionSummary') ?? getRecordValue(summary, 'nextActionSummary');
+  const suggestedAction = getRecordValue(diagnostics, 'suggestedAction');
+  const planner = getRecordValue(diagnostics, 'planner');
+  const issuePlane = getRecordString(diagnostics, 'issuePlane', 'none');
+  const issueCategory = getRecordString(diagnostics, 'issueCategory', 'none');
+  const actionLabel = getRecordString(
+    suggestedAction,
+    'label',
+    getRecordString(primaryAction, 'label', getRecordString(nextActionSummary, 'label', 'Inspect diagnostics'))
+  );
+  const actionReason = getRecordString(
+    suggestedAction,
+    'reason',
+    getRecordString(primaryAction, 'description', getRecordString(nextActionSummary, 'reason', 'Review task truth.'))
+  );
+  const lines = [
+    'SCC Batch Agent Console',
+    'Task diagnostics',
+    `Task id: ${getRecordString(diagnostics, 'taskId', 'unknown')}`,
+    `Lifecycle: ${getRecordString(diagnostics, 'lifecycleStatus', 'unknown')}`,
+    `Failure plane: ${issuePlane} / ${issueCategory}`,
+    `Problem: ${getRecordString(statusSummary, 'label', getRecordString(summary, 'statusLabel', 'Task truth unavailable'))}`,
+    `Cause: ${getRecordString(statusSummary, 'detail', getRecordString(summary, 'blockingReason', 'No clear blocking reason recorded.'))}`,
+    `Suggested action: ${actionLabel}`,
+    `Why: ${actionReason}`,
+    '',
+    'Acceptance and quality',
+    ...formatHumanAcceptance(diagnostics),
+    '',
+    'Artifact state',
+    ...formatHumanArtifactState({
+      ...diagnostics,
+      ...(summary ?? {})
+    })
+  ];
+  if (planner) {
+    lines.push(
+      '',
+      'Runtime',
+      `Planner phase: ${getRecordString(planner, 'executionPhase', 'unknown')}`,
+      `Stage count: ${formatOptionalJson(planner.stageCount)}`,
+      `Current stage: ${formatOptionalJson(planner.currentStageIndex)}`
+    );
+  }
+  const providerFailure = diagnostics.providerFailure;
+  if (providerFailure) {
+    lines.push('', `Provider failure: ${formatOptionalJson(providerFailure)}`);
+  }
+  const evidenceGaps = getStringArray(getRecordValue(diagnostics, 'executionSummary'), 'evidenceGaps');
+  if (evidenceGaps.length > 0) {
+    lines.push('', 'Evidence gaps', ...evidenceGaps.map((gap) => `- ${gap}`));
+  }
+  return `${lines.join('\n')}\n`;
+}
+
 export function writeError(io: CliIo, error: unknown): void {
   if (error instanceof Error) {
     io.stderr.write(`${JSON.stringify({
@@ -417,6 +653,12 @@ export function summarizeTask(task: TaskQueryApiResponse, debug: TaskDebugRespon
     providerFailureStreak: progress.providerFailureStreak,
     skillFailureStreak: progress.skillFailureStreak,
     mcpFailureStreak: progress.mcpFailureStreak,
+    issuePlane: debug?.executionSummary.issuePlane ?? null,
+    issueCategory: debug?.executionSummary.issueCategory ?? null,
+    issueSummary: debug?.executionSummary.issueSummary ?? null,
+    suggestedAction: debug?.executionSummary.suggestedAction ?? null,
+    acceptance: debug?.executionSummary.acceptance ?? null,
+    quality: debug?.executionSummary.acceptance?.quality ?? null,
     lastSafeCheckpointAt: progress.lastSafeCheckpointAt,
     lastRecoverySource: progress.lastRecoverySource,
     conservativeModeReason: progress.conservativeModeReason,
@@ -436,6 +678,7 @@ export function summarizeTask(task: TaskQueryApiResponse, debug: TaskDebugRespon
     selectedArtifactDir: debug?.executionSummary.selectedArtifactDir ?? null,
     recommendedArtifactDir: debug?.executionSummary.recommendedArtifactDir ?? null,
     artifactPaths: debug?.executionSummary.artifactPaths ?? [],
+    artifactDestinationPaths: debug?.executionSummary.artifactDestinationPaths ?? [],
     lastArtifactApplyAt: debug?.executionSummary.lastArtifactApplyAt ?? null,
     lastArtifactApplyResult: debug?.executionSummary.lastArtifactApplyResult ?? null
   };
@@ -473,6 +716,10 @@ export interface TaskProgressSummary {
   providerFailureStreak: number;
   skillFailureStreak: number;
   mcpFailureStreak: number;
+  issuePlane: TaskDebugResponse['executionSummary']['issuePlane'] | null;
+  issueCategory: TaskDebugResponse['executionSummary']['issueCategory'] | null;
+  issueSummary: string | null;
+  suggestedAction: TaskDebugResponse['executionSummary']['suggestedAction'] | null;
   lastSafeCheckpointAt: number | null;
   lastRecoverySource: string | null;
   conservativeModeReason: string | null;
@@ -839,6 +1086,10 @@ export function deriveTaskProgressSummary(task: TaskQueryApiResponse, debug: Tas
     providerFailureStreak: debug?.executionSummary.providerFailureStreak ?? 0,
     skillFailureStreak: debug?.executionSummary.skillFailureStreak ?? 0,
     mcpFailureStreak: debug?.executionSummary.mcpFailureStreak ?? 0,
+    issuePlane: debug?.executionSummary.issuePlane ?? null,
+    issueCategory: debug?.executionSummary.issueCategory ?? null,
+    issueSummary: debug?.executionSummary.issueSummary ?? null,
+    suggestedAction: debug?.executionSummary.suggestedAction ?? null,
     lastSafeCheckpointAt: debug?.executionSummary.lastSafeCheckpointAt ?? null,
     lastRecoverySource: debug?.executionSummary.lastRecoverySource ?? null,
     conservativeModeReason: debug?.executionSummary.conservativeModeReason ?? null,

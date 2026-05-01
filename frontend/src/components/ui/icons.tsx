@@ -240,3 +240,74 @@ export function SearchIcon({ className = 'h-4 w-4' }: IconProps) {
     </svg>
   );
 }
+
+export function TimelineUserIcon({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <circle cx="10" cy="7.5" r="2.75" stroke="currentColor" strokeWidth="1.45" />
+      <path d="M4.75 15.75c.78-2.55 2.6-4 5.25-4s4.47 1.45 5.25 4" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function TimelineRuntimeIcon({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <rect x="3.75" y="4.75" width="12.5" height="10.5" rx="2" stroke="currentColor" strokeWidth="1.45" />
+      <path d="m7 8.25 2 1.75-2 1.75M10.75 12h2.75" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function TimelineAgentIcon({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <path d="M6.25 7.35c0-1.1.9-2 2-2h3.5c1.1 0 2 .9 2 2v3.3c0 1.1-.9 2-2 2h-3.5c-1.1 0-2-.9-2-2v-3.3Z" stroke="currentColor" strokeWidth="1.35" />
+      <path d="M8.55 8.75h.01M11.45 8.75h.01M8.75 10.9h2.5" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M10 5.35V3.75M5.35 10H3.75M16.25 10h-1.6M7.05 13.05 5.6 14.5M12.95 13.05l1.45 1.45" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+      <circle cx="10" cy="3.45" r=".8" fill="currentColor" />
+      <circle cx="3.45" cy="10" r=".8" fill="currentColor" />
+      <circle cx="16.55" cy="10" r=".8" fill="currentColor" />
+    </svg>
+  );
+}
+
+export function TimelineArtifactIcon({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <path d="m10 3.75 5.25 2.95v6.6L10 16.25 4.75 13.3V6.7L10 3.75Z" stroke="currentColor" strokeWidth="1.45" strokeLinejoin="round" />
+      <path d="M4.95 6.85 10 9.8l5.05-2.95M10 9.8v6.2" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function TimelineDecisionIcon({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <path d="M10 3.9 16.2 15H3.8L10 3.9Z" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M10 7.8v3.85M10 14h.01" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function TimelineDelegationIcon({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <circle cx="6" cy="6.75" r="2.1" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="14" cy="6.75" r="2.1" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="10" cy="14" r="2.1" stroke="currentColor" strokeWidth="1.4" />
+      <path d="m7.65 8.1 1.35 3.7M12.35 8.1 11 11.8M8.1 6.75h3.8" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function TimelineResultIcon({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <path d="M6.2 7.6c0-1.1.9-2 2-2h3.2c1.1 0 2 .9 2 2v2.9c0 1.1-.9 2-2 2H8.2c-1.1 0-2-.9-2-2V7.6Z" stroke="currentColor" strokeWidth="1.35" />
+      <path d="m8.15 9.65 1.45 1.35 2.65-3" stroke="currentColor" strokeWidth="1.45" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M10 5.4V3.75M7.05 13.05 5.6 14.5M12.95 13.05l1.45 1.45" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+      <circle cx="10" cy="3.45" r=".8" fill="currentColor" />
+    </svg>
+  );
+}

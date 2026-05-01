@@ -81,7 +81,7 @@
     "smoke:frontend:direct": "npm run smoke -w frontend --",
     "e2e:frontend": "node scripts/run-frontend-e2e-stack.mjs",
     "review:frontend:live": "node scripts/run-frontend-live-review-stack.mjs",
-    "review:frontend:mainline": "node scripts/run-frontend-live-review-stack.mjs",
+    "review:frontend:mainline": "node scripts/run-frontend-mainline-review-stack.mjs",
     "review:frontend:delegation-live": "node scripts/run-frontend-delegation-live-review-stack.mjs",
     "improvement-proposal-audit": "node scripts/run-frontend-improvement-proposal-audit-stack.mjs",
     "instruction-skill-proposal-audit": "node scripts/run-frontend-instruction-skill-proposal-audit-stack.mjs",

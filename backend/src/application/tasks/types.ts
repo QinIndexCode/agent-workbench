@@ -293,6 +293,43 @@ export const TASK_EXECUTION_ISSUE_CATEGORIES = [
 
 export type TaskExecutionIssueCategory = typeof TASK_EXECUTION_ISSUE_CATEGORIES[number];
 
+export const TASK_EXECUTION_ISSUE_PLANES = [
+  'core',
+  'ecosystem',
+  'harness',
+  'ui',
+  'provider',
+  'external_blocker'
+] as const;
+
+export type TaskExecutionIssuePlane = typeof TASK_EXECUTION_ISSUE_PLANES[number];
+
+export const TASK_EXECUTION_SUGGESTED_ACTION_TYPES = [
+  'none',
+  'start',
+  'continue',
+  'wait',
+  'inspect_diagnostics',
+  'configure_provider',
+  'review_ecosystem',
+  'resolve_approval',
+  'select_artifact_destination',
+  'resolve_artifact_conflict',
+  'repair_quality_evidence',
+  'resume',
+  'restart',
+  'open_runtime_state'
+] as const;
+
+export type TaskExecutionSuggestedActionType = typeof TASK_EXECUTION_SUGGESTED_ACTION_TYPES[number];
+
+export interface TaskExecutionSuggestedAction {
+  type: TaskExecutionSuggestedActionType;
+  label: string;
+  reason: string;
+  command: string | null;
+}
+
 export const TASK_OBSERVATION_HOOK_IDS = [
   'pre-tool-dispatch',
   'post-tool-result',
@@ -447,8 +484,10 @@ export interface TaskAcceptanceSummary {
 }
 
 export interface TaskExecutionSummary {
+  issuePlane: TaskExecutionIssuePlane | null;
   issueCategory: TaskExecutionIssueCategory | null;
   issueSummary: string | null;
+  suggestedAction: TaskExecutionSuggestedAction;
   eventCounts: Record<string, number>;
   turnCount: number;
   correctionDepth: number;

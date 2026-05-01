@@ -20,6 +20,17 @@ function toTaskSummary(task: TaskDetail): TaskSummary {
   };
 }
 
+function mergeEvents(previous: RuntimeEvent[], next: RuntimeEvent[]): RuntimeEvent[] {
+  const byId = new Map<string, RuntimeEvent>();
+  for (const event of previous) {
+    byId.set(event.eventId, event);
+  }
+  for (const event of next) {
+    byId.set(event.eventId, event);
+  }
+  return [...byId.values()].sort((left, right) => left.timestamp - right.timestamp);
+}
+
 export function useTasks(options?: { includeArchived?: boolean }) {
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -96,7 +107,7 @@ export function useTaskDetail(taskId: string | null) {
         return;
       }
       setTask(taskData);
-      setEvents(eventsData);
+      setEvents((previous) => mergeEvents(previous.filter((event) => event.taskId === taskId), eventsData));
     } catch (err) {
       if (requestSequence.current !== currentRequest) {
         return;
@@ -118,15 +129,11 @@ export function useTaskDetail(taskId: string | null) {
     setLoading(false);
     setError(null);
     setTask(snapshot);
-    setEvents(Array.isArray(snapshot.events) ? snapshot.events : []);
+    setEvents((previous) => mergeEvents(previous.filter((event) => event.taskId === snapshot.definition.taskId), Array.isArray(snapshot.events) ? snapshot.events : []));
   }, []);
 
   const appendEvent = useCallback((event: RuntimeEvent) => {
-    setEvents(prev => (
-      prev.some((existing) => existing.eventId === event.eventId)
-        ? prev
-        : [...prev, event]
-    ));
+    setEvents(prev => mergeEvents(prev, [event]));
     
     if (event.type === 'TASK_STARTED' || event.type === 'TASK_COMPLETED' || 
         event.type === 'TASK_FAILED' || event.type === 'TASK_PAUSED') {

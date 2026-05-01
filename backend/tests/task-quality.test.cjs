@@ -6,7 +6,7 @@ const path = require('node:path');
 const {
   evaluateTaskQuality,
   getQualityProfilePromptSection,
-} = require('../dist/domain/quality/task-quality');
+} = require('../dist/application/validation/task-quality-profiles');
 
 function createTempRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'scc-quality-'));

@@ -8,12 +8,22 @@ export type TaskLifecycleStatus =
 
 export type TaskPathPolicy = 'task_workspace' | 'project_relative' | 'ask_if_unclear';
 
-export type QualityProfileId =
-  | 'web_experience'
-  | 'docs_normalize'
-  | 'docs_synthesize'
-  | 'system_audit'
-  | 'desktop_observation';
+export type QualityProfileId = string;
+
+export type TaskExecutionIssuePlane =
+  | 'core'
+  | 'ecosystem'
+  | 'harness'
+  | 'ui'
+  | 'provider'
+  | 'external_blocker';
+
+export interface TaskExecutionSuggestedAction {
+  type: string;
+  label: string;
+  reason: string;
+  command: string | null;
+}
 
 export interface TaskSummary {
   taskId: string;
@@ -42,6 +52,15 @@ export interface AgentUnit {
   executionProfileId?: string;
   qualityProfileId?: QualityProfileId;
   delegationRequired?: boolean;
+  delegationContract?: {
+    title?: string;
+    role?: string;
+    goal?: string;
+    taskScope?: string;
+    outputContract?: string;
+    allowedToolIds?: string[];
+    successCriteria?: string;
+  };
 }
 
 export interface QueueItem {
@@ -406,8 +425,10 @@ export interface TaskAcceptanceSummary {
 }
 
 export interface TaskExecutionSummary {
+  issuePlane: TaskExecutionIssuePlane | null;
   issueCategory: string | null;
   issueSummary: string | null;
+  suggestedAction: TaskExecutionSuggestedAction;
   providerSummary: {
     providerId: string | null;
     modelId: string | null;
@@ -900,6 +921,34 @@ export interface PlatformConfigHealth {
     code?: string;
     message?: string;
   }>;
+}
+
+export interface PlatformSystemView {
+  server: {
+    host: string;
+    port: number;
+    websocketPath: string;
+    sseFallback: boolean;
+  };
+  storage: {
+    driver: string;
+    rootDir: string;
+  };
+  database: {
+    enabled: boolean;
+    healthy: boolean | null;
+    schema: string;
+  };
+  queue: {
+    enabled: boolean;
+    workerEnabled: boolean;
+  };
+  registries: {
+    providers: number;
+    skills: number;
+    mcpServers: number;
+    tools: number;
+  };
 }
 
 export interface WorkspaceWorkflowView {

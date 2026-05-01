@@ -3,6 +3,7 @@ import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from 're
 import { api } from './api/client';
 import { Badge } from './components/ui/badge';
 import {
+  CapabilityIcon,
   DashboardIcon,
   QueueIcon,
   SettingsIcon,
@@ -15,7 +16,23 @@ import { TasksPage } from './pages/TasksPage';
 
 function AppShell({ children }: { children: ReactNode }) {
   const location = useLocation();
-  const [connectionState, setConnectionState] = useState<'connected' | 'degraded'>('connected');
+  const [connectionState, setConnectionState] = useState<{
+    state: 'connected' | 'degraded';
+    detail: string;
+    chips: Array<{
+      label: string;
+      value: string;
+      tone: 'success' | 'warning' | 'error';
+    }>;
+  }>({
+    state: 'degraded',
+    detail: 'Checking backend runtime readiness.',
+    chips: [
+      { label: 'Runtime', value: 'checking', tone: 'warning' },
+      { label: 'Worker', value: 'checking', tone: 'warning' },
+      { label: 'Providers', value: 'checking', tone: 'warning' },
+    ],
+  });
 
   const title = useMemo(() => {
     if (location.pathname.startsWith('/settings')) return 'Settings';
@@ -23,6 +40,7 @@ function AppShell({ children }: { children: ReactNode }) {
     if (location.pathname.startsWith('/dashboard')) return 'Dashboard';
     return 'Tasks';
   }, [location.pathname]);
+  const isTaskWorkspace = location.pathname.startsWith('/tasks');
 
   const topNavItems = useMemo(() => ([
     {
@@ -47,11 +65,18 @@ function AppShell({ children }: { children: ReactNode }) {
       active: location.pathname.startsWith('/queue'),
     },
     {
+      key: 'ecosystem',
+      to: '/settings/ecosystem',
+      label: 'Ecosystem',
+      icon: CapabilityIcon,
+      active: location.pathname.startsWith('/settings/ecosystem'),
+    },
+    {
       key: 'settings',
       to: '/settings/general',
       label: 'Settings',
       icon: SettingsIcon,
-      active: location.pathname.startsWith('/settings'),
+      active: location.pathname.startsWith('/settings') && !location.pathname.startsWith('/settings/ecosystem'),
     },
   ]), [location.pathname]);
 
@@ -60,13 +85,58 @@ function AppShell({ children }: { children: ReactNode }) {
 
     async function loadHealth() {
       try {
-        const health = await api.getHealth();
+        const [health, startup] = await Promise.all([
+          api.getHealth(),
+          api.getSystemStartup(),
+        ]);
+        const reasons = [
+          health.ok ? null : health.issues?.[0]?.message ?? 'backend health reported degraded',
+          startup.queue.enabled && !startup.queue.workerEnabled ? 'queue worker disabled' : null,
+          startup.database.enabled && startup.database.healthy === false ? 'database unhealthy' : null,
+          startup.registries.providers === 0 ? 'no providers registered' : null,
+        ].filter(Boolean) as string[];
+        const workerValue = startup.queue.enabled
+          ? startup.queue.workerEnabled ? 'online' : 'disabled'
+          : 'inline';
+        const providerValue = startup.registries.providers > 0
+          ? `${startup.registries.providers} registered`
+          : 'none';
         if (!disposed) {
-          setConnectionState(health.ok ? 'connected' : 'degraded');
+          setConnectionState({
+            state: reasons.length === 0 ? 'connected' : 'degraded',
+            detail: reasons.length
+              ? reasons.join(' / ')
+              : `runtime ready / worker ${startup.queue.enabled ? startup.queue.workerEnabled ? 'ready' : 'off' : 'inline'} / providers ${startup.registries.providers}`,
+            chips: [
+              {
+                label: 'Runtime',
+                value: health.ok ? 'ready' : 'degraded',
+                tone: health.ok ? 'success' : 'warning',
+              },
+              {
+                label: 'Worker',
+                value: workerValue,
+                tone: startup.queue.enabled && !startup.queue.workerEnabled ? 'warning' : 'success',
+              },
+              {
+                label: 'Providers',
+                value: providerValue,
+                tone: startup.registries.providers > 0 ? 'success' : 'warning',
+              },
+            ],
+          });
         }
-      } catch {
+      } catch (error) {
         if (!disposed) {
-          setConnectionState('degraded');
+          setConnectionState({
+            state: 'degraded',
+            detail: error instanceof Error ? error.message : 'backend health check failed',
+            chips: [
+              { label: 'Runtime', value: 'blocked', tone: 'error' },
+              { label: 'Worker', value: 'unknown', tone: 'warning' },
+              { label: 'Providers', value: 'unknown', tone: 'warning' },
+            ],
+          });
         }
       }
     }
@@ -85,21 +155,59 @@ function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="border-b border-border-subtle bg-background/86 px-3 py-2 backdrop-blur-md sm:px-4">
+        <header className={`border-b border-border-subtle bg-background/82 px-3 py-2 backdrop-blur-md sm:px-4 ${
+          isTaskWorkspace
+            ? 'lg:absolute lg:left-72 lg:right-0 lg:top-0 lg:z-50 xl:left-[19rem]'
+            : ''
+        }`}>
           <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-[10px] uppercase tracking-[0.3em] text-text-muted">SCC Batch</p>
-              <p className="text-sm font-semibold text-text-primary sm:hidden">{title}</p>
-              <p className="hidden text-sm font-semibold text-text-primary sm:block">Workspace</p>
+            <div className="flex min-w-0 items-center gap-3 lg:hidden">
+              <img
+                src="/logo.png"
+                alt="SCC Batch"
+                data-testid="app-brand-logo-mobile"
+                className="h-9 w-9 rounded-lg border border-white/10 object-cover shadow-[0_0_22px_rgba(99,102,241,0.20)] lg:hidden"
+              />
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase tracking-[0.3em] text-text-muted">SCC Batch</p>
+                <p className="text-sm font-semibold text-text-primary sm:hidden">{title}</p>
+                <p className="hidden text-sm font-semibold text-text-primary sm:block lg:hidden">Agent Console</p>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="ml-auto flex items-center gap-2 lg:ml-0">
               <span className="hidden text-xs uppercase tracking-[0.24em] text-text-muted sm:inline">{title}</span>
-              <Badge variant={connectionState === 'connected' ? 'success' : 'warning'} className="opacity-70">
-                {connectionState}
+              <div className="hidden items-center gap-1.5 xl:flex" data-testid="app-runtime-chip-strip">
+                {connectionState.chips.map((chip) => (
+                  <Badge
+                    key={chip.label}
+                    variant={chip.tone === 'success' ? 'success' : chip.tone === 'error' ? 'error' : 'warning'}
+                    className="opacity-80"
+                  >
+                    {chip.label}: {chip.value}
+                  </Badge>
+                ))}
+              </div>
+              <Badge
+                variant={connectionState.state === 'connected' ? 'success' : 'warning'}
+                className="opacity-70"
+              >
+                <span
+                  data-testid="app-runtime-status"
+                  title={connectionState.detail}
+                  className="inline-block max-w-[16rem] truncate align-bottom"
+                >
+                  {connectionState.state}: {connectionState.detail}
+                </span>
               </Badge>
             </div>
+            <div className="ml-auto hidden items-center gap-4 text-xs text-text-secondary lg:flex">
+              <span className="inline-flex items-center gap-2 text-success"><span className="status-dot" />Live</span>
+              <span>Help</span>
+              <span>Alerts</span>
+              <span className="grid h-8 w-8 place-items-center rounded-full border border-border-default bg-surface-elevated text-text-primary">DE</span>
+            </div>
           </div>
-          <nav className="mt-2 flex items-center gap-1 overflow-x-auto border-b border-border-subtle pb-0.5 scrollbar-thin">
+          <nav className="mt-2 flex items-center gap-1 overflow-x-auto border-b border-border-subtle pb-0.5 scrollbar-thin lg:hidden">
             {topNavItems.map((item) => {
               const Icon = item.icon;
               return (

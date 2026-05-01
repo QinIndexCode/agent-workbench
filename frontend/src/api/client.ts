@@ -7,6 +7,7 @@ import type {
   ImprovementProposal,
   PlatformActionResult,
   PlatformConfigHealth,
+  PlatformSystemView,
   ProviderPresetView,
   ProviderProfile,
   ProviderProfileView,
@@ -43,8 +44,12 @@ class ApiClient {
     return response.json();
   }
 
-  async getHealth() {
-    return this.request<{ ok: boolean }>('/health');
+  async getHealth(): Promise<PlatformConfigHealth> {
+    return this.request<PlatformConfigHealth>('/health');
+  }
+
+  async getSystemStartup(): Promise<PlatformSystemView> {
+    return this.request<PlatformSystemView>('/system/startup');
   }
 
   async getCapabilities(): Promise<CapabilityHubView> {
@@ -298,7 +303,7 @@ class ApiClient {
   }
 
   async getTaskEvents(taskId: string, afterEventId?: string): Promise<RuntimeEvent[]> {
-    const query = afterEventId ? `?afterEventId=${afterEventId}` : '';
+    const query = afterEventId ? `?afterEventId=${encodeURIComponent(afterEventId)}` : '';
     return this.request<RuntimeEvent[]>(`/tasks/${taskId}/events${query}`);
   }
 

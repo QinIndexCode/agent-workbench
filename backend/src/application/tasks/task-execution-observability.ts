@@ -667,6 +667,186 @@ function classifyIssue(
   };
 }
 
+const PROVIDER_EXTERNAL_BLOCKER_PATTERN = /\b(rate[- ]?limit|quota|timeout|timed out|tls|certificate|network|dns|econnrefused|econnreset|enotfound|upstream|5\d\d|service unavailable|temporarily unavailable)\b/i;
+
+function classifyIssuePlane(
+  category: TaskExecutionSummary['issueCategory'],
+  task: TaskQueryResponse
+): TaskExecutionSummary['issuePlane'] {
+  if (!category) {
+    return null;
+  }
+  if (category === 'provider_config_failure') {
+    const providerMessage = [
+      task.diagnostics.providerFailure?.category,
+      task.diagnostics.providerFailure?.kind,
+      task.diagnostics.providerFailure?.message,
+      task.diagnostics.lastError
+    ]
+      .filter((value): value is string => typeof value === 'string')
+      .join(' ');
+    return PROVIDER_EXTERNAL_BLOCKER_PATTERN.test(providerMessage)
+      ? 'external_blocker'
+      : 'provider';
+  }
+  switch (category) {
+    case 'skill_runtime_unavailable':
+    case 'skill_invocation_failed':
+    case 'mcp_server_unavailable':
+    case 'mcp_call_failed':
+    case 'mcp_capability_mismatch':
+    case 'tool_execution_failure':
+      return 'ecosystem';
+    case 'artifact_destination_unresolved':
+    case 'artifact_apply_conflict':
+    case 'artifact_apply_failed':
+    case 'artifact_policy_mismatch':
+    case 'approval_deadlock':
+    case 'required_delegation_missing':
+    case 'quality_gate_failed':
+    case 'queue_runtime_divergence':
+    case 'context_overload_planner_fallback':
+    case 'invalid_lifecycle_transition':
+    case 'recovery_inconsistency':
+      return 'core';
+    default:
+      return 'core';
+  }
+}
+
+function buildSuggestedAction(params: {
+  task: TaskQueryResponse;
+  issuePlane: TaskExecutionSummary['issuePlane'];
+  issueCategory: TaskExecutionSummary['issueCategory'];
+  issueSummary: string | null;
+  turnContract: TaskExecutionSummary['turnContract'];
+}): TaskExecutionSummary['suggestedAction'] {
+  const { task, issuePlane, issueCategory, issueSummary, turnContract } = params;
+  const reason = issueSummary ?? turnContract.continueReason;
+  switch (issueCategory) {
+    case 'provider_config_failure':
+      return issuePlane === 'external_blocker'
+        ? {
+          type: 'inspect_diagnostics',
+          label: 'Check external provider environment',
+          reason,
+          command: 'platform providers test'
+        }
+        : {
+          type: 'configure_provider',
+          label: 'Open Connections',
+          reason,
+          command: 'settings/connections'
+        };
+    case 'skill_runtime_unavailable':
+    case 'skill_invocation_failed':
+    case 'mcp_server_unavailable':
+    case 'mcp_call_failed':
+    case 'mcp_capability_mismatch':
+    case 'tool_execution_failure':
+      return {
+        type: 'review_ecosystem',
+        label: 'Review ecosystem readiness',
+        reason,
+        command: 'settings/ecosystem'
+      };
+    case 'artifact_destination_unresolved':
+      return {
+        type: 'select_artifact_destination',
+        label: 'Select artifact destination',
+        reason,
+        command: 'tasks artifacts apply'
+      };
+    case 'artifact_apply_conflict':
+    case 'artifact_apply_failed':
+    case 'artifact_policy_mismatch':
+      return {
+        type: 'resolve_artifact_conflict',
+        label: 'Resolve artifact delivery',
+        reason,
+        command: 'tasks artifacts apply --destination <path>'
+      };
+    case 'approval_deadlock':
+      return {
+        type: 'resolve_approval',
+        label: 'Resolve pending approval',
+        reason,
+        command: 'tasks approvals resolve'
+      };
+    case 'quality_gate_failed':
+      return {
+        type: 'repair_quality_evidence',
+        label: 'Provide required quality evidence',
+        reason,
+        command: 'tasks continue'
+      };
+    case 'required_delegation_missing':
+    case 'context_overload_planner_fallback':
+      return {
+        type: 'continue',
+        label: 'Continue with focused guidance',
+        reason,
+        command: 'tasks continue'
+      };
+    case 'queue_runtime_divergence':
+    case 'recovery_inconsistency':
+      return {
+        type: 'open_runtime_state',
+        label: 'Open runtime state',
+        reason,
+        command: 'settings/state'
+      };
+    case 'invalid_lifecycle_transition':
+      return {
+        type: 'inspect_diagnostics',
+        label: 'Refresh task diagnostics',
+        reason,
+        command: 'tasks inspect'
+      };
+    default:
+      break;
+  }
+
+  if (task.runtime.lifecycleStatus === 'SUBMITTED') {
+    return {
+      type: 'start',
+      label: 'Start task',
+      reason: 'The task is submitted and ready for the first runtime turn.',
+      command: 'tasks start'
+    };
+  }
+  if (task.runtime.lifecycleStatus === 'PAUSED') {
+    return {
+      type: 'resume',
+      label: 'Resume task',
+      reason: 'The task is paused and waiting for an operator decision.',
+      command: 'tasks resume'
+    };
+  }
+  if (task.runtime.lifecycleStatus === 'FAILED') {
+    return {
+      type: 'restart',
+      label: 'Restart task',
+      reason: task.diagnostics.lastError ?? reason,
+      command: 'tasks restart'
+    };
+  }
+  if (turnContract.continueAllowed || task.runtime.lifecycleStatus === 'COMPLETED') {
+    return {
+      type: 'continue',
+      label: 'Continue current thread',
+      reason,
+      command: 'tasks continue'
+    };
+  }
+  return {
+    type: 'wait',
+    label: 'Wait for runtime update',
+    reason,
+    command: null
+  };
+}
+
 function buildWorkspaceRuleSummary(task: TaskQueryResponse): TaskExecutionSummary['ruleSummary'] {
   const latestWorkspaceEvent = [...task.events]
     .reverse()
@@ -2111,9 +2291,19 @@ export function buildTaskExecutionSummary(
         issueSummary: acceptance.quality.failedChecks[0] ?? 'The active quality profile has not passed yet.'
       }
       : issue;
-  return {
+  const issuePlane = classifyIssuePlane(resolvedIssue.issueCategory, task);
+  const suggestedAction = buildSuggestedAction({
+    task,
+    issuePlane,
     issueCategory: resolvedIssue.issueCategory,
     issueSummary: resolvedIssue.issueSummary,
+    turnContract
+  });
+  return {
+    issuePlane,
+    issueCategory: resolvedIssue.issueCategory,
+    issueSummary: resolvedIssue.issueSummary,
+    suggestedAction,
     eventCounts,
     turnCount,
     correctionDepth,

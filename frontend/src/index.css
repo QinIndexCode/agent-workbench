@@ -125,8 +125,9 @@
 
   body {
     background:
-      radial-gradient(circle at top left, rgba(59, 130, 246, 0.055), transparent 28rem),
-      linear-gradient(180deg, #0b0b0c 0%, var(--color-background) 18rem);
+      radial-gradient(circle at 46% 18%, rgba(56, 189, 248, 0.055), transparent 32rem),
+      radial-gradient(circle at 78% 0%, rgba(139, 92, 246, 0.052), transparent 28rem),
+      linear-gradient(180deg, #0c0d10 0%, var(--color-background) 18rem);
     color: var(--color-text-primary);
     min-height: 100vh;
   }
@@ -242,6 +243,94 @@
     border-radius: 9999px;
     background: currentColor;
     box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 14%, transparent);
+  }
+
+  .agent-conversation {
+    position: relative;
+    width: min(100%, 62rem);
+    margin-inline: auto;
+  }
+
+  .agent-conversation::before {
+    content: "";
+    position: absolute;
+    bottom: 0.25rem;
+    left: 1.05rem;
+    top: 0.25rem;
+    width: 1px;
+    background:
+      linear-gradient(
+        180deg,
+        transparent 0%,
+        color-mix(in srgb, var(--color-accent) 38%, transparent) 14%,
+        color-mix(in srgb, #8b5cf6 30%, transparent) 84%,
+        transparent 100%
+      );
+  }
+
+  .agent-conversation > * {
+    position: relative;
+    max-width: min(100%, 52rem);
+  }
+
+  .timeline-node {
+    position: relative;
+    margin-left: 3.05rem;
+    max-width: min(100% - 1rem, 52rem);
+  }
+
+  .timeline-node-content {
+    min-width: 0;
+  }
+
+  .timeline-node-content > * {
+    width: 100%;
+  }
+
+  .timeline-node-glyph {
+    position: absolute;
+    left: -2.93rem;
+    top: 0.35rem;
+    z-index: 1;
+    display: inline-flex;
+    width: 2.15rem;
+    height: 2.15rem;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid color-mix(in srgb, var(--color-accent) 42%, var(--color-border-default));
+    border-radius: 0.72rem;
+    background:
+      radial-gradient(circle at 50% 16%, rgba(255, 255, 255, 0.2), transparent 32%),
+      linear-gradient(135deg, color-mix(in srgb, currentColor 16%, transparent), rgba(139, 92, 246, 0.12)),
+      var(--color-background);
+    box-shadow:
+      0 0 0 4px color-mix(in srgb, var(--color-background) 86%, transparent),
+      0 12px 28px rgba(0, 0, 0, 0.34);
+  }
+}
+
+@media (max-width: 640px) {
+  @layer utilities {
+    .agent-conversation::before {
+      display: none;
+    }
+
+    .agent-conversation > * {
+      margin-left: 0;
+    }
+
+    .timeline-node {
+      margin-left: 0;
+      max-width: 100%;
+    }
+
+    .timeline-node-glyph {
+      position: static;
+      margin-bottom: 0.5rem;
+      width: 2rem;
+      height: 2rem;
+      box-shadow: 0 10px 22px rgba(0, 0, 0, 0.26);
+    }
   }
 }
 

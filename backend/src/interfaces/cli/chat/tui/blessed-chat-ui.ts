@@ -75,15 +75,19 @@ function formatSummary(record: Record<string, unknown> | null): string {
     ? record.approvalActions as Record<string, unknown>
     : null;
   const lines = [
+    'Task truth',
     `${title}`,
     `taskId: ${taskId}`,
     `status: ${typeof statusSummary?.label === 'string' ? statusSummary.label : 'Task truth unavailable'}`,
     `stage: ${stageLabel}`,
     `unit: ${currentUnitId}`,
     '',
+    `Suggested action: ${typeof primaryAction?.label === 'string' ? primaryAction.label : typeof nextAction?.label === 'string' ? nextAction.label : 'Task truth unavailable'}`,
     `Why: ${blockingReason}`,
+    `Next action detail: ${typeof primaryAction?.description === 'string' ? primaryAction.description : typeof nextAction?.reason === 'string' ? nextAction.reason : 'Task query is missing nextActionSummary.'}`,
     `Primary action: ${typeof primaryAction?.label === 'string' ? primaryAction.label : typeof nextAction?.label === 'string' ? nextAction.label : 'Task truth unavailable'}`,
-    `Action detail: ${typeof primaryAction?.description === 'string' ? primaryAction.description : typeof nextAction?.reason === 'string' ? nextAction.reason : 'Task query is missing nextActionSummary.'}`
+    '',
+    `Artifact state: ${String(record.artifactPathState ?? 'sandbox_only')}`
   ];
   if (typeof completionSummary?.summary === 'string' && completionSummary.summary.trim()) {
     lines.push(`Recent result: ${completionSummary.summary}`);
@@ -182,14 +186,22 @@ function formatDiagnostics(snapshot: ReturnType<CliChatSessionController['getIns
     ? acceptance.quality as Record<string, unknown>
     : null;
   const lines: string[] = [];
+  lines.push('Task truth');
   lines.push(`taskId: ${String(diagnostics.taskId ?? '-')}`);
   lines.push(`lifecycleStatus: ${String(diagnostics.lifecycleStatus ?? '-')}`);
+  lines.push(`failurePlane: ${String(diagnostics.issuePlane ?? 'none')} / ${String(diagnostics.issueCategory ?? 'none')}`);
   if (summary) {
     lines.push(`problem: ${String(summary.blockingReason ?? '-')}`);
-    lines.push(`suggestedAction: ${String(summary.nextAction ?? '-')}`);
-    lines.push(`actionReason: ${String(summary.nextActionReason ?? '-')}`);
+    lines.push('');
+    lines.push('Suggested action');
+    lines.push(`${String(diagnostics.suggestedAction && typeof diagnostics.suggestedAction === 'object' ? (diagnostics.suggestedAction as Record<string, unknown>).label ?? summary.nextAction ?? '-' : summary.nextAction ?? '-')}`);
+    lines.push(`reason: ${String(diagnostics.suggestedAction && typeof diagnostics.suggestedAction === 'object' ? (diagnostics.suggestedAction as Record<string, unknown>).reason ?? summary.nextActionReason ?? '-' : summary.nextActionReason ?? '-')}`);
     lines.push('');
   }
+  lines.push('Artifact state');
+  lines.push(`pathState: ${String(summary?.artifactPathState ?? 'sandbox_only')}`);
+  lines.push(`pendingArtifacts: ${String(summary?.pendingArtifactCount ?? 0)}`);
+  lines.push('');
   if (planner) {
     lines.push(`plannerPhase: ${String(planner.executionPhase ?? '-')}`);
     lines.push(`stageCount: ${String(planner.stageCount ?? '-')}`);
@@ -211,6 +223,19 @@ function formatDiagnostics(snapshot: ReturnType<CliChatSessionController['getIns
   if (semanticReview) {
     lines.push(`semanticReview: ${String(semanticReview.status ?? '-')}`);
     lines.push(`semanticConfidence: ${String(semanticReview.confidence ?? '-')}`);
+  }
+  const executionSummary = diagnostics.executionSummary && typeof diagnostics.executionSummary === 'object'
+    ? diagnostics.executionSummary as Record<string, unknown>
+    : null;
+  const evidenceGaps = Array.isArray(executionSummary?.evidenceGaps)
+    ? executionSummary.evidenceGaps.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    : [];
+  if (evidenceGaps.length > 0) {
+    lines.push('');
+    lines.push('Evidence gaps');
+    for (const gap of evidenceGaps) {
+      lines.push(`- ${gap}`);
+    }
   }
   if (attribution) {
     lines.push('');

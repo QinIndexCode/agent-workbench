@@ -496,6 +496,13 @@ async function collectTaskVisualChecklist(page, options = {}) {
     const emptyStateVisible = isVisible(document.querySelector('[data-testid="task-empty-state"]'));
     const runtimeSummaryVisible = isVisible(document.querySelector('[data-testid="task-runtime-summary"]'));
     const threadRailVisible = isVisible(document.querySelector('[data-testid="tasks-explorer-scroll"]'));
+    const brandLogoVisible =
+      isVisible(document.querySelector('[data-testid="app-brand-logo"]'))
+      || isVisible(document.querySelector('[data-testid="app-brand-logo-mobile"]'));
+    const agentShellVisible = isVisible(document.querySelector('[data-testid="tasks-agent-shell"]'));
+    const conversationVisible = isVisible(document.querySelector('[data-testid="task-conversation"]')) || emptyStateVisible;
+    const truthInspectorReady = Boolean(document.querySelector('[data-testid="task-truth-inspector"]'));
+    const emptyAgentStateReady = Boolean(document.querySelector('[data-testid="task-empty-agent-state"]')) || !emptyStateVisible;
     const operatorSummaryVisible = isVisible(document.querySelector('[data-testid="tasks-operator-summary"]'));
     const statusStripVisible = isVisible(document.querySelector('[data-testid="task-status-strip"]'));
     const statusStripText = (() => {
@@ -575,6 +582,11 @@ async function collectTaskVisualChecklist(page, options = {}) {
 
     return {
       threadRailVisible,
+      brandLogoVisible,
+      agentShellVisible,
+      conversationVisible,
+      truthInspectorReady,
+      emptyAgentStateReady,
       operatorSummaryVisible,
       statusStripVisible,
       statusStripText,
@@ -608,6 +620,11 @@ async function collectTaskVisualChecklist(page, options = {}) {
       followUpPlaceholder,
       passes:
         threadRailVisible
+        && brandLogoVisible
+        && agentShellVisible
+        && conversationVisible
+        && truthInspectorReady
+        && emptyAgentStateReady
         && operatorSummaryVisible
         && timelineVisible
         && composerVisible
@@ -682,12 +699,11 @@ async function openComposer(page) {
 async function verifyComposerIsGeneric(page) {
   const taskTypeVisible = await page.locator('[data-testid="task-composer-task-type"]').isVisible().catch(() => false);
   assertCondition(taskTypeVisible, "Add Task composer is missing the generic task type selector.");
-  const qualityOptions = await page.locator('[data-testid="task-composer-quality-profile"] option').evaluateAll((options) =>
-    options.map((option) => option.textContent ?? "")
-  );
+  const qualityInput = page.locator('[data-testid="task-composer-quality-profile"]');
+  const qualityTagName = await qualityInput.evaluate((element) => element.tagName.toLowerCase()).catch(() => "missing");
   assertCondition(
-    !qualityOptions.some((label) => /database|mysql/i.test(label)),
-    `Add Task default quality profiles must not expose database-specific presets. options=${qualityOptions.join(", ")}`
+    qualityTagName === "input",
+    `Add Task default quality contract must be a generic input, not a scenario preset selector. tag=${qualityTagName}`
   );
 }
 
@@ -1018,6 +1034,7 @@ async function captureNoSelectionState(page, stateScreenshots) {
   await page.goto(`${BASE_URL}/tasks?task=none`, { waitUntil: "networkidle" });
   await page.waitForSelector('[data-testid="tasks-page"]');
   await page.waitForSelector('[data-testid="task-empty-state"]');
+  await page.waitForSelector('[data-testid="task-empty-agent-state"]');
   await captureTaskState(page, stateScreenshots, "empty-no-selection", {
     expectContextOpen: false,
     expectResultCard: false,
@@ -1489,6 +1506,7 @@ async function runApprovalScenario(page, status, stateScreenshots) {
 async function runArtifactRoutingScenario(page, stateScreenshots) {
   const artifactFileName = `e2e-artifact-routing-${Date.now()}.md`;
   const artifactPath = `docs/${artifactFileName}`;
+  const selectedDestination = "backend/docs/e2e-artifacts";
   const title = `E2E Artifact Apply Task ${TEST_RUN_ID}`;
   await patchConfig({
     tools: {
@@ -1526,12 +1544,12 @@ async function runArtifactRoutingScenario(page, stateScreenshots) {
   const unresolvedDebug = await getTaskDebug(taskId);
   const recommendedDestination = unresolvedDebug.executionSummary?.recommendedArtifactDir;
   assertCondition(
-    typeof recommendedDestination === "string" && recommendedDestination.length > 0,
-    `Artifact routing scenario did not produce a recommended destination. Debug=${JSON.stringify(unresolvedDebug.executionSummary)}`,
+    recommendedDestination === null,
+    `Core artifact routing should not infer a scenario destination. Debug=${JSON.stringify(unresolvedDebug.executionSummary)}`,
   );
-  await waitForStatusText(page, "Use recommended path");
+  await waitForStatusText(page, "Choose custom path");
   await page.waitForSelector('[data-testid="task-assistant-note"]', { timeout: 20_000 });
-  await page.waitForSelector('[data-testid="task-action-use-recommended-path"]', { timeout: 20_000 });
+  await page.waitForSelector('[data-testid="task-action-choose-custom-path"]', { timeout: 20_000 });
   await ensureTimelineSelectorVisible(page, '[data-testid="task-assistant-note"]');
   await captureTaskState(page, stateScreenshots, "artifact-destination-unresolved", {
     scenario: "web-artifact-routing-apply",
@@ -1543,8 +1561,11 @@ async function runArtifactRoutingScenario(page, stateScreenshots) {
   await page.getByRole("button", { name: /refresh/i }).click();
   await page.waitForTimeout(300);
   await reopenTaskFromList(page, title);
-  await waitForEnabledSelector(page, '[data-testid="task-action-use-recommended-path"]');
-  await page.locator('[data-testid="task-action-use-recommended-path"]').click();
+  await waitForEnabledSelector(page, '[data-testid="task-action-choose-custom-path"]');
+  await page.locator('[data-testid="task-action-choose-custom-path"]').click();
+  await page.locator('[data-testid="task-artifact-dir"]').fill(selectedDestination);
+  await waitForEnabledSelector(page, '[data-testid="task-action-apply-artifacts"]');
+  await page.locator('[data-testid="task-action-apply-artifacts"]').click();
   const completedTask = await waitForTaskDetail(
     taskId,
     (task) => task.runtime?.lifecycleStatus === "COMPLETED",
@@ -1571,8 +1592,8 @@ async function runArtifactRoutingScenario(page, stateScreenshots) {
     `Artifact apply result did not settle to APPLIED. Last result=${debug.executionSummary?.lastArtifactApplyResult?.status ?? "missing"}`,
   );
   assertCondition(
-    debug.executionSummary?.lastArtifactApplyResult?.destinationDir === recommendedDestination,
-    `Artifact apply destination did not match the recommended directory. Recommended=${recommendedDestination ?? "missing"} Last destination=${debug.executionSummary?.lastArtifactApplyResult?.destinationDir ?? "missing"}`,
+    debug.executionSummary?.lastArtifactApplyResult?.destinationDir === selectedDestination,
+    `Artifact apply destination did not match the selected directory. Selected=${selectedDestination} Last destination=${debug.executionSummary?.lastArtifactApplyResult?.destinationDir ?? "missing"}`,
   );
   assertCondition(
     debug.executionSummary?.artifactPathState === "applied",

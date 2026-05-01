@@ -257,6 +257,20 @@ test('cli status returns compact task summary', async () => {
     assert.equal(payload.lifecycleStatus, 'SUBMITTED');
     assert.equal(payload.progressState, 'ready_to_start');
     assert.equal(payload.nextAction, 'Start task');
+
+    const humanCapture = createIoCapture();
+    const humanExit = await runBackendNewCli({
+      argv: ['tasks', 'status', submitted.command.taskId, '--format', 'human', '--server', serverUrl],
+      io: humanCapture.io
+    });
+    assert.equal(humanExit, 0);
+    const humanOutput = humanCapture.stdout.join('');
+    assert.match(humanOutput, /SCC Batch Agent Console/);
+    assert.match(humanOutput, /Task truth/);
+    assert.match(humanOutput, /Failure plane:/);
+    assert.match(humanOutput, /Suggested action:/);
+    assert.match(humanOutput, /Artifact state:/);
+    assert.match(humanOutput, /Next command:/);
   } finally {
     server.close();
     removeDir(root);
@@ -318,9 +332,25 @@ test('cli diagnostics exposes experience summary after approved experience reuse
     });
     assert.equal(diagnosticsExit, 0);
     const diagnostics = JSON.parse(diagnosticsCapture.stdout.join(''));
+    assert.equal(diagnostics.issuePlane, 'core');
+    assert.equal(diagnostics.issueCategory, 'artifact_destination_unresolved');
+    assert.equal(typeof diagnostics.suggestedAction.label, 'string');
     assert.equal(Array.isArray(diagnostics.experienceSummary.selected), true);
     assert.equal(diagnostics.experienceSummary.selected[0].proposalId, experienceProposal.proposalId);
     assert.equal(diagnostics.experienceSummary.validationCandidates[0].successfulReuseTaskIds.includes(third.command.taskId), true);
+
+    const humanDiagnosticsCapture = createIoCapture();
+    const humanDiagnosticsExit = await runBackendNewCli({
+      argv: ['tasks', 'diagnostics', third.command.taskId, '--format', 'human', '--server', serverUrl],
+      io: humanDiagnosticsCapture.io
+    });
+    assert.equal(humanDiagnosticsExit, 0);
+    const humanDiagnostics = humanDiagnosticsCapture.stdout.join('');
+    assert.match(humanDiagnostics, /Task diagnostics/);
+    assert.match(humanDiagnostics, /Failure plane: core \/ artifact_destination_unresolved/);
+    assert.match(humanDiagnostics, /Acceptance and quality/);
+    assert.match(humanDiagnostics, /Artifact state/);
+    assert.doesNotThrow(() => JSON.parse(diagnosticsCapture.stdout.join('')));
   } finally {
     server.close();
     removeDir(root);
@@ -469,11 +499,11 @@ test('cli inspect exposes recommended-path guidance for unresolved artifact deli
     assert.equal(exitCode, 0);
     const payload = JSON.parse(capture.stdout.join(''));
     assert.equal(payload.runtime.lifecycleStatus, 'RUNNING');
-    assert.equal(payload.statusSummary.label, 'Use recommended path');
-    assert.equal(payload.primaryAction.kind, 'use_recommended_path');
-    assert.equal(payload.primaryAction.destinationDir, 'backend/docs');
-    assert.equal(payload.nextActionSummary.label, 'Use recommended path');
-    assert.match(payload.nextActionSummary.reason, /backend\/docs/);
+    assert.equal(payload.statusSummary.label, 'Choose custom path');
+    assert.equal(payload.primaryAction.kind, 'choose_custom_path');
+    assert.equal(payload.primaryAction.destinationDir, null);
+    assert.equal(payload.nextActionSummary.label, 'Choose custom path');
+    assert.match(payload.nextActionSummary.reason, /project-relative destination/);
     assert.deepEqual(payload.completionSummary.artifactPaths, ['docs/release-notes.md']);
     assert.equal(payload.completionSummary.artifactApplyStatus, null);
     assert.equal(Array.isArray(payload.visibleToolActivities), true);
@@ -1135,6 +1165,10 @@ test('cli chat can attach to an existing task and expose diagnostics for agent-c
     assert.equal(Boolean(diagnostics), true);
     assert.equal(diagnostics.taskId, submitted.command.taskId);
     assert.equal(typeof diagnostics.data.promptSectionAttribution, 'object');
+    assert.equal(Object.prototype.hasOwnProperty.call(diagnostics.data, 'issuePlane'), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(diagnostics.data, 'suggestedAction'), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(diagnostics.data.summary, 'artifactPathState'), true);
+    assert.equal(records.every((entry) => entry && typeof entry === 'object' && typeof entry.type === 'string'), true);
   } finally {
     server.close();
     removeDir(root);

@@ -176,107 +176,7 @@ export function recommendArtifactDirectory(params: {
   definition: TaskDefinition;
   artifactPaths: string[];
 }): { directory: string | null; reason: string | null } {
-  const relativeArtifactPaths = params.artifactPaths.filter((entry) => !isAbsoluteArtifactPath(entry));
-  const haystack = [
-    params.definition.title,
-    params.definition.intent,
-    ...params.definition.units.map((unit) => [unit.role, unit.goal, unit.taskScope].filter(Boolean).join(' ')),
-    ...relativeArtifactPaths
-  ]
-    .join(' ')
-    .toLowerCase();
-  const artifactPaths = relativeArtifactPaths.map((entry) => entry.toLowerCase());
-  const topLevelSegments = Array.from(new Set(
-    artifactPaths
-      .map((entry) => entry.split('/')[0]?.trim())
-      .filter((entry): entry is string => Boolean(entry))
-  ));
-
-  const codeExtensions = ['.ts', '.tsx', '.js', '.jsx', '.cjs', '.mjs', '.py', '.java', '.go', '.rs'];
-  const frontendExtensions = ['.tsx', '.jsx', '.css', '.scss', '.sass', '.html'];
-  const docExtensions = ['.md', '.mdx', '.txt', '.adoc'];
-  const reportExtensions = ['.log'];
-  const hasExtension = (extensions: string[]) => artifactPaths.some((entry) => extensions.some((extension) => entry.endsWith(extension)));
-
-  if (artifactPaths.some((entry) => entry.startsWith('reports/') || entry.startsWith('logs/'))) {
-    return {
-      directory: '.codex-run/logs',
-      reason: 'artifact heuristic matched report or log directories'
-    };
-  }
-  if (artifactPaths.some((entry) => entry.startsWith('docs/'))) {
-    return {
-      directory: 'backend/docs',
-      reason: 'artifact heuristic matched documentation directories'
-    };
-  }
-  if (artifactPaths.some((entry) => entry.startsWith('src/'))) {
-    return {
-      directory: 'backend/src',
-      reason: 'artifact heuristic matched backend source directories'
-    };
-  }
-  if (artifactPaths.some((entry) => entry.startsWith('frontend/'))) {
-    return {
-      directory: 'frontend/src',
-      reason: 'artifact heuristic matched frontend source directories'
-    };
-  }
-  if (topLevelSegments.length === 1 && ['config', 'data', 'workspace', 'policies', 'bundle', '.scc'].includes(topLevelSegments[0])) {
-    return {
-      directory: topLevelSegments[0],
-      reason: 'artifact heuristic matched a stable project-relative top-level directory'
-    };
-  }
-
-  if (artifactPaths.some((entry) => entry.includes('report') || entry.includes('scorecard') || entry.includes('benchmark') || entry.includes('log'))) {
-    return {
-      directory: '.codex-run/logs',
-      reason: 'artifact heuristic matched benchmark or report outputs'
-    };
-  }
-  if (artifactPaths.some((entry) => entry.startsWith('docs/') || entry.endsWith('.md') || entry.endsWith('.html') || entry.includes('readme') || entry.includes('guide') || entry.includes('adr'))) {
-    return {
-      directory: 'backend/docs',
-      reason: 'artifact heuristic matched documentation outputs'
-    };
-  }
-  if (hasExtension(reportExtensions) && !hasExtension(codeExtensions)) {
-    return {
-      directory: '.codex-run/logs',
-      reason: 'artifact heuristic matched json or log outputs'
-    };
-  }
-  if (hasExtension(docExtensions)) {
-    return {
-      directory: 'backend/docs',
-      reason: 'artifact heuristic matched documentation file extensions'
-    };
-  }
-  if (hasExtension(frontendExtensions)) {
-    return {
-      directory: 'frontend/src',
-      reason: 'artifact heuristic matched frontend file extensions'
-    };
-  }
-  if (/\b(frontend|ui|react|component|page|css|tailwind|client)\b/.test(haystack)) {
-    return {
-      directory: 'frontend/src',
-      reason: 'task heuristic matched frontend implementation work'
-    };
-  }
-  if (hasExtension(codeExtensions)) {
-    return {
-      directory: 'backend/src',
-      reason: 'artifact heuristic matched code file extensions'
-    };
-  }
-  if (/(backend|api|runtime|service|worker|repository|queue|provider|server)/.test(haystack)) {
-    return {
-      directory: 'backend/src',
-      reason: 'task heuristic matched backend runtime work'
-    };
-  }
+  void params;
   return {
     directory: null,
     reason: null
@@ -400,19 +300,6 @@ export function resolveProjectRelativeDestination(params: {
   }
   if (sourceRelativePath === destinationDir || sourceRelativePath.startsWith(`${destinationDir}/`)) {
     return sourceRelativePath;
-  }
-  const sourceSegments = sourceRelativePath.split('/');
-  const destinationSegments = destinationDir.split('/');
-  const destinationTail = destinationSegments[destinationSegments.length - 1] ?? destinationDir;
-
-  if (destinationTail === 'docs' && sourceSegments[0] === 'docs') {
-    return normalizeRelativePath(path.posix.join(destinationDir, sourceSegments.slice(1).join('/'))) ?? sourceRelativePath;
-  }
-  if (destinationTail === 'src' && sourceSegments[0] === 'src') {
-    return normalizeRelativePath(path.posix.join(destinationDir, sourceSegments.slice(1).join('/'))) ?? sourceRelativePath;
-  }
-  if (destinationTail === 'logs' && (sourceSegments[0] === 'reports' || sourceSegments[0] === 'logs')) {
-    return normalizeRelativePath(path.posix.join(destinationDir, sourceSegments.slice(1).join('/'))) ?? sourceRelativePath;
   }
   return normalizeRelativePath(path.posix.join(destinationDir, sourceRelativePath)) ?? sourceRelativePath;
 }

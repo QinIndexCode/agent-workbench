@@ -2180,6 +2180,52 @@ async function verifyInspectorScroll(page) {
   return { checked: true };
 }
 
+async function verifyAgentConsoleShell(page, viewport) {
+  if ((await page.locator('[data-testid="task-truth-inspector"]').count()) === 0) {
+    await clickVisibleContextToggle(page);
+    await page.waitForSelector('[data-testid="task-truth-inspector"]', { timeout: 2_000 }).catch(() => null);
+  }
+  const metrics = await page.evaluate((width) => {
+    function isVisible(selector) {
+      const node = document.querySelector(selector);
+      if (!(node instanceof HTMLElement)) {
+        return false;
+      }
+      const style = window.getComputedStyle(node);
+      return style.display !== "none" && style.visibility !== "hidden" && node.getClientRects().length > 0;
+    }
+
+    function exists(selector) {
+      return Boolean(document.querySelector(selector));
+    }
+
+    return {
+      brandLogoVisible: width >= 1024
+        ? isVisible('[data-testid="app-brand-logo"]')
+        : isVisible('[data-testid="app-brand-logo-mobile"]'),
+      agentShellVisible: isVisible('[data-testid="tasks-agent-shell"]'),
+      threadRailReady: width >= 1100
+        ? isVisible('[data-testid="task-thread-rail"]')
+        : exists('[data-testid="task-thread-rail"]'),
+      conversationVisible: isVisible('[data-testid="task-conversation"]'),
+      inspectorReady: exists('[data-testid="task-truth-inspector"]'),
+      composerVisible: isVisible('[data-testid="task-composer"]'),
+      emptyAgentStateReady: exists('[data-testid="task-empty-agent-state"]') || isVisible('[data-testid="task-list-item"]'),
+    };
+  }, viewport.width);
+  assertCondition(
+    metrics.brandLogoVisible
+      && metrics.agentShellVisible
+      && metrics.threadRailReady
+      && metrics.conversationVisible
+      && metrics.inspectorReady
+      && metrics.composerVisible
+      && metrics.emptyAgentStateReady,
+    `Agent console shell is missing flagship selectors: ${JSON.stringify(metrics)}`,
+  );
+  return metrics;
+}
+
 async function verifyAcceptanceInspector(page) {
   if ((await page.locator('[data-testid="task-inspector-scroll"]').count()) === 0) {
     const explicitToggle = page.locator('[data-testid="task-context-toggle"]').last();
@@ -2226,6 +2272,64 @@ async function verifyToolActivityIcons(page) {
   };
 }
 
+async function verifyTimelineGlyphs(page, requirements = {}) {
+  const metrics = await page.evaluate((options) => {
+    function visible(selector) {
+      const nodes = Array.from(document.querySelectorAll(selector));
+      return nodes.some((node) => {
+        if (!(node instanceof HTMLElement)) {
+          return false;
+        }
+        const style = window.getComputedStyle(node);
+        return style.display !== "none" && style.visibility !== "hidden" && node.getClientRects().length > 0;
+      });
+    }
+
+    const glyphs = Array.from(document.querySelectorAll('[data-testid^="task-timeline-glyph-"]'))
+      .filter((node) => {
+        if (!(node instanceof HTMLElement)) {
+          return false;
+        }
+        const style = window.getComputedStyle(node);
+        return style.display !== "none" && style.visibility !== "hidden" && node.getClientRects().length > 0;
+      });
+    const firstTimelineNode = document.querySelector('[data-testid^="task-timeline-node-"]');
+    const beforeContent = firstTimelineNode instanceof HTMLElement
+      ? window.getComputedStyle(firstTimelineNode, "::before").content
+      : "none";
+
+    return {
+      glyphCount: glyphs.length,
+      pseudoDotRemoved: glyphs.length > 0 && (beforeContent === "none" || beforeContent === "normal"),
+      agent: visible('[data-testid="task-timeline-agent-icon"]'),
+      tool: visible('[data-testid="task-timeline-tool-icon"]'),
+      artifact: visible('[data-testid="task-timeline-glyph-artifact"]'),
+      decision: visible('[data-testid="task-timeline-glyph-decision"]'),
+      delegation: visible('[data-testid="task-timeline-glyph-delegation"]'),
+      minGlyphs: options.minGlyphs ?? 1,
+    };
+  }, requirements);
+
+  assertCondition(metrics.glyphCount >= metrics.minGlyphs, `Timeline has too few typed SVG glyphs: ${JSON.stringify(metrics)}`);
+  assertCondition(metrics.pseudoDotRemoved, `Timeline still appears to depend on pseudo dots instead of typed glyphs: ${JSON.stringify(metrics)}`);
+  if (requirements.expectAgent) {
+    assertCondition(metrics.agent, `Timeline is missing the Agent glyph: ${JSON.stringify(metrics)}`);
+  }
+  if (requirements.expectTool) {
+    assertCondition(metrics.tool, `Timeline is missing the Tool glyph: ${JSON.stringify(metrics)}`);
+  }
+  if (requirements.expectArtifact) {
+    assertCondition(metrics.artifact, `Timeline is missing the Artifact glyph: ${JSON.stringify(metrics)}`);
+  }
+  if (requirements.expectDecision) {
+    assertCondition(metrics.decision, `Timeline is missing the Decision glyph: ${JSON.stringify(metrics)}`);
+  }
+  if (requirements.expectDelegation) {
+    assertCondition(metrics.delegation, `Timeline is missing the Delegation glyph: ${JSON.stringify(metrics)}`);
+  }
+  return metrics;
+}
+
 async function verifyToolExecutionDetails(page) {
   const summaries = page.locator('[data-testid="task-tool-activity-summary"]');
   const summaryCount = await summaries.count();
@@ -2246,6 +2350,15 @@ async function verifyToolExecutionDetails(page) {
 }
 
 async function verifyComposerRefreshAnchor(page) {
+  const localConsole = [];
+  const consoleHandler = (message) => {
+    localConsole.push({ type: message.type(), text: message.text() });
+  };
+  const pageErrorHandler = (error) => {
+    localConsole.push({ type: "pageerror", text: error.message });
+  };
+  page.on("console", consoleHandler);
+  page.on("pageerror", pageErrorHandler);
   const textarea = page.locator('[data-testid="task-continue-message"]').first();
   if (!(await textarea.isVisible().catch(() => false))) {
     const expandFollowUp = page.locator('[data-testid="task-action-expand-follow-up"]').first();
@@ -2299,16 +2412,22 @@ async function verifyComposerRefreshAnchor(page) {
       draftNoticeVisible: draftNoticeNode instanceof HTMLElement && draftNoticeNode.getClientRects().length > 0,
     };
   });
-  const afterDebug = after ?? await page.evaluate(() => ({
+  const afterDebug = after ?? await page.evaluate((capturedConsole) => ({
+    url: window.location.href,
+    console: capturedConsole,
     composerCount: document.querySelectorAll('[data-testid="task-composer-card"]').length,
     textareaCount: document.querySelectorAll('[data-testid="task-continue-message"]').length,
     contextToggleCount: document.querySelectorAll('[data-testid="task-context-toggle"]').length,
+    rootExcerpt: document.querySelector('#root')?.innerHTML?.slice(0, 500) ?? null,
+    viteOverlayText: document.querySelector('vite-error-overlay')?.shadowRoot?.textContent?.slice(0, 500) ?? null,
     actionText: (document.querySelector('[data-testid="task-action-continue"], [data-testid="task-action-start"], [data-testid="task-action-resume"], [data-testid="task-action-restart"]') instanceof HTMLElement
       ? document.querySelector('[data-testid="task-action-continue"], [data-testid="task-action-start"], [data-testid="task-action-resume"], [data-testid="task-action-restart"]')?.textContent?.trim()
       : null),
     composerText: document.querySelector('[data-testid="task-composer-card"]')?.textContent?.slice(0, 240) ?? null,
     bodyExcerpt: document.body.innerText.slice(0, 500),
-  }));
+  }), localConsole);
+  page.off("console", consoleHandler);
+  page.off("pageerror", pageErrorHandler);
   assertCondition(Boolean(after), `Composer disappeared after refresh and details toggles. debug=${JSON.stringify(afterDebug)}`);
   const actionStable = after.actionLabel === before.actionLabel || after.draftNoticeVisible;
   const unexpectedRestart = before.actionLabel !== "Restart task" && after.actionLabel === "Restart task" && !after.draftNoticeVisible;
@@ -3117,8 +3236,8 @@ function buildActualScenarios(viewport) {
         titleSelectors: ['[data-testid="tasks-operator-summary"] h2'],
         primaryActionSelectors: [],
         keySelectors: viewport.width >= 1100
-          ? ['[data-testid="task-detail-pane"]', '[data-testid="task-timeline-scroll"]', '[data-testid="tasks-explorer-scroll"]']
-          : ['[data-testid="task-detail-pane"]', '[data-testid="task-timeline-scroll"]', '[data-testid="tasks-operator-summary"]'],
+          ? ['[data-testid="tasks-agent-shell"]', '[data-testid="task-detail-pane"]', '[data-testid="task-timeline-scroll"]', '[data-testid="tasks-explorer-scroll"]', '[data-testid="task-conversation"]', '[data-testid="task-composer"]']
+          : ['[data-testid="tasks-agent-shell"]', '[data-testid="task-detail-pane"]', '[data-testid="task-timeline-scroll"]', '[data-testid="tasks-operator-summary"]', '[data-testid="task-conversation"]', '[data-testid="task-composer"]'],
         hiddenTextSnippets: HIDDEN_TEXT_SNIPPETS,
       },
       afterOpen: async (page) => {
@@ -3131,6 +3250,8 @@ function buildActualScenarios(viewport) {
           sanitized: await verifyTimelineSanitized(page),
           emptyCopy: await verifyTimelineEmptyCopyReadable(page),
           inspector: await verifyInspectorScroll(page),
+          agentShell: await verifyAgentConsoleShell(page, viewport),
+          timelineGlyphs: await verifyTimelineGlyphs(page, { minGlyphs: 1 }),
           acceptance: await verifyAcceptanceInspector(page),
           explorer: null,
           shortViewport: null,
@@ -3370,10 +3491,12 @@ function buildDynamicScenarios() {
         requireDescription: false,
         titleSelectors: ['[data-testid="tasks-operator-summary"] h2'],
         primaryActionSelectors: ['[data-testid="task-context-toggle"]'],
-        keySelectors: ['[data-testid="task-detail-pane"]', '[data-testid="task-timeline-scroll"]'],
+        keySelectors: ['[data-testid="tasks-agent-shell"]', '[data-testid="task-detail-pane"]', '[data-testid="task-timeline-scroll"]', '[data-testid="task-conversation"]', '[data-testid="task-composer"]'],
         hiddenTextSnippets: HIDDEN_TEXT_SNIPPETS,
       },
       extraChecks: async (page) => ({
+        agentShell: await verifyAgentConsoleShell(page, { width: 1280 }),
+        timelineGlyphs: await verifyTimelineGlyphs(page, { expectTool: true, expectDelegation: true, minGlyphs: 3 }),
         delegation: await verifyDelegationCard(page, "Delegated note draft"),
       }),
     },
@@ -3449,10 +3572,12 @@ function buildDynamicScenarios() {
         requireDescription: false,
         titleSelectors: ['[data-testid="tasks-operator-summary"] h2'],
         primaryActionSelectors: ['[data-testid="task-action-continue"]', '[data-testid="task-context-toggle"]'],
-        keySelectors: ['[data-testid="task-detail-pane"]', '[data-testid="task-timeline-scroll"]', '[data-testid="task-composer-card"]'],
+        keySelectors: ['[data-testid="tasks-agent-shell"]', '[data-testid="task-detail-pane"]', '[data-testid="task-timeline-scroll"]', '[data-testid="task-conversation"]', '[data-testid="task-composer"]', '[data-testid="task-composer-card"]'],
         hiddenTextSnippets: HIDDEN_TEXT_SNIPPETS,
       },
       extraChecks: async (page) => ({
+        agentShell: await verifyAgentConsoleShell(page, { width: 1280 }),
+        timelineGlyphs: await verifyTimelineGlyphs(page, { expectTool: true, minGlyphs: 3 }),
         toolIcons: await verifyToolActivityIcons(page),
         toolExecution: await verifyToolExecutionDetails(page),
         composerAnchor: await verifyComposerRefreshAnchor(page),
@@ -3514,6 +3639,7 @@ function buildDynamicScenarios() {
         hiddenTextSnippets: HIDDEN_TEXT_SNIPPETS,
       },
       extraChecks: async (page) => ({
+        timelineGlyphs: await verifyTimelineGlyphs(page, { expectAgent: true, expectArtifact: true, minGlyphs: 3 }),
         deleteDialog: await verifyTaskDeleteDialog(page),
       }),
     },

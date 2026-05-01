@@ -13,7 +13,7 @@
     "smoke": "node scripts/smoke-validate.mjs",
     "e2e": "node scripts/live-task-review.mjs",
     "live-review": "node scripts/live-task-review.mjs",
-    "mainline-review": "node scripts/live-task-review.mjs",
+    "mainline-review": "node scripts/mainline-task-review.mjs",
     "delegation-live-review": "node scripts/delegation-live-review.mjs",
     "improvement-proposal-audit": "node scripts/improvement-proposal-audit.mjs"
   },
