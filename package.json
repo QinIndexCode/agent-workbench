@@ -74,6 +74,7 @@
     "clean:runtime-state": "node scripts/clean-backend-runtime-state.mjs",
     "clean:test-artifacts": "node scripts/clean-test-artifacts.mjs",
     "repo-cleanup:audit": "node scripts/repo-cleanup-audit.mjs",
+    "secret-hygiene": "node scripts/check-secret-hygiene.mjs",
     "repo-hygiene": "node scripts/check-repo-hygiene.mjs",
     "repo-delivery": "node scripts/check-repo-delivery.mjs",
     "smoke:frontend": "node scripts/run-frontend-smoke-stack.mjs",

@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { buildSecretHygieneAudit } from './check-secret-hygiene.mjs';
 
 const rootDir = process.cwd();
 
@@ -237,6 +238,14 @@ async function main() {
     }
   }
 
+  const secretHygiene = await buildSecretHygieneAudit({ rootDir });
+  for (const issue of secretHygiene.issues) {
+    issues.push({
+      ...issue,
+      kind: `secret_hygiene_${issue.kind}`
+    });
+  }
+
   const report = {
     status: issues.length === 0 ? 'achieved' : 'open_gap',
     checkedPaths: includedPaths,
@@ -251,6 +260,7 @@ async function main() {
     genericRunnerSpecializedPatterns,
     coreBoundaryPaths,
     coreBoundaryForbiddenPatterns,
+    secretHygiene,
     issues
   };
 
