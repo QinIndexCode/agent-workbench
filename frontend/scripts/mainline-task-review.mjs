@@ -13,8 +13,8 @@ const REPORT_PATH =
 const SCREENSHOT_DIR =
   process.env.FRONTEND_MAINLINE_REVIEW_SCREENSHOTS ??
   path.resolve(process.cwd(), "..", ".codex-run", "logs", "frontend-mainline-review");
-const VIEWPORT_WIDTH = Number.parseInt(process.env.FRONTEND_MAINLINE_REVIEW_VIEWPORT_WIDTH ?? "1440", 10);
-const VIEWPORT_HEIGHT = Number.parseInt(process.env.FRONTEND_MAINLINE_REVIEW_VIEWPORT_HEIGHT ?? "960", 10);
+const VIEWPORT_WIDTH = Number.parseInt(process.env.FRONTEND_MAINLINE_REVIEW_VIEWPORT_WIDTH ?? "1586", 10);
+const VIEWPORT_HEIGHT = Number.parseInt(process.env.FRONTEND_MAINLINE_REVIEW_VIEWPORT_HEIGHT ?? "992", 10);
 
 function resolveChromeExecutable() {
   const candidates = [

@@ -27,6 +27,7 @@ test('cleanHistoricalTestArtifacts preserves reusable release evidence reports b
     await fs.writeFile(path.join(logsDir, 'practical-live-task-acceptance.json'), '{}', 'utf8');
     await fs.writeFile(path.join(logsDir, 'benchmark.json'), '{}', 'utf8');
     await fs.writeFile(path.join(logsDir, 'frontend-smoke-report.json'), '{}', 'utf8');
+    await fs.writeFile(path.join(logsDir, 'actual-user-cli-report.json'), '{}', 'utf8');
     await fs.mkdir(path.join(logsDir, 'real-task-wave-matrix', 'current-run'), { recursive: true });
     await fs.writeFile(path.join(logsDir, 'real-task-wave-matrix', 'current-run', 'matrix-summary.json'), '{}', 'utf8');
     await fs.mkdir(path.join(logsDir, 'human-task-matrix', 'current-run'), { recursive: true });
@@ -39,6 +40,7 @@ test('cleanHistoricalTestArtifacts preserves reusable release evidence reports b
 
     const remaining = (await fs.readdir(logsDir)).sort();
     assert.deepEqual(remaining, [
+      'actual-user-cli-report.json',
       'benchmark.json',
       'frontend-smoke-report.json',
       'human-task-matrix',
@@ -49,6 +51,7 @@ test('cleanHistoricalTestArtifacts preserves reusable release evidence reports b
     ]);
     assert.equal(result.skippedLogs.some((entry) => /live-cost-probe\.json$/i.test(entry.target)), true);
     assert.equal(result.skippedLogs.some((entry) => /frontend-smoke-report\.json$/i.test(entry.target)), true);
+    assert.equal(result.skippedLogs.some((entry) => /actual-user-cli-report\.json$/i.test(entry.target)), true);
     assert.equal(result.skippedLogs.some((entry) => /real-task-wave-matrix$/i.test(entry.target)), true);
     assert.equal(result.skippedLogs.some((entry) => /human-task-matrix$/i.test(entry.target)), true);
   } finally {

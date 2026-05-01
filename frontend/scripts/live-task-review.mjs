@@ -780,7 +780,7 @@ async function runArtifactDeliveryScenario(page) {
 
     await openTask(page, taskId);
     await setContextVisibility(page, true);
-    await page.waitForSelector('[data-testid="task-action-use-recommended-path"]', { timeout: 20_000 });
+    await page.waitForSelector('[data-testid="task-action-choose-custom-path"]', { timeout: 20_000 });
     await page.waitForSelector('[data-testid="task-assistant-note"]', { timeout: 30_000 });
     await ensureTimelineSelectorVisible(page, '[data-testid="task-assistant-note"]');
     const unresolvedScreenshot = await captureScreenshot(page, "live-artifact-delivery-unresolved");
@@ -798,7 +798,18 @@ async function runArtifactDeliveryScenario(page) {
       unresolvedChecklist.toolActivityCount >= 1,
       "Artifact delivery unresolved state did not render a visible tool activity card.",
     );
-    await page.locator('[data-testid="task-action-use-recommended-path"]').click();
+    const selectedDestinationDir = "backend/docs/live-review-artifacts";
+    await page.locator('[data-testid="task-action-choose-custom-path"]').click();
+    await page.locator('[data-testid="task-artifact-dir"]').fill(selectedDestinationDir);
+    await page.waitForFunction(
+      () => {
+        const button = document.querySelector('[data-testid="task-action-apply-artifacts"]');
+        return button instanceof HTMLButtonElement && !button.disabled;
+      },
+      undefined,
+      { timeout: 20_000 },
+    );
+    await page.locator('[data-testid="task-action-apply-artifacts"]').click();
     const appliedDebug = await waitForTaskDebug(
       taskId,
       (entry) => entry.executionSummary?.artifactPathState === "applied",
@@ -809,7 +820,7 @@ async function runArtifactDeliveryScenario(page) {
     if (!["COMPLETED", "FAILED", "CANCELLED"].includes(task.runtime?.lifecycleStatus) && !(task.pendingApprovals?.length > 0)) {
       await continueTask(
         taskId,
-        "The recommended destination has already been applied. Do not create or rewrite scratch artifacts again. Confirm the delivered location and finish the delivery.",
+        `The selected destination ${selectedDestinationDir} has already been applied. Do not create or rewrite scratch artifacts again. Confirm the delivered location and finish the delivery.`,
       );
       continuedAfterApply = true;
     }

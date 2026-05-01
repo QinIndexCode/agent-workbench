@@ -64,6 +64,7 @@ export async function cleanHistoricalTestArtifacts(options = {}) {
     /^frontend-mainline-review$/,
     /^frontend-e2e-report(?:\.[^.]+)?\.json$/,
     /^frontend-e2e$/,
+    /^actual-user-cli-report(?:\.[^.]+)?\.json$/,
     /^workflow(?:\.[^.]+)?\.json$/,
     /^breadth(?:\.[^.]+)?\.json$/,
     /^flagship(?:\.[^.]+)?\.json$/,
@@ -82,7 +83,9 @@ export async function cleanHistoricalTestArtifacts(options = {}) {
     /^benchmark(?:\.[^.]+)?\.json$/
   ];
   const projectArtifactPaths = options.projectArtifactPaths ?? [
-    'backend/docs/docs'
+    'backend/docs/docs',
+    'backend/docs/live-review-artifacts',
+    'backend/docs/actual-cli-artifacts'
   ];
 
   const tempEntries = await listDirectorySafe(tmpDir);
