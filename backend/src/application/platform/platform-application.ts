@@ -20,6 +20,7 @@ import {
   MemoryUpsertInput,
   PlatformAuditTrailView,
   RealTaskArchiveEntry,
+  WorkspaceDirectoryListing,
   ScheduleUpsertInput,
   SkillDuplicateInput,
   SkillImportInput,
@@ -155,6 +156,7 @@ export class BackendNewPlatformApplication {
     return (await this.getEcosystemSummary()).mcpServers;
   }
   getWorkspaceWorkflow(): Promise<WorkspaceWorkflowView> { return this.workspace.getView(); }
+  listWorkspaceDirectories(inputPath?: string | null): Promise<WorkspaceDirectoryListing> { return this.workspace.listDirectories(inputPath); }
   initWorkspaceWorkflow() { return this.workspace.initWorkspace(); }
   importWorkspaceDocs(): Promise<import('./types').PlatformActionResult<WorkspaceDocsImportSummary>> { return this.workspace.importDocs(); }
 

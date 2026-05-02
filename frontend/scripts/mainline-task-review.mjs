@@ -304,6 +304,12 @@ async function collectChecklist(page, options = {}) {
       const node = document.querySelector('[data-testid="task-inspector-scroll"]');
       return node instanceof HTMLElement ? node.innerText : "";
     })();
+    const footerText = (() => {
+      const node = document.querySelector('[data-testid="task-global-footer"]');
+      return node instanceof HTMLElement ? node.innerText : "";
+    })();
+    const artifactBlockerPhrase = "Artifacts are ready in the task workspace and still need a project-relative destination.";
+    const artifactBlockerPhraseCount = bodyText.split(artifactBlockerPhrase).length - 1;
     const followUpEntryVisible =
       isVisible('[data-testid="task-action-open-follow-up"]')
       || isVisible('[data-testid="task-action-expand-follow-up"]')
@@ -342,6 +348,19 @@ async function collectChecklist(page, options = {}) {
       conceptShellGeometry: desktopConceptLayout,
       runtimeChipStripVisible: window.innerWidth >= 1100 ? isVisible('[data-testid="app-runtime-chip-strip"]') : true,
       footerVisible: window.innerWidth >= 1100 ? isVisible('[data-testid="task-global-footer"]') : true,
+      footerRuntimeBadgesRemoved:
+        !footerText.includes("Backend healthy")
+        && !footerText.includes("Provider gated")
+        && !footerText.includes("WS live"),
+      compactTruthStripVisible: isVisible('[data-testid="task-truth-compact-strip"]'),
+      readyProviderCardCollapsed: !contextText.includes("Provider readiness"),
+      noDuplicateAssistantLabel: !/\bAssistant\s+Assistant\b/.test(bodyText),
+      noDuplicateToolLabel:
+        !bodyText.toLowerCase().includes("write file write file")
+        && !bodyText.toLowerCase().includes("read file read file")
+        && !bodyText.toLowerCase().includes("list files list files")
+        && !bodyText.toLowerCase().includes("run command run command"),
+      noRepeatedArtifactBlocker: artifactBlockerPhraseCount <= 1,
       typedTimelineGlyphsVisible: visibleTimelineGlyphs.length >= (config.minTimelineGlyphs ?? 1),
       timelineNotPseudoOnly: visibleTimelineGlyphs.length > 0 && (timelineBeforeContent === "none" || timelineBeforeContent === "normal"),
       agentTimelineIconVisible: isVisible('[data-testid="task-timeline-agent-icon"]'),
@@ -386,6 +405,12 @@ async function collectChecklist(page, options = {}) {
       && checklist.conceptShellGeometry
       && checklist.runtimeChipStripVisible
       && checklist.footerVisible
+      && checklist.footerRuntimeBadgesRemoved
+      && checklist.compactTruthStripVisible
+      && checklist.readyProviderCardCollapsed
+      && checklist.noDuplicateAssistantLabel
+      && checklist.noDuplicateToolLabel
+      && checklist.noRepeatedArtifactBlocker
       && (config.expectTimelineGlyphs === false ? true : checklist.typedTimelineGlyphsVisible)
       && (config.expectTimelineGlyphs === false ? true : checklist.timelineNotPseudoOnly)
       && (config.expectAgentGlyph ? checklist.agentTimelineIconVisible : true)
@@ -764,7 +789,75 @@ async function runVisualProofScenario(browser, desktopPage, completedTaskId, att
     Object.values(emptyChecklist).every(Boolean),
     `Empty/new task state is missing flagship proof selectors: ${JSON.stringify(emptyChecklist)}`,
   );
+  await desktopPage.click('[data-testid="task-empty-create"]');
+  await desktopPage.waitForSelector('[data-testid="task-composer-dialog"]', { timeout: 20_000 });
+  await desktopPage.click('[data-testid="task-composer-working-dir-browse"]');
+  await desktopPage.waitForSelector('[data-testid="task-working-dir-browser"]', { timeout: 20_000 });
+  const composerChecklist = await desktopPage.evaluate(() => {
+    function visible(selector) {
+      const node = document.querySelector(selector);
+      if (!(node instanceof HTMLElement)) {
+        return false;
+      }
+      const style = window.getComputedStyle(node);
+      return style.display !== "none" && style.visibility !== "hidden" && node.getClientRects().length > 0;
+    }
+    const duplicateDirectoryOption = Array.from(document.querySelectorAll('[data-testid="task-working-dir-option"]'))
+      .some((node) => {
+        if (!(node instanceof HTMLElement)) {
+          return false;
+        }
+        const text = node.innerText.trim().replace(/\s+/g, " ");
+        const middle = text.length / 2;
+        return text.length > 0
+          && Number.isInteger(middle)
+          && text.slice(0, middle).trim() === text.slice(middle).trim();
+      });
+    return {
+      workingDirFieldVisible: visible('[data-testid="task-composer-working-dir"]'),
+      workingDirPasteVisible: visible('[data-testid="task-composer-working-dir-paste"]'),
+      workingDirDefaultVisible: visible('[data-testid="task-composer-working-dir-default"]'),
+      workingDirBrowseVisible: visible('[data-testid="task-composer-working-dir-browse"]'),
+      workingDirAdvisoryVisible: visible('[data-testid="task-composer-working-dir-advisory"]'),
+      workingDirBrowserVisible: visible('[data-testid="task-working-dir-browser"]'),
+      workingDirOptionsDeduped: !duplicateDirectoryOption,
+      workingDirBrowserPath: document.querySelector('[data-testid="task-working-dir-browser"]')?.textContent ?? "",
+    };
+  });
+  const normalizedBrowserPath = composerChecklist.workingDirBrowserPath.replace(/\\/g, "/");
+  composerChecklist.workingDirBrowserStartsAtRepoRoot =
+    /Scc_batch_web/i.test(normalizedBrowserPath) && !/Scc_batch_web\/backend(?:\s|$)/i.test(normalizedBrowserPath);
+  assertCondition(
+    Object.values(composerChecklist).every(Boolean),
+    `Task composer is missing working-directory controls: ${JSON.stringify(composerChecklist)}`,
+  );
+  await desktopPage.click('text=Close');
+  await desktopPage.waitForSelector('[data-testid="task-composer-dialog"]', { state: "detached", timeout: 20_000 });
   const emptyScreenshot = await captureScreenshot(desktopPage, "empty-new-task-state");
+
+  await desktopPage.goto(`${BASE_URL}/dashboard`, { waitUntil: "networkidle" });
+  await desktopPage.waitForSelector('[data-testid="dashboard-page"]', { timeout: 20_000 });
+  const sidebarChecklist = await desktopPage.evaluate(() => {
+    function visible(selector) {
+      const node = document.querySelector(selector);
+      if (!(node instanceof HTMLElement)) {
+        return false;
+      }
+      const style = window.getComputedStyle(node);
+      return style.display !== "none" && style.visibility !== "hidden" && node.getClientRects().length > 0;
+    }
+    return {
+      sidebarVisible: visible('[data-testid="app-sidebar"]'),
+      brandVisible: visible('[data-testid="app-sidebar"] [data-testid="app-brand-logo"]'),
+      dashboardNavVisible: visible('[data-testid="app-sidebar-nav-dashboard"]'),
+      queueNavVisible: visible('[data-testid="app-sidebar-nav-queue"]'),
+      runtimeVisible: visible('[data-testid="app-sidebar-runtime"]'),
+    };
+  });
+  assertCondition(
+    Object.values(sidebarChecklist).every(Boolean),
+    `Non-task pages are missing the desktop app sidebar: ${JSON.stringify(sidebarChecklist)}`,
+  );
 
   const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
   attachConsoleCapture(mobilePage);
@@ -808,6 +901,8 @@ async function runVisualProofScenario(browser, desktopPage, completedTaskId, att
       },
       checklists: {
         empty: emptyChecklist,
+        composer: composerChecklist,
+        sidebar: sidebarChecklist,
         mobile: mobileChecklist,
       },
     };

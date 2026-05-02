@@ -71,6 +71,14 @@ export interface PromptArtifactRoutingSummary {
   lastArtifactApplyMessage: string | null;
 }
 
+export interface PromptWorkingDirectorySummary {
+  status: 'explicit' | 'default' | 'missing';
+  workingDirectory: string | null;
+  source: 'operator' | 'runtime_default' | 'metadata' | 'missing';
+  requiresSelection: boolean;
+  guidance: string;
+}
+
 function summarizeRoutingPaths(paths: string[], params: {
   maxItems: number;
   charLimit: number;
@@ -220,8 +228,28 @@ export function buildWorkspaceInstructionSection(params: {
   commandInstructionsSummary: string | null;
   agentInstructionsSummary?: string | null;
   importedDocs?: PromptWorkspaceDocSummary[];
+  workingDirectory?: PromptWorkingDirectorySummary | null;
 }): string[] {
   const lines = ['WORKSPACE_WORKFLOW'];
+  if (params.workingDirectory) {
+    lines.push(
+      'WORKING_DIRECTORY',
+      `Status: ${params.workingDirectory.status}`,
+      `Selected directory: ${params.workingDirectory.workingDirectory ?? 'none'}`,
+      `Source: ${params.workingDirectory.source}`,
+      `Requires selection: ${params.workingDirectory.requiresSelection}`,
+      params.workingDirectory.guidance
+    );
+  } else {
+    lines.push(
+      'WORKING_DIRECTORY',
+      'Status: missing',
+      'Selected directory: none',
+      'Source: missing',
+      'Requires selection: true',
+      'No project working directory was selected. Use the isolated task workspace for sandboxed artifacts, and ask the operator before reading project files or running project-local commands.'
+    );
+  }
   if (params.projectInstructionsSummary) {
     lines.push(`Project instructions: ${params.projectInstructionsSummary}`);
   } else {
@@ -438,7 +466,7 @@ export function buildResponsePolicySection(params: {
     pendingCorrection: params.pendingCorrection ?? 'NONE',
     guidanceLines: params.policy.guidanceLines
   });
-  const canonicalToolNamesLine = 'Accepted canonical tool names: read_file, inspect_file, write_file, create_folder, list_files, search_files, run_command, delegate_subtask.';
+  const canonicalToolNamesLine = 'Accepted canonical tool names: read_file, inspect_file, write_file, create_folder, list_files, search_files, run_command, request_working_directory, delegate_subtask.';
   return [
     'RESPONSE_POLICY',
     `Provider prompt policy: ${params.policy.vendorLabel}`,

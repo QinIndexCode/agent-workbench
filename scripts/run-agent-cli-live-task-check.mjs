@@ -12,7 +12,7 @@ import {
   XIAOMI_MIMO_STRONG_MODEL,
 } from './lib/xiaomi-mimo-live-provider.mjs';
 import { assertLiveCostGuard } from './lib/live-cost-guard.mjs';
-import { resolveBackendRuntimeRoot } from './lib/backend-runtime-paths.mjs';
+import { createIsolatedBackendRuntimeRoot, resolveBackendRuntimeRoot } from './lib/backend-runtime-paths.mjs';
 
 const rootDir = process.cwd();
 const backendPortStart = Number.parseInt(process.env.AGENT_CLI_LIVE_BACKEND_PORT ?? '3511', 10);
@@ -20,7 +20,15 @@ const backendCliPath = path.resolve(rootDir, 'backend', 'dist', 'bin', 'cli.js')
 const reportPath =
   process.env.AGENT_CLI_LIVE_REPORT ??
   path.resolve(rootDir, '.codex-run', 'logs', 'agent-cli-live-task-check.json');
-const backendDataRoot = resolveBackendRuntimeRoot(rootDir);
+const configuredBackendRootDir = process.env.AGENT_CLI_LIVE_BACKEND_ROOT_DIR?.trim() ?? '';
+const backendRootDir = configuredBackendRootDir
+  ? (path.isAbsolute(configuredBackendRootDir) ? configuredBackendRootDir : path.resolve(rootDir, configuredBackendRootDir))
+  : createIsolatedBackendRuntimeRoot(rootDir, 'agent-cli-live');
+const ownsBackendRootDir = !configuredBackendRootDir;
+const backendDataRoot = resolveBackendRuntimeRoot(rootDir, {
+  ...process.env,
+  BACKEND_NEW_ROOT_DIR: backendRootDir,
+});
 
 function npmCommand() {
   return process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -266,9 +274,15 @@ async function main() {
   const liveEnv = await buildXiaomiMimoFlashLiveEnv(rootDir, { model: liveModel });
   const backendPort = await findAvailablePort(backendPortStart);
   const serverUrl = `http://127.0.0.1:${backendPort}`;
+  if (ownsBackendRootDir) {
+    await fs.rm(backendRootDir, { recursive: true, force: true });
+  }
+  await fs.mkdir(backendRootDir, { recursive: true });
   const backend = spawnNpm(['run', 'start', '-w', 'backend'], {
     ...liveEnv,
     BACKEND_NEW_SERVER_PORT: String(backendPort),
+    BACKEND_NEW_ROOT_DIR: backendRootDir,
+    BACKEND_NEW_WORKSPACE_CWD: rootDir,
     SCC_LIVE_PROVIDER_SOURCE: resolveXiaomiMimoFlashDocPath(rootDir),
   });
   const readBackendLogs = collectOutput(backend, 'backend');
@@ -504,6 +518,9 @@ async function main() {
     throw error;
   } finally {
     await terminateChild(backend, 'backend');
+    if (ownsBackendRootDir && process.env.SCC_PRESERVE_STACK_RUNTIME !== '1') {
+      await fs.rm(backendRootDir, { recursive: true, force: true });
+    }
   }
 }
 

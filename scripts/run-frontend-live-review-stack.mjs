@@ -1,8 +1,10 @@
+import fsSync from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
 import { buildXiaomiMimoFlashLiveEnv, resolveXiaomiMimoFlashDocPath } from './lib/xiaomi-mimo-live-provider.mjs';
+import { createIsolatedBackendRuntimeRoot } from './lib/backend-runtime-paths.mjs';
 
 const rootDir = process.cwd();
 const windowsNodeDir = process.platform === 'win32' ? path.dirname(process.execPath) : null;
@@ -12,6 +14,11 @@ const preferredFrontendPort = Number.parseInt(process.env.LIVE_REVIEW_FRONTEND_P
 const reportPath =
   process.env.FRONTEND_LIVE_REVIEW_REPORT ??
   path.resolve(rootDir, '.codex-run', 'logs', 'frontend-live-task-review.json');
+const configuredBackendRootDir = process.env.LIVE_REVIEW_BACKEND_ROOT_DIR?.trim() ?? '';
+const backendRootDir = configuredBackendRootDir
+  ? (path.isAbsolute(configuredBackendRootDir) ? configuredBackendRootDir : path.resolve(rootDir, configuredBackendRootDir))
+  : createIsolatedBackendRuntimeRoot(rootDir, 'frontend-live-review');
+const ownsBackendRootDir = !configuredBackendRootDir;
 
 async function writeExternalBlockerReport(reason) {
   const fs = await import('node:fs/promises');
@@ -147,6 +154,10 @@ async function terminateChild(child, label) {
 
 async function main() {
   const liveEnv = await buildXiaomiMimoFlashLiveEnv(rootDir);
+  if (ownsBackendRootDir) {
+    fsSync.rmSync(backendRootDir, { recursive: true, force: true });
+  }
+  fsSync.mkdirSync(backendRootDir, { recursive: true });
 
   const backendPort = await findAvailablePort(preferredBackendPort);
   const frontendPort = await findAvailablePort(preferredFrontendPort);
@@ -156,6 +167,8 @@ async function main() {
   const backend = spawnNpm(['run', 'start', '-w', 'backend'], {
     ...liveEnv,
     BACKEND_NEW_SERVER_PORT: String(backendPort),
+    BACKEND_NEW_ROOT_DIR: backendRootDir,
+    BACKEND_NEW_WORKSPACE_CWD: rootDir,
     SCC_LIVE_PROVIDER_SOURCE: resolveXiaomiMimoFlashDocPath(rootDir),
   });
   const readBackendLogs = collectOutput(backend, 'backend');
@@ -195,6 +208,9 @@ async function main() {
       terminateChild(frontend, 'frontend'),
       terminateChild(backend, 'backend')
     ]);
+    if (ownsBackendRootDir && process.env.SCC_PRESERVE_STACK_RUNTIME !== '1') {
+      fsSync.rmSync(backendRootDir, { recursive: true, force: true });
+    }
   }
 }
 

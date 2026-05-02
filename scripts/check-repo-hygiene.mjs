@@ -90,6 +90,12 @@ const reviewScriptExpectations = [
     requiredFragment: 'scripts/run-frontend-live-review-stack.mjs',
     forbiddenFragments: ['scripts/run-frontend-mainline-review-stack.mjs'],
     plane: 'harness'
+  },
+  {
+    scriptName: 'e2e:frontend',
+    requiredFragment: 'scripts/run-frontend-e2e-stack.mjs',
+    forbiddenFragments: ['scripts/run-frontend-live-review-stack.mjs', 'scripts/run-frontend-mainline-review-stack.mjs'],
+    plane: 'harness'
   }
 ];
 
@@ -107,8 +113,29 @@ const workspaceReviewScriptExpectations = [
     requiredFragment: 'scripts/live-task-review.mjs',
     forbiddenFragments: ['scripts/mainline-task-review.mjs'],
     plane: 'harness'
+  },
+  {
+    packagePath: 'frontend/package.json',
+    scriptName: 'e2e',
+    requiredFragment: 'scripts/task-e2e-validate.mjs',
+    forbiddenFragments: ['scripts/live-task-review.mjs', 'scripts/mainline-task-review.mjs', 'scripts/delegation-live-review.mjs'],
+    plane: 'harness'
   }
 ];
+
+const stackRuntimeIsolationExpectations = [
+  'scripts/run-frontend-mainline-review-stack.mjs',
+  'scripts/run-frontend-live-review-stack.mjs',
+  'scripts/run-frontend-smoke-stack.mjs',
+  'scripts/run-frontend-e2e-stack.mjs',
+  'scripts/run-frontend-delegation-live-review-stack.mjs',
+  'scripts/run-ordinary-interaction-live-check.mjs',
+  'scripts/run-agent-cli-live-task-check.mjs'
+].map((scriptPath) => ({
+  scriptPath,
+  requiredFragments: ['BACKEND_NEW_ROOT_DIR', 'BACKEND_NEW_WORKSPACE_CWD', 'createIsolatedBackendRuntimeRoot'],
+  plane: 'harness'
+}));
 
 const includedPaths = [
   'README.md',
@@ -172,6 +199,7 @@ async function main() {
   const genericRunnerWarnings = [];
   const coreBoundaryIssues = [];
   const reviewScriptIssues = [];
+  const stackRuntimeIsolationIssues = [];
 
   for (const requiredPath of requiredPaths) {
     if (!await exists(requiredPath)) {
@@ -223,6 +251,23 @@ async function main() {
       message: `${expectation.packagePath}:${expectation.scriptName} must run ${expectation.requiredFragment} without crossing into a different review stack.`
     };
     reviewScriptIssues.push(issue);
+    issues.push(issue);
+  }
+
+  for (const expectation of stackRuntimeIsolationExpectations) {
+    const scriptContent = normalizeForSearch(await fs.readFile(path.resolve(rootDir, expectation.scriptPath), 'utf8'));
+    const missingFragments = expectation.requiredFragments.filter((fragment) => !scriptContent.includes(fragment));
+    if (missingFragments.length === 0) {
+      continue;
+    }
+    const issue = {
+      kind: 'stack_runtime_isolation_missing',
+      path: expectation.scriptPath,
+      plane: expectation.plane,
+      missingFragments,
+      message: `${expectation.scriptPath} must run backend stacks against an isolated BACKEND_NEW_ROOT_DIR.`
+    };
+    stackRuntimeIsolationIssues.push(issue);
     issues.push(issue);
   }
 
@@ -333,8 +378,10 @@ async function main() {
     genericRunnerWarnings,
     coreBoundaryIssues,
     reviewScriptIssues,
+    stackRuntimeIsolationIssues,
     reviewScriptExpectations,
     workspaceReviewScriptExpectations,
+    stackRuntimeIsolationExpectations,
     forbiddenPatterns,
     genericRunnerSpecializedPatterns,
     coreBoundaryPaths,

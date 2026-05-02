@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { ExecutionProfileId, TaskDefinition } from '../../domain/contracts/types';
 import { createTopologyGraph, validateTaskDefinitionPreflight } from '../../domain/runtime/topology-graph';
 import { normalizeTaskArtifactRouting } from './artifact-routing';
+import { withTaskWorkingDirectoryMetadata } from './task-working-directory';
 import { SubmitTaskInput } from './types';
 
 function createTaskId(): string {
@@ -109,7 +110,10 @@ export function createTaskDefinition(input: SubmitTaskInput): TaskDefinition {
     metadata: normalizeTaskArtifactRouting({
       pathPolicy: input.pathPolicy,
       preferredArtifactDir: input.preferredArtifactDir,
-      metadata: input.metadata
+      metadata: withTaskWorkingDirectoryMetadata({
+        workingDirectory: input.workingDirectory,
+        metadata: input.metadata
+      })
     })
   });
   const validation = validateTaskDefinitionPreflight(definition);

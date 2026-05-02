@@ -18,6 +18,7 @@ import { createStagePromptCapabilitySummary } from '../../runtime/prompt-capabil
 import { loadUserPreferenceProfile } from '../../runtime/memory-store';
 import { loadWorkspaceWorkflowPromptContext } from '../../runtime/workspace-workflow-context';
 import { filterAllowedToolIdsForDelegation, getActiveDelegatedChildrenForParent } from '../delegation/delegation';
+import { getTaskWorkingDirectorySettings } from '../task-working-directory';
 import { getExecutionProfile } from '../../runtime/execution-profiles';
 import { gateProviderRequestContext } from './request-context-gating';
 import { protectOperatorGuidanceForCorrection } from './operator-guidance';
@@ -185,6 +186,7 @@ export async function assembleStageTurnContext(params: {
       activeChildCount: getActiveDelegatedChildrenForParent(await foundation.taskRuntimes.list(), taskId).length
     })
   });
+  const workingDirectory = getTaskWorkingDirectorySettings(runtimeRecord.definition);
 
   const pendingOperatorInputs = runtime.pendingOperatorInputs;
   const effectiveUserProfile = evolveUserPreferenceProfile({
@@ -228,7 +230,8 @@ export async function assembleStageTurnContext(params: {
     workspaceApprovedExperienceInstructions: workspaceWorkflow.approvedExperienceInstructionsSummary,
     workspaceCommandInstructions: workspaceWorkflow.commandInstructionsSummary,
     workspaceAgentInstructions: workspaceWorkflow.agentInstructionsSummary,
-    importedWorkspaceDocs: workspaceWorkflow.importedDocs
+    importedWorkspaceDocs: workspaceWorkflow.importedDocs,
+    workingDirectory
   });
   const executionProfileIds = stageUnitIds.map((unitId) => (
     runtimeRecord.definition.units.find((unit) => unit.id === unitId)?.executionProfileId

@@ -24,6 +24,7 @@ import type {
   TaskSummary,
   RealTaskArchiveEntry,
   ComplexTaskAcceptanceReport,
+  WorkspaceDirectoryListing,
   WorkspaceWorkflowView
 } from '../types';
 
@@ -62,6 +63,11 @@ class ApiClient {
 
   async getWorkspaceWorkflow(): Promise<WorkspaceWorkflowView> {
     return this.request<WorkspaceWorkflowView>('/workspace/workflow');
+  }
+
+  async listWorkspaceDirectories(path?: string): Promise<WorkspaceDirectoryListing> {
+    const query = path ? `?path=${encodeURIComponent(path)}` : '';
+    return this.request<WorkspaceDirectoryListing>(`/workspace/directories${query}`);
   }
 
   async initWorkspaceWorkflow(): Promise<PlatformActionResult<WorkspaceWorkflowView>> {

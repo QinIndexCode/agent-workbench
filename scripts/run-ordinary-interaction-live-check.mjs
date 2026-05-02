@@ -14,6 +14,7 @@ import {
   XIAOMI_MIMO_STRONG_MODEL,
 } from './lib/xiaomi-mimo-live-provider.mjs';
 import { assertLiveCostGuard } from './lib/live-cost-guard.mjs';
+import { createIsolatedBackendRuntimeRoot } from './lib/backend-runtime-paths.mjs';
 
 const rootDir = process.cwd();
 const backendCliPath = path.resolve(rootDir, 'backend', 'dist', 'bin', 'cli.js');
@@ -22,6 +23,11 @@ const screenshotDir = path.resolve(rootDir, '.codex-run', 'logs', 'ordinary-inte
 const preferredBackendPort = Number.parseInt(process.env.ORDINARY_INTERACTION_BACKEND_PORT ?? '3611', 10);
 const preferredFrontendPort = Number.parseInt(process.env.ORDINARY_INTERACTION_FRONTEND_PORT ?? '5773', 10);
 const RUN_FAMILY_TAG = process.env.ORDINARY_INTERACTION_RUN_TAG ?? `aaordinaryrun${Date.now().toString(36)}`;
+const configuredBackendRootDir = process.env.ORDINARY_INTERACTION_BACKEND_ROOT_DIR?.trim() ?? '';
+const backendRootDir = configuredBackendRootDir
+  ? (path.isAbsolute(configuredBackendRootDir) ? configuredBackendRootDir : path.resolve(rootDir, configuredBackendRootDir))
+  : createIsolatedBackendRuntimeRoot(rootDir, 'ordinary-interaction-live');
+const ownsBackendRootDir = !configuredBackendRootDir;
 
 const COMMON_GOAL = `Create a reusable markdown release checklist artifact for repeated operator use. Pattern family ${RUN_FAMILY_TAG}.`;
 const COMMON_OUTPUT_CONTRACT = '{"summary":"string","artifact":"string","details":"string","issues":[]}';
@@ -836,10 +842,16 @@ async function main() {
   const frontendPort = await findAvailablePort(preferredFrontendPort);
   const serverUrl = `http://127.0.0.1:${backendPort}`;
   const frontendBaseUrl = `http://127.0.0.1:${frontendPort}`;
+  if (ownsBackendRootDir) {
+    fsSync.rmSync(backendRootDir, { recursive: true, force: true });
+  }
+  fsSync.mkdirSync(backendRootDir, { recursive: true });
 
   const backend = spawnNpm(['run', 'start', '-w', 'backend'], {
     ...liveEnv,
     BACKEND_NEW_SERVER_PORT: String(backendPort),
+    BACKEND_NEW_ROOT_DIR: backendRootDir,
+    BACKEND_NEW_WORKSPACE_CWD: rootDir,
     SCC_LIVE_PROVIDER_SOURCE: resolveXiaomiMimoFlashDocPath(rootDir),
   });
   const readBackendLogs = collectOutput(backend, 'backend');
@@ -1132,6 +1144,9 @@ async function main() {
       terminateChild(frontend, 'frontend'),
       terminateChild(backend, 'backend'),
     ]);
+    if (ownsBackendRootDir && process.env.SCC_PRESERVE_STACK_RUNTIME !== '1') {
+      fsSync.rmSync(backendRootDir, { recursive: true, force: true });
+    }
   }
 }
 

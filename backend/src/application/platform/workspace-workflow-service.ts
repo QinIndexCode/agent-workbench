@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { BackendNewFoundation } from '../../foundation/bootstrap/types';
 import { PlatformMemoryRecord } from '../../foundation/repository';
-import { PlatformActionResult, WorkspaceDocsImportSummary, WorkspaceWorkflowView } from './types';
+import { PlatformActionResult, WorkspaceDirectoryListing, WorkspaceDocsImportSummary, WorkspaceWorkflowView } from './types';
 import { PlatformMutationRecorder } from './platform-mutation-recorder';
 import {
   WorkspaceDocsManifest,
@@ -24,6 +24,15 @@ function summarizeInstructions(value: string | null, limit = 320): string | null
 
 function normalizeWorkspaceRelativePath(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '').trim();
+}
+
+function toPortablePath(value: string): string {
+  return value.replace(/\\/g, '/');
+}
+
+function isSameOrChildPath(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 function createContentHash(value: string): string {
@@ -123,6 +132,45 @@ export class WorkspaceWorkflowService {
         total: snapshot.agents.length,
         names: snapshot.agents.map((agent) => agent.name)
       }
+    };
+  }
+
+  async listDirectories(inputPath?: string | null): Promise<WorkspaceDirectoryListing> {
+    const snapshot = await this.loader.discover();
+    const workspaceRoot = path.resolve(snapshot.workspaceRoot ?? this.foundation.cwd);
+    const requested = inputPath?.trim();
+    const requestedPath = requested
+      ? (path.isAbsolute(requested) ? path.resolve(requested) : path.resolve(workspaceRoot, requested))
+      : workspaceRoot;
+    const currentPath = isSameOrChildPath(workspaceRoot, requestedPath) ? requestedPath : workspaceRoot;
+    const directoryEntries = await fs.readdir(currentPath, { withFileTypes: true });
+    const entries = directoryEntries
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.git'))
+      .map((entry) => {
+        const absolutePath = path.join(currentPath, entry.name);
+        const relativePath = normalizeWorkspaceRelativePath(path.relative(workspaceRoot, absolutePath));
+        return {
+          name: entry.name,
+          path: relativePath,
+          absolutePath
+        };
+      })
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const relativePath = normalizeWorkspaceRelativePath(path.relative(workspaceRoot, currentPath));
+    const parent = path.dirname(currentPath);
+    const parentPath = currentPath === workspaceRoot || !isSameOrChildPath(workspaceRoot, parent)
+      ? null
+      : normalizeWorkspaceRelativePath(path.relative(workspaceRoot, parent));
+    return {
+      workspaceRoot,
+      currentPath,
+      relativePath,
+      parentPath,
+      entries: entries.map((entry) => ({
+        ...entry,
+        absolutePath: path.normalize(entry.absolutePath),
+        path: toPortablePath(entry.path)
+      }))
     };
   }
 

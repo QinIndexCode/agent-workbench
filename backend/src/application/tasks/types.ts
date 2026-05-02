@@ -35,6 +35,7 @@ export interface SubmitTaskInput {
   preferredProviderId?: string | null;
   pathPolicy?: TaskArtifactPathPolicy;
   preferredArtifactDir?: string | null;
+  workingDirectory?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -488,6 +489,13 @@ export interface TaskExecutionSummary {
   issueCategory: TaskExecutionIssueCategory | null;
   issueSummary: string | null;
   suggestedAction: TaskExecutionSuggestedAction;
+  workingDirectory: {
+    status: 'explicit' | 'default' | 'missing';
+    workingDirectory: string | null;
+    source: 'operator' | 'runtime_default' | 'metadata' | 'missing';
+    requiresSelection: boolean;
+    guidance: string;
+  };
   eventCounts: Record<string, number>;
   turnCount: number;
   correctionDepth: number;

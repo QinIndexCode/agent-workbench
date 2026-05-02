@@ -23,6 +23,7 @@ import {
   isArtifactWriteEvidenceTool,
   TaskArtifactRoutingSummary
 } from './artifact-routing';
+import { getTaskWorkingDirectorySettings } from './task-working-directory';
 import type { ToolInvocationRecord } from '../../foundation/repository/types';
 import { shouldMarkInvocationAsVerification } from './tools/tool-verification';
 import { evaluateTaskQuality } from '../../domain/quality/task-quality';
@@ -577,6 +578,13 @@ function classifyIssue(
     };
   }
 
+  if (task.pendingApprovals.length > 0 || task.runtime.pendingToolBatches.some((batch) => batch.approvalBlockedCount > 0)) {
+    return {
+      issueCategory: 'approval_deadlock',
+      issueSummary: 'Task is blocked on tool approval.'
+    };
+  }
+
   const failedTool = findUnresolvedFailedTool(task);
   if (
     failedTool
@@ -622,13 +630,6 @@ function classifyIssue(
             ? 'mcp_capability_mismatch'
             : 'mcp_call_failed',
       issueSummary: typeof payload.error === 'string' ? payload.error : 'MCP execution failed.'
-    };
-  }
-
-  if (task.pendingApprovals.length > 0 || task.runtime.pendingToolBatches.some((batch) => batch.approvalBlockedCount > 0)) {
-    return {
-      issueCategory: 'approval_deadlock',
-      issueSummary: 'Task is blocked on tool approval.'
     };
   }
 
@@ -2299,11 +2300,13 @@ export function buildTaskExecutionSummary(
     issueSummary: resolvedIssue.issueSummary,
     turnContract
   });
+  const workingDirectory = getTaskWorkingDirectorySettings(task.definition);
   return {
     issuePlane,
     issueCategory: resolvedIssue.issueCategory,
     issueSummary: resolvedIssue.issueSummary,
     suggestedAction,
+    workingDirectory,
     eventCounts,
     turnCount,
     correctionDepth,

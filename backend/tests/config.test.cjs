@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { loadBackendNewConfig } = require('../dist');
+const { createBackendNewFoundation, loadBackendNewConfig } = require('../dist');
 const { createTempRoot, removeDir } = require('./helpers.cjs');
 
 test('loadBackendNewConfig resolves foundation paths and extension paths', () => {
@@ -116,6 +116,25 @@ test('loadBackendNewConfig rejects invalid logging and security settings', () =>
         ),
       /promptMaxSummaryItems/
     );
+  } finally {
+    removeDir(root);
+  }
+});
+
+test('createBackendNewFoundation can separate workspace cwd from runtime storage root', () => {
+  const root = createTempRoot();
+  try {
+    const workspaceRoot = path.join(root, 'workspace-root');
+    const runtimeRoot = path.join(root, 'runtime-root');
+    const foundation = createBackendNewFoundation({
+      env: {
+        BACKEND_NEW_WORKSPACE_CWD: workspaceRoot,
+        BACKEND_NEW_ROOT_DIR: runtimeRoot
+      }
+    });
+
+    assert.equal(foundation.cwd, path.resolve(workspaceRoot));
+    assert.equal(foundation.config.paths.rootDir, path.resolve(runtimeRoot));
   } finally {
     removeDir(root);
   }

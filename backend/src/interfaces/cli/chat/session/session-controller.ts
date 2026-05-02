@@ -145,6 +145,7 @@ function buildInteractivePayload(message: string, args: ParsedCliArgs, metadata?
     preferredProviderId,
     pathPolicy: (getFlagString(args, 'path-policy') as 'task_workspace' | 'project_relative' | 'ask_if_unclear' | undefined) ?? undefined,
     preferredArtifactDir: getFlagString(args, 'output-dir') ?? null,
+    workingDirectory: getFlagString(args, 'working-dir') ?? getFlagString(args, 'workdir') ?? null,
     metadata,
     units: [
       {
@@ -221,6 +222,20 @@ function summarizeMemorySelection(summary: Record<string, unknown> | null | unde
   ].filter((value): value is string => Boolean(value));
 }
 
+function isHumanDisplaySafeSummary(value: string | null): value is string {
+  const text = value?.trim() ?? '';
+  if (!text) {
+    return false;
+  }
+  return !(
+    text.includes('[/')
+    || /\[(?:[A-Z0-9_-]+)_OUTPUT\]/.test(text)
+    || /"tool(?:_name)?"\s*:/.test(text)
+    || /"current_unit"\s*:/.test(text)
+    || /"arguments"\s*:/.test(text)
+  );
+}
+
 function buildSummaryHintLines(summary: Record<string, unknown> | null): string[] {
   if (!summary) {
     return ['Current status: no task attached', 'Suggested action: Enter a prompt or use /switch <taskId>.'];
@@ -240,7 +255,7 @@ function buildSummaryHintLines(summary: Record<string, unknown> | null): string[
     `Blocking reason: ${getString(statusSummary?.detail) ?? 'Task query is missing statusSummary.'}`,
     `Primary action: ${getString(primaryAction?.label) ?? getString(nextAction?.label) ?? 'Task truth unavailable'} - ${getString(primaryAction?.description) ?? getString(nextAction?.reason) ?? 'Task query is missing nextActionSummary.'}`
   ];
-  if (resultSummary) {
+  if (isHumanDisplaySafeSummary(resultSummary)) {
     lines.push(`Recent result: ${resultSummary}`);
   }
   if (artifactDestinationPaths.length > 0) {

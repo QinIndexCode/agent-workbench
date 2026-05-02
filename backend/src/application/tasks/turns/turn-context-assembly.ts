@@ -15,6 +15,7 @@ import { createPromptCapabilitySummary } from '../../runtime/prompt-capability-s
 import { loadUserPreferenceProfile } from '../../runtime/memory-store';
 import { loadWorkspaceWorkflowPromptContext } from '../../runtime/workspace-workflow-context';
 import { deriveTaskArtifactRoutingSummary } from '../artifact-routing';
+import { getTaskWorkingDirectorySettings } from '../task-working-directory';
 import {
   buildRequiredDelegationContract,
   filterAllowedToolIdsForDelegation,
@@ -144,6 +145,7 @@ export async function assembleTurnContext(params: {
     invocations: latestInvocations,
     commands: latestCommands
   });
+  const workingDirectory = getTaskWorkingDirectorySettings(runtimeRecord.definition);
   const allRuntimes = await foundation.taskRuntimes.list();
   const activeChildCount = getActiveDelegatedChildrenForParent(allRuntimes, taskId).length;
   const delegationRequired = isDelegationRequiredForUnit({
@@ -235,6 +237,7 @@ export async function assembleTurnContext(params: {
       lastArtifactApplyStatus: artifactRouting.lastArtifactApplyResult?.status ?? null,
       lastArtifactApplyMessage: artifactRouting.lastArtifactApplyResult?.message ?? null
     },
+    workingDirectory,
     workspaceProjectInstructions: workspaceWorkflow.projectInstructionsSummary,
     workspaceRuleInstructions: workspaceWorkflow.ruleInstructionsSummary,
     workspaceInstructionSkillInstructions: workspaceWorkflow.instructionSkillInstructionsSummary,

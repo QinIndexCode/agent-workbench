@@ -3,8 +3,31 @@ import path from 'node:path';
 export const BACKEND_RUNTIME_ROOT_DIRNAME = 'data';
 export const LEGACY_BACKEND_RUNTIME_ROOT_DIRNAME = 'backend_new_data';
 
-export function resolveBackendRuntimeRoot(rootDir) {
+export function resolveBackendRuntimeRoot(rootDir, env = process.env) {
+  const configuredRoot = typeof env.BACKEND_NEW_ROOT_DIR === 'string'
+    ? env.BACKEND_NEW_ROOT_DIR.trim()
+    : '';
+  if (configuredRoot) {
+    return path.isAbsolute(configuredRoot)
+      ? path.resolve(configuredRoot)
+      : path.resolve(rootDir, configuredRoot);
+  }
   return path.resolve(rootDir, 'backend', BACKEND_RUNTIME_ROOT_DIRNAME);
+}
+
+export function createIsolatedBackendRuntimeRoot(rootDir, label) {
+  const safeLabel = String(label ?? 'backend-runtime')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'backend-runtime';
+  return path.resolve(
+    rootDir,
+    '.codex-run',
+    'tmp',
+    `${safeLabel}-${Date.now()}-${process.pid}`
+  );
 }
 
 export function resolveBackendRuntimeManifestPath(rootDir) {

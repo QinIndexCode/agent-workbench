@@ -79,6 +79,7 @@ function AppShell({ children }: { children: ReactNode }) {
       active: location.pathname.startsWith('/settings') && !location.pathname.startsWith('/settings/ecosystem'),
     },
   ]), [location.pathname]);
+  const showDesktopSidebar = !isTaskWorkspace;
 
   useEffect(() => {
     let disposed = false;
@@ -154,6 +155,64 @@ function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
+      {showDesktopSidebar ? (
+        <aside
+          className="hidden h-full w-72 flex-shrink-0 flex-col border-r border-border-subtle bg-[linear-gradient(180deg,rgba(17,17,20,0.98),rgba(11,11,13,0.98))] px-4 py-4 lg:flex"
+          data-testid="app-sidebar"
+        >
+          <div className="flex items-center gap-3 px-1">
+            <img
+              src="/logo.png"
+              alt="SCC Batch"
+              data-testid="app-brand-logo"
+              className="h-10 w-10 rounded-lg border border-white/10 object-cover shadow-[0_0_24px_rgba(99,102,241,0.34)]"
+            />
+            <div className="min-w-0">
+              <p className="truncate text-[1.05rem] font-semibold leading-tight text-text-primary">SCC Batch</p>
+              <p className="mt-0.5 text-[11px] leading-none text-text-muted">Agent Console</p>
+            </div>
+          </div>
+          <nav className="mt-5 space-y-1" aria-label="Primary console navigation">
+            {topNavItems.map((item) => {
+              const Icon = item.icon;
+              return (
+                <NavLink
+                  key={item.key}
+                  to={item.to}
+                  data-testid={`app-sidebar-nav-${item.key}`}
+                  data-active={item.active ? 'true' : 'false'}
+                  className={() =>
+                    `flex h-10 items-center gap-3 rounded-md border px-3 text-sm transition duration-fast ${
+                      item.active
+                        ? 'border-border-default bg-surface-elevated text-text-primary shadow-[inset_3px_0_0_rgba(99,102,241,0.86)]'
+                        : 'border-transparent text-text-secondary hover:border-border-subtle hover:bg-surface-hover hover:text-text-primary'
+                    }`
+                  }
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span>{item.label}</span>
+                </NavLink>
+              );
+            })}
+          </nav>
+          <div className="mt-auto rounded-lg border border-border-subtle bg-surface-elevated/45 p-3" data-testid="app-sidebar-runtime">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-text-muted">Runtime</p>
+            <p className="mt-2 text-sm font-medium text-text-primary">{connectionState.state}</p>
+            <p className="mt-1 line-clamp-3 text-xs leading-5 text-text-secondary">{connectionState.detail}</p>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {connectionState.chips.map((chip) => (
+                <Badge
+                  key={chip.label}
+                  variant={chip.tone === 'success' ? 'success' : chip.tone === 'error' ? 'error' : 'warning'}
+                  className="opacity-80"
+                >
+                  {chip.label}: {chip.value}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        </aside>
+      ) : null}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header className={`border-b border-border-subtle bg-background/82 px-3 py-2 backdrop-blur-md sm:px-4 ${
           isTaskWorkspace
@@ -176,7 +235,7 @@ function AppShell({ children }: { children: ReactNode }) {
             </div>
             <div className="ml-auto flex items-center gap-2 lg:ml-0">
               <span className="hidden text-xs uppercase tracking-[0.24em] text-text-muted sm:inline">{title}</span>
-              <div className="hidden items-center gap-1.5 xl:flex" data-testid="app-runtime-chip-strip">
+              <div className="hidden items-center gap-1.5 lg:flex" data-testid="app-runtime-chip-strip">
                 {connectionState.chips.map((chip) => (
                   <Badge
                     key={chip.label}
@@ -189,19 +248,18 @@ function AppShell({ children }: { children: ReactNode }) {
               </div>
               <Badge
                 variant={connectionState.state === 'connected' ? 'success' : 'warning'}
-                className="opacity-70"
+                className="opacity-70 lg:hidden"
               >
                 <span
                   data-testid="app-runtime-status"
                   title={connectionState.detail}
-                  className="inline-block max-w-[16rem] truncate align-bottom"
+                  className="inline-block max-w-[8rem] truncate align-bottom capitalize"
                 >
-                  {connectionState.state}: {connectionState.detail}
+                  {connectionState.state}
                 </span>
               </Badge>
             </div>
             <div className="ml-auto hidden items-center gap-4 text-xs text-text-secondary lg:flex">
-              <span className="inline-flex items-center gap-2 text-success"><span className="status-dot" />Live</span>
               <span>Help</span>
               <span>Alerts</span>
               <span className="grid h-8 w-8 place-items-center rounded-full border border-border-default bg-surface-elevated text-text-primary">DE</span>

@@ -55,6 +55,7 @@ import {
   SkillUpsertInput,
   McpCatalogEntry,
   McpTestResult,
+  WorkspaceDirectoryListing,
   WorkspaceDocsImportSummary,
   WorkspaceWorkflowView
 } from '../platform/types';
@@ -180,6 +181,7 @@ export interface BackendNewPlatformFacade {
   listEcosystemSkills(): Promise<EcosystemSummaryView['skills']>;
   listEcosystemMcpServers(): Promise<EcosystemSummaryView['mcpServers']>;
   getWorkspaceWorkflow(): Promise<WorkspaceWorkflowView>;
+  listWorkspaceDirectories(inputPath?: string | null): Promise<WorkspaceDirectoryListing>;
   initWorkspaceWorkflow(): Promise<PlatformActionResult<WorkspaceWorkflowView>>;
   importWorkspaceDocs(): Promise<PlatformActionResult<WorkspaceDocsImportSummary>>;
   listImprovementProposals(): Promise<ImprovementProposal[]>;
@@ -304,6 +306,7 @@ export function createPlatformFacade(params: {
     listEcosystemSkills: guardAsync(params.ensureReady, params.platformApplication.listEcosystemSkills.bind(params.platformApplication)),
     listEcosystemMcpServers: guardAsync(params.ensureReady, params.platformApplication.listEcosystemMcpServers.bind(params.platformApplication)),
     getWorkspaceWorkflow: guardAsync(params.ensureReady, params.platformApplication.getWorkspaceWorkflow.bind(params.platformApplication)),
+    listWorkspaceDirectories: guardAsync(params.ensureReady, params.platformApplication.listWorkspaceDirectories.bind(params.platformApplication)),
     initWorkspaceWorkflow: guardAsync(params.ensureReady, params.platformApplication.initWorkspaceWorkflow.bind(params.platformApplication)),
     importWorkspaceDocs: guardAsync(params.ensureReady, params.platformApplication.importWorkspaceDocs.bind(params.platformApplication)),
     listImprovementProposals: guardAsync(params.ensureReady, params.platformApplication.listImprovementProposals.bind(params.platformApplication)),

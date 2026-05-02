@@ -43,6 +43,10 @@ export const platformRoutes: HttpRouteModule = {
       sendJson(response, 200, await runtime.platform.getWorkspaceWorkflow());
       return true;
     }
+    if (request.method === 'GET' && path === '/workspace/directories') {
+      sendJson(response, 200, await runtime.platform.listWorkspaceDirectories(url.searchParams.get('path')));
+      return true;
+    }
     if (request.method === 'GET' && path === '/improvements/proposals') {
       sendJson(response, 200, await runtime.platform.listImprovementProposals());
       return true;

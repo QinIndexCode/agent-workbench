@@ -312,6 +312,7 @@ export class OpenAiCompatibleProviderClient implements ProviderClient {
             messages: buildRequestMessages(request),
             temperature: request.temperature ?? undefined,
             max_tokens: request.maxTokens ?? undefined,
+            response_format: request.responseFormat === 'json_object' ? { type: 'json_object' } : undefined,
             stop: request.stop && request.stop.length > 0 ? request.stop : undefined
           });
           const response = await postJsonWithFallback({

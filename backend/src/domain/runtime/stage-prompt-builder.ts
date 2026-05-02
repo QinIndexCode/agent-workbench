@@ -18,6 +18,7 @@ import {
   buildWorkspaceInstructionSection,
   PromptExtensionCapabilitySummary,
   PromptProviderSummary,
+  PromptWorkingDirectorySummary,
   PromptWorkspaceDocSummary
 } from './prompt-sections';
 
@@ -43,6 +44,7 @@ export interface BuildStagePromptInput {
   workspaceCommandInstructions?: string | null;
   workspaceAgentInstructions?: string | null;
   importedWorkspaceDocs?: PromptWorkspaceDocSummary[];
+  workingDirectory?: PromptWorkingDirectorySummary | null;
 }
 
 export interface BuiltStagePromptResult {
@@ -387,6 +389,7 @@ export function buildStageTurnPrompt(input: BuildStagePromptInput): BuiltStagePr
     approvedExperienceInstructionsSummary: input.workspaceApprovedExperienceInstructions ?? null,
     commandInstructionsSummary: input.workspaceCommandInstructions ?? null,
     agentInstructionsSummary: input.workspaceAgentInstructions ?? null,
+    workingDirectory: input.workingDirectory ?? null,
     importedDocs: input.importedWorkspaceDocs ?? []
   });
   const stablePromptText = joinPromptSections([

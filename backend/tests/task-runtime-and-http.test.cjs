@@ -149,6 +149,7 @@ test('task application runs multi-unit task sequentially to completion', async (
   const root = createTempRoot();
   try {
     const { foundation, runtime } = createRuntimeWithFoundation({
+      cwd: root,
       config: {
         paths: {
           rootDir: root
@@ -183,6 +184,7 @@ test('direct task actions can auto-run generic correction turns after tool evide
   const root = createTempRoot();
   try {
     const { foundation, runtime } = createRuntimeWithFoundation({
+      cwd: root,
       config: {
         paths: {
           rootDir: root
@@ -1011,6 +1013,78 @@ test('verify profile treats a failed read_file as resolved after the same path i
   }
 });
 
+test('task debug exposes generic working directory contract and workspace directory browsing', async () => {
+  const root = createTempRoot();
+  try {
+    fs.mkdirSync(path.join(root, 'src', 'app'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+    const { foundation, runtime } = createRuntimeWithFoundation({
+      cwd: root,
+      config: {
+        paths: {
+          rootDir: root
+        }
+      }
+    });
+    registerProvider(foundation, [
+      '[AGENT-001_OUTPUT]{"summary":"done","issues":[]}[/AGENT-001_OUTPUT]\n'
+        + '{"current_unit":"AGENT-001","status":"COMPLETE","progress_percent":100,"decision":"CONTINUE","reason":"done","files_created":[]}'
+    ]);
+    const explicitWorkingDir = path.join(root, 'src');
+    const submitted = await runtime.tasks.submitTask({
+      ...createTaskInput([
+        {
+          id: 'AGENT-001',
+          role: 'Verifier',
+          goal: 'Inspect the selected working directory contract',
+          executionProfileId: 'verify',
+          outputContract: '{"summary":"string","issues":[]}',
+          dependencies: []
+        }
+      ]),
+      workingDirectory: explicitWorkingDir
+    });
+    const debug = await runtime.tasks.getTaskDebug(submitted.command.taskId);
+    assert.equal(debug.executionSummary.workingDirectory.status, 'explicit');
+    assert.equal(debug.executionSummary.workingDirectory.source, 'operator');
+    assert.equal(debug.executionSummary.workingDirectory.requiresSelection, false);
+    assert.equal(debug.executionSummary.workingDirectory.workingDirectory, path.normalize(explicitWorkingDir));
+
+    const missing = await runtime.tasks.submitTask(createTaskInput([
+      {
+        id: 'AGENT-001',
+        role: 'Verifier',
+        goal: 'Inspect the missing working directory contract',
+        executionProfileId: 'verify',
+        outputContract: '{"summary":"string","issues":[]}',
+        dependencies: []
+      }
+    ]));
+    const missingDebug = await runtime.tasks.getTaskDebug(missing.command.taskId);
+    assert.equal(missingDebug.executionSummary.workingDirectory.status, 'missing');
+    assert.equal(missingDebug.executionSummary.workingDirectory.workingDirectory, null);
+    assert.equal(missingDebug.executionSummary.workingDirectory.requiresSelection, true);
+
+    const server = createBackendNewHttpServer(runtime);
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      const serverUrl = `http://127.0.0.1:${address.port}`;
+      const listing = await (await fetch(`${serverUrl}/workspace/directories`)).json();
+      assert.equal(path.normalize(listing.workspaceRoot), path.normalize(root));
+      assert.equal(listing.entries.some((entry) => entry.name === 'src'), true);
+      const child = await (await fetch(`${serverUrl}/workspace/directories?path=src`)).json();
+      assert.equal(child.entries.some((entry) => entry.name === 'app'), true);
+      assert.equal(child.parentPath, '');
+    } finally {
+      server.close();
+    }
+  } finally {
+    removeDir(root);
+  }
+});
+
 test('verify profile treats failed inspection reads as evidence for missing-source blockers', async () => {
   const root = createTempRoot();
   try {
@@ -1547,6 +1621,100 @@ test('semantic review failures are advisory and do not change completed task lif
     assert.equal(debug.executionSummary.acceptance.deterministic.verdict, 'passed');
     assert.equal(debug.executionSummary.acceptance.semanticReview.status, 'unavailable');
     assert.match(debug.executionSummary.acceptance.semanticReview.error ?? '', /semantic review unavailable/i);
+  } finally {
+    removeDir(root);
+  }
+});
+
+test('semantic review requests provider JSON mode and accepts fenced JSON verdicts', async () => {
+  const root = createTempRoot();
+  try {
+    const { foundation, runtime } = createRuntimeWithFoundation({
+      config: {
+        paths: {
+          rootDir: root
+        }
+      }
+    });
+    const now = Date.now();
+    await foundation.apiKeys.save({
+      id: 'provider-main-key',
+      provider: 'provider-main',
+      label: 'Provider Main Key',
+      apiKey: 'test-key',
+      createdAt: now,
+      updatedAt: now,
+      metadata: {}
+    });
+    foundation.providers.register({
+      id: 'provider-main',
+      label: 'Provider Main',
+      transport: 'openai-compatible',
+      baseUrl: 'https://provider.example.com',
+      model: 'mock-model',
+      apiKeySecretId: 'provider-main-key'
+    });
+    let semanticReviewRequest = null;
+    foundation.providerClients.register('provider-main', {
+      async complete(request) {
+        if (request.metadata?.purpose === 'acceptance_semantic_review') {
+          semanticReviewRequest = request;
+          return {
+            responseId: `resp_${Date.now()}`,
+            providerId: 'provider-main',
+            model: 'mock-model',
+            outputText:
+              '```json\n'
+              + '{"verdict":"passed","confidence":0.88,"summary":"The visible output satisfies the intent.","mismatches":[],"missingEvidence":[]}\n'
+              + '```',
+            finishReason: 'stop',
+            usage: {
+              promptTokens: 10,
+              completionTokens: 10,
+              totalTokens: 20
+            },
+            metadata: {}
+          };
+        }
+        return {
+          responseId: `resp_${Date.now()}`,
+          providerId: 'provider-main',
+          model: 'mock-model',
+          outputText:
+            '[AGENT-001_OUTPUT]{"summary":"completed","details":"Grounded summary.","issues":[]}[/AGENT-001_OUTPUT]\n'
+            + '{"current_unit":"AGENT-001","status":"COMPLETE","progress_percent":100,"decision":"CONTINUE","reason":"done","files_created":[]}',
+          finishReason: 'stop',
+          usage: {
+            promptTokens: 10,
+            completionTokens: 10,
+            totalTokens: 20
+          },
+          metadata: {}
+        };
+      }
+    }, {
+      supportsJsonMode: true
+    });
+
+    const submitted = await runtime.tasks.submitTask(createTaskInput([
+      {
+        id: 'AGENT-001',
+        role: 'Reviewer',
+        goal: 'Finish with a grounded summary',
+        executionProfileId: 'analyze',
+        outputContract: '{"summary":"string","details":"string","issues":[]}',
+        dependencies: []
+      }
+    ]));
+    await runtime.tasks.startTask({ taskId: submitted.command.taskId });
+    const debug = await runtime.tasks.getTaskDebug(submitted.command.taskId);
+
+    assert.equal(debug.task.runtime.lifecycleStatus, 'COMPLETED');
+    assert.equal(debug.executionSummary.acceptance.deterministic.verdict, 'passed');
+    assert.equal(debug.executionSummary.acceptance.semanticReview.status, 'passed');
+    assert.equal(debug.executionSummary.acceptance.semanticReview.verdict, 'passed');
+    assert.equal(debug.executionSummary.acceptance.semanticReview.confidence, 0.88);
+    assert.equal(semanticReviewRequest?.responseFormat, 'json_object');
   } finally {
     removeDir(root);
   }
@@ -3114,6 +3282,65 @@ test('artifact path routing blocks continue when destination is unresolved and r
   }
 });
 
+test('artifact path routing allows explicit corrective follow-up before destination selection', async () => {
+  const root = createTempRoot();
+  try {
+    const { foundation, runtime } = createRuntimeWithFoundation({
+      config: {
+        paths: {
+          rootDir: root
+        },
+        tools: {
+          permissionMode: 'full'
+        }
+      }
+    });
+    registerProvider(foundation, [
+      '{"current_unit":"AGENT-001","tool_name":"write_file","arguments":{"path":"scratch/output","content":"artifact"}}\n'
+        + '{"current_unit":"AGENT-001","status":"PARTIAL","progress_percent":50,"decision":"CONTINUE","reason":"artifact created","next_unit":"AGENT-001","files_created":["scratch/output"]}',
+      '[AGENT-001_OUTPUT]{"summary":"corrected output references scratch/output","artifact":"scratch/output","issues":[]}[/AGENT-001_OUTPUT]\n'
+        + '{"current_unit":"AGENT-001","status":"PARTIAL","progress_percent":75,"decision":"CONTINUE","reason":"output corrected","next_unit":"AGENT-001","files_created":["scratch/output"]}'
+    ]);
+
+    const submitted = await runtime.tasks.submitTask({
+      title: 'Corrective artifact routing task',
+      intent: 'Produce a file, correct the output contract, and then wait for destination selection.',
+      preferredProviderId: 'provider-main',
+      units: [
+        {
+          id: 'AGENT-001',
+          role: 'Writer',
+          goal: 'Generate a deliverable',
+          outputContract: '{"summary":"string","artifact":"string","issues":[]}',
+          dependencies: []
+        }
+      ]
+    });
+    const started = await runtime.tasks.startTask({ taskId: submitted.command.taskId });
+    const blockedDebug = await runtime.tasks.getTaskDebug(submitted.command.taskId);
+
+    assert.equal(started.task.runtime.lifecycleStatus, 'RUNNING');
+    assert.equal(blockedDebug.executionSummary.issueCategory, 'artifact_destination_unresolved');
+    assert.notEqual(started.task.runtime.pendingCorrection, 'NONE');
+    await assert.rejects(
+      () => runtime.tasks.continueTask({ taskId: submitted.command.taskId }),
+      /project-relative destination/i
+    );
+
+    const corrected = await runtime.tasks.continueTask({
+      taskId: submitted.command.taskId,
+      userMessage: 'Correct the output contract for the current artifact before applying it.'
+    });
+    const correctedDebug = await runtime.tasks.getTaskDebug(submitted.command.taskId);
+
+    assert.equal(corrected.task.runtime.lifecycleStatus, 'RUNNING');
+    assert.equal(correctedDebug.executionSummary.artifactPathState, 'unresolved');
+    assert.match(corrected.task.latestVisibleOutput?.summary ?? '', /corrected output/i);
+  } finally {
+    removeDir(root);
+  }
+});
+
 test('artifact apply flow copies sandbox outputs into project destination and records apply evidence', async () => {
   const root = createTempRoot();
   try {
@@ -3603,6 +3830,7 @@ test('approval-blocked stage stays active and reports batch-blocked diagnostics 
     registerProvider(foundation, [
       '[AGENT-001_OUTPUT]{"summary":"needs approval","issues":[]}[/AGENT-001_OUTPUT]\n'
         + '{"current_unit":"AGENT-001","tool_name":"write_file","arguments":{"path":"report.md","content":"# Report\\n"}}\n'
+        + '{"current_unit":"AGENT-001","tool_name":"read_file","arguments":{"path":"report.md"}}\n'
         + '{"current_unit":"AGENT-001","status":"COMPLETE","progress_percent":100,"decision":"CONTINUE","reason":"waiting on tool approval","files_created":[]}'
     ]);
 
@@ -3628,6 +3856,13 @@ test('approval-blocked stage stays active and reports batch-blocked diagnostics 
     assert.equal(started.task.pendingApprovals.length, 1);
     assert.equal(started.task.runtime.completedUnits.length, 0);
     assert.match(approvalSummary?.content ?? '', /waiting for approval/i);
+    const debug = await runtime.tasks.getTaskDebug(submitted.command.taskId);
+    const failedRead = debug.task.toolInvocations.find((record) => record.toolId === 'read_file' && record.status === 'FAILED');
+    assert.ok(failedRead, 'expected a stale read failure to reproduce approval-first diagnostics priority');
+    assert.equal(debug.executionSummary.issueCategory, 'approval_deadlock');
+    assert.equal(debug.executionSummary.issuePlane, 'core');
+    assert.equal(debug.executionSummary.suggestedAction.type, 'resolve_approval');
+    assert.match(debug.executionSummary.suggestedAction.label, /approval/i);
   } finally {
     removeDir(root);
   }

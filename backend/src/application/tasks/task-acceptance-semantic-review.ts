@@ -126,6 +126,7 @@ function buildPrompt(params: {
     'Do not restate the evidence. Do not invent facts. If evidence is insufficient, say so in missingEvidence.',
     'Return JSON only with this schema:',
     '{"verdict":"passed|failed","confidence":0.0,"summary":"string","mismatches":["string"],"missingEvidence":["string"]}',
+    'The first non-whitespace character must be "{" and the last non-whitespace character must be "}". Do not wrap the JSON in markdown.',
     `Task title: ${task.definition.title}`,
     `Task intent: ${task.definition.intent}`,
     `Lifecycle status: ${task.runtime.lifecycleStatus}`,
@@ -238,6 +239,7 @@ export class TaskAcceptanceSemanticReviewService {
     try {
       const resolvedProfile = await resolveProviderProfile(this.foundation.providers, this.foundation.apiKeys, providerId);
       const client = this.foundation.providerClients.resolve(resolvedProfile);
+      const capability = this.foundation.providerClients.resolveCapability(resolvedProfile);
       if (!client) {
         return await this.persistReview(params.metadataRecord, task, {
           status: 'unavailable',
@@ -272,6 +274,7 @@ export class TaskAcceptanceSemanticReviewService {
         }],
         temperature: 0,
         maxTokens: 400,
+        responseFormat: capability?.supportsJsonMode ? 'json_object' : undefined,
         metadata: {
           purpose: 'acceptance_semantic_review',
           taskId: task.definition.taskId,

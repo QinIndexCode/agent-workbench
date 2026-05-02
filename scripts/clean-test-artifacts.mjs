@@ -40,6 +40,31 @@ async function listDirectorySafe(target) {
   }
 }
 
+async function getDirectorySize(target) {
+  let total = 0;
+  const entries = await listDirectorySafe(target);
+  for (const entry of entries) {
+    const entryPath = path.join(target, entry.name);
+    if (entry.isDirectory()) {
+      total += await getDirectorySize(entryPath);
+      continue;
+    }
+    if (!entry.isFile()) {
+      continue;
+    }
+    try {
+      const stat = await fs.stat(entryPath);
+      total += stat.size;
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+        continue;
+      }
+      throw error;
+    }
+  }
+  return total;
+}
+
 function isInside(parent, child) {
   const relative = path.relative(parent, child);
   return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
@@ -50,6 +75,8 @@ export async function cleanHistoricalTestArtifacts(options = {}) {
   const tmpDir = options.tmpDir ?? os.tmpdir();
   const tempPrefixes = options.tempPrefixes ?? ['backend-new-'];
   const logsDir = options.logsDir ?? path.resolve(cwd, '.codex-run', 'logs');
+  const codexTmpDir = options.codexTmpDir ?? path.resolve(cwd, '.codex-run', 'tmp');
+  const maxPreservedLogDirBytes = options.maxPreservedLogDirBytes ?? 32 * 1024 * 1024;
   const preservedLogPatterns = options.preservedLogPatterns ?? [
     /^release-scorecard(?:\.[^.]+)?\.json$/,
     /^live-cost-probe(?:\.[^.]+)?\.json$/,
@@ -65,6 +92,12 @@ export async function cleanHistoricalTestArtifacts(options = {}) {
     /^frontend-e2e-report(?:\.[^.]+)?\.json$/,
     /^frontend-e2e$/,
     /^actual-user-cli-report(?:\.[^.]+)?\.json$/,
+    /^flagship-loop-report(?:\.[^.]+)?\.json$/,
+    /^frontend-live-task-review(?:\.[^.]+)?\.json$/,
+    /^frontend-live-task-review$/,
+    /^ordinary-interaction-live-check(?:\.[^.]+)?\.json$/,
+    /^ordinary-interaction-live$/,
+    /^agent-cli-live-task-check(?:\.[^.]+)?\.json$/,
     /^workflow(?:\.[^.]+)?\.json$/,
     /^breadth(?:\.[^.]+)?\.json$/,
     /^flagship(?:\.[^.]+)?\.json$/,
@@ -84,6 +117,7 @@ export async function cleanHistoricalTestArtifacts(options = {}) {
   ];
   const projectArtifactPaths = options.projectArtifactPaths ?? [
     'backend/docs/docs',
+    'backend/docs/mainline-artifacts',
     'backend/docs/live-review-artifacts',
     'backend/docs/actual-cli-artifacts'
   ];
@@ -112,6 +146,22 @@ export async function cleanHistoricalTestArtifacts(options = {}) {
   const skippedLogs = [];
   for (const entry of logEntries) {
     if (preservedLogPatterns.some((pattern) => pattern.test(entry.name))) {
+      const target = path.join(logsDir, entry.name);
+      if (entry.isDirectory() && Number.isFinite(maxPreservedLogDirBytes) && maxPreservedLogDirBytes >= 0) {
+        const size = await getDirectorySize(target);
+        if (size > maxPreservedLogDirBytes) {
+          const result = await safeRemove(target);
+          if (result.removed) {
+            removedLogs.push(target);
+            continue;
+          }
+          skippedLogs.push({
+            target,
+            reason: result.reason ?? `preserved_dir_size_exceeds_${maxPreservedLogDirBytes}`
+          });
+          continue;
+        }
+      }
       skippedLogs.push({ target: path.join(logsDir, entry.name), reason: 'preserved' });
       continue;
     }
@@ -124,6 +174,24 @@ export async function cleanHistoricalTestArtifacts(options = {}) {
     skippedLogs.push({ target, reason: result.reason ?? 'unknown' });
   }
   await fs.mkdir(logsDir, { recursive: true });
+
+  const codexTmpEntries = await listDirectorySafe(codexTmpDir);
+  const removedCodexTmp = [];
+  const skippedCodexTmp = [];
+  for (const entry of codexTmpEntries) {
+    const target = path.join(codexTmpDir, entry.name);
+    if (!isInside(cwd, target)) {
+      skippedCodexTmp.push({ target, reason: 'outside_workspace' });
+      continue;
+    }
+    const result = await safeRemove(target);
+    if (result.removed) {
+      removedCodexTmp.push(target);
+      continue;
+    }
+    skippedCodexTmp.push({ target, reason: result.reason ?? 'unknown' });
+  }
+  await fs.mkdir(codexTmpDir, { recursive: true });
 
   const removedProjectArtifacts = [];
   const skippedProjectArtifacts = [];
@@ -146,6 +214,8 @@ export async function cleanHistoricalTestArtifacts(options = {}) {
     skippedTempRoots,
     removedLogs,
     skippedLogs,
+    removedCodexTmp,
+    skippedCodexTmp,
     removedProjectArtifacts,
     skippedProjectArtifacts
   };

@@ -51,6 +51,7 @@ import type {
   TaskDetail,
   TaskPathPolicy,
   TaskVisibleOutputSummary,
+  WorkspaceDirectoryListing,
   ToolApproval,
   VisibleToolActivity
 } from '../types';
@@ -241,6 +242,7 @@ function validateComposerInput(input: {
   unitsText: string;
   pathPolicy: TaskPathPolicy;
   outputDir: string;
+  workingDirectory: string;
 }): { units: AgentUnit[] | null; errors: string[] } {
   const errors: string[] = [];
   if (!input.title.trim()) {
@@ -628,6 +630,25 @@ function getToolActivityStatusLabel(status: VisibleToolActivity['status']) {
   }
 }
 
+function getToolActivityDisplayName(activity: VisibleToolActivity): string {
+  return activity.toolId.replaceAll('_', ' ');
+}
+
+function stripLeadingRepeatedToolName(activity: VisibleToolActivity): string {
+  const displayName = getToolActivityDisplayName(activity);
+  const summary = activity.summary.trim();
+  if (!summary) {
+    return summary;
+  }
+  const normalizedSummary = summary.toLowerCase();
+  const normalizedDisplayName = displayName.toLowerCase();
+  if (!normalizedSummary.startsWith(`${normalizedDisplayName} `)) {
+    return summary;
+  }
+  const stripped = summary.slice(displayName.length).trimStart();
+  return stripped ? `${stripped.charAt(0).toUpperCase()}${stripped.slice(1)}` : summary;
+}
+
 function renderToolActivityIcon(activity: VisibleToolActivity) {
   const normalizedToolId = activity.toolId.toLowerCase();
   const iconClassName = 'h-4 w-4';
@@ -992,7 +1013,15 @@ function buildTimeline(task: TaskDetail | null, events: RuntimeEvent[], debug: T
     : [];
 
   const eventItems: TimelineEntry[] = events
-    .filter((event) => ['TASK_STARTED', 'TASK_PAUSED', 'TASK_RESUMED', 'TASK_COMPLETED', 'TASK_FAILED', 'TASK_ARTIFACTS_APPLIED'].includes(event.type))
+    .filter((event) => {
+      if (!['TASK_STARTED', 'TASK_PAUSED', 'TASK_RESUMED', 'TASK_COMPLETED', 'TASK_FAILED', 'TASK_ARTIFACTS_APPLIED'].includes(event.type)) {
+        return false;
+      }
+      if (visibleResult && (event.type === 'TASK_COMPLETED' || event.type === 'TASK_RESUMED')) {
+        return false;
+      }
+      return true;
+    })
     .map((event, index) => ({
       id: `${event.eventId}-${index}`,
       kind: 'runtime',
@@ -2292,8 +2321,13 @@ export function TasksPage() {
       setDismissedAutoOpenTaskId(null);
       setLatchedAutoOpenTaskId(null);
       setDetailsOpen(false);
+      return;
     }
-  }, [selectedTaskId]);
+    if (wideContextViewport) {
+      setDetailsOpen(true);
+      setDismissedAutoOpenTaskId(null);
+    }
+  }, [selectedTaskId, wideContextViewport]);
 
   useEffect(() => {
     if (!selectedTaskId) {
@@ -2567,9 +2601,7 @@ export function TasksPage() {
   const shouldShowStatusStrip = Boolean(
     task
     && (
-      primaryApproval
-      || artifactSelectionRequired
-      || Boolean(task.delegationSummary.activeChildTask)
+      Boolean(task.delegationSummary.activeChildTask)
       || hasRecoveryBlocker
       || hasRuntimeBlocker
     )
@@ -2592,13 +2624,6 @@ export function TasksPage() {
         label: 'Approval summary',
         title: primaryApproval.toolName,
         detail: primaryApproval.argumentsSummary ?? 'An operator decision is required before the thread can continue.',
-      });
-    }
-    if (artifactSelectionRequired) {
-      cards.push({
-        label: 'Artifact destination',
-        title: recommendedArtifactDir ?? task.primaryAction.destinationDir ?? 'Select a delivery path',
-        detail: task.nextActionSummary.reason || 'Choose a project-relative destination before the artifact can be applied.',
       });
     }
     if (task.delegationSummary.activeChildTask) {
@@ -2692,9 +2717,6 @@ export function TasksPage() {
     ?? debug?.executionSummary.recommendedArtifactDir
     ?? task?.primaryAction.destinationDir
     ?? 'workspace';
-  const composerTruthLabel = debug?.executionSummary.acceptance?.deterministic?.contract?.verdict
-    ? `Acceptance ${debug.executionSummary.acceptance.deterministic.contract.verdict}`
-    : 'Acceptance pending';
   const executionTruth = debug?.executionSummary ?? null;
   const credibilitySummary = buildCredibilitySummary(task, executionTruth);
   const confidenceScore = !task || !executionTruth
@@ -2711,6 +2733,31 @@ export function TasksPage() {
   const artifactPathStateLabel = executionTruth?.artifactPathState ?? 'sandbox_only';
   const deliveredArtifactCount = executionTruth?.artifactDestinationPaths.length ?? 0;
   const createdArtifactCount = executionTruth?.artifactPaths.length ?? 0;
+  const workingDirectoryTruth = executionTruth?.workingDirectory ?? null;
+  const workingDirectoryLabel = workingDirectoryTruth?.workingDirectory ?? 'not selected';
+  const workingDirectoryStatusLabel = workingDirectoryTruth?.status ?? 'missing';
+  const providerReadinessStatus = executionTruth?.providerSummary.recentStatus
+    ?? (composerProviderLabel === 'No provider selected' ? 'not_selected' : 'ready');
+  const providerNeedsAttention = composerProviderLabel === 'No provider selected' || providerReadinessStatus !== 'ready';
+  const providerReadinessLabel = String(providerReadinessStatus).replaceAll('_', ' ');
+  const showSuggestedActionCard = Boolean(
+    issuePlaneLabel !== 'none'
+    || (credibilitySummary.gaps.length > 0 && !artifactSelectionRequired && !primaryApproval)
+  );
+  const composerContextChips = [
+    providerNeedsAttention ? `Provider: ${composerProviderLabel}` : null,
+    artifactSelectionRequired ? `Destination: ${composerDestinationLabel}` : null,
+    workingDirectoryTruth?.requiresSelection ? 'Workspace: needs directory' : null,
+    issuePlaneLabel !== 'none' && !artifactSelectionRequired && !primaryApproval ? `Plane: ${issuePlaneLabel}` : null,
+    credibilitySummary.gaps.length > 0 && !artifactSelectionRequired ? `${credibilitySummary.gaps.length} evidence gap${credibilitySummary.gaps.length === 1 ? '' : 's'}` : null,
+  ].filter((chip): chip is string => Boolean(chip));
+  const renderComposerContextChips = () => composerContextChips.length ? (
+    <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-secondary" data-testid="task-composer-context-chips">
+      {composerContextChips.map((chip) => (
+        <span key={chip} className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">{chip}</span>
+      ))}
+    </div>
+  ) : null;
 
   useEffect(() => {
     setComposerExpanded(false);
@@ -3045,37 +3092,6 @@ export function TasksPage() {
                     <span data-testid="task-action-model">{composerModel.actionLane}</span>
                   </span>
                 ) : null}
-                {task ? (
-                  <div className="hidden items-center gap-2 xl:flex">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      disabled={!showPause || !selectedTaskId || busyAction !== null}
-                      onClick={() => void runAction('pause', async () => { await api.pauseTask(selectedTaskId!); })}
-                    >
-                      Pause
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      disabled={!selectedTaskId || busyAction !== null}
-                      onClick={focusThreadComposer}
-                    >
-                      Continue
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      disabled={!selectedTaskId || busyAction !== null}
-                      onClick={() => void runAction('restart', async () => { await api.restartTask(selectedTaskId!, undefined, { autoRun: true }); })}
-                    >
-                      Restart
-                    </Button>
-                  </div>
-                ) : null}
                 <button
                   type="button"
                   onClick={toggleContextPanel}
@@ -3138,7 +3154,7 @@ export function TasksPage() {
               )}
               </div>
             ) : null}
-            {task && (!ultraCompactVerticalViewport || hasCompactHeaderActions) ? (
+            {task && (artifactSelectionRequired || (ultraCompactVerticalViewport && hasCompactHeaderActions)) ? (
               <div className={`flex flex-wrap items-center gap-2 ${ultraCompactVerticalViewport ? 'mt-1' : 'mt-2'}`}>
                 {primaryApproval ? (
                   <>
@@ -3445,7 +3461,7 @@ export function TasksPage() {
                                 <span className="status-dot" />
                                 {getToolActivityStatusLabel(entry.activity.status)}
                               </span>
-                              <span className="font-semibold text-text-primary">{entry.activity.toolId.replaceAll('_', ' ')}</span>
+                              <span className="font-semibold text-text-primary">{getToolActivityDisplayName(entry.activity)}</span>
                               {entry.activity.execution?.durationMs !== null && entry.activity.execution?.durationMs !== undefined ? (
                                 <span className="uppercase tracking-[0.18em] text-text-muted/85">
                                   {entry.activity.execution.durationMs}ms
@@ -3457,7 +3473,7 @@ export function TasksPage() {
                                 </span>
                               ) : null}
                             </div>
-                            <p className={`mt-1.5 text-sm ${tone.text}`}>{entry.activity.summary}</p>
+                            <p className={`mt-1.5 text-sm ${tone.text}`}>{stripLeadingRepeatedToolName(entry.activity)}</p>
                           </div>
                         </div>
                         <div className={`shrink-0 text-[11px] ${tone.meta}`}>{formatTime(entry.timestamp)}</div>
@@ -3603,10 +3619,8 @@ export function TasksPage() {
                             <TimelineAgentIcon className="h-4 w-4" />
                           </span>
                           <span className={`rounded-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] ${cardTone.label}`}>
-                            {entry.kind === 'result' ? (isFailureResult ? 'Failure' : 'Result') : 'Progress'}
+                            Assistant · {entry.kind === 'result' ? (isFailureResult ? 'Failure' : 'Result') : 'Progress'}
                           </span>
-                          <span className="font-semibold text-text-primary">Assistant</span>
-                          <span className="font-semibold">{entry.label}</span>
                         </div>
                         <span>{formatTime(entry.timestamp)}</span>
                       </div>
@@ -3992,6 +4006,11 @@ export function TasksPage() {
                     : isOperatorCorrection
                       ? 'decision'
                       : 'user';
+                const displayContent = entry.kind === 'assistant-note'
+                  && entry.displayKind === 'artifact_ready'
+                  && requiresArtifactSelection(task)
+                    ? 'Artifact output is available in the task workspace. Use the composer delivery action below when you are ready to apply it.'
+                    : entry.content;
 
                 return (
                   <TimelineNodeFrame key={entry.id} kind={genericNodeKind}>
@@ -4053,7 +4072,7 @@ export function TasksPage() {
                       }
                       className={`whitespace-pre-wrap text-sm leading-6 ${timelineTone.text}`}
                     >
-                      {isOperatorCorrection ? summarizeTimelineInstruction(entry.content) : entry.content}
+                      {isOperatorCorrection ? summarizeTimelineInstruction(displayContent) : displayContent}
                     </p>
                     {isOperatorCorrection ? (
                       <p className="mt-2 text-xs leading-5 text-text-muted">
@@ -4100,7 +4119,7 @@ export function TasksPage() {
               }`}>
                 <p className="text-[10px] uppercase tracking-[0.24em] text-text-muted">Thread controls</p>
                 <div className="flex flex-wrap items-center gap-1.5">
-                  {showPause && <Button data-testid="task-action-pause" size="sm" variant="secondary" disabled={!selectedTaskId || busyAction !== null} onClick={() => void runAction('pause', async () => { await api.pauseTask(selectedTaskId!); })}>Pause</Button>}
+                  {showPause && <Button data-testid="task-action-pause" size="sm" variant="secondary" disabled={!selectedTaskId || busyAction === 'pause'} onClick={() => void runAction('pause', async () => { await api.pauseTask(selectedTaskId!); })}>Pause</Button>}
                   {selectedTaskId ? <Button data-testid="task-action-restart" size="sm" variant="ghost" disabled={busyAction !== null} onClick={() => void runAction('restart', async () => { await api.restartTask(selectedTaskId, undefined, { autoRun: true }); })}>Restart</Button> : null}
                   {task?.isArchived ? <Button data-testid="task-action-unarchive" size="sm" variant="secondary" disabled={!selectedTaskId || busyAction !== null} onClick={() => void unarchiveSelectedTask()}>Unarchive</Button> : null}
                   {!task?.isArchived && task?.canArchive ? <Button data-testid="task-action-archive" size="sm" variant="secondary" disabled={!selectedTaskId || busyAction !== null} onClick={() => void archiveSelectedTask()}>Archive</Button> : null}
@@ -4133,11 +4152,7 @@ export function TasksPage() {
                   <div>
                     <p data-testid="task-composer-mode" className="text-[11px] uppercase tracking-[0.28em] text-violet-200/70">follow_up</p>
                     <p className="mt-1 text-sm font-medium text-text-primary">Keep working in this thread from the delivered result when you are ready.</p>
-                    <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-secondary">
-                      <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">Provider: {composerProviderLabel}</span>
-                      <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">Destination: {composerDestinationLabel}</span>
-                      <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">{composerTruthLabel}</span>
-                    </div>
+                    {renderComposerContextChips()}
                   </div>
                   <Button
                     data-testid="task-action-expand-follow-up"
@@ -4155,11 +4170,7 @@ export function TasksPage() {
                       <p data-testid="task-composer-mode" className="text-[11px] uppercase tracking-[0.28em] text-violet-200/70">{composerModel.actionLane}</p>
                       <p className="mt-1 text-sm font-medium text-text-primary">{composerModel.title}</p>
                       <p className="mt-1 text-sm text-text-secondary">{composerModel.description}</p>
-                      <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-secondary">
-                        <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">Provider: {composerProviderLabel}</span>
-                        <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">Destination: {composerDestinationLabel}</span>
-                        <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">{composerTruthLabel}</span>
-                      </div>
+                      {renderComposerContextChips()}
                     </div>
                   </div>
                   {composerModelChangedWhileEditing ? (
@@ -4231,11 +4242,7 @@ export function TasksPage() {
                     <p data-testid="task-composer-mode" className="text-[11px] uppercase tracking-[0.26em] text-violet-200/70">{composerModel.actionLane}</p>
                     <p className="mt-1 text-sm font-medium text-text-primary">{composerModel.title}</p>
                     <p className="mt-1 text-sm leading-6 text-text-secondary">{composerModel.description}</p>
-                    <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-secondary">
-                      <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">Provider: {composerProviderLabel}</span>
-                      <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">Destination: {composerDestinationLabel}</span>
-                      <span className="rounded-md border border-border-subtle bg-black/20 px-2 py-1">{composerTruthLabel}</span>
-                    </div>
+                    {renderComposerContextChips()}
                   </div>
                   <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
                     {autoOpenContext && !effectiveDetailsOpen ? (
@@ -4297,7 +4304,7 @@ export function TasksPage() {
                 </Button>
             </div>
           {effectiveDetailsOpen && (
-            <div className="flex-1 min-h-0 space-y-3 overflow-y-auto scrollbar-thin px-4 pb-4" data-testid="task-inspector-scroll">
+            <div className="flex-1 min-h-0 space-y-3 overflow-y-auto scrollbar-thin px-4 pb-20 lg:pb-16" data-testid="task-inspector-scroll">
               {activeInspectorSnapshot?.importantCards.length ? activeInspectorSnapshot.importantCards.map((card) => (
                 <Card key={`${card.label}-${card.title}`} className="workbench-panel border-border-subtle bg-surface-elevated">
                   <CardContent className="space-y-2 text-sm">
@@ -4326,78 +4333,99 @@ export function TasksPage() {
                 </Card>
               )}
               <div className="space-y-3" data-testid="task-truth-summary-cards">
-                <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-semibold text-text-primary">Confidence & acceptance</p>
-                    <span className="text-sm font-semibold text-success">{confidenceScore}%</span>
-                  </div>
-                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/8">
-                    <div
-                      className={`h-full rounded-full ${
-                        credibilitySummary.gaps.length === 0 ? 'bg-success' : 'bg-warning'
-                      }`}
-                      style={{ width: `${confidenceScore}%` }}
-                    />
-                  </div>
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                    <div>
-                      <p className="text-text-muted">Acceptance</p>
-                      <p className="mt-1 font-medium text-text-primary">{acceptanceVerdict}</p>
+                <div className="grid grid-cols-2 gap-2" data-testid="task-truth-compact-strip">
+                  <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-2.5">
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-text-muted">Confidence</p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <span className="text-sm font-semibold text-success">{confidenceScore}%</span>
+                      <span className="text-xs text-text-secondary">{acceptanceVerdict}</span>
                     </div>
-                    <div>
-                      <p className="text-text-muted">Quality</p>
-                      <p className="mt-1 font-medium text-text-primary">{qualityVerdict}</p>
+                    <p className="mt-1 text-xs text-text-secondary">Quality: {qualityVerdict}</p>
+                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8">
+                      <div
+                        className={`h-full rounded-full ${
+                          credibilitySummary.gaps.length === 0 ? 'bg-success' : 'bg-warning'
+                        }`}
+                        style={{ width: `${confidenceScore}%` }}
+                      />
                     </div>
                   </div>
-                </div>
-                <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-semibold text-text-primary">Failure plane</p>
-                    <span className={issuePlaneLabel === 'none' ? 'text-sm font-semibold text-success' : 'text-sm font-semibold text-warning'}>
+                  <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-2.5">
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-text-muted">Plane</p>
+                    <p className={issuePlaneLabel === 'none' ? 'mt-2 text-sm font-semibold text-success' : 'mt-2 text-sm font-semibold text-warning'}>
                       {issuePlaneLabel}
-                    </span>
+                    </p>
+                    <p className="mt-1 line-clamp-1 text-xs text-text-secondary">{issueSummaryLabel}</p>
                   </div>
-                  <p className="mt-2 text-sm leading-6 text-text-secondary">{issueSummaryLabel}</p>
-                </div>
-                <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-semibold text-text-primary">Provider readiness</p>
-                    <span className="text-sm font-semibold text-success">{composerProviderLabel === 'No provider selected' ? 'not selected' : 'ready'}</span>
-                  </div>
-                  <p className="mt-2 text-xs leading-5 text-text-secondary">{composerProviderLabel}</p>
-                </div>
-                <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-semibold text-text-primary">Artifact state</p>
-                    <span className={artifactPathStateLabel === 'unresolved' ? 'text-sm font-semibold text-warning' : 'text-sm font-semibold text-success'}>
+                  <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-2.5">
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-text-muted">Artifact</p>
+                    <p className={artifactPathStateLabel === 'unresolved' ? 'mt-2 text-sm font-semibold text-warning' : 'mt-2 text-sm font-semibold text-success'}>
                       {artifactPathStateLabel}
-                    </span>
+                    </p>
+                    <p className="mt-1 text-xs text-text-secondary">{createdArtifactCount} created / {deliveredArtifactCount} delivered</p>
                   </div>
-                  <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-                    <div>
-                      <p className="text-text-muted">Created</p>
-                      <p className="mt-1 font-medium text-text-primary">{createdArtifactCount}</p>
-                    </div>
-                    <div>
-                      <p className="text-text-muted">Delivered</p>
-                      <p className="mt-1 font-medium text-text-primary">{deliveredArtifactCount}</p>
-                    </div>
-                    <div>
-                      <p className="text-text-muted">Destination</p>
-                      <p className="mt-1 truncate font-medium text-text-primary">{composerDestinationLabel}</p>
-                    </div>
+                  <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-2.5" data-testid="task-working-dir-truth">
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-text-muted">Workspace</p>
+                    <p className={workingDirectoryStatusLabel === 'missing' ? 'mt-2 text-sm font-semibold text-warning' : 'mt-2 text-sm font-semibold text-success'}>
+                      {workingDirectoryStatusLabel}
+                    </p>
+                    <p className="mt-1 line-clamp-1 break-all text-xs text-text-secondary">{workingDirectoryLabel}</p>
                   </div>
                 </div>
-                <div className="rounded-lg border border-violet-300/35 bg-violet-950/18 px-3 py-3 shadow-[0_0_0_1px_rgba(139,92,246,0.10)]">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-semibold text-violet-100">Suggested action</p>
-                    <Badge variant={credibilitySummary.gaps.length ? 'warning' : 'success'}>
-                      {credibilitySummary.gaps.length ? `${credibilitySummary.gaps.length} gap` : 'clear'}
-                    </Badge>
+
+                {providerNeedsAttention ? (
+                  <div className="rounded-lg border border-warning/35 bg-warning/10 px-3 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-text-primary">Provider needs attention</p>
+                      <span className="text-sm font-semibold text-warning">{providerReadinessLabel}</span>
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-text-secondary">{composerProviderLabel}</p>
                   </div>
-                  <p className="mt-2 text-sm font-medium text-text-primary">{suggestedActionLabel}</p>
-                  <p className="mt-1 text-sm leading-6 text-text-secondary">{suggestedActionReason}</p>
-                </div>
+                ) : null}
+                {workingDirectoryTruth?.requiresSelection ? (
+                  <div className="rounded-lg border border-warning/35 bg-warning/10 px-3 py-3" data-testid="task-working-dir-warning">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-text-primary">Working directory required</p>
+                      <span className="text-sm font-semibold text-warning">{workingDirectoryStatusLabel}</span>
+                    </div>
+                    <p className="mt-2 break-all text-xs leading-5 text-text-secondary">{workingDirectoryLabel}</p>
+                    <p className="mt-2 text-xs leading-5 text-warning">Agent must ask before project-local reads or commands.</p>
+                  </div>
+                ) : null}
+                {artifactPathStateLabel === 'unresolved' ? (
+                  <div className="rounded-lg border border-warning/35 bg-warning/10 px-3 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-text-primary">Artifact destination required</p>
+                      <span className="text-sm font-semibold text-warning">{artifactPathStateLabel}</span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                      <div>
+                        <p className="text-text-muted">Created</p>
+                        <p className="mt-1 font-medium text-text-primary">{createdArtifactCount}</p>
+                      </div>
+                      <div>
+                        <p className="text-text-muted">Delivered</p>
+                        <p className="mt-1 font-medium text-text-primary">{deliveredArtifactCount}</p>
+                      </div>
+                      <div>
+                        <p className="text-text-muted">Destination</p>
+                        <p className="mt-1 truncate font-medium text-text-primary">{composerDestinationLabel}</p>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+                {showSuggestedActionCard ? (
+                  <div className="rounded-lg border border-violet-300/35 bg-violet-950/18 px-3 py-3 shadow-[0_0_0_1px_rgba(139,92,246,0.10)]">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-violet-100">Suggested action</p>
+                      <Badge variant={credibilitySummary.gaps.length ? 'warning' : 'success'}>
+                        {credibilitySummary.gaps.length ? `${credibilitySummary.gaps.length} gap` : 'clear'}
+                      </Badge>
+                    </div>
+                    <p className="mt-2 text-sm font-medium text-text-primary">{suggestedActionLabel}</p>
+                    <p className="mt-1 text-sm leading-6 text-text-secondary">{suggestedActionReason}</p>
+                  </div>
+                ) : null}
                 {credibilitySummary.gaps.length > 0 ? (
                   <div className="rounded-lg border border-border-subtle bg-surface-elevated/72 px-3 py-3">
                     <div className="flex items-center justify-between gap-3">
@@ -4606,7 +4634,7 @@ export function TasksPage() {
         onConfirm={() => void deleteSelectedTask()}
       />
 
-      <div data-testid="task-global-footer" className="hidden border-t border-border-subtle bg-background/92 backdrop-blur-md lg:fixed lg:inset-x-0 lg:bottom-0 lg:z-50 lg:flex lg:h-10 lg:items-center lg:justify-between">
+      <div data-testid="task-global-footer" className="pointer-events-none hidden border-t border-border-subtle bg-background/92 backdrop-blur-md lg:fixed lg:inset-x-0 lg:bottom-0 lg:z-50 lg:flex lg:h-10 lg:items-center lg:justify-between">
         <div className="flex h-full w-72 items-center gap-3 border-r border-border-subtle px-3 xl:w-[19rem]">
           <span className="text-xs text-text-secondary">Workspace</span>
           <span className="rounded-md border border-border-default bg-black/20 px-2.5 py-1 text-xs text-text-primary">scc-batch</span>
@@ -4615,11 +4643,7 @@ export function TasksPage() {
           <span className="truncate">D:\MyCode\myApp_\Scc_batch_web</span>
           <span className="status-dot text-success" />
         </div>
-        <div className="flex h-full items-center gap-2 border-l border-border-subtle px-3">
-          <span className="rounded-md border border-border-default bg-surface-elevated px-2.5 py-1 text-xs text-text-primary">Backend healthy</span>
-          <span className="rounded-md border border-warning/30 bg-warning-muted/15 px-2.5 py-1 text-xs text-warning">Provider gated</span>
-          <span className="rounded-md border border-success/25 bg-success-muted/15 px-2.5 py-1 text-xs text-success">WS live</span>
-        </div>
+        <div className="h-full w-72 border-l border-border-subtle xl:w-[22rem]" aria-hidden="true" />
       </div>
 
       {composerPresence.mounted ? (
@@ -4656,6 +4680,10 @@ function TaskComposer({
   const [qualityProfileId, setQualityProfileId] = useState<'' | QualityProfileId>('');
   const [pathPolicy, setPathPolicy] = useState<TaskPathPolicy>('task_workspace');
   const [outputDir, setOutputDir] = useState('');
+  const [workingDirectory, setWorkingDirectory] = useState('');
+  const [workingDirectoryBrowser, setWorkingDirectoryBrowser] = useState<WorkspaceDirectoryListing | null>(null);
+  const [workingDirectoryBrowserOpen, setWorkingDirectoryBrowserOpen] = useState(false);
+  const [workingDirectoryBrowserError, setWorkingDirectoryBrowserError] = useState<string | null>(null);
   const [unitsText, setUnitsText] = useState(JSON.stringify(DEFAULT_UNITS, null, 2));
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -4671,6 +4699,7 @@ function TaskComposer({
         unitsText,
         pathPolicy,
         outputDir,
+        workingDirectory,
       });
       if (preflight.errors.length > 0 || !preflight.units) {
         setError(preflight.errors.join('\n'));
@@ -4683,7 +4712,8 @@ function TaskComposer({
         defaultQualityProfileId: qualityProfileId || undefined,
         preferredProviderId: providerId || null,
         pathPolicy,
-        preferredArtifactDir: outputDir || null
+        preferredArtifactDir: outputDir || null,
+        workingDirectory: workingDirectory.trim() || null
       });
       onCreated(response.command.taskId);
     } catch (submitError) {
@@ -4693,10 +4723,48 @@ function TaskComposer({
 
   const selectedFamily = TASK_FAMILY_OPTIONS.find((option) => option.value === taskFamily) ?? TASK_FAMILY_OPTIONS[0];
   const errorMessages = error?.split('\n').filter(Boolean) ?? [];
+  const workingDirectoryAdvisory = workingDirectory.trim()
+    ? `Agent workspace selected: ${workingDirectory.trim()}`
+    : 'No working directory selected. The Agent will use the isolated task workspace and must ask before project-local reads or commands.';
 
   function handleTaskFamilyChange(value: TaskFamilyId) {
     setTaskFamily(value);
     setUnitsText(formatUnitsTemplate(value));
+  }
+
+  async function fillWorkspaceRoot() {
+    try {
+      setWorkingDirectoryBrowserError(null);
+      const workflow = await api.getWorkspaceWorkflow();
+      if (!workflow.workspaceRoot) {
+        setWorkingDirectoryBrowserError('No configured workspace root was found. Paste a path or browse from the runtime root.');
+        return;
+      }
+      setWorkingDirectory(workflow.workspaceRoot);
+    } catch (loadError) {
+      setWorkingDirectoryBrowserError(loadError instanceof Error ? loadError.message : 'Failed to load workspace root.');
+    }
+  }
+
+  async function pasteWorkingDirectory() {
+    try {
+      setWorkingDirectoryBrowserError(null);
+      const value = await navigator.clipboard.readText();
+      setWorkingDirectory(value.trim());
+    } catch {
+      setWorkingDirectoryBrowserError('Clipboard is unavailable. Paste the directory path into the field directly.');
+    }
+  }
+
+  async function loadWorkingDirectoryBrowser(path?: string | null) {
+    try {
+      setWorkingDirectoryBrowserError(null);
+      const listing = await api.listWorkspaceDirectories(path ?? undefined);
+      setWorkingDirectoryBrowser(listing);
+      setWorkingDirectoryBrowserOpen(true);
+    } catch (loadError) {
+      setWorkingDirectoryBrowserError(loadError instanceof Error ? loadError.message : 'Failed to browse directories.');
+    }
   }
 
   return (
@@ -4778,6 +4846,122 @@ function TaskComposer({
                     className={TASK_COMPOSER_FIELD_CLASS}
                   />
                 </label>
+              </div>
+
+              <div className="rounded-lg border border-border-subtle bg-surface-elevated/35 p-3.5" data-testid="task-composer-working-dir-panel">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium text-text-primary">Agent working directory</p>
+                    <p className="mt-1 text-xs leading-5 text-text-muted">
+                      Optional. If empty, project-local commands are blocked behind an explicit operator directory question.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      data-testid="task-composer-working-dir-paste"
+                      onClick={pasteWorkingDirectory}
+                    >
+                      Paste
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      data-testid="task-composer-working-dir-default"
+                      onClick={fillWorkspaceRoot}
+                    >
+                      Use workspace root
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      data-testid="task-composer-working-dir-browse"
+                      onClick={() => loadWorkingDirectoryBrowser(workingDirectory.trim() || null)}
+                    >
+                      Browse
+                    </Button>
+                  </div>
+                </div>
+                <input
+                  data-testid="task-composer-working-dir"
+                  value={workingDirectory}
+                  onChange={(event) => setWorkingDirectory(event.target.value)}
+                  placeholder="Optional absolute or project-relative directory"
+                  className={`${TASK_COMPOSER_FIELD_CLASS} mt-3`}
+                />
+                <p
+                  className={`mt-2 text-xs leading-5 ${workingDirectory.trim() ? 'text-success' : 'text-warning'}`}
+                  data-testid="task-composer-working-dir-advisory"
+                >
+                  {workingDirectoryAdvisory}
+                </p>
+                {workingDirectoryBrowserError ? (
+                  <p className="mt-2 text-xs leading-5 text-error" data-testid="task-working-dir-browser-error">
+                    {workingDirectoryBrowserError}
+                  </p>
+                ) : null}
+                {workingDirectoryBrowserOpen && workingDirectoryBrowser ? (
+                  <div className="mt-3 rounded-lg border border-border-subtle bg-black/18 p-3" data-testid="task-working-dir-browser">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-xs uppercase tracking-[0.2em] text-text-muted">Browse directory</p>
+                        <p className="truncate text-sm text-text-primary">{workingDirectoryBrowser.currentPath}</p>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          data-testid="task-working-dir-up"
+                          disabled={!workingDirectoryBrowser.parentPath}
+                          onClick={() => loadWorkingDirectoryBrowser(workingDirectoryBrowser.parentPath)}
+                        >
+                          Up
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          data-testid="task-working-dir-select"
+                          onClick={() => {
+                            setWorkingDirectory(workingDirectoryBrowser.currentPath);
+                            setWorkingDirectoryBrowserOpen(false);
+                          }}
+                        >
+                          Select this folder
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid max-h-48 gap-2 overflow-y-auto pr-1 scrollbar-thin">
+                      {workingDirectoryBrowser.entries.length === 0 ? (
+                        <p className="rounded-md border border-border-subtle bg-surface/50 px-3 py-2 text-xs text-text-muted">No child folders.</p>
+                      ) : (
+                        workingDirectoryBrowser.entries.map((entry) => (
+                          <button
+                            key={entry.absolutePath}
+                            type="button"
+                            data-testid="task-working-dir-option"
+                            aria-label={`Open ${entry.name} folder`}
+                            className="flex items-center justify-between gap-3 rounded-md border border-border-subtle bg-surface/55 px-3 py-2 text-left text-sm text-text-secondary transition duration-fast hover:border-accent/45 hover:bg-surface-hover hover:text-text-primary"
+                            onClick={() => loadWorkingDirectoryBrowser(entry.path)}
+                          >
+                            <span className="inline-flex min-w-0 items-center gap-2">
+                              <FolderIcon className="h-4 w-4 flex-shrink-0 text-accent" />
+                              <span className="truncate">{entry.name}</span>
+                            </span>
+                            {entry.path !== entry.name ? (
+                              <span className="truncate text-xs text-text-muted">{entry.path}</span>
+                            ) : null}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
 

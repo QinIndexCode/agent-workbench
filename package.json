@@ -62,6 +62,7 @@
     "live-provider:postgres": "node scripts/run-live-postgres-local.mjs live-provider-scenarios -- --json",
     "agent-cli:live": "node scripts/run-agent-cli-live-task-check.mjs",
     "ordinary-interaction:live": "node scripts/run-ordinary-interaction-live-check.mjs",
+    "flagship-loop": "node scripts/run-flagship-loop.mjs",
     "clean:real-task-wave": "node scripts/clean-real-task-wave-state.mjs",
     "real-task-wave": "node scripts/run-real-task-wave.mjs",
     "real-task-wave:matrix": "node scripts/run-real-task-wave-matrix.mjs",

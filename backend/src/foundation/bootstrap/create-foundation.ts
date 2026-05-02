@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { BackendNewConfig, BackendNewConfigInput } from '../config/types';
 import { loadBackendNewConfig } from '../config/load-config';
 import { PostgresDatabaseAdapter } from '../database';
@@ -71,17 +72,18 @@ export interface CreateFoundationOptions {
 export function createBackendNewFoundation(
   options: CreateFoundationOptions = {}
 ): BackendNewFoundation {
-  const cwd = options.cwd ?? process.cwd();
+  const env = options.env ?? process.env;
+  const cwd = path.resolve(options.cwd ?? env.BACKEND_NEW_WORKSPACE_CWD ?? process.cwd());
   const config = options.resolvedConfig ?? loadBackendNewConfig(options.config, {
     cwd,
-    env: options.env
+    env
   });
   const storage = options.storage ?? new FileStorageAdapter();
   const layout = new StorageLayout(config);
   const logs = new TaskLogWriter(config, storage, layout);
   const eventHub = new RuntimeEventHub();
   const snapshotHub = new TaskSnapshotHub();
-  const cipher = createSecretCipher(config, options.env ?? process.env);
+  const cipher = createSecretCipher(config, env);
   const database = config.storage.driver === 'postgres'
     ? new PostgresDatabaseAdapter(config)
     : null;

@@ -19,6 +19,7 @@ export function projectTaskDiagnostics(task: TaskQueryApiResponse, debug: TaskDe
     issueCategory: debug?.executionSummary?.issueCategory ?? null,
     issueSummary: debug?.executionSummary?.issueSummary ?? null,
     suggestedAction: debug?.executionSummary?.suggestedAction ?? null,
+    workingDirectory: debug?.executionSummary?.workingDirectory ?? null,
     providerSummary: debug?.executionSummary?.providerSummary ?? null,
     quality: debug?.executionSummary?.acceptance?.quality ?? null,
     summary,

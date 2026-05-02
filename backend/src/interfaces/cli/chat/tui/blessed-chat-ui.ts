@@ -74,6 +74,15 @@ function formatSummary(record: Record<string, unknown> | null): string {
   const approvalActions = record.approvalActions && typeof record.approvalActions === 'object'
     ? record.approvalActions as Record<string, unknown>
     : null;
+  const isSafeRecentResult = (value: string): boolean => {
+    const text = value.trim();
+    return Boolean(text)
+      && !text.includes('[/')
+      && !/\[(?:[A-Z0-9_-]+)_OUTPUT\]/.test(text)
+      && !/"tool(?:_name)?"\s*:/.test(text)
+      && !/"current_unit"\s*:/.test(text)
+      && !/"arguments"\s*:/.test(text);
+  };
   const lines = [
     'Task truth',
     `${title}`,
@@ -89,7 +98,7 @@ function formatSummary(record: Record<string, unknown> | null): string {
     '',
     `Artifact state: ${String(record.artifactPathState ?? 'sandbox_only')}`
   ];
-  if (typeof completionSummary?.summary === 'string' && completionSummary.summary.trim()) {
+  if (typeof completionSummary?.summary === 'string' && isSafeRecentResult(completionSummary.summary)) {
     lines.push(`Recent result: ${completionSummary.summary}`);
   }
   if (Array.isArray(completionSummary?.artifactDestinationPaths) && completionSummary.artifactDestinationPaths.length > 0) {
@@ -201,6 +210,16 @@ function formatDiagnostics(snapshot: ReturnType<CliChatSessionController['getIns
   lines.push('Artifact state');
   lines.push(`pathState: ${String(summary?.artifactPathState ?? 'sandbox_only')}`);
   lines.push(`pendingArtifacts: ${String(summary?.pendingArtifactCount ?? 0)}`);
+  lines.push('');
+  const workingDirectory = diagnostics.workingDirectory && typeof diagnostics.workingDirectory === 'object'
+    ? diagnostics.workingDirectory as Record<string, unknown>
+    : null;
+  lines.push('Working directory');
+  lines.push(`selected: ${String(workingDirectory?.workingDirectory ?? 'not selected')}`);
+  lines.push(`status: ${String(workingDirectory?.status ?? 'missing')}`);
+  if (workingDirectory?.requiresSelection === true) {
+    lines.push('action: ask operator before project-local commands');
+  }
   lines.push('');
   if (planner) {
     lines.push(`plannerPhase: ${String(planner.executionPhase ?? '-')}`);

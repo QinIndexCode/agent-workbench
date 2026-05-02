@@ -11,7 +11,7 @@
     "audit:size-classes": "node scripts/audit-safe-size-classes.mjs",
     "test": "npm run typecheck && npm run audit:size-classes",
     "smoke": "node scripts/smoke-validate.mjs",
-    "e2e": "node scripts/live-task-review.mjs",
+    "e2e": "node scripts/task-e2e-validate.mjs",
     "live-review": "node scripts/live-task-review.mjs",
     "mainline-review": "node scripts/mainline-task-review.mjs",
     "delegation-live-review": "node scripts/delegation-live-review.mjs",

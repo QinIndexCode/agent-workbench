@@ -3,6 +3,7 @@ import fsSync from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn, spawnSync } from 'node:child_process';
+import { createIsolatedBackendRuntimeRoot } from './lib/backend-runtime-paths.mjs';
 
 const rootDir = process.cwd();
 const windowsNodeDir = process.platform === 'win32' ? path.dirname(process.execPath) : null;
@@ -14,6 +15,11 @@ const mockProviderPort = Number.parseInt(process.env.MAINLINE_REVIEW_MOCK_PROVID
 const frontendBaseUrl = `http://127.0.0.1:${frontendPort}`;
 const backendBaseUrl = `http://127.0.0.1:${backendPort}`;
 const mockProviderUrl = `http://127.0.0.1:${mockProviderPort}`;
+const configuredBackendRootDir = process.env.MAINLINE_REVIEW_BACKEND_ROOT_DIR?.trim() ?? '';
+const backendRootDir = configuredBackendRootDir
+  ? (path.isAbsolute(configuredBackendRootDir) ? configuredBackendRootDir : path.resolve(rootDir, configuredBackendRootDir))
+  : createIsolatedBackendRuntimeRoot(rootDir, 'frontend-mainline-review');
+const ownsBackendRootDir = !configuredBackendRootDir;
 
 function spawnNpm(args, env = {}) {
   if (process.platform === 'win32') {
@@ -270,9 +276,15 @@ async function closeServer(server, label) {
 }
 
 async function main() {
+  if (ownsBackendRootDir) {
+    fsSync.rmSync(backendRootDir, { recursive: true, force: true });
+  }
+  fsSync.mkdirSync(backendRootDir, { recursive: true });
   const mockProvider = await createMockProviderServer(mockProviderPort);
   const backend = spawnNpm(['run', 'start', '-w', 'backend'], {
-    BACKEND_NEW_SERVER_PORT: String(backendPort)
+    BACKEND_NEW_SERVER_PORT: String(backendPort),
+    BACKEND_NEW_ROOT_DIR: backendRootDir,
+    BACKEND_NEW_WORKSPACE_CWD: rootDir
   });
   const readBackendLogs = collectOutput(backend, 'backend');
   const frontend = spawnNpm(['run', 'dev', '-w', 'frontend', '--', '--host', '127.0.0.1', '--port', String(frontendPort)], {
@@ -312,6 +324,9 @@ async function main() {
       terminateChild(backend, 'backend'),
       closeServer(mockProvider, 'mock-provider')
     ]);
+    if (ownsBackendRootDir && process.env.SCC_PRESERVE_STACK_RUNTIME !== '1') {
+      fsSync.rmSync(backendRootDir, { recursive: true, force: true });
+    }
   }
 }
 

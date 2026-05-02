@@ -168,6 +168,7 @@ export function buildTaskPayloadFromFlags(args: ParsedCliArgs): TaskSubmitReques
     preferredProviderId: getFlagString(args, 'provider') ?? null,
     pathPolicy: (getFlagString(args, 'path-policy') as TaskSubmitRequest['pathPolicy']) ?? undefined,
     preferredArtifactDir: getFlagString(args, 'output-dir') ?? null,
+    workingDirectory: getFlagString(args, 'working-dir') ?? getFlagString(args, 'workdir') ?? null,
     metadata,
     units: [
       {
@@ -268,6 +269,28 @@ function getStringArray(record: Record<string, unknown> | null | undefined, key:
     : [];
 }
 
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function isHumanDisplaySafeSummary(value: string): boolean {
+  const text = value.trim();
+  if (!text) {
+    return false;
+  }
+  return !(
+    text.includes('[/')
+    || /\[(?:[A-Z0-9_-]+)_OUTPUT\]/.test(text)
+    || /"tool(?:_name)?"\s*:/.test(text)
+    || /"current_unit"\s*:/.test(text)
+    || /"arguments"\s*:/.test(text)
+  );
+}
+
+function getHumanResultSummary(...candidates: string[]): string {
+  return candidates.find(isHumanDisplaySafeSummary) ?? '';
+}
+
 function formatOptionalJson(value: unknown): string {
   if (value === null || value === undefined) {
     return 'none';
@@ -309,14 +332,14 @@ function formatHumanArtifactState(summary: Record<string, unknown>): string[] {
   const selectedArtifactDir = getRecordString(summary, 'selectedArtifactDir', '');
   const recommendedArtifactDir = getRecordString(summary, 'recommendedArtifactDir', '');
   const lastApplyResult = getRecordValue(summary, 'lastArtifactApplyResult');
-  const destinationPaths = [
+  const destinationPaths = uniqueStrings([
     ...getStringArray(completionSummary, 'artifactDestinationPaths'),
     ...getStringArray(summary, 'artifactDestinationPaths')
-  ];
-  const artifactPaths = [
+  ]);
+  const artifactPaths = uniqueStrings([
     ...getStringArray(completionSummary, 'artifactPaths'),
     ...getStringArray(summary, 'artifactPaths')
-  ];
+  ]);
   const lines = [
     `Artifact state: ${artifactPathState} (${pendingArtifactCount} pending)`
   ];
@@ -333,6 +356,73 @@ function formatHumanArtifactState(summary: Record<string, unknown>): string[] {
   if (lastApplyResult) {
     lines.push(`Last apply: ${getRecordString(lastApplyResult, 'status', 'unknown')} ${getRecordString(lastApplyResult, 'destinationDir', '')}`.trim());
   }
+  return lines;
+}
+
+function formatHumanWorkingDirectory(
+  summary: Record<string, unknown>,
+  options: { nested?: boolean; expandGuidance?: boolean } = {}
+): string[] {
+  const workingDirectory = getRecordValue(summary, 'workingDirectory');
+  const status = getRecordString(workingDirectory, 'status', 'missing');
+  const selected = getRecordString(workingDirectory, 'workingDirectory', '');
+  const source = getRecordString(workingDirectory, 'source', 'missing');
+  const requiresSelection = workingDirectory?.requiresSelection === true;
+  const guidance = getRecordString(workingDirectory, 'guidance', '');
+  const expandGuidance = options.expandGuidance ?? true;
+  if (options.nested) {
+    return [
+      `selected: ${selected || 'not selected'}`,
+      `status: ${status} (${source})`,
+      ...(requiresSelection && expandGuidance ? ['action: Agent must ask before project-local reads or commands.'] : []),
+      ...(requiresSelection && expandGuidance && guidance ? [`guidance: ${guidance}`] : [])
+    ];
+  }
+  return [
+    `Working directory: ${selected || 'not selected'} (${status}, ${source})`,
+    ...(requiresSelection && expandGuidance ? ['Working directory action: Agent must ask before project-local reads or commands.'] : []),
+    ...(requiresSelection && expandGuidance && guidance ? [`Working directory guidance: ${guidance}`] : [])
+  ];
+}
+
+function formatHumanExperienceSummary(source: Record<string, unknown>): string[] {
+  const experienceSummary = getRecordValue(source, 'experienceSummary')
+    ?? getRecordValue(getRecordValue(source, 'executionSummary'), 'experienceSummary')
+    ?? getRecordValue(getRecordValue(source, 'summary'), 'experienceSummary');
+  if (!experienceSummary) {
+    return ['Experience: none selected'];
+  }
+
+  const selected = getRecordArray(experienceSummary, 'selected');
+  const validationCandidates = getRecordArray(experienceSummary, 'validationCandidates');
+  const configuredCount = getRecordNumber(experienceSummary, 'configuredCount', 0);
+  const selectedCount = getRecordNumber(experienceSummary, 'selectedCount', selected.length);
+  const lines = [
+    `Experience: selected=${selectedCount} configured=${configuredCount} validationCandidates=${validationCandidates.length}`
+  ];
+
+  for (const entry of selected.slice(0, 3)) {
+    const limitations = getStringArray(entry, 'limitations');
+    lines.push(
+      `Selected experience: ${getRecordString(entry, 'title', getRecordString(entry, 'proposalId', 'experience'))} (${getRecordString(entry, 'selectedBy', 'unknown')}, ${getRecordString(entry, 'validationStatus', 'unknown')})`
+    );
+    const referenceSummary = getRecordString(entry, 'referenceSummary', '');
+    if (referenceSummary) {
+      lines.push(`Experience reference: ${referenceSummary}`);
+    }
+    if (limitations.length > 0) {
+      lines.push(`Experience limitations: ${limitations.join('; ')}`);
+    }
+  }
+
+  for (const candidate of validationCandidates.slice(0, 3)) {
+    const successfulReuseTaskIds = getStringArray(candidate, 'successfulReuseTaskIds');
+    const failedReuseTaskIds = getStringArray(candidate, 'failedReuseTaskIds');
+    lines.push(
+      `Experience candidate: ${getRecordString(candidate, 'proposalId', 'unknown')} ${getRecordString(candidate, 'validationStatus', 'unknown')} success=${successfulReuseTaskIds.length} failed=${failedReuseTaskIds.length}`
+    );
+  }
+
   return lines;
 }
 
@@ -360,6 +450,10 @@ export function formatTaskSummaryHuman(summary: Record<string, unknown>, options
     'reason',
     getRecordString(primaryAction, 'description', getRecordString(nextActionSummary, 'reason', 'Review task truth.'))
   );
+  const workingDirectoryActionSignal = `${issueCategory} ${actionLabel} ${actionReason}`
+    .toLowerCase()
+    .includes('working director');
+  const expandWorkingDirectoryGuidance = options.source !== 'chat' || workingDirectoryActionSignal;
   const lines = [
     'SCC Batch Agent Console',
     `Task: ${title}`,
@@ -380,7 +474,12 @@ export function formatTaskSummaryHuman(summary: Record<string, unknown>, options
       `Provider: ${getRecordString(providerSummary, 'providerId', 'unknown')} / ${getRecordString(providerSummary, 'readiness', 'unknown')}`
     );
   }
-  const resultSummary = getRecordString(completionSummary, 'summary', getRecordString(latestVisibleOutput, 'summary', ''));
+  lines.push(...formatHumanExperienceSummary(summary));
+  lines.push(...formatHumanWorkingDirectory(summary, { expandGuidance: expandWorkingDirectoryGuidance }));
+  const resultSummary = getHumanResultSummary(
+    getRecordString(completionSummary, 'summary', ''),
+    getRecordString(latestVisibleOutput, 'summary', '')
+  );
   if (resultSummary) {
     lines.push(`Recent result: ${resultSummary}`);
   }
@@ -447,7 +546,13 @@ export function formatTaskDiagnosticsHuman(diagnostics: Record<string, unknown>)
     ...formatHumanArtifactState({
       ...diagnostics,
       ...(summary ?? {})
-    })
+    }),
+    '',
+    'Experience summary',
+    ...formatHumanExperienceSummary(diagnostics),
+    '',
+    'Working directory',
+    ...formatHumanWorkingDirectory(diagnostics, { nested: true })
   ];
   if (planner) {
     lines.push(
@@ -657,6 +762,7 @@ export function summarizeTask(task: TaskQueryApiResponse, debug: TaskDebugRespon
     issueCategory: debug?.executionSummary.issueCategory ?? null,
     issueSummary: debug?.executionSummary.issueSummary ?? null,
     suggestedAction: debug?.executionSummary.suggestedAction ?? null,
+    workingDirectory: debug?.executionSummary.workingDirectory ?? null,
     acceptance: debug?.executionSummary.acceptance ?? null,
     quality: debug?.executionSummary.acceptance?.quality ?? null,
     lastSafeCheckpointAt: progress.lastSafeCheckpointAt,
@@ -720,6 +826,7 @@ export interface TaskProgressSummary {
   issueCategory: TaskDebugResponse['executionSummary']['issueCategory'] | null;
   issueSummary: string | null;
   suggestedAction: TaskDebugResponse['executionSummary']['suggestedAction'] | null;
+  workingDirectory: TaskDebugResponse['executionSummary']['workingDirectory'] | null;
   lastSafeCheckpointAt: number | null;
   lastRecoverySource: string | null;
   conservativeModeReason: string | null;
@@ -1090,6 +1197,7 @@ export function deriveTaskProgressSummary(task: TaskQueryApiResponse, debug: Tas
     issueCategory: debug?.executionSummary.issueCategory ?? null,
     issueSummary: debug?.executionSummary.issueSummary ?? null,
     suggestedAction: debug?.executionSummary.suggestedAction ?? null,
+    workingDirectory: debug?.executionSummary.workingDirectory ?? null,
     lastSafeCheckpointAt: debug?.executionSummary.lastSafeCheckpointAt ?? null,
     lastRecoverySource: debug?.executionSummary.lastRecoverySource ?? null,
     conservativeModeReason: debug?.executionSummary.conservativeModeReason ?? null,

@@ -589,6 +589,20 @@ export interface WorkspaceDocsImportSummary {
   lastImportedAt: number | null;
 }
 
+export interface WorkspaceDirectoryEntry {
+  name: string;
+  path: string;
+  absolutePath: string;
+}
+
+export interface WorkspaceDirectoryListing {
+  workspaceRoot: string;
+  currentPath: string;
+  relativePath: string;
+  parentPath: string | null;
+  entries: WorkspaceDirectoryEntry[];
+}
+
 export interface WorkspaceWorkflowView {
   workspaceRoot: string | null;
   sccDir: string | null;

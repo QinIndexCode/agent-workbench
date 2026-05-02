@@ -274,7 +274,13 @@ export class LifecycleCommandHandler implements TaskLifecycleCommandHandler {
       invocations: toolInvocations,
       commands
     });
-    if (artifactRouting.needsExplicitDestination) {
+    const correctiveFollowUpAllowed = trimmedMessage.length > 0
+      && (
+        record.runtime.pendingCorrection !== 'NONE'
+        || !!record.runtime.contractDiagnostics?.lastPendingCorrectionKind
+        || record.runtime.contractDiagnostics?.correctionLoopNonConvergent === true
+      );
+    if (artifactRouting.needsExplicitDestination && !correctiveFollowUpAllowed) {
       const recommended = artifactRouting.recommendedArtifactDir
         ? ` Recommended directory: ${artifactRouting.recommendedArtifactDir}.`
         : '';

@@ -12,6 +12,7 @@ import { ToolExecutorRegistry } from '../../../foundation/tools/executor-registr
 import { ToolExecutorRequest } from '../../../foundation/tools/executor-types';
 import { createToolFailureResult, createToolSuccessResult } from '../../../foundation/tools/result-envelope';
 import { DelegatedSubtaskService } from '../../tasks/delegation/delegated-subtask-service';
+import { getTaskWorkingDirectorySettings } from '../../tasks/task-working-directory';
 
 const BUILTIN_TOOLS: AgentToolDefinition[] = [
   {
@@ -109,6 +110,19 @@ const BUILTIN_TOOLS: AgentToolDefinition[] = [
       { name: 'timeout_ms', type: 'number', description: 'Optional command timeout in milliseconds. Clamped for safety.' }
     ],
     tags: ['workspace', 'host', 'command']
+  },
+  {
+    id: 'request-working-directory',
+    name: 'request_working_directory',
+    description: 'Check whether the task has an operator-selected project working directory. If none is selected, return a structured operator-action request instead of guessing from the task description.',
+    source: 'builtin',
+    effect: 'READ',
+    riskLevel: 'LOW',
+    inputSchema: [
+      { name: 'reason', type: 'string', description: 'Why the current step needs a project working directory.' },
+      { name: 'suggested_path', type: 'string', description: 'Optional path candidate to show the operator for confirmation. Do not treat it as selected until the operator confirms it.' }
+    ],
+    tags: ['workspace', 'operator-input']
   },
   {
     id: 'delegate-subtask',
@@ -1186,6 +1200,39 @@ async function executeRunCommand(request: ToolExecutorRequest) {
   }
 }
 
+async function executeRequestWorkingDirectory(foundation: BackendNewFoundation, request: ToolExecutorRequest) {
+  const runtimeRecord = await foundation.taskRuntimes.get(request.invocation.taskId);
+  const settings = runtimeRecord
+    ? getTaskWorkingDirectorySettings(runtimeRecord.definition)
+    : {
+      status: 'missing' as const,
+      workingDirectory: null,
+      source: 'missing' as const,
+      requiresSelection: true,
+      guidance: 'Task runtime state was not available. Ask the operator to choose a project working directory before project-local reads or commands.'
+    };
+  const reason = typeof request.invocation.arguments.reason === 'string'
+    ? request.invocation.arguments.reason.trim()
+    : '';
+  const suggestedPath = typeof request.invocation.arguments.suggested_path === 'string'
+    ? request.invocation.arguments.suggested_path.trim()
+    : null;
+  return createToolSuccessResult({
+    output: {
+      ...settings,
+      reason: reason || 'A project working directory is required for the next project-local action.',
+      suggestedPath,
+      operatorAction: settings.requiresSelection
+        ? 'Ask the operator to choose a working directory, then continue with that explicit path.'
+        : 'Proceed using the selected working directory when tool policy allows it.'
+    },
+    metadata: {
+      workingDirectoryStatus: settings.status,
+      requiresSelection: settings.requiresSelection
+    }
+  });
+}
+
 export function registerBuiltinToolAdapters(
   foundation: BackendNewFoundation,
   extensions: ExtensionRegistry,
@@ -1217,6 +1264,11 @@ export function registerBuiltinToolAdapters(
   }
   if (!toolExecutors.has('run-command')) {
     toolExecutors.register('run-command', { execute: executeRunCommand });
+  }
+  if (!toolExecutors.has('request-working-directory')) {
+    toolExecutors.register('request-working-directory', {
+      execute: (request: ToolExecutorRequest) => executeRequestWorkingDirectory(foundation, request)
+    });
   }
   if (!toolExecutors.has('delegate-subtask')) {
     const delegation = new DelegatedSubtaskService(foundation);

@@ -429,6 +429,13 @@ export interface TaskExecutionSummary {
   issueCategory: string | null;
   issueSummary: string | null;
   suggestedAction: TaskExecutionSuggestedAction;
+  workingDirectory: {
+    status: 'explicit' | 'default' | 'missing';
+    workingDirectory: string | null;
+    source: 'operator' | 'runtime_default' | 'metadata' | 'missing';
+    requiresSelection: boolean;
+    guidance: string;
+  };
   providerSummary: {
     providerId: string | null;
     modelId: string | null;
@@ -685,6 +692,8 @@ export interface SubmitTaskPayload {
   preferredProviderId?: string | null;
   pathPolicy?: TaskPathPolicy;
   preferredArtifactDir?: string | null;
+  workingDirectory?: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 export interface TaskCommandPayload {
@@ -992,6 +1001,18 @@ export interface WorkspaceWorkflowView {
     importedMemoryIds: string[];
     lastImportedAt: number | null;
   };
+}
+
+export interface WorkspaceDirectoryListing {
+  workspaceRoot: string;
+  currentPath: string;
+  relativePath: string;
+  parentPath: string | null;
+  entries: Array<{
+    name: string;
+    path: string;
+    absolutePath: string;
+  }>;
 }
 
 export interface CapabilityHubView {

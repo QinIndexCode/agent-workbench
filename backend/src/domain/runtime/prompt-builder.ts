@@ -18,6 +18,7 @@ import {
   PromptArtifactRoutingSummary,
   PromptExtensionCapabilitySummary,
   PromptProviderSummary,
+  PromptWorkingDirectorySummary,
   PromptWorkspaceDocSummary
 } from './prompt-sections';
 import { getQualityProfilePromptSection } from '../quality/task-quality';
@@ -43,6 +44,7 @@ export interface BuildPromptInput {
   capabilities: PromptExtensionCapabilitySummary;
   userProfile: UserPreferenceProfile | null;
   artifactRouting?: PromptArtifactRoutingSummary | null;
+  workingDirectory?: PromptWorkingDirectorySummary | null;
   workspaceProjectInstructions?: string | null;
   workspaceRuleInstructions?: string | null;
   workspaceInstructionSkillInstructions?: string | null;
@@ -485,6 +487,7 @@ export function buildTurnPrompt(input: BuildPromptInput): BuiltPromptResult {
     approvedExperienceInstructionsSummary: input.workspaceApprovedExperienceInstructions ?? null,
     commandInstructionsSummary: input.workspaceCommandInstructions ?? null,
     agentInstructionsSummary: input.workspaceAgentInstructions ?? null,
+    workingDirectory: input.workingDirectory ?? null,
     importedDocs: input.importedWorkspaceDocs ?? []
   });
   const stableSections = [
@@ -540,6 +543,7 @@ export function buildTurnPrompt(input: BuildPromptInput): BuiltPromptResult {
       approvedExperienceInstructionsSummary: input.workspaceApprovedExperienceInstructions ?? null,
       commandInstructionsSummary: input.workspaceCommandInstructions ?? null,
       agentInstructionsSummary: input.workspaceAgentInstructions ?? null,
+      workingDirectory: input.workingDirectory ?? null,
       importedDocs: input.importedWorkspaceDocs ?? []
     });
   const baselineTaskContractSection = buildTaskContractSection({

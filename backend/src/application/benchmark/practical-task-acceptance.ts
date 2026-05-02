@@ -306,6 +306,13 @@ function createScenarioFailureResult(params: {
         reason: params.message,
         command: null
       },
+      workingDirectory: {
+        status: 'missing',
+        workingDirectory: null,
+        source: 'missing',
+        requiresSelection: true,
+        guidance: 'No project working directory was selected for this scenario result.'
+      },
       eventCounts: {},
       turnCount: 0,
       correctionDepth: 0,

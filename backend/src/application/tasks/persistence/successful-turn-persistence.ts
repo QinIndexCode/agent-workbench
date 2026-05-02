@@ -132,11 +132,12 @@ function looksLikeClarificationCandidate(candidate: VisibleOutputCandidate | nul
   if (!candidate) {
     return false;
   }
-  if (candidate.issues.length > 0 && candidate.artifactPaths.length === 0) {
-    return true;
-  }
-  const combinedText = `${candidate.summary ?? ''} ${candidate.details ?? ''}`.toLowerCase();
-  return /missing|required context|need more context|cannot safely continue|safest next step|ask the operator/i.test(combinedText);
+  const combinedText = [
+    candidate.summary,
+    candidate.details,
+    ...candidate.issues
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0).join(' ');
+  return /\b(request is missing|missing (?:the )?(?:audience|target|constraint|success criteria|destination|path|input|context)|required context|need more context|cannot safely continue|safest next step|ask the operator|ask for|please clarify|needs clarification|waiting for operator)\b/i.test(combinedText);
 }
 
 function buildClarificationMessage(candidate: VisibleOutputCandidate): string {

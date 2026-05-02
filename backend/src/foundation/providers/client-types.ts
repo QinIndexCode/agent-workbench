@@ -23,6 +23,7 @@ export interface ProviderCompletionRequest {
   temperature?: number | null;
   maxTokens?: number | null;
   stop?: string[];
+  responseFormat?: 'json_object' | null;
   metadata?: Record<string, unknown>;
 }
 

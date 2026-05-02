@@ -10,12 +10,12 @@ const frontendDir = resolve(root, 'frontend');
 
 const processes = [];
 
-function addProcess(name, command, args, cwd, useShell = false) {
+function addProcess(name, command, args, cwd, useShell = false, env = {}) {
   const proc = spawn(command, args, {
     cwd,
     shell: useShell,
     stdio: 'pipe',
-    env: { ...process.env, FORCE_COLOR: '1' },
+    env: { ...process.env, FORCE_COLOR: '1', ...env },
     windowsHide: true,
   });
 
@@ -80,8 +80,12 @@ async function main() {
     process.exit(1);
   }
 
-  addProcess('backend', process.execPath, [resolve(backendDir, 'dist/bin/server.js')], backendDir);
-  addProcess('worker', process.execPath, [resolve(backendDir, 'dist/bin/worker.js')], backendDir);
+  const backendEnv = {
+    BACKEND_NEW_WORKSPACE_CWD: root,
+    BACKEND_NEW_ROOT_DIR: resolve(backendDir, 'data'),
+  };
+  addProcess('backend', process.execPath, [resolve(backendDir, 'dist/bin/server.js')], backendDir, false, backendEnv);
+  addProcess('worker', process.execPath, [resolve(backendDir, 'dist/bin/worker.js')], backendDir, false, backendEnv);
   addProcess('frontend', 'npx', ['vite', '--strictPort'], frontendDir, true);
 
   let cleaning = false;

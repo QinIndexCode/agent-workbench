@@ -1,8 +1,10 @@
+import fsSync from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import fs from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { getPortStatus } from './lib/port-check.mjs';
+import { createIsolatedBackendRuntimeRoot } from './lib/backend-runtime-paths.mjs';
 
 const rootDir = process.cwd();
 const windowsNodeDir = process.platform === 'win32' ? path.dirname(process.execPath) : null;
@@ -13,6 +15,11 @@ const frontendBaseUrl = `http://127.0.0.1:${frontendPort}`;
 const smokeTimeoutMs = Number.parseInt(process.env.FRONTEND_SMOKE_TIMEOUT_MS ?? '600000', 10);
 const smokeReportPath = path.resolve(rootDir, '.codex-run', 'logs', 'frontend-smoke-report.json');
 const smokeScreenshotDir = path.resolve(rootDir, '.codex-run', 'logs', 'frontend-smoke-snapshots');
+const configuredBackendRootDir = process.env.SMOKE_BACKEND_ROOT_DIR?.trim() ?? '';
+const backendRootDir = configuredBackendRootDir
+  ? (path.isAbsolute(configuredBackendRootDir) ? configuredBackendRootDir : path.resolve(rootDir, configuredBackendRootDir))
+  : createIsolatedBackendRuntimeRoot(rootDir, 'frontend-smoke');
+const ownsBackendRootDir = !configuredBackendRootDir;
 
 function spawnNpm(args, env = {}) {
   if (process.platform === 'win32') {
@@ -165,13 +172,19 @@ async function cleanupPortOwners(portEntries) {
 }
 
 async function main() {
+  if (ownsBackendRootDir) {
+    fsSync.rmSync(backendRootDir, { recursive: true, force: true });
+  }
+  fsSync.mkdirSync(backendRootDir, { recursive: true });
   await cleanupPortOwners([
     { port: backendPort, label: 'smoke-backend' },
     { port: frontendPort, label: 'smoke-frontend' }
   ]);
 
   const backend = spawnNpm(['run', 'start', '-w', 'backend'], {
-    BACKEND_NEW_SERVER_PORT: String(backendPort)
+    BACKEND_NEW_SERVER_PORT: String(backendPort),
+    BACKEND_NEW_ROOT_DIR: backendRootDir,
+    BACKEND_NEW_WORKSPACE_CWD: rootDir
   });
   const readBackendLogs = collectOutput(backend, 'backend');
   const frontend = spawnNpm(['run', 'dev', '-w', 'frontend', '--', '--host', '127.0.0.1', '--port', String(frontendPort)], {
@@ -217,6 +230,9 @@ async function main() {
       { port: backendPort, label: 'smoke-backend' },
       { port: frontendPort, label: 'smoke-frontend' }
     ]);
+    if (ownsBackendRootDir && process.env.SCC_PRESERVE_STACK_RUNTIME !== '1') {
+      fsSync.rmSync(backendRootDir, { recursive: true, force: true });
+    }
   }
 }
 

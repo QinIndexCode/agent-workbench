@@ -1,14 +1,21 @@
+import fsSync from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
-import { buildXiaomiMimoFlashLiveEnv, resolveXiaomiMimoFlashDocPath } from './lib/xiaomi-mimo-live-provider.mjs';
+import { createIsolatedBackendRuntimeRoot } from './lib/backend-runtime-paths.mjs';
 
 const rootDir = process.cwd();
 const windowsNodeDir = process.platform === 'win32' ? path.dirname(process.execPath) : null;
 const preferredWindowsNpm = windowsNodeDir ? path.join(windowsNodeDir, 'npm.cmd') : null;
 const preferredBackendPort = Number.parseInt(process.env.E2E_BACKEND_PORT ?? '3411', 10);
 const preferredFrontendPort = Number.parseInt(process.env.E2E_FRONTEND_PORT ?? '5373', 10);
+const preferredMockProviderPort = Number.parseInt(process.env.E2E_MOCK_PROVIDER_PORT ?? '4011', 10);
+const configuredBackendRootDir = process.env.E2E_BACKEND_ROOT_DIR?.trim() ?? '';
+const backendRootDir = configuredBackendRootDir
+  ? (path.isAbsolute(configuredBackendRootDir) ? configuredBackendRootDir : path.resolve(rootDir, configuredBackendRootDir))
+  : createIsolatedBackendRuntimeRoot(rootDir, 'frontend-e2e');
+const ownsBackendRootDir = !configuredBackendRootDir;
 
 function spawnNpm(args, env = {}) {
   if (process.platform === 'win32') {
@@ -28,6 +35,19 @@ function spawnNpm(args, env = {}) {
   return spawn('npm', args, {
     cwd: rootDir,
     stdio: 'pipe',
+    env: {
+      ...process.env,
+      ...env
+    }
+  });
+}
+
+function spawnNode(args, env = {}) {
+  return spawn(process.execPath, args, {
+    cwd: rootDir,
+    stdio: 'pipe',
+    windowsHide: true,
+    shell: false,
     env: {
       ...process.env,
       ...env
@@ -126,17 +146,26 @@ async function terminateChild(child, label) {
 }
 
 async function main() {
-  const liveEnv = await buildXiaomiMimoFlashLiveEnv(rootDir);
   const backendPort = await findAvailablePort(preferredBackendPort);
   const frontendPort = await findAvailablePort(preferredFrontendPort);
+  const mockProviderPort = await findAvailablePort(preferredMockProviderPort);
   const frontendBaseUrl = `http://127.0.0.1:${frontendPort}`;
   const backendBaseUrl = `http://127.0.0.1:${backendPort}`;
+  const mockProviderUrl = `http://127.0.0.1:${mockProviderPort}`;
   const frontendE2EReportPath = path.resolve(rootDir, '.codex-run', 'logs', 'frontend-e2e-report.json');
   const frontendE2EScreenshotDir = path.resolve(rootDir, '.codex-run', 'logs', 'frontend-e2e');
+  if (ownsBackendRootDir) {
+    fsSync.rmSync(backendRootDir, { recursive: true, force: true });
+  }
+  fsSync.mkdirSync(backendRootDir, { recursive: true });
+  const mockProvider = spawnNode(['scripts/mock-provider-server.mjs'], {
+    MOCK_PROVIDER_PORT: String(mockProviderPort)
+  });
+  const readMockProviderLogs = collectOutput(mockProvider, 'mock-provider');
   const backend = spawnNpm(['run', 'start', '-w', 'backend'], {
-    ...liveEnv,
     BACKEND_NEW_SERVER_PORT: String(backendPort),
-    SCC_LIVE_PROVIDER_SOURCE: resolveXiaomiMimoFlashDocPath(rootDir),
+    BACKEND_NEW_ROOT_DIR: backendRootDir,
+    BACKEND_NEW_WORKSPACE_CWD: rootDir,
   });
   const readBackendLogs = collectOutput(backend, 'backend');
   const frontend = spawnNpm(['run', 'dev', '-w', 'frontend', '--', '--host', '127.0.0.1', '--port', String(frontendPort)], {
@@ -147,14 +176,14 @@ async function main() {
   const readFrontendLogs = collectOutput(frontend, 'frontend');
 
   try {
+    await waitForHttp(`${mockProviderUrl}/health`, 60_000);
     await waitForHttp(`${backendBaseUrl}/health`, 120_000);
     await waitForHttp(frontendBaseUrl, 120_000);
 
     const e2e = spawnNpm(['run', 'e2e', '-w', 'frontend', '--'], {
-      ...liveEnv,
       FRONTEND_BASE_URL: frontendBaseUrl,
       FRONTEND_E2E_BACKEND_URL: backendBaseUrl,
-      FRONTEND_LIVE_REVIEW_BACKEND_URL: backendBaseUrl,
+      FRONTEND_E2E_MOCK_PROVIDER_URL: mockProviderUrl,
       FRONTEND_E2E_REPORT: frontendE2EReportPath,
       FRONTEND_E2E_SCREENSHOTS: frontendE2EScreenshotDir
     });
@@ -168,15 +197,20 @@ async function main() {
       throw new Error(`frontend e2e failed (${exitCode})\n${logs.stdout}\n${logs.stderr}`);
     }
   } catch (error) {
+    const mockProviderLogs = readMockProviderLogs();
     const backendLogs = readBackendLogs();
     const frontendLogs = readFrontendLogs();
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message}\n[backend stdout]\n${backendLogs.stdout}\n[backend stderr]\n${backendLogs.stderr}\n[frontend stdout]\n${frontendLogs.stdout}\n[frontend stderr]\n${frontendLogs.stderr}`);
+    throw new Error(`${message}\n[mock provider stdout]\n${mockProviderLogs.stdout}\n[mock provider stderr]\n${mockProviderLogs.stderr}\n[backend stdout]\n${backendLogs.stdout}\n[backend stderr]\n${backendLogs.stderr}\n[frontend stdout]\n${frontendLogs.stdout}\n[frontend stderr]\n${frontendLogs.stderr}`);
   } finally {
     await Promise.all([
       terminateChild(frontend, 'frontend'),
-      terminateChild(backend, 'backend')
+      terminateChild(backend, 'backend'),
+      terminateChild(mockProvider, 'mock-provider')
     ]);
+    if (ownsBackendRootDir && process.env.SCC_PRESERVE_STACK_RUNTIME !== '1') {
+      fsSync.rmSync(backendRootDir, { recursive: true, force: true });
+    }
   }
 }
 

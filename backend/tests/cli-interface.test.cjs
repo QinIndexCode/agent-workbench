@@ -11,7 +11,7 @@ const {
   createBackendNewRuntime,
   runBackendNewCli
 } = require('../dist');
-const { formatTailLine } = require('../dist/interfaces/cli/shared.js');
+const { formatTaskSummaryHuman, formatTailLine } = require('../dist/interfaces/cli/shared.js');
 const { createTempRoot, removeDir } = require('./helpers.cjs');
 
 function registerProvider(foundation, responses) {
@@ -116,6 +116,123 @@ function createIoCapture() {
 function createInputStream(lines) {
   return Readable.from(lines.map((line) => `${line}\n`));
 }
+
+test('human task summaries suppress raw tool JSON as recent result', () => {
+  const text = formatTaskSummaryHuman({
+    taskId: 'task_human_raw_tool',
+    title: 'Human raw tool guard',
+    lifecycleStatus: 'RUNNING',
+    stageLabel: 'Stage 1 of 1',
+    statusSummary: {
+      label: 'Approval required',
+      detail: 'A tool request needs a decision before the thread can move again.'
+    },
+    primaryAction: {
+      label: 'Approve request',
+      description: 'Review the pending tool request.'
+    },
+    nextActionSummary: {
+      label: 'Approve request',
+      reason: 'Review the pending tool request.'
+    },
+    suggestedAction: {
+      label: 'Resolve pending approval',
+      reason: 'Task is blocked on tool approval.'
+    },
+    providerSummary: {
+      providerId: 'provider-main',
+      recentStatus: 'ready'
+    },
+    latestVisibleOutput: {
+      summary: '{"tool":"write_file","arguments":{"path":"report.md"}}'
+    },
+    acceptance: {
+      deterministic: { verdict: 'failed', profileId: 'implement' },
+      quality: { verdict: 'not_applicable' },
+      semanticReview: { status: 'not_requested' }
+    },
+    artifactPathState: 'sandbox_only',
+    pendingArtifactCount: 0,
+    pendingApprovals: [],
+    visibleToolActivities: [{
+      toolId: 'write_file',
+      status: 'WAITING_APPROVAL',
+      summary: 'write file is waiting for approval.'
+    }]
+  });
+
+  assert.doesNotMatch(text, /Recent result: \{"tool"/);
+  assert.match(text, /Tool evidence: write_file \[WAITING_APPROVAL\]/);
+});
+
+test('human task summaries only show working directory guidance when it is actionable', () => {
+  const readyText = formatTaskSummaryHuman({
+    taskId: 'task_ready_workdir',
+    title: 'Ready workdir',
+    lifecycleStatus: 'COMPLETED',
+    stageLabel: 'Stage 1 of 1',
+    statusSummary: { label: 'Completed', detail: 'Task completed.' },
+    primaryAction: { label: 'Continue current thread', description: 'Send a follow-up.' },
+    nextActionSummary: { label: 'Continue current thread', reason: 'Send a follow-up.' },
+    workingDirectory: {
+      status: 'explicit',
+      source: 'operator',
+      workingDirectory: 'D:/workspace',
+      requiresSelection: false,
+      guidance: 'Use D:/workspace as the operator-selected project working directory.'
+    },
+    acceptance: {
+      deterministic: { verdict: 'passed', profileId: 'implement' }
+    }
+  });
+  assert.match(readyText, /Working directory: D:\/workspace \(explicit, operator\)/);
+  assert.doesNotMatch(readyText, /Working directory action:/);
+  assert.doesNotMatch(readyText, /Working directory guidance:/);
+
+  const missingText = formatTaskSummaryHuman({
+    taskId: 'task_missing_workdir',
+    title: 'Missing workdir',
+    lifecycleStatus: 'RUNNING',
+    stageLabel: 'Stage 1 of 1',
+    statusSummary: { label: 'Working directory required', detail: 'Project-local commands require a selected directory.' },
+    primaryAction: { label: 'Choose working directory', description: 'Ask the operator for a directory.' },
+    nextActionSummary: { label: 'Choose working directory', reason: 'Ask the operator for a directory.' },
+    workingDirectory: {
+      status: 'missing',
+      source: 'missing',
+      workingDirectory: null,
+      requiresSelection: true,
+      guidance: 'Ask the operator before project-local reads or commands.'
+    }
+  });
+  assert.match(missingText, /Working directory action: Agent must ask before project-local reads or commands\./);
+  assert.match(missingText, /Working directory guidance: Ask the operator before project-local reads or commands\./);
+});
+
+test('human chat summaries keep missing working directory guidance compact unless it is the current action', () => {
+  const text = formatTaskSummaryHuman({
+    taskId: 'task_chat_missing_workdir',
+    title: 'Chat missing workdir',
+    lifecycleStatus: 'RUNNING',
+    stageLabel: 'Stage 1 of 1',
+    statusSummary: { label: 'Approval required', detail: 'A tool request needs approval.' },
+    primaryAction: { label: 'Resolve approvals', description: 'Task is blocked on tool approval.' },
+    nextActionSummary: { label: 'Resolve approvals', reason: 'Task is blocked on tool approval.' },
+    issuePlane: 'core',
+    issueCategory: 'approval_deadlock',
+    workingDirectory: {
+      status: 'missing',
+      source: 'missing',
+      workingDirectory: null,
+      requiresSelection: true,
+      guidance: 'Ask the operator before project-local reads or commands.'
+    }
+  }, { source: 'chat' });
+
+  assert.match(text, /Working directory: not selected \(missing, missing\)/);
+  assert.doesNotMatch(text, /Working directory action:/);
+  assert.doesNotMatch(text, /Working directory guidance:/);
+});
 
 test('cli can submit list and get tasks through the stable REST interface', async () => {
   const root = createTempRoot();
@@ -257,6 +374,8 @@ test('cli status returns compact task summary', async () => {
     assert.equal(payload.lifecycleStatus, 'SUBMITTED');
     assert.equal(payload.progressState, 'ready_to_start');
     assert.equal(payload.nextAction, 'Start task');
+    assert.equal(payload.workingDirectory.status, 'missing');
+    assert.equal(payload.workingDirectory.requiresSelection, true);
 
     const humanCapture = createIoCapture();
     const humanExit = await runBackendNewCli({
@@ -270,6 +389,8 @@ test('cli status returns compact task summary', async () => {
     assert.match(humanOutput, /Failure plane:/);
     assert.match(humanOutput, /Suggested action:/);
     assert.match(humanOutput, /Artifact state:/);
+    assert.match(humanOutput, /Working directory: not selected/);
+    assert.match(humanOutput, /Agent must ask before project-local reads or commands/);
     assert.match(humanOutput, /Next command:/);
   } finally {
     server.close();
@@ -350,6 +471,8 @@ test('cli diagnostics exposes experience summary after approved experience reuse
     assert.match(humanDiagnostics, /Failure plane: core \/ artifact_destination_unresolved/);
     assert.match(humanDiagnostics, /Acceptance and quality/);
     assert.match(humanDiagnostics, /Artifact state/);
+    assert.match(humanDiagnostics, /Experience summary/);
+    assert.match(humanDiagnostics, /Experience: selected=1/);
     assert.doesNotThrow(() => JSON.parse(diagnosticsCapture.stdout.join('')));
   } finally {
     server.close();
@@ -508,6 +631,16 @@ test('cli inspect exposes recommended-path guidance for unresolved artifact deli
     assert.equal(payload.completionSummary.artifactApplyStatus, null);
     assert.equal(Array.isArray(payload.visibleToolActivities), true);
     assert.equal(payload.visibleToolActivities.length >= 1, true);
+
+    const humanCapture = createIoCapture();
+    const humanExitCode = await runBackendNewCli({
+      argv: ['tasks', 'inspect', submitted.command.taskId, '--format', 'human', '--server', serverUrl],
+      io: humanCapture.io
+    });
+    assert.equal(humanExitCode, 0);
+    const humanOutput = humanCapture.stdout.join('');
+    assert.match(humanOutput, /Artifacts: docs\/release-notes\.md/);
+    assert.doesNotMatch(humanOutput, /Artifacts: docs\/release-notes\.md, docs\/release-notes\.md/);
   } finally {
     server.close();
     removeDir(root);
@@ -1167,7 +1300,9 @@ test('cli chat can attach to an existing task and expose diagnostics for agent-c
     assert.equal(typeof diagnostics.data.promptSectionAttribution, 'object');
     assert.equal(Object.prototype.hasOwnProperty.call(diagnostics.data, 'issuePlane'), true);
     assert.equal(Object.prototype.hasOwnProperty.call(diagnostics.data, 'suggestedAction'), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(diagnostics.data, 'workingDirectory'), true);
     assert.equal(Object.prototype.hasOwnProperty.call(diagnostics.data.summary, 'artifactPathState'), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(diagnostics.data.summary, 'workingDirectory'), true);
     assert.equal(records.every((entry) => entry && typeof entry === 'object' && typeof entry.type === 'string'), true);
   } finally {
     server.close();
