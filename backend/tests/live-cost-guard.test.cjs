@@ -76,7 +76,7 @@ test('evaluateLiveCostGuard accepts provider cache telemetry fallback when stabl
         LIVE_COST_MAX_API_CALLS: '4',
         LIVE_COST_MAX_TOTAL_TOKENS: '4000'
       },
-      label: 'real-task-wave'
+      label: 'agent-script-catalog'
     });
 
     assert.equal(result.status, 'ok');

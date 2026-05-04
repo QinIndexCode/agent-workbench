@@ -17,6 +17,7 @@ import { loadWorkspaceWorkflowPromptContext } from '../../runtime/workspace-work
 import { deriveTaskArtifactRoutingSummary } from '../artifact-routing';
 import { getTaskWorkingDirectorySettings } from '../task-working-directory';
 import {
+  DELEGATE_SUBTASK_TOOL_ID,
   buildRequiredDelegationContract,
   filterAllowedToolIdsForDelegation,
   getActiveDelegatedChildrenForParent,
@@ -26,6 +27,7 @@ import { getExecutionProfile } from '../../runtime/execution-profiles';
 import { gateProviderRequestContext } from './request-context-gating';
 import { protectOperatorGuidanceForCorrection } from './operator-guidance';
 import { buildCurrentTurnToolContextMessages } from './turn-runtime-state-builder';
+import { isProductRuntimeTask } from '../task-definition';
 
 function normalizeRuntimeCollections(
   runtime: TaskRuntimeRecord['runtime'],
@@ -146,12 +148,22 @@ export async function assembleTurnContext(params: {
     commands: latestCommands
   });
   const workingDirectory = getTaskWorkingDirectorySettings(runtimeRecord.definition);
-  const allRuntimes = await foundation.taskRuntimes.list();
-  const activeChildCount = getActiveDelegatedChildrenForParent(allRuntimes, taskId).length;
+  const productRuntime = isProductRuntimeTask(runtimeRecord.definition);
+  const baseAllowedToolIds = productRuntime
+    ? null
+    : getExecutionProfile(currentUnit.executionProfileId)?.allowedToolIds ?? null;
   const delegationRequired = isDelegationRequiredForUnit({
     definition: runtimeRecord.definition,
     unitId: currentUnitId
   });
+  const delegationRuntimeLookupNeeded = foundation.config.runtime.delegation.enabled
+    && (
+      baseAllowedToolIds?.includes(DELEGATE_SUBTASK_TOOL_ID)
+      || delegationRequired
+    );
+  const activeChildCount = delegationRuntimeLookupNeeded
+    ? getActiveDelegatedChildrenForParent(await foundation.taskRuntimes.list(), taskId).length
+    : 0;
   const allowedToolIds = filterAllowedToolIdsForDelegation({
     definition: runtimeRecord.definition,
     runtime,
@@ -160,7 +172,7 @@ export async function assembleTurnContext(params: {
     hasRecoveryBlocker: runtime.lifecycleStatus === 'FAILED' || runtime.lifecycleStatus === 'CANCELLED' || Boolean(runtime.lastError),
     commands: latestCommands,
     invocations: latestInvocations,
-    baseAllowedToolIds: getExecutionProfile(currentUnit.executionProfileId)?.allowedToolIds ?? null,
+    baseAllowedToolIds,
     activeChildCount
   });
   const capabilitySelectionSummary = {
@@ -174,7 +186,7 @@ export async function assembleTurnContext(params: {
     selectedToolNames: foundation.extensions.snapshot().tools
       .filter((tool) => !allowedToolIds || allowedToolIds.includes(tool.id))
       .map((tool) => tool.name),
-    reasons: ['single_unit_prompt_full_tools', ...(allowedToolIds ? ['delegation_tool_filter_applied'] : [])]
+    reasons: ['single_unit_prompt_full_tools', ...(allowedToolIds ? ['delegation_tool_filter_applied'] : ['product_runtime_full_tool_request_surface'])]
   };
 
   const pendingOperatorInputs = runtime.pendingOperatorInputs;

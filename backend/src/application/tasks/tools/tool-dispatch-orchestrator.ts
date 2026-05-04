@@ -12,6 +12,7 @@ import {
   dispatchToolExecutor,
   evaluateToolInvocationResumePolicy,
   findLatestApprovalForInvocation,
+  type ToolRiskCategory,
   ToolExecutorRegistry
 } from '../../../foundation/tools';
 import { TaskLogWriter } from '../../../foundation/logging/task-log-writer';
@@ -159,7 +160,11 @@ export class ToolDispatchOrchestrator {
           checkpointId: params.checkpointId,
           policy: {
             decision: 'ALLOW',
-            reason: policy.reason
+            reason: policy.reason,
+            riskCategory: typeof started.metadata?.riskCategory === 'string'
+              ? started.metadata.riskCategory as ToolRiskCategory
+              : 'workspace_read',
+            grantMatched: started.metadata?.permissionGrantMatched === true
           },
           result
         })

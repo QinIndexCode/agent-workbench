@@ -128,14 +128,7 @@ export class TaskTurnRuntimeControl {
 
     if (params.runtime.interrupt.pauseRequested || params.runtime.interrupt.interruptRequested) {
       const paused: TaskRuntimeState = {
-        ...params.runtime,
-        lifecycleStatus: 'PAUSED',
-        engineStatus: 'PAUSED',
-        executionLease: {
-          ...params.runtime.executionLease,
-          active: false,
-          phase: 'PAUSED'
-        },
+        ...applyLifecycleTransition(params.runtime, 'PAUSED'),
         interrupt: {
           pauseRequested: false,
           interruptRequested: false,

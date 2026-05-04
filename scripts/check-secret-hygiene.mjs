@@ -105,7 +105,15 @@ function getTrackedFiles(rootDir) {
 
 async function readTextFile(rootDir, relativeFile) {
   const absoluteFile = path.resolve(rootDir, relativeFile);
-  const content = await fs.readFile(absoluteFile);
+  let content;
+  try {
+    content = await fs.readFile(absoluteFile);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return undefined;
+    }
+    throw error;
+  }
   if (content.includes(0)) {
     return null;
   }
@@ -119,6 +127,7 @@ export async function buildSecretHygieneAudit(options = {}) {
   const highConfidenceFindings = [];
   const credentialAssignmentWarnings = [];
   let checkedTextFileCount = 0;
+  let missingTrackedFileCount = 0;
 
   for (const relativeFile of trackedFiles) {
     if (isForbiddenTrackedLocalPath(relativeFile)) {
@@ -130,6 +139,10 @@ export async function buildSecretHygieneAudit(options = {}) {
     }
 
     const content = await readTextFile(rootDir, relativeFile);
+    if (content === undefined) {
+      missingTrackedFileCount += 1;
+      continue;
+    }
     if (content === null) {
       continue;
     }
@@ -175,6 +188,7 @@ export async function buildSecretHygieneAudit(options = {}) {
     status: issues.length === 0 ? 'achieved' : 'open_gap',
     trackedFileCount: trackedFiles.length,
     checkedTextFileCount,
+    missingTrackedFileCount,
     highConfidenceSecretPatterns: highConfidenceSecretPatterns.map((entry) => entry.kind),
     highConfidenceFindings,
     credentialAssignmentWarnings,

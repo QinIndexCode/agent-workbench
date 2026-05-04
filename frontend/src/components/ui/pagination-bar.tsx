@@ -23,7 +23,7 @@ export function PaginationBar({
 }: PaginationBarProps) {
   return (
     <div
-      className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] border border-border-subtle bg-surface/18 px-4 py-3"
+      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border-subtle bg-surface/18 px-4 py-3"
       data-testid={testId}
     >
       <div>

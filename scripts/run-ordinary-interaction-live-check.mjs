@@ -728,7 +728,6 @@ async function sendWebFollowup(page, frontendBaseUrl, taskId, message) {
     { testId: 'task-action-start', endpoint: 'start' },
     { testId: 'task-action-resume', endpoint: 'resume' },
     { testId: 'task-action-continue', endpoint: 'continue' },
-    { testId: 'task-action-restart', endpoint: 'restart' },
   ];
   for (let attempt = 0; attempt < 10; attempt += 1) {
     for (const action of actionButtons) {
@@ -997,11 +996,19 @@ async function main() {
       maxFollowups: 6,
     });
     const webFollowupScreenshot = await captureScreenshot(page, 'ordinary-web-followup');
-    if (getThreadMessageCount(webAfterFollowup.task) <= preFollowupConversations) {
+    const webAfterFollowupFinal = isTerminalCompleted(webAfterFollowup.task, webAfterFollowup.debug)
+      ? webAfterFollowup
+      : await waitForTaskSettle({
+        serverUrl,
+        taskId: webTaskId,
+        timeoutMs: 90_000,
+        maxFollowups: 0,
+      });
+    if (getThreadMessageCount(webAfterFollowupFinal.task) <= preFollowupConversations) {
       issues.push('Web follow-up composer did not continue the existing thread.');
     }
-    if (!isTerminalCompleted(webAfterFollowup.task, webAfterFollowup.debug)) {
-      issues.push(`Web ordinary-interaction follow-up task did not reach terminal completed state (${webAfterFollowup.task.runtime.lifecycleStatus}).`);
+    if (!isTerminalCompleted(webAfterFollowupFinal.task, webAfterFollowupFinal.debug)) {
+      issues.push(`Web ordinary-interaction follow-up task did not reach terminal completed state (${webAfterFollowupFinal.task.runtime.lifecycleStatus}).`);
     }
 
     const agentReuseMetadataFile = experienceProposal
@@ -1091,10 +1098,13 @@ async function main() {
         },
         webCreate: {
           prompt: PROMPTS.web,
-          followups: webSettled.followups,
-          surface: summarizeTaskSurface(webSettled.task, webSettled.debug),
+          initialFollowups: webSettled.followups,
+          followupFollowups: webAfterFollowup.followups,
+          finalizationFollowups: webAfterFollowupFinal.followups,
+          surface: summarizeTaskSurface(webAfterFollowupFinal.task, webAfterFollowupFinal.debug),
+          initialSurface: summarizeTaskSurface(webSettled.task, webSettled.debug),
           screenshots: [webInspectorScreenshot, webFollowupScreenshot],
-          followupConversationCount: webAfterFollowup.task.conversations.length,
+          followupConversationCount: webAfterFollowupFinal.task.conversations.length,
         },
         agentReuse: {
           prompt: PROMPTS.reuse,

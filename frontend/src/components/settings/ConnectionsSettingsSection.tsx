@@ -224,7 +224,7 @@ function TextInput(props: InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`w-full rounded-2xl border border-border-default bg-surface-elevated px-3 py-2 text-sm text-text-primary outline-none transition duration-fast placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-accent/30 ${props.className ?? ''}`}
+      className={`w-full rounded-lg border border-border-default bg-surface-elevated px-3 py-2 text-sm text-text-primary outline-none transition duration-fast placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-accent/30 ${props.className ?? ''}`}
     />
   );
 }
@@ -414,6 +414,18 @@ export function ConnectionsSettingsSection({
     if (!providerId) {
       throw new Error('Provider ID is required.');
     }
+    if (!providerModalDraft.label.trim()) {
+      throw new Error('Provider label is required.');
+    }
+    if (!providerModalDraft.model.trim()) {
+      throw new Error('Provider model is required.');
+    }
+    const duplicateProvider = orderedProviders.find((provider) => (
+      provider.profile.id === providerId && provider.profile.id !== providerModalTargetId
+    ));
+    if (duplicateProvider) {
+      throw new Error(`Provider ID "${providerId}" already exists. Choose a different ID before saving.`);
+    }
     const existing = providerModalTargetId
       ? orderedProviders.find((provider) => provider.profile.id === providerModalTargetId) ?? null
       : null;
@@ -480,7 +492,7 @@ export function ConnectionsSettingsSection({
 
   return (
     <AdminPageShell summary={<SummaryStrip items={summaryItems} />}>
-      <Card className="rounded-[20px] border-border-subtle bg-surface/30">
+      <Card className="rounded-lg border-border-subtle bg-surface/30">
         <CardHeader className="flex flex-col gap-3 py-4 sm:flex-row sm:items-end sm:justify-between">
           <SectionLead
             eyebrow="Connections"
@@ -502,7 +514,7 @@ export function ConnectionsSettingsSection({
             <>
               {!savedEnabledProvider && !runtimeEnabledProvider ? (
                 <div
-                  className="rounded-2xl border border-warning/25 bg-warning-muted/10 px-4 py-3 text-sm text-text-secondary"
+                  className="rounded-lg border border-warning/25 bg-warning-muted/10 px-4 py-3 text-sm text-text-secondary"
                   data-testid="settings-connections-no-enabled-provider"
                 >
                   No provider is enabled in saved config or runtime yet. Choose one connection to make the roster deterministic.
@@ -510,7 +522,7 @@ export function ConnectionsSettingsSection({
               ) : null}
               {providerTruthMismatch ? (
                 <div
-                  className="rounded-2xl border border-warning/25 bg-warning-muted/10 px-4 py-3 text-sm text-text-secondary"
+                  className="rounded-lg border border-warning/25 bg-warning-muted/10 px-4 py-3 text-sm text-text-secondary"
                   data-testid="settings-connections-runtime-pending"
                 >
                   {restartRequired
@@ -635,7 +647,7 @@ export function ConnectionsSettingsSection({
               />
 
               {pagedProviders.some((provider) => providerTestResults[provider.profile.id]) ? (
-                <div className="rounded-[18px] border border-border-subtle bg-surface/18 px-4 py-3">
+                <div className="rounded-lg border border-border-subtle bg-surface/18 px-4 py-3">
                   <p className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Latest connection tests</p>
                   <div className="mt-2 space-y-2 text-sm text-text-secondary">
                     {pagedProviders.filter((provider) => providerTestResults[provider.profile.id]).map((provider) => (
@@ -685,7 +697,7 @@ export function ConnectionsSettingsSection({
         )}
       >
         <div className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-[18px] border border-border-subtle bg-surface/18 px-4 py-3 md:col-span-2">
+          <div className="rounded-lg border border-border-subtle bg-surface/18 px-4 py-3 md:col-span-2">
             <p className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Connection editor</p>
             <p className="mt-2 text-sm text-text-secondary">
               Start with a quick preset when all you need is an API key and a model. Open the advanced fields only when you need to tune transport details.
@@ -758,7 +770,7 @@ export function ConnectionsSettingsSection({
                       ))}
                     </SelectInput>
                   </div>
-                  <div className="rounded-[18px] border border-border-subtle bg-surface/18 px-4 py-3">
+                  <div className="rounded-lg border border-border-subtle bg-surface/18 px-4 py-3">
                     <p className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Preset details</p>
                     <div className="mt-2 space-y-1 text-sm text-text-secondary">
                       <p className="break-words"><span className="text-text-primary">Vendor:</span> {selectedPreset?.vendor ?? 'custom'}</p>
@@ -787,7 +799,7 @@ export function ConnectionsSettingsSection({
                   </div>
                   {!selectedPresetRunnable && selectedPreset ? (
                     <div
-                      className="rounded-[18px] border border-info/25 bg-info-muted/10 px-4 py-3 text-sm text-text-secondary md:col-span-2"
+                      className="rounded-lg border border-info/25 bg-info-muted/10 px-4 py-3 text-sm text-text-secondary md:col-span-2"
                       data-testid="settings-connections-provider-non-runnable"
                     >
                       {selectedPreset.implementationStatus === 'external-auth-required'
@@ -816,7 +828,7 @@ export function ConnectionsSettingsSection({
             />
           </div>
           {selectedRequiredConfigFields.length ? (
-            <div className="rounded-[18px] border border-border-subtle bg-surface/18 px-4 py-3 md:col-span-2">
+            <div className="rounded-lg border border-border-subtle bg-surface/18 px-4 py-3 md:col-span-2">
               <p className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Required configuration</p>
               <p className="mt-1 text-sm text-text-secondary">
                 These fields are stored as provider metadata so enterprise and gateway profiles stay explicit.
@@ -850,7 +862,7 @@ export function ConnectionsSettingsSection({
               onChange={(event) => setProviderModalSecret(event.target.value)}
             />
           </div>
-          <div className="rounded-[18px] border border-border-subtle bg-surface/18 px-4 py-3 md:col-span-2">
+          <div className="rounded-lg border border-border-subtle bg-surface/18 px-4 py-3 md:col-span-2">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Enable after save</p>
@@ -866,7 +878,7 @@ export function ConnectionsSettingsSection({
               />
             </div>
           </div>
-          <div className="rounded-[18px] border border-border-subtle bg-surface/18 px-4 py-3 md:col-span-2">
+          <div className="rounded-lg border border-border-subtle bg-surface/18 px-4 py-3 md:col-span-2">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Advanced settings</p>
@@ -952,7 +964,7 @@ export function ConnectionsSettingsSection({
             ) : null}
           </div>
           {providerModalMode === 'edit' && providerModalTargetId ? (
-            <div className="rounded-[18px] border border-border-subtle bg-surface/18 px-4 py-3 md:col-span-2">
+            <div className="rounded-lg border border-border-subtle bg-surface/18 px-4 py-3 md:col-span-2">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Connectivity check</p>

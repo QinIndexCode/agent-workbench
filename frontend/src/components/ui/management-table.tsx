@@ -9,7 +9,7 @@ export function ManagementTable({
 }) {
   return (
     <div
-      className="overflow-hidden rounded-[20px] border border-border-subtle bg-surface/26"
+      className="overflow-hidden rounded-lg border border-border-subtle bg-surface/26"
       data-testid={testId}
     >
       {children}

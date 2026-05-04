@@ -10,7 +10,9 @@ export class InterruptController {
 
   begin(taskId: string): { leaseId: string; signal: AbortSignal } {
     const active = this.activeLeases.get(taskId);
-    active?.controller.abort();
+    if (active) {
+      throw new Error(`backend_new interrupt error: task "${taskId}" already has an active execution lease.`);
+    }
     const leaseId = `lease_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const controller = new AbortController();
     this.activeLeases.set(taskId, {

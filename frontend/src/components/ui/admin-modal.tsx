@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from './button';
 import { useAnimatedPresence } from '../../hooks/useAnimatedPresence';
@@ -37,6 +37,9 @@ export function AdminModal({
   onClose,
 }: AdminModalProps) {
   const presence = useAnimatedPresence(open, 180);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const titleId = useId();
+  const descriptionId = useId();
 
   useEffect(() => {
     if (!open) {
@@ -46,6 +49,32 @@ export function AdminModal({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !busy) {
         onClose();
+        return;
+      }
+
+      if (event.key !== 'Tab') {
+        return;
+      }
+
+      const focusable = dialogRef.current
+        ? Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )).filter((element) => element.offsetParent !== null)
+        : [];
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
       }
     };
 
@@ -57,6 +86,17 @@ export function AdminModal({
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [busy, onClose, open]);
+
+  useEffect(() => {
+    if (!presence.mounted || presence.state !== 'open') {
+      return;
+    }
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && dialogRef.current?.contains(activeElement)) {
+      return;
+    }
+    dialogRef.current?.focus();
+  }, [presence.mounted, presence.state]);
 
   if (!presence.mounted) {
     return null;
@@ -75,7 +115,13 @@ export function AdminModal({
         onClick={onClose}
       />
       <div
-        className={`motion-fade relative z-[1] flex max-h-[min(90vh,980px)] w-full ${MODAL_WIDTH[size]} flex-col overflow-hidden rounded-[28px] border border-border-subtle bg-surface shadow-[0_28px_120px_-40px_rgba(0,0,0,0.72)] ${presence.state === 'open' ? 'motion-modal-open' : 'motion-modal-closed'}`}
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={description ? descriptionId : undefined}
+        tabIndex={-1}
+        className={`motion-fade relative z-[1] flex max-h-[min(90vh,980px)] w-full ${MODAL_WIDTH[size]} flex-col overflow-hidden rounded-lg border border-border-subtle bg-surface shadow-[0_28px_120px_-40px_rgba(0,0,0,0.72)] ${presence.state === 'open' ? 'motion-modal-open' : 'motion-modal-closed'}`}
         data-testid={testId ? `${testId}-panel` : undefined}
       >
         <div
@@ -84,9 +130,9 @@ export function AdminModal({
         >
           <div className="min-w-0 flex-1">
             <p className="text-[11px] uppercase tracking-[0.28em] text-text-muted">{eyebrow}</p>
-            <h2 className="mt-2 text-xl font-semibold text-text-primary">{title}</h2>
+            <h2 id={titleId} className="mt-2 text-xl font-semibold text-text-primary">{title}</h2>
             {description ? (
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">{description}</p>
+              <p id={descriptionId} className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">{description}</p>
             ) : null}
           </div>
           <div className="flex items-center gap-2">
@@ -97,7 +143,7 @@ export function AdminModal({
               size="sm"
               disabled={busy}
               onClick={onClose}
-              className="h-10 w-10 rounded-full p-0"
+              className="h-10 w-10 rounded-lg p-0"
               aria-label="Close dialog"
               title="Close dialog"
             >

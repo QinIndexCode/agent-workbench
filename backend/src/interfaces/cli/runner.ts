@@ -36,7 +36,7 @@ export async function runBackendNewCli(options: RunBackendNewCliOptions): Promis
   const fetchImpl = options.fetchImpl ?? fetch;
   const io: CliIo = options.io ?? process;
   const stdin = options.stdin ?? process.stdin;
-  const createWebSocket: CreateWebSocket = options.createWebSocket ?? ((url: string) => new WebSocket(url) as any);
+  const createWebSocket: CreateWebSocket = options.createWebSocket ?? ((url: string) => new WebSocket(url));
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const args = parseCliArgs(options.argv);
   const [group, action, ...rest] = args.command;

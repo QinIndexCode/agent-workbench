@@ -7,6 +7,7 @@ import {
   TaskDebugResponse,
   TaskDiagnosticsSummary,
   TaskDiscussionResponse,
+  TaskGuidanceRecord,
   TaskQueryResponse,
   TaskSummaryResponse,
   TaskToolingResponse,
@@ -74,6 +75,10 @@ export class TaskQueryService {
 
   async getTaskOperatorMessages(taskId: string): Promise<OperatorMessageRecord[]> {
     return this.foundation.operatorMessages.listLatest(taskId);
+  }
+
+  async getTaskGuidance(taskId: string): Promise<TaskGuidanceRecord[]> {
+    return (await this.records.buildTaskQuery(taskId)).pendingGuidance;
   }
 
   async getTaskDiscussion(taskId: string): Promise<TaskDiscussionResponse> {

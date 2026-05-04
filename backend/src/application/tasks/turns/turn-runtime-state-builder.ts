@@ -17,12 +17,11 @@ import { evolveTaskMemory, evolveUserPreferenceProfile } from '../../../domain/r
 import {
   applyCorrectionState,
   applyTrackerState,
-  applyTrackerStates
+  applyTrackerStates,
+  applyLifecycleTransition
 } from '../../../domain/runtime/state-transition-applier';
 import { BackendNewFoundation } from '../../../foundation/bootstrap/types';
 import { ToolInvocationRecord } from '../../../foundation/repository/types';
-import { evaluateTaskQuality } from '../../../domain/quality/task-quality';
-import { collectTaskArtifactPaths } from '../artifact-routing';
 import { TaskPlannerService } from '../planning/task-planner-service';
 import { TurnContextAssemblyResult } from './turn-context-assembly';
 import { TurnPhaseOutcome } from './turn-phase-types';
@@ -76,10 +75,6 @@ function formatPathList(paths: string[], limit: number): string {
   const shown = normalized.slice(0, limit);
   const suffix = normalized.length > shown.length ? `; +${normalized.length - shown.length} more` : '';
   return `${shown.join(', ')}${suffix}`;
-}
-
-function isAbsoluteArtifactEvidencePath(value: string): boolean {
-  return /^[A-Za-z]:\//.test(value) || value.startsWith('/');
 }
 
 function getWriteFileContentFromArguments(argumentsRecord: Record<string, unknown>): string | null {
@@ -754,9 +749,8 @@ function deriveEffectiveAcceptanceState(params: {
   diagnosticsAcceptance: TurnPhaseOutcome['orchestrated']['acceptance'];
   latestToolInvocations: ToolInvocationRecord[];
   acceptedTrackers: TurnPhaseOutcome['acceptedTrackers'];
-  qualityGateFailed: boolean;
 }) {
-  if (!params.currentUnit || params.qualityGateFailed) {
+  if (!params.currentUnit) {
     return {
       pendingCorrection: params.diagnosticsAcceptance.ok ? 'NONE' as const : params.diagnosticsAcceptance.pendingCorrection,
       failureCategory: params.diagnosticsAcceptance.ok
@@ -917,62 +911,14 @@ export function buildTurnRuntimeState(params: {
 }): TurnRuntimeStateBuildResult {
   const currentUnit = params.definition.units.find((unit) => unit.id === params.currentUnitId) ?? null;
   const latestAcceptedOutput = params.phaseOutcome.acceptedOutputs?.at(-1);
-  const qualityArtifactPaths = collectTaskArtifactPaths(params.latestToolInvocations);
-  const qualityArtifactDestinationPaths = qualityArtifactPaths.filter(isAbsoluteArtifactEvidencePath);
-  const qualityEvaluation = currentUnit
-    ? evaluateTaskQuality({
-      taskId: params.definition.taskId,
-      title: params.definition.title,
-      intent: params.definition.intent,
-      unitId: currentUnit.id,
-      executionProfileId: currentUnit.executionProfileId ?? 'analyze',
-      qualityProfileId: currentUnit.qualityProfileId ?? null,
-      workspaceDir: params.foundation.layout.forTask(params.definition.taskId).workspaceDir,
-      artifactPaths: qualityArtifactPaths,
-      artifactDestinationPaths: qualityArtifactDestinationPaths,
-      artifactDestinationDir: null,
-      latestVisibleOutput: latestAcceptedOutput
-        ? {
-          summary: typeof latestAcceptedOutput.parsedJson === 'object' && latestAcceptedOutput.parsedJson && 'summary' in latestAcceptedOutput.parsedJson
-            ? String((latestAcceptedOutput.parsedJson as Record<string, unknown>).summary ?? '')
-            : '',
-          details: typeof latestAcceptedOutput.parsedJson === 'object' && latestAcceptedOutput.parsedJson && 'details' in latestAcceptedOutput.parsedJson
-            ? String((latestAcceptedOutput.parsedJson as Record<string, unknown>).details ?? '')
-            : null,
-          issues: Array.isArray((latestAcceptedOutput.parsedJson as Record<string, unknown> | null)?.issues)
-            ? ((latestAcceptedOutput.parsedJson as Record<string, unknown>).issues as unknown[])
-              .filter((issue): issue is string => typeof issue === 'string')
-            : []
-        }
-        : null,
-      completionSummary: null,
-      toolInvocations: params.latestToolInvocations
-    })
-    : {
-      profileId: null,
-      verdict: 'not_applicable' as const,
-      passedChecks: [],
-      failedChecks: [],
-      requiredNextEvidence: [],
-      lastEvaluatedAt: null
-    };
-  const qualityGateFailed = qualityEvaluation.profileId !== null && qualityEvaluation.verdict === 'failed';
-  const qualityFailureMessages = qualityEvaluation.failedChecks.map((issue) => `quality_gate_failed:${issue}`);
-  const qualityRequiredEvidenceMessages = qualityEvaluation.requiredNextEvidence.map((item) => `quality_required_evidence:${item}`);
-  const qualityCorrectionKind = qualityGateFailed
-    ? (qualityEvaluation.requiredNextEvidence.length > 0 ? 'AWAITING_TOOL_ACTION' : 'AWAITING_OUTPUT_CORRECTION')
-    : params.phaseOutcome.orchestrated.acceptance.pendingCorrection;
   const diagnosticsAcceptance = params.phaseOutcome.diagnosticsAcceptance ?? params.phaseOutcome.orchestrated.acceptance;
   const effectiveAcceptance = deriveEffectiveAcceptanceState({
     currentUnit,
     diagnosticsAcceptance,
     latestToolInvocations: params.latestToolInvocations,
-    acceptedTrackers: params.phaseOutcome.acceptedTrackers,
-    qualityGateFailed
+    acceptedTrackers: params.phaseOutcome.acceptedTrackers
   });
-  const effectivePendingCorrection = qualityGateFailed
-    ? qualityCorrectionKind
-    : effectiveAcceptance.pendingCorrection;
+  const effectivePendingCorrection = effectiveAcceptance.pendingCorrection;
   const pendingInvocationIds = derivePendingInvocationIds({
     acceptedInvocationIds: params.phaseOutcome.plannedTools.acceptedInvocationIds,
     approvalInvocationIds: params.phaseOutcome.plannedTools.approvalInvocationIds,
@@ -1007,16 +953,13 @@ export function buildTurnRuntimeState(params: {
       }));
   const nextRuntimeBase = params.phaseOutcome.orchestrated.acceptance.ok
     && params.phaseOutcome.acceptedTrackers.length > 0
-    && !qualityGateFailed
     ? runtimeWithAcceptedTrackers
     : applyCorrectionState({
       definition: params.definition,
       runtime: runtimeWithAcceptedTrackers,
       currentUnitId: params.phaseOutcome.correctionUnitId,
       kind: effectivePendingCorrection,
-      errors: qualityGateFailed
-        ? [...qualityFailureMessages, ...qualityRequiredEvidenceMessages]
-        : effectiveAcceptance.issueMessages,
+      errors: effectiveAcceptance.issueMessages,
       acceptedInvocationIds: pendingInvocationIds.awaitingToolDispatch,
       approvalInvocationIds: pendingInvocationIds.awaitingApprovalInvocations,
       sessionId: params.sessionId,
@@ -1047,9 +990,7 @@ export function buildTurnRuntimeState(params: {
     userProfile: updatedUserProfile
   });
   const nextPlannerDiagnostics = params.plannerService.summarizeTurn(params.definition, nextRuntimeBase);
-  const acceptanceFailureCategory = qualityGateFailed
-    ? 'quality_gate_failed'
-    : effectiveAcceptance.failureCategory;
+  const acceptanceFailureCategory = effectiveAcceptance.failureCategory;
   const fallbackTurn = !params.plannerPreferred;
   const nextGuardrails = computeGuardrails({
     previousRuntime: params.previousRuntime,
@@ -1093,7 +1034,7 @@ export function buildTurnRuntimeState(params: {
     validatedOutputs: params.assembled.selectedValidatedOutputs.records,
     memory: updatedTaskMemory
   });
-  const nextRuntime: TaskRuntimeState = {
+  let nextRuntime: TaskRuntimeState = {
     ...nextRuntimeBase,
     planner: {
       ...nextPlannerDiagnostics.planner,
@@ -1220,24 +1161,17 @@ export function buildTurnRuntimeState(params: {
           failureCategory: diagnosticsAcceptance.exitCondition.failureCategory
         },
         lastAcceptanceFailureCategory: acceptanceFailureCategory,
-        lastAcceptanceIssueCodes: qualityGateFailed
-          ? [
-            ...qualityEvaluation.failedChecks.map((issue) => `quality:${issue}`),
-            ...qualityEvaluation.requiredNextEvidence.map((item) => `quality_required:${item}`)
-          ]
-          : effectiveAcceptance.issueCodes,
-        lastAcceptanceIssueMessages: qualityGateFailed
-          ? [...qualityFailureMessages, ...qualityRequiredEvidenceMessages]
-          : effectiveAcceptance.issueMessages,
-        lastPendingCorrectionKind: qualityGateFailed ? qualityCorrectionKind : diagnosticsAcceptance.ok ? null : effectiveAcceptance.pendingCorrection,
+        lastAcceptanceIssueCodes: effectiveAcceptance.issueCodes,
+        lastAcceptanceIssueMessages: effectiveAcceptance.issueMessages,
+        lastPendingCorrectionKind: diagnosticsAcceptance.ok ? null : effectiveAcceptance.pendingCorrection,
         lastCorrectionPromptMode: deriveCorrectionPromptMode({
-          pendingCorrection: qualityGateFailed ? qualityCorrectionKind : diagnosticsAcceptance.ok ? 'NONE' : effectiveAcceptance.pendingCorrection,
+          pendingCorrection: diagnosticsAcceptance.ok ? 'NONE' : effectiveAcceptance.pendingCorrection,
           failureCategory: acceptanceFailureCategory
       }),
       correctionLoopNonConvergent:
-        (qualityGateFailed || !diagnosticsAcceptance.ok)
+        !diagnosticsAcceptance.ok
         && (nextGuardrails.correctionStreak >= 3)
-        && (params.previousRuntime.contractDiagnostics?.lastPendingCorrectionKind === (qualityGateFailed ? qualityCorrectionKind : effectiveAcceptance.pendingCorrection))
+        && (params.previousRuntime.contractDiagnostics?.lastPendingCorrectionKind === effectiveAcceptance.pendingCorrection)
         && (params.previousRuntime.contractDiagnostics?.lastAcceptanceFailureCategory === acceptanceFailureCategory)
     },
     contextCompressionCount: params.previousRuntime.contextCompressionCount
@@ -1245,8 +1179,7 @@ export function buildTurnRuntimeState(params: {
       + (nextContext.compressed ? 1 : 0)
   };
   if (
-    !qualityGateFailed
-    && effectiveAcceptance.pendingCorrection !== 'NONE'
+    effectiveAcceptance.pendingCorrection !== 'NONE'
     && nextRuntime.pendingCorrection === 'NONE'
     && nextRuntime.lifecycleStatus === 'RUNNING'
     && nextRuntime.currentUnitId === params.phaseOutcome.correctionUnitId
@@ -1254,6 +1187,7 @@ export function buildTurnRuntimeState(params: {
     nextRuntime.pendingCorrection = effectiveAcceptance.pendingCorrection;
     const unit = nextRuntime.schedulerUnits[params.phaseOutcome.correctionUnitId];
     if (unit) {
+      unit.status = 'PARTIAL';
       unit.invalidOutputErrors = effectiveAcceptance.issueMessages.length > 0
         ? [...effectiveAcceptance.issueMessages]
         : [...unit.invalidOutputErrors];
@@ -1297,27 +1231,11 @@ export function buildTurnRuntimeState(params: {
     || params.latestRuntimeAfterProvider.interrupt.interruptRequested
     || params.latestRuntimeAfterProvider.interrupt.pauseRequested
   ) {
-    if (!nextRuntime.executionLease) {
-      nextRuntime.executionLease = {
-        active: false,
-        phase: 'IDLE',
-        leaseId: null,
-        startedAt: null,
-        replayable: true
-      };
-    }
-    
+    const transitionStatus = params.latestRuntimeAfterProvider.interrupt.cancelRequested ? 'CANCELLED' : 'PAUSED';
+    nextRuntime = applyLifecycleTransition(nextRuntime, transitionStatus);
     if (params.latestRuntimeAfterProvider.interrupt.cancelRequested) {
-      nextRuntime.lifecycleStatus = 'CANCELLED';
-      nextRuntime.engineStatus = 'FAILED';
       nextRuntime.currentUnitId = null;
-      nextRuntime.executionLease.phase = 'INTERRUPTED';
-    } else {
-      nextRuntime.lifecycleStatus = 'PAUSED';
-      nextRuntime.engineStatus = 'PAUSED';
-      nextRuntime.executionLease.phase = 'PAUSED';
     }
-    nextRuntime.executionLease.active = false;
     nextRuntime.interrupt = {
       pauseRequested: false,
       interruptRequested: false,

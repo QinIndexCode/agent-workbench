@@ -85,14 +85,12 @@ export function getTaskPatternKeyFromDefinition(definition: TaskDefinition): str
   const unit = definition.units[0];
   const unitRole = unit?.role ?? 'task';
   const executionProfileId = unit?.executionProfileId ?? 'analyze';
-  const qualityProfileId = unit?.qualityProfileId ?? 'none';
   const outputContractKeys = extractOutputContractKeysFromDefinition(definition);
   const artifactExpectation = outputContractKeys.includes('artifact') ? 'artifact' : 'no-artifact';
   const semanticTokens = extractStableTaskPatternTokensFromDefinition(definition);
   return normalizeTaskPatternKey([
     unitRole,
     executionProfileId,
-    qualityProfileId,
     artifactExpectation,
     ...semanticTokens
   ].join('-'));

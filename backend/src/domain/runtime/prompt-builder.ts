@@ -21,7 +21,6 @@ import {
   PromptWorkingDirectorySummary,
   PromptWorkspaceDocSummary
 } from './prompt-sections';
-import { getQualityProfilePromptSection } from '../quality/task-quality';
 import { createPromptBudgetMetadata, createPromptSectionAttribution } from './prompt-budgeter';
 import {
   AgentUnit,
@@ -458,9 +457,6 @@ export function buildTurnPrompt(input: BuildPromptInput): BuiltPromptResult {
   const delegationRequirementSection = buildDelegationRequirementSection({
     requirement: input.delegationRequirement ?? null
   });
-  const qualityProfileSection = getQualityProfilePromptSection(
-    'qualityProfileId' in input.currentUnit ? input.currentUnit.qualityProfileId ?? null : null
-  );
   const capabilityBaselineSection = buildCapabilityBaselineSection({
     capabilities: input.capabilities
   });
@@ -499,7 +495,6 @@ export function buildTurnPrompt(input: BuildPromptInput): BuiltPromptResult {
     stableSections,
     workspaceInstructionSection,
     taskContractSection,
-    ...(qualityProfileSection.length > 0 ? [qualityProfileSection] : []),
     capabilityBaselineSection
   ]);
   const volatilePromptText = joinPromptSections([
@@ -522,7 +517,7 @@ export function buildTurnPrompt(input: BuildPromptInput): BuiltPromptResult {
   const promptSeparator = stablePromptText && volatilePromptText ? '\n\n' : '';
   const prompt = `${stablePromptText}${promptSeparator}${volatilePromptText}`;
   const sectionPromptChars = createPromptSectionAttribution({
-    stageRuntimeText: [workspaceInstructionSection.join('\n'), taskContractSection.join('\n'), runtimeStateSection.join('\n'), qualityProfileSection.join('\n'), capabilityBaselineSection.join('\n')].filter(Boolean).join('\n\n'),
+    stageRuntimeText: [workspaceInstructionSection.join('\n'), taskContractSection.join('\n'), runtimeStateSection.join('\n'), capabilityBaselineSection.join('\n')].filter(Boolean).join('\n\n'),
     responsePolicyText: responsePolicySection.join('\n'),
     taskMemoryText: memorySection.lines.join('\n'),
     preferenceText: preferenceSection.lines.join('\n'),
@@ -604,7 +599,6 @@ export function buildTurnPrompt(input: BuildPromptInput): BuiltPromptResult {
     baselineSystemSection,
     baselineWorkspaceSection,
     baselineTaskContractSection,
-    ...(qualityProfileSection.length > 0 ? [qualityProfileSection] : []),
     capabilityBaselineSection
   ]);
   const baselineVolatileSections = joinPromptSections([

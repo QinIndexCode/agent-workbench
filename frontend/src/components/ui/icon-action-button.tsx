@@ -26,7 +26,7 @@ export function IconActionButton({
       disabled={disabled}
       onClick={onClick}
       data-testid={testId}
-      className="h-10 w-10 rounded-full p-0 text-text-primary hover:text-text-primary"
+      className="h-10 w-10 rounded-full p-0 text-text-primary hover:text-text-primary hover:shadow-[0_0_16px_rgba(99,102,241,0.2)] active:scale-90"
       aria-label={label}
       title={label}
     >

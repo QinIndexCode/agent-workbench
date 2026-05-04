@@ -1,6 +1,6 @@
 import { BackendNewFoundation } from '../../foundation/bootstrap/types';
 import { AgentToolDefinition } from '../../foundation/extensions/types';
-import { CapabilityHubView, EcosystemSummaryView, ImprovementProposal, ScenarioPackSummary, ToolCapabilityEntry, WorkspaceWorkflowView } from './types';
+import { CapabilityHubView, EcosystemSummaryView, ImprovementProposal, ScriptCatalogEntry, ToolCapabilityEntry, WorkspaceWorkflowView } from './types';
 
 const ACCEPTANCE_TOOL_NAMES = new Set([
   'read_file',
@@ -21,126 +21,60 @@ const VISIBLE_TOOL_NAMES = new Set([
   'run_command'
 ]);
 
-const SCENARIO_PACKS: ScenarioPackSummary[] = [
+const SCRIPT_CATALOG: ScriptCatalogEntry[] = [
   {
-    id: 'web-creation',
-    label: 'Web/App Creation',
-    focus: 'External-path delivery, browser-verifiable UI, build or DOM quality checks.',
-    qualityProfileId: 'web_experience',
-    qualityGateId: 'web_experience',
-    artifactAudit: 'Checks generated files, no placeholder content, visible interaction, and build or browser smoke evidence.',
-    surfaceChecks: ['web-inspector', 'human-cli-diagnostics', 'agent-cli-ndjson', 'browser-preview'],
-    cleanupHints: ['workspace', 'external-delivery-path'],
-    modelPolicy: {
-      defaultModelClass: 'fast',
-      reason: 'Web creation is artifact-heavy but usually does not require the strong long-context model.'
-    },
-    timeoutPolicy: {
-      maxTurns: 10,
-      maxIdleCorrections: 2,
-      maxRuntimeMs: 20 * 60 * 1000
-    },
-    status: 'ready'
+    id: 'frontend-typecheck',
+    label: 'Frontend typecheck',
+    description: 'Runs the frontend TypeScript checker when the agent needs compiler feedback for UI changes.',
+    commandTemplate: 'npm.cmd run typecheck -w frontend',
+    defaultCwd: null,
+    riskCategory: 'shell_command',
+    outputHint: 'Use TypeScript diagnostics to decide the next code edit; a pass is evidence only, not task completion.'
   },
   {
-    id: 'docs-normalize',
-    label: 'Document Normalize',
-    focus: 'Batch rename, hierarchy cleanup, source-preserving trace, and cross-reference repair.',
-    qualityProfileId: 'docs_normalize',
-    qualityGateId: 'docs_normalize',
-    artifactAudit: 'Checks source-to-output trace, preserved phrases, consistent names, and non-template output.',
-    surfaceChecks: ['web-inspector', 'human-cli-diagnostics', 'agent-cli-ndjson'],
-    cleanupHints: ['workspace/incoming', 'workspace/normalized'],
-    modelPolicy: {
-      defaultModelClass: 'fast',
-      reason: 'The quality gate depends on source grounding, not high-cost reasoning by default.'
-    },
-    timeoutPolicy: {
-      maxTurns: 8,
-      maxIdleCorrections: 2,
-      maxRuntimeMs: 15 * 60 * 1000
-    },
-    status: 'ready'
+    id: 'backend-typecheck',
+    label: 'Backend typecheck',
+    description: 'Runs the backend TypeScript checker when the agent needs compiler feedback for runtime or API changes.',
+    commandTemplate: 'npm.cmd run typecheck -w backend',
+    defaultCwd: null,
+    riskCategory: 'shell_command',
+    outputHint: 'Use TypeScript diagnostics to decide the next code edit; a pass is evidence only, not task completion.'
   },
   {
-    id: 'docs-synthesize',
-    label: 'Document Synthesis',
-    focus: 'Handbook, summary, index, and decision-log synthesis with claim-level sources.',
-    qualityProfileId: 'docs_synthesize',
-    qualityGateId: 'docs_synthesize',
-    artifactAudit: 'Checks claim/source trace, no unsupported generic claims, and coherent handbook structure.',
-    surfaceChecks: ['web-inspector', 'human-cli-diagnostics', 'agent-cli-ndjson'],
-    cleanupHints: ['workspace/source', 'workspace/handbook'],
-    modelPolicy: {
-      defaultModelClass: 'fast',
-      reason: 'The pack tests claim-level grounding before it tests model depth.'
-    },
-    timeoutPolicy: {
-      maxTurns: 9,
-      maxIdleCorrections: 2,
-      maxRuntimeMs: 18 * 60 * 1000
-    },
-    status: 'ready'
+    id: 'frontend-build',
+    label: 'Frontend build',
+    description: 'Builds the frontend when the agent needs production bundle feedback after UI work.',
+    commandTemplate: 'npm.cmd run build -w frontend',
+    defaultCwd: null,
+    riskCategory: 'shell_command',
+    outputHint: 'Treat build output as engineering feedback and summarize warnings separately from failures.'
   },
   {
-    id: 'system-audit',
-    label: 'System Audit',
-    focus: 'Host observation, fact/source binding, unit normalization, and actionable recommendations.',
-    qualityProfileId: 'system_audit',
-    qualityGateId: 'system_audit',
-    artifactAudit: 'Checks source invocation ids, reported values, units, and recommendation grounding.',
-    surfaceChecks: ['web-inspector', 'human-cli-diagnostics', 'agent-cli-ndjson', 'host-snapshot-audit'],
-    cleanupHints: ['workspace/reports', 'workspace/quality'],
-    modelPolicy: {
-      defaultModelClass: 'fast',
-      reason: 'Correct host observation and evidence binding matter more than long-context generation.'
-    },
-    timeoutPolicy: {
-      maxTurns: 8,
-      maxIdleCorrections: 2,
-      maxRuntimeMs: 15 * 60 * 1000
-    },
-    status: 'ready'
+    id: 'frontend-unit',
+    label: 'Frontend unit tests',
+    description: 'Runs frontend unit tests and coverage when the agent changes component logic or governance UI.',
+    commandTemplate: 'npm.cmd run test:unit -w frontend',
+    defaultCwd: null,
+    riskCategory: 'shell_command',
+    outputHint: 'Use failing tests and coverage gaps as feedback; do not treat coverage as task quality judgment.'
   },
   {
-    id: 'codebase-work',
-    label: 'Codebase Work',
-    focus: 'Repo-local implementation, bug fix, verification command evidence, and follow-up diagnosis.',
-    qualityProfileId: null,
-    qualityGateId: null,
-    artifactAudit: 'Checks changed files, command results, tool evidence, and failure recovery traces.',
-    surfaceChecks: ['web-inspector', 'human-cli-diagnostics', 'agent-cli-ndjson', 'command-evidence'],
-    cleanupHints: ['workspace', 'repo-diff'],
-    modelPolicy: {
-      defaultModelClass: 'provider-default',
-      reason: 'Codebase tasks should follow the selected provider unless a scenario pack explicitly escalates.'
-    },
-    timeoutPolicy: {
-      maxTurns: 12,
-      maxIdleCorrections: 3,
-      maxRuntimeMs: 25 * 60 * 1000
-    },
-    status: 'ready'
+    id: 'host-process-observation',
+    label: 'Host process observation',
+    description: 'Inspects currently running processes and resource usage for desktop/system observation tasks.',
+    commandTemplate: 'Get-Process | Sort-Object CPU -Descending | Select-Object -First 20 ProcessName,Id,CPU,WorkingSet',
+    defaultCwd: null,
+    riskCategory: 'host_observation',
+    outputHint: 'Summarize top CPU and memory consumers and mention that CPU is cumulative process time on Windows.'
   },
   {
-    id: 'database-design',
-    label: 'Database Design',
-    focus: 'High-complexity system design, runnable prototype scaffold, benchmark plan, and dry-run evidence.',
-    qualityProfileId: null,
-    qualityGateId: 'database_near_mysql_design',
-    artifactAudit: 'Checks design coverage, prototype modules, manifest, benchmark script, and dry-run result.',
-    surfaceChecks: ['web-inspector', 'human-cli-diagnostics', 'agent-cli-ndjson', 'benchmark-artifact-audit'],
-    cleanupHints: ['workspace/database-lab'],
-    modelPolicy: {
-      defaultModelClass: 'strong',
-      reason: 'Database design intentionally exercises long-context architecture and prototype repair.'
-    },
-    timeoutPolicy: {
-      maxTurns: 18,
-      maxIdleCorrections: 3,
-      maxRuntimeMs: 45 * 60 * 1000
-    },
-    status: 'ready'
+    id: 'frontend-smoke',
+    label: 'Frontend smoke',
+    description: 'Runs broad browser smoke validation after substantial UI changes.',
+    commandTemplate: 'npm.cmd run smoke:frontend',
+    defaultCwd: null,
+    riskCategory: 'shell_command',
+    outputHint: 'Use screenshots, console failures, and functional failures as feedback for the next agent step.'
   }
 ];
 
@@ -181,7 +115,7 @@ function failureTaxonomyFor(toolName: string): string[] {
     case 'read_file':
       return ['not_found', 'access_denied', 'range_invalid', 'encoding_error'];
     case 'write_file':
-      return ['access_denied', 'path_escape', 'invalid_quality_json', 'write_failed'];
+      return ['access_denied', 'path_escape', 'invalid_content', 'write_failed'];
     case 'run_command':
       return ['non_zero_exit', 'timeout', 'blocked_command', 'spawn_failed'];
     case 'delegate_subtask':
@@ -351,6 +285,7 @@ export function createEcosystemSummaryView(params: {
   });
   const readyProviders = params.capabilities.providers.filter((entry) => entry.readiness === 'ready').length;
   const readyMcpServers = params.capabilities.mcpServers.filter((entry) => entry.readiness === 'ready').length;
+  const scriptCatalog = SCRIPT_CATALOG.map((entry) => ({ ...entry }));
 
   return {
     generatedAt: Date.now(),
@@ -363,7 +298,7 @@ export function createEcosystemSummaryView(params: {
       instructionSkills: params.capabilities.skills.filter((entry) => entry.kind === 'instruction-skill').length,
       tools: tools.length,
       acceptanceEvidenceTools: tools.filter((entry) => entry.acceptanceEvidence).length,
-      scenarioPacks: SCENARIO_PACKS.length,
+      scriptCatalogEntries: scriptCatalog.length,
       workspaceCommands: params.workspace.commands.length,
       warnings: warnings.length
     },
@@ -373,10 +308,7 @@ export function createEcosystemSummaryView(params: {
     experiences,
     tools,
     workspaceCommands: params.workspace.commands,
-    scenarioPacks: SCENARIO_PACKS.map((pack) => ({
-      ...pack,
-      cleanupHints: [...pack.cleanupHints]
-    })),
+    scriptCatalog,
     warnings
   };
 }

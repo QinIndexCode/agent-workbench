@@ -16,6 +16,7 @@ import {
   ComplexTaskAcceptanceReport,
   ConfigUpdateInput,
   EcosystemSummaryView,
+  ExperienceUpsertInput,
   ImprovementProposal,
   MemoryUpsertInput,
   PlatformAuditTrailView,
@@ -103,6 +104,8 @@ export class BackendNewPlatformApplication {
   createSkill(input: SkillUpsertInput) { return this.skills.create(input); }
   updateSkill(skillId: string, input: SkillUpsertInput) { return this.skills.update(skillId, input); }
   deleteSkill(skillId: string) { return this.skills.remove(skillId); }
+  bulkDeleteSkills(skillIds: string[]) { return this.skills.bulkRemove(skillIds); }
+  exportSkills(format: 'json' | 'markdown' = 'json') { return this.skills.export(format); }
   duplicateSkill(skillId: string, input: SkillDuplicateInput) { return this.skills.duplicate(skillId, input); }
   importSkill(input: SkillImportInput) { return this.skills.importSkill(input); }
   importMarketplaceSkills(input: Parameters<SkillService['importMarketplace']>[0]) { return this.skills.importMarketplace(input); }
@@ -120,6 +123,14 @@ export class BackendNewPlatformApplication {
   getImprovementProposal(proposalId: string): Promise<ImprovementProposal | null> { return this.improvements.getProposal(proposalId); }
   approveImprovementProposal(proposalId: string) { return this.improvements.approveProposal(proposalId); }
   rejectImprovementProposal(proposalId: string) { return this.improvements.rejectProposal(proposalId); }
+  listExperiences() { return this.improvements.listExperiences(); }
+  getExperience(experienceId: string) { return this.improvements.getExperience(experienceId); }
+  createExperience(input: ExperienceUpsertInput) { return this.improvements.createExperience(input); }
+  updateExperience(experienceId: string, input: ExperienceUpsertInput) { return this.improvements.updateExperience(experienceId, input); }
+  deleteExperience(experienceId: string) { return this.improvements.deleteExperience(experienceId); }
+  bulkDeleteExperiences(experienceIds: string[]) { return this.improvements.bulkDeleteExperiences(experienceIds); }
+  exportExperiences(format: 'json' | 'markdown' = 'json') { return this.improvements.exportExperiences(format); }
+  promoteExperienceToSkill(experienceId: string) { return this.improvements.promoteExperienceToSkill(experienceId); }
   listRealTaskArchive(): Promise<RealTaskArchiveEntry[]> { return this.improvements.listArchive(); }
   getComplexTaskAcceptanceReport(): Promise<ComplexTaskAcceptanceReport> { return this.improvements.buildComplexTaskAcceptanceReport(); }
   async getCapabilityHub(): Promise<CapabilityHubView> {
@@ -146,8 +157,8 @@ export class BackendNewPlatformApplication {
   async listToolCapabilities(): Promise<EcosystemSummaryView['tools']> {
     return (await this.getEcosystemSummary()).tools;
   }
-  async listScenarioPacks(): Promise<EcosystemSummaryView['scenarioPacks']> {
-    return (await this.getEcosystemSummary()).scenarioPacks;
+  async listScriptCatalog(): Promise<EcosystemSummaryView['scriptCatalog']> {
+    return (await this.getEcosystemSummary()).scriptCatalog;
   }
   async listEcosystemSkills(): Promise<EcosystemSummaryView['skills']> {
     return (await this.getEcosystemSummary()).skills;

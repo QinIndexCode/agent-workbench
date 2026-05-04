@@ -674,7 +674,7 @@ test('buildTurnPrompt uses JSON-only tool guidance for custom openai-compatible 
   assert.match(result.prompt, /Provider prompt policy: OpenAI-compatible/);
   assert.match(result.prompt, /Tool call format: json/);
   assert.match(result.prompt, /Tool calls must be JSON objects only\./i);
-  assert.match(result.prompt, /Accepted canonical tool names: read_file, inspect_file, write_file, create_folder, list_files, search_files, run_command, delegate_subtask\./i);
+  assert.match(result.prompt, /Accepted canonical tool names: read_file, inspect_file, write_file, create_folder, list_files, search_files, run_command, request_working_directory, delegate_subtask\./i);
   assert.match(result.prompt, /Do not use XML wrappers such as <tool>, <tool_call>, <tool_invocation>, or <invoke>\./i);
   assert.match(result.prompt, /\{"tool":"write_file","arguments":\{"path":"relative\/path\.txt","content":"file content"\}\}/);
 });
@@ -962,10 +962,10 @@ test('buildStageTurnPrompt uses shared stage templates instead of repeating full
     pendingApprovals: [],
     provider: {
       id: 'provider-main',
-      vendor: 'deepseek',
-      transport: 'deepseek-compatible',
-      model: 'deepseek-v3.1',
-      label: 'DeepSeek Main'
+      vendor: 'custom',
+      transport: 'openai-compatible',
+      model: 'stage-json-model',
+      label: 'Stage JSON Provider'
     },
     capabilities: {
       tools: [],
@@ -979,6 +979,7 @@ test('buildStageTurnPrompt uses shared stage templates instead of repeating full
   assert.match(result.prompt, /contracts: input=includeGlobalMemory=true; output=keys=summary,issues,artifact,report; exit=requires=report/);
   assert.match(result.prompt, /contracts: input=units=AGENT-001; outputKeys=AGENT-001; memoryUnits=AGENT-001; memoryKinds=DECISION; includeGlobalMemory=false/);
   assert.match(result.prompt, /Use this exact output\/tracker template for each completed stage unit U:/);
+  assert.match(result.prompt, /Accepted canonical tool names: read_file, inspect_file, write_file, create_folder, list_files, search_files, run_command, request_working_directory, delegate_subtask\./i);
   assert.match(result.prompt, /Replace U with one of the valid stage unit ids\./);
   assert.match(result.prompt, /Preference status: minimal stable preference card included; full profile not included in this provider-facing context\./);
   assert.match(result.prompt, /Selection mode: full capability snapshot included\./i);

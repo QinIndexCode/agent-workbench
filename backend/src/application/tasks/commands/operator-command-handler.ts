@@ -306,7 +306,23 @@ export class OperatorCommandHandler implements TaskOperatorInteractionHandler {
         type: 'OPERATOR_MESSAGE_QUEUED',
         payload: {
           messageId: operatorMessage.messageId,
+          guidanceId: operatorMessage.messageId,
           pendingOperatorInputCount: nextRuntime.pendingOperatorInputs.length
+        }
+      })
+    );
+    await this.services.foundation.events.append(
+      createRuntimeEventEnvelope({
+        correlationId: `corr_guidance_${operatorMessage.messageId}`,
+        sessionId: `sess_guidance_${operatorMessage.messageId}`,
+        turnId: `turn_guidance_${operatorMessage.messageId}`,
+        taskId: input.taskId,
+        unitId: nextRuntime.currentUnitId,
+        checkpointId: nextRuntime.latestCheckpointId,
+        type: 'TASK_GUIDANCE_PENDING',
+        payload: {
+          guidanceId: operatorMessage.messageId,
+          pendingGuidanceCount: nextRuntime.pendingOperatorInputs.length
         }
       })
     );

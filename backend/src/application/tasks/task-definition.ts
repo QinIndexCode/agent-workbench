@@ -79,9 +79,28 @@ function normalizeTaskDefinitionProfiles(definition: TaskDefinition): TaskDefini
   return normalizedDefinition;
 }
 
+function getExecutionMode(input: SubmitTaskInput): string {
+  const raw = input.metadata?.executionMode;
+  return typeof raw === 'string' && raw.trim()
+    ? raw.trim()
+    : 'product_runtime';
+}
+
+export function getTaskDefinitionExecutionMode(definition: TaskDefinition): string {
+  const raw = definition.metadata?.executionMode;
+  return typeof raw === 'string' && raw.trim()
+    ? raw.trim()
+    : 'product_runtime';
+}
+
+export function isProductRuntimeTask(definition: TaskDefinition): boolean {
+  return getTaskDefinitionExecutionMode(definition) === 'product_runtime';
+}
+
 export function createTaskDefinition(input: SubmitTaskInput): TaskDefinition {
   ensureUnits(input.units);
   const taskId = input.taskId?.trim() || createTaskId();
+  const executionMode = getExecutionMode(input);
   if (!input.title.trim()) {
     throw new Error('backend_new task error: title must not be empty.');
   }
@@ -92,19 +111,26 @@ export function createTaskDefinition(input: SubmitTaskInput): TaskDefinition {
     taskId,
     title: input.title.trim(),
     intent: input.intent.trim(),
-    units: input.units.map(unit => ({
-      ...unit,
-      qualityProfileId: unit.qualityProfileId ?? input.defaultQualityProfileId,
-      delegationContract: unit.delegationContract
-        ? {
-          ...unit.delegationContract,
-          allowedToolIds: unit.delegationContract.allowedToolIds
-            ? [...unit.delegationContract.allowedToolIds]
-            : undefined
-        }
-        : undefined,
-      dependencies: [...unit.dependencies]
-    })),
+    units: input.units.map(unit => {
+      const { qualityProfileId: _qualityProfileId, qualityGateId: _qualityGateId, ...unitWithoutLegacyQuality } = unit as typeof unit & {
+        qualityProfileId?: unknown;
+        qualityGateId?: unknown;
+      };
+      void _qualityProfileId;
+      void _qualityGateId;
+      return {
+        ...unitWithoutLegacyQuality,
+        delegationContract: unit.delegationContract
+          ? {
+            ...unit.delegationContract,
+            allowedToolIds: unit.delegationContract.allowedToolIds
+              ? [...unit.delegationContract.allowedToolIds]
+              : undefined
+          }
+          : undefined,
+        dependencies: [...unit.dependencies]
+      };
+    }),
     preferredProviderId: input.preferredProviderId ?? null,
     createdAt: Date.now(),
     metadata: normalizeTaskArtifactRouting({
@@ -112,7 +138,10 @@ export function createTaskDefinition(input: SubmitTaskInput): TaskDefinition {
       preferredArtifactDir: input.preferredArtifactDir,
       metadata: withTaskWorkingDirectoryMetadata({
         workingDirectory: input.workingDirectory,
-        metadata: input.metadata
+        metadata: {
+          ...(input.metadata ?? {}),
+          executionMode
+        }
       })
     })
   });

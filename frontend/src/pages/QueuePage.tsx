@@ -38,7 +38,7 @@ export function QueuePage() {
             <div className="flex items-center gap-2">
               {collections.recovery.length > 0 ? (
                 <Link
-                  to="/settings/state"
+                  to="/settings/general"
                   data-testid="queue-open-state"
                   className={buttonClassName({ variant: 'secondary', className: 'no-underline' })}
                 >

@@ -16,6 +16,21 @@ import {
   UserPreferenceProfile
 } from '../contracts/types';
 
+export const CANONICAL_JSON_TOOL_NAMES = [
+  'read_file',
+  'inspect_file',
+  'write_file',
+  'create_folder',
+  'list_files',
+  'search_files',
+  'run_command',
+  'request_working_directory',
+  'delegate_subtask'
+] as const;
+
+export const CANONICAL_JSON_TOOL_NAMES_LINE =
+  `Accepted canonical tool names: ${CANONICAL_JSON_TOOL_NAMES.join(', ')}.`;
+
 export interface PromptProviderSummary {
   id: string;
   vendor: ProviderVendor;
@@ -466,7 +481,6 @@ export function buildResponsePolicySection(params: {
     pendingCorrection: params.pendingCorrection ?? 'NONE',
     guidanceLines: params.policy.guidanceLines
   });
-  const canonicalToolNamesLine = 'Accepted canonical tool names: read_file, inspect_file, write_file, create_folder, list_files, search_files, run_command, request_working_directory, delegate_subtask.';
   return [
     'RESPONSE_POLICY',
     `Provider prompt policy: ${params.policy.vendorLabel}`,
@@ -497,7 +511,7 @@ export function buildResponsePolicySection(params: {
     ...(params.policy.toolCallFormat === 'json'
       ? [
         'Tool calls must be JSON objects only.',
-        canonicalToolNamesLine,
+        CANONICAL_JSON_TOOL_NAMES_LINE,
         'Do not use XML wrappers such as <tool>, <tool_call>, <tool_invocation>, or <invoke>.',
         'Canonical JSON tool object example:',
         '{"tool":"write_file","arguments":{"path":"relative/path.txt","content":"file content"}}',

@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Download, Trash2 } from 'lucide-react';
 import { api } from '../../api/client';
 import type { SummaryStripItem } from '../../lib/workbench';
 import type { SkillCatalogEntry } from '../../types';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Card, CardContent, CardHeader } from '../ui/card';
+import { Checkbox } from '../ui/checkbox';
 import { AdminModal } from '../ui/admin-modal';
 import { CompactEmptyState } from '../ui/compact-empty-state';
 import { ConfirmDialog } from '../ui/confirm-dialog';
@@ -48,6 +50,18 @@ interface MarketplaceImportDraft {
 interface DeleteIntent {
   id: string;
   label: string;
+}
+
+function downloadTextFile(filename: string, content: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 const EMPTY_SKILL_DRAFT: SkillEditorDraft = {
@@ -145,7 +159,7 @@ function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`w-full rounded-2xl border border-border-default bg-surface-elevated px-3 py-2 text-sm text-text-primary outline-none transition duration-fast placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-accent/30 ${props.className ?? ''}`}
+      className={`w-full rounded-lg border border-border-default bg-surface-elevated px-3 py-2 text-sm text-text-primary outline-none transition duration-fast placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-accent/30 ${props.className ?? ''}`}
     />
   );
 }
@@ -154,7 +168,7 @@ function TextAreaInput(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>)
   return (
     <textarea
       {...props}
-      className={`w-full rounded-2xl border border-border-default bg-surface-elevated px-3 py-2 text-sm text-text-primary outline-none transition duration-fast placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-accent/30 ${props.className ?? ''}`}
+      className={`w-full rounded-lg border border-border-default bg-surface-elevated px-3 py-2 text-sm text-text-primary outline-none transition duration-fast placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-accent/30 ${props.className ?? ''}`}
     />
   );
 }
@@ -199,6 +213,8 @@ export function SkillsSettingsSection({
   const [skillModalTargetId, setSkillModalTargetId] = useState<string | null>(null);
   const [skillModalDraft, setSkillModalDraft] = useState<SkillEditorDraft>(EMPTY_SKILL_DRAFT);
   const [skillDeleteIntent, setSkillDeleteIntent] = useState<DeleteIntent | null>(null);
+  const [bulkDeleteRequested, setBulkDeleteRequested] = useState(false);
+  const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(() => new Set());
   const [localImportOpen, setLocalImportOpen] = useState(false);
   const [marketplaceImportOpen, setMarketplaceImportOpen] = useState(false);
   const [skillImportDraft, setSkillImportDraft] = useState<SkillImportDraft>({
@@ -223,10 +239,60 @@ export function SkillsSettingsSection({
     const start = (currentPage - 1) * PAGE_SIZE;
     return orderedSkills.slice(start, start + PAGE_SIZE);
   }, [currentPage, orderedSkills]);
+  const selectedDeletableSkillIds = useMemo(
+    () => orderedSkills
+      .filter((entry) => selectedSkillIds.has(entry.skill.id) && entry.deletable)
+      .map((entry) => entry.skill.id),
+    [orderedSkills, selectedSkillIds],
+  );
 
   useEffect(() => {
     setCurrentPage((current) => Math.min(current, totalPages));
   }, [totalPages]);
+
+  useEffect(() => {
+    setSelectedSkillIds((current) => {
+      const allowed = new Set(orderedSkills.map((entry) => entry.skill.id));
+      const next = new Set([...current].filter((skillId) => allowed.has(skillId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [orderedSkills]);
+
+  const toggleSkillSelection = (skillId: string, checked: boolean) => {
+    setSelectedSkillIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(skillId);
+      } else {
+        next.delete(skillId);
+      }
+      return next;
+    });
+  };
+
+  const setAllPagedSkillsSelected = (checked: boolean) => {
+    setSelectedSkillIds((current) => {
+      const next = new Set(current);
+      for (const entry of pagedSkills) {
+        if (checked) {
+          next.add(entry.skill.id);
+        } else {
+          next.delete(entry.skill.id);
+        }
+      }
+      return next;
+    });
+  };
+
+  const exportSkills = async (format: 'json' | 'markdown') => {
+    const bundle = await api.exportSkills(format);
+    const extension = format === 'markdown' ? 'md' : 'json';
+    downloadTextFile(
+      `skills-export-${new Date(bundle.generatedAt).toISOString().replace(/[:.]/g, '-')}.${extension}`,
+      bundle.content,
+      format === 'markdown' ? 'text/markdown;charset=utf-8' : 'application/json;charset=utf-8',
+    );
+  };
 
   const summaryItems = useMemo<SummaryStripItem[]>(() => {
     const editableCount = orderedSkills.filter((entry) => entry.editable).length;
@@ -353,7 +419,7 @@ export function SkillsSettingsSection({
 
   return (
     <AdminPageShell summary={<SummaryStrip items={summaryItems} />}>
-      <Card className="rounded-[20px] border-border-subtle bg-surface/30">
+      <Card className="rounded-lg border-border-subtle bg-surface/30">
         <CardHeader className="flex flex-col gap-3 py-4 lg:flex-row lg:items-start lg:justify-between">
           <SectionLead
             eyebrow="Skills"
@@ -390,6 +456,33 @@ export function SkillsSettingsSection({
               <PlusIcon className="h-4 w-4" />
               Create skill
             </Button>
+            <Button
+              variant="secondary"
+              disabled={busyKey !== null}
+              onClick={() => void runAction('skills-export-json', () => exportSkills('json'), 'Skill JSON export prepared.', { reload: false })}
+              data-testid="settings-skills-export-json"
+            >
+              <Download className="h-4 w-4" />
+              Export JSON
+            </Button>
+            <Button
+              variant="secondary"
+              disabled={busyKey !== null}
+              onClick={() => void runAction('skills-export-markdown', () => exportSkills('markdown'), 'Skill Markdown export prepared.', { reload: false })}
+              data-testid="settings-skills-export-markdown"
+            >
+              <Download className="h-4 w-4" />
+              Export MD
+            </Button>
+            <Button
+              variant="ghost"
+              disabled={busyKey !== null || selectedDeletableSkillIds.length === 0}
+              onClick={() => setBulkDeleteRequested(true)}
+              data-testid="settings-skills-bulk-delete"
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete selected
+            </Button>
           </div>
         </CardHeader>
         <CardContent className="space-y-4 pt-0">
@@ -402,7 +495,12 @@ export function SkillsSettingsSection({
           ) : (
             <>
               <ManagementTable testId="settings-skills-table">
-                <ManagementTableHeader columns="minmax(0,1.45fr) minmax(0,0.8fr) minmax(0,0.85fr) minmax(0,0.8fr) auto">
+                <ManagementTableHeader columns="2rem minmax(0,1.45fr) minmax(0,0.8fr) minmax(0,0.85fr) minmax(0,0.8fr) auto">
+                  <Checkbox
+                    checked={pagedSkills.length > 0 && pagedSkills.every((entry) => selectedSkillIds.has(entry.skill.id))}
+                    aria-label="Select page skills"
+                    onChange={(event) => setAllPagedSkillsSelected(event.currentTarget.checked)}
+                  />
                   <span>Skill</span>
                   <span>Source</span>
                   <span>Status</span>
@@ -413,9 +511,14 @@ export function SkillsSettingsSection({
                   {pagedSkills.map((entry) => (
                     <ManagementTableRow
                       key={entry.skill.id}
-                      columns="minmax(0,1.45fr) minmax(0,0.8fr) minmax(0,0.85fr) minmax(0,0.8fr) auto"
+                      columns="2rem minmax(0,1.45fr) minmax(0,0.8fr) minmax(0,0.85fr) minmax(0,0.8fr) auto"
                       testId={`settings-skills-row-${entry.skill.id}`}
                     >
+                      <Checkbox
+                        checked={selectedSkillIds.has(entry.skill.id)}
+                        aria-label={`Select ${entry.skill.name}`}
+                        onChange={(event) => toggleSkillSelection(entry.skill.id, event.currentTarget.checked)}
+                      />
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold text-text-primary">{entry.skill.name}</p>
                         <p className="mt-1 line-clamp-1 text-sm text-text-secondary">
@@ -810,6 +913,30 @@ export function SkillsSettingsSection({
               return result;
             },
             `Deleted skill ${skillDeleteIntent.id}.`,
+          );
+        }}
+      />
+      <ConfirmDialog
+        open={bulkDeleteRequested}
+        title={`Delete ${selectedDeletableSkillIds.length} selected skill(s)?`}
+        description="Only deletable managed skills will be removed. Builtin, config-root, and read-only marketplace entries stay untouched."
+        confirmLabel="Delete selected"
+        cancelLabel="Keep skills"
+        tone="danger"
+        busy={busyKey !== null}
+        testId="settings-skills-bulk-delete-dialog"
+        confirmTestId="settings-skills-bulk-delete-confirm"
+        onCancel={() => setBulkDeleteRequested(false)}
+        onConfirm={() => {
+          void runAction(
+            'skills-bulk-delete',
+            async () => {
+              const result = await api.bulkDeleteSkills(selectedDeletableSkillIds);
+              setBulkDeleteRequested(false);
+              setSelectedSkillIds(new Set());
+              return result;
+            },
+            `Deleted ${selectedDeletableSkillIds.length} selected skill(s).`,
           );
         }}
       />

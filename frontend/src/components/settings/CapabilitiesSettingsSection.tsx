@@ -90,7 +90,7 @@ function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`w-full rounded-2xl border border-border-default bg-surface-elevated px-3 py-2 text-sm text-text-primary outline-none transition duration-fast placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-accent/30 ${props.className ?? ''}`}
+      className={`w-full rounded-lg border border-border-default bg-surface-elevated px-3 py-2 text-sm text-text-primary outline-none transition duration-fast placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-accent/30 ${props.className ?? ''}`}
     />
   );
 }
@@ -99,7 +99,7 @@ function TextAreaInput(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>)
   return (
     <textarea
       {...props}
-      className={`w-full rounded-2xl border border-border-default bg-surface-elevated px-3 py-2 text-sm text-text-primary outline-none transition duration-fast placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-accent/30 ${props.className ?? ''}`}
+      className={`w-full rounded-lg border border-border-default bg-surface-elevated px-3 py-2 text-sm text-text-primary outline-none transition duration-fast placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-accent/30 ${props.className ?? ''}`}
     />
   );
 }
@@ -251,7 +251,7 @@ export function CapabilitiesSettingsSection({
 
   return (
     <AdminPageShell summary={<SummaryStrip items={summaryItems} />}>
-      <Card className="rounded-[20px] border-border-subtle bg-surface/30">
+      <Card className="rounded-lg border-border-subtle bg-surface/30">
         <CardHeader className="flex flex-col gap-3 py-4 lg:flex-row lg:items-start lg:justify-between">
           <SectionLead
             eyebrow="Workflow"
@@ -278,7 +278,7 @@ export function CapabilitiesSettingsSection({
         </CardHeader>
       </Card>
 
-      <Card className="rounded-[20px] border-border-subtle bg-surface/30">
+      <Card className="rounded-lg border-border-subtle bg-surface/30">
         <CardHeader className="flex flex-col gap-3 py-4 lg:flex-row lg:items-start lg:justify-between">
           <SectionLead
             eyebrow="MCP"

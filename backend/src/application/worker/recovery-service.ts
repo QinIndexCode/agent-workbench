@@ -176,7 +176,8 @@ export class RecoveryService {
     let recovered = 0;
 
     for (const runtimeRecord of runtimes) {
-      if (runtimeRecord.runtime.lifecycleStatus !== 'RUNNING') {
+      const hasActiveExecutionLease = runtimeRecord.runtime.executionLease?.active === true;
+      if (runtimeRecord.runtime.lifecycleStatus !== 'RUNNING' && !hasActiveExecutionLease) {
         continue;
       }
       const queueItem = queueByTaskId.get(runtimeRecord.taskId) ?? null;

@@ -543,12 +543,7 @@ export function applyLiveProviderArtifactQualityGate(
 }
 
 function hasRuntimeCompletionGate(summary: TaskExecutionSummary): boolean {
-  const quality = summary.acceptance.quality;
-  return summary.acceptance.deterministic.verdict === 'passed'
-    && (
-      quality.profileId === null
-      || quality.verdict === 'passed'
-    );
+  return summary.acceptance.deterministic.verdict === 'passed';
 }
 
 function shouldPassLiveProviderScenario(params: {

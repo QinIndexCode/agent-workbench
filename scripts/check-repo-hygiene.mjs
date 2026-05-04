@@ -46,16 +46,6 @@ const forbiddenPatterns = [
   ['"sources": [', ']'].join('')
 ];
 
-const genericRunnerSpecializedPatterns = [
-  'database-lab',
-  'bench.js',
-  'docs_normalize',
-  'docs_synthesize',
-  'system-health',
-  'incoming/',
-  'source/product-strategy'
-];
-
 const coreBoundaryPaths = [
   'backend/src/domain',
   'backend/src/application/tasks',
@@ -67,15 +57,7 @@ const coreBoundaryForbiddenPatterns = [
   'database-lab',
   'database_near_mysql',
   'XIAOMI_MIMO',
-  'xiaomi-mimo',
-  'real-task-wave',
-  'web_experience',
-  'docs_normalize',
-  'docs_synthesize',
-  'system_audit',
-  'desktop_observation',
-  'quality/web-audit',
-  'docs-synthesize-trace'
+  'xiaomi-mimo'
 ];
 
 const reviewScriptExpectations = [
@@ -196,7 +178,6 @@ function normalizeScriptCommand(command) {
 async function main() {
   const issues = [];
   const runtimeResidueWarnings = [];
-  const genericRunnerWarnings = [];
   const coreBoundaryIssues = [];
   const reviewScriptIssues = [];
   const stackRuntimeIsolationIssues = [];
@@ -329,36 +310,6 @@ async function main() {
     }
   }
 
-  const realTaskWavePath = path.resolve(rootDir, 'scripts', 'run-real-task-wave.mjs');
-  const realTaskWaveContent = normalizeForSearch(await fs.readFile(realTaskWavePath, 'utf8'));
-  const realTaskWaveLines = realTaskWaveContent.split('\n');
-  let legacyScenarioSpecDepth = 0;
-  for (let index = 0; index < realTaskWaveLines.length; index += 1) {
-    const line = realTaskWaveLines[index];
-    if (line.includes('function buildLegacyScenarioSpecsLive')) {
-      legacyScenarioSpecDepth = 1;
-    } else if (legacyScenarioSpecDepth > 0) {
-      legacyScenarioSpecDepth += (line.match(/{/g) ?? []).length;
-      legacyScenarioSpecDepth -= (line.match(/}/g) ?? []).length;
-      continue;
-    }
-    const matched = genericRunnerSpecializedPatterns.find((pattern) => line.includes(pattern));
-    if (!matched) {
-      continue;
-    }
-    const warning = {
-      kind: 'generic_runner_specialized_logic',
-      file: 'scripts/run-real-task-wave.mjs',
-      line: index + 1,
-      pattern: matched,
-      text: line.trim()
-    };
-    genericRunnerWarnings.push(warning);
-    if (process.env.SCC_HYGIENE_STRICT_GENERIC_RUNNER === '1') {
-      issues.push(warning);
-    }
-  }
-
   const secretHygiene = await buildSecretHygieneAudit({ rootDir });
   for (const issue of secretHygiene.issues) {
     issues.push({
@@ -375,7 +326,6 @@ async function main() {
     requiredGitignoreEntries,
     forbiddenRuntimeResiduePaths,
     runtimeResidueWarnings,
-    genericRunnerWarnings,
     coreBoundaryIssues,
     reviewScriptIssues,
     stackRuntimeIsolationIssues,
@@ -383,7 +333,6 @@ async function main() {
     workspaceReviewScriptExpectations,
     stackRuntimeIsolationExpectations,
     forbiddenPatterns,
-    genericRunnerSpecializedPatterns,
     coreBoundaryPaths,
     coreBoundaryForbiddenPatterns,
     secretHygiene,

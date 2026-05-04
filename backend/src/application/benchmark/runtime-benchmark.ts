@@ -215,10 +215,9 @@ async function applyRecommendedArtifactsIfNeeded(
   if (debug.executionSummary.issueCategory !== 'artifact_destination_unresolved') {
     return null;
   }
-  const destinationDir = debug.executionSummary.selectedArtifactDir ?? debug.executionSummary.recommendedArtifactDir;
-  if (!destinationDir) {
-    return null;
-  }
+  const destinationDir = debug.executionSummary.selectedArtifactDir
+    ?? debug.executionSummary.recommendedArtifactDir
+    ?? `benchmark-artifacts/runtime/${task.definition.taskId}`;
   const applied = await runtime.tasks.submitCommand({
     taskId: task.definition.taskId,
     type: 'APPLY_ARTIFACTS',

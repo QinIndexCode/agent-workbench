@@ -16,6 +16,10 @@ function getSummaryAccentClass(variant?: SummaryStripItem['variant']) {
 }
 
 export function SummaryStrip({ items }: { items: SummaryStripItem[] }) {
+  if (items.length === 0) {
+    return null;
+  }
+
   return (
     <div className="grid grid-cols-2 gap-2 md:grid-cols-2 xl:grid-cols-[repeat(auto-fit,minmax(0,1fr))]">
       {items.map((item) => (

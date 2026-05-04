@@ -81,10 +81,7 @@ export async function cleanHistoricalTestArtifacts(options = {}) {
     /^release-scorecard(?:\.[^.]+)?\.json$/,
     /^live-cost-probe(?:\.[^.]+)?\.json$/,
     /^live-provider-scenarios(?:\.[^.]+)?\.json$/,
-    /^real-task-wave-report(?:\.[^.]+)?\.(?:json|md)$/,
-    /^real-task-wave-matrix$/,
     /^human-task-matrix$/,
-    /^real-task-manual-review(?:\.[^.]+)?\.(?:json|md)$/,
     /^frontend-smoke-report(?:\.[^.]+)?\.json$/,
     /^frontend-smoke-snapshots$/,
     /^frontend-mainline-review(?:\.[^.]+)?\.json$/,
@@ -116,7 +113,9 @@ export async function cleanHistoricalTestArtifacts(options = {}) {
     /^benchmark(?:\.[^.]+)?\.json$/
   ];
   const projectArtifactPaths = options.projectArtifactPaths ?? [
+    'backend/.codex-run',
     'backend/docs/docs',
+    'backend/docs/e2e-artifacts',
     'backend/docs/mainline-artifacts',
     'backend/docs/live-review-artifacts',
     'backend/docs/actual-cli-artifacts'

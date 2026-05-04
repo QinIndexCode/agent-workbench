@@ -191,9 +191,6 @@ function formatDiagnostics(snapshot: ReturnType<CliChatSessionController['getIns
   const semanticReview = acceptance?.semanticReview && typeof acceptance.semanticReview === 'object'
     ? acceptance.semanticReview as Record<string, unknown>
     : null;
-  const quality = acceptance?.quality && typeof acceptance.quality === 'object'
-    ? acceptance.quality as Record<string, unknown>
-    : null;
   const lines: string[] = [];
   lines.push('Task truth');
   lines.push(`taskId: ${String(diagnostics.taskId ?? '-')}`);
@@ -234,10 +231,6 @@ function formatDiagnostics(snapshot: ReturnType<CliChatSessionController['getIns
   if (deterministic) {
     lines.push(`acceptanceVerdict: ${String(deterministic.verdict ?? '-')}`);
     lines.push(`acceptanceProfile: ${String(deterministic.profileId ?? '-')}`);
-  }
-  if (quality) {
-    lines.push(`qualityVerdict: ${String(quality.verdict ?? '-')}`);
-    lines.push(`qualityProfile: ${String(quality.profileId ?? '-')}`);
   }
   if (semanticReview) {
     lines.push(`semanticReview: ${String(semanticReview.status ?? '-')}`);

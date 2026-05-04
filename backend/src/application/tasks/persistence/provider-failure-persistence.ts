@@ -1,4 +1,5 @@
 import { TaskRuntimeState } from '../../../domain/contracts/types';
+import { applyLifecycleTransition } from '../../../domain/runtime/state-transition-applier';
 import { BackendNewFoundation } from '../../../foundation/bootstrap/types';
 import { createRuntimeEventEnvelope } from '../../../foundation/projection/event-envelope';
 import { TaskTurnRuntimeControl } from '../control/task-turn-runtime-control';
@@ -17,9 +18,7 @@ export class ProviderFailurePersistence {
 
   async persist(params: ProviderFailurePersistenceInput): Promise<void> {
     const failedRuntime: TaskRuntimeState = {
-      ...params.runtime,
-      lifecycleStatus: 'FAILED',
-      engineStatus: 'FAILED',
+      ...applyLifecycleTransition(params.runtime, 'FAILED'),
       currentUnitId: params.currentUnitId,
       pendingCorrection: 'AWAITING_BLOCKER_EXPLANATION',
       lastError: params.error.message,

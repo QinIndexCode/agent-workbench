@@ -486,7 +486,7 @@ async function verifyComposerRefreshAnchor(page) {
     const textareaNode = document.querySelector('[data-testid="task-continue-message"]');
     const composerNode = document.querySelector('[data-testid="task-composer-card"]');
     const draftNoticeNode = document.querySelector('[data-testid="task-composer-draft-lock-notice"]');
-    const actionNode = document.querySelector('[data-testid="task-action-continue"], [data-testid="task-action-start"], [data-testid="task-action-resume"], [data-testid="task-action-restart"]');
+    const actionNode = document.querySelector('[data-testid="task-action-continue"], [data-testid="task-action-start"], [data-testid="task-action-resume"]');
     if (!(textareaNode instanceof HTMLTextAreaElement) || !(composerNode instanceof HTMLElement)) {
       return null;
     }
@@ -509,7 +509,7 @@ async function verifyComposerRefreshAnchor(page) {
     const textareaNode = document.querySelector('[data-testid="task-continue-message"]');
     const composerNode = document.querySelector('[data-testid="task-composer-card"]');
     const draftNoticeNode = document.querySelector('[data-testid="task-composer-draft-lock-notice"]');
-    const actionNode = document.querySelector('[data-testid="task-action-continue"], [data-testid="task-action-start"], [data-testid="task-action-resume"], [data-testid="task-action-restart"]');
+    const actionNode = document.querySelector('[data-testid="task-action-continue"], [data-testid="task-action-start"], [data-testid="task-action-resume"]');
     if (!(textareaNode instanceof HTMLTextAreaElement) || !(composerNode instanceof HTMLElement)) {
       return null;
     }
@@ -523,9 +523,8 @@ async function verifyComposerRefreshAnchor(page) {
   });
   assertCondition(Boolean(after), "Composer disappeared after refresh/details toggles.");
   const actionStable = after.actionLabel === before.actionLabel || after.draftNoticeVisible;
-  const unexpectedRestart = before.actionLabel !== "Restart task" && after.actionLabel === "Restart task" && !after.draftNoticeVisible;
   assertCondition(after.value === draftValue, `Composer draft was lost after refresh. before=${JSON.stringify(before)} after=${JSON.stringify(after)}`);
-  assertCondition(actionStable && !unexpectedRestart, `Composer action changed unexpectedly after refresh. before=${JSON.stringify(before)} after=${JSON.stringify(after)}`);
+  assertCondition(actionStable, `Composer action changed unexpectedly after refresh. before=${JSON.stringify(before)} after=${JSON.stringify(after)}`);
   assertCondition(
     Math.abs(after.textareaTop - before.textareaTop) <= 24 && Math.abs(after.composerTop - before.composerTop) <= 24,
     `Composer shifted unexpectedly after refresh. before=${JSON.stringify(before)} after=${JSON.stringify(after)}`,

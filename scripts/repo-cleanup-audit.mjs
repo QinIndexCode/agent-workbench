@@ -13,9 +13,7 @@ const PRESERVED_AUDIT_REPORTS = new Set([
   'live-provider-scenarios.json',
   'practical-live-manual-audit.json',
   'practical-live-task-acceptance.json',
-  'release-scorecard.json',
-  'real-task-wave-report.json',
-  'real-task-wave-report.md'
+  'release-scorecard.json'
 ]);
 
 const ACTIVE_SOURCE_PATHS = [
@@ -59,8 +57,7 @@ const DELETE_CANDIDATE_PATHS = [
   'config-snapshots',
   'platform',
   'secrets',
-  'workspace',
-  'real-task-wave-run.log'
+  'workspace'
 ];
 
 function normalizePath(value) {
@@ -196,7 +193,7 @@ export async function buildRepoCleanupAudit(options = {}) {
       activeRuntimeRoot: 'backend/data',
       preservedAuditRoot: DEFAULT_REPORT_DIR,
       cleanupStrategy: 'layered-archive',
-      note: 'Generic harness observes, audits, reports, and cleans; scenario-specific rules stay in scenario packs.'
+      note: 'Generic harness observes, audits, reports, and cleans; task-family rules stay inside validation harnesses.'
     },
     trackedByCategory,
     activeSource,
@@ -213,9 +210,9 @@ export async function buildRepoCleanupAudit(options = {}) {
     },
     recommendations: [
       'Keep backend/data/.gitignore and backend/data/providers/manifest.json as the only baseline runtime files.',
-      'Use scripts/clean-test-artifacts.mjs or scripts/clean-real-task-wave-state.mjs before live waves.',
+      'Use scripts/clean-test-artifacts.mjs before live validation runs.',
       'Preserve final JSON/MD validation reports under .codex-run/logs or move curated reports into docs/reports.',
-      'Do not add task-family-specific phase logic to the generic runner; keep it inside scenario packs.'
+      'Do not add task-family-specific phase logic to product runtime scripts.'
     ]
   };
 }

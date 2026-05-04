@@ -23,6 +23,7 @@ const {
   FileToolInvocationRepository,
   FileValidatedOutputRepository,
   resolveToolApprovalRecord,
+  sanitizeLogDetails,
   StorageLayout,
   ToolExecutorRegistry,
   loadBackendNewConfig,
@@ -30,6 +31,7 @@ const {
   validateBuiltinWriteFileContent,
   validateToolInvocationRequest
 } = require('../dist');
+const { InterruptController } = require('../dist/application/tasks/control/interrupt-controller.js');
 const { buildCurrentTurnToolContextMessages } = require('../dist/application/tasks/turns/turn-runtime-state-builder.js');
 const { gateProviderRequestContext } = require('../dist/application/tasks/turns/request-context-gating.js');
 const { createTempRoot, removeDir } = require('./helpers.cjs');
@@ -72,6 +74,20 @@ test('validated output repository stores structured unit output', async () => {
   } finally {
     removeDir(root);
   }
+});
+
+test('interrupt controller rejects overlapping execution leases without aborting the active lease', () => {
+  const interrupts = new InterruptController();
+  const first = interrupts.begin('task_interrupt');
+
+  assert.equal(first.signal.aborted, false);
+  assert.throws(
+    () => interrupts.begin('task_interrupt'),
+    /already has an active execution lease/
+  );
+  assert.equal(first.signal.aborted, false);
+  assert.equal(interrupts.requestInterrupt('task_interrupt'), true);
+  assert.equal(first.signal.aborted, true);
 });
 
 test('tool invocation validation uses extension registry as single source of truth', () => {
@@ -135,7 +151,7 @@ test('tool invocation validation allows structured write_file content variants a
     unitId: 'AGENT-001',
     toolName: 'write_file',
     arguments: {
-      path: 'quality/database-design.json',
+      path: 'reports/database-design.json',
       content_json: { ok: true }
     }
   });
@@ -194,6 +210,15 @@ test('tool execution policy respects full ask and read-only permission modes', (
     riskLevel: 'HIGH',
     inputSchema: []
   };
+  const runCommandTool = {
+    id: 'run-command',
+    name: 'run_command',
+    description: 'Run command',
+    source: 'builtin',
+    effect: 'PROCESS',
+    riskLevel: 'MEDIUM',
+    inputSchema: []
+  };
 
   const fullConfig = loadBackendNewConfig({ tools: { permissionMode: 'full' } }, { cwd: process.cwd(), env: {} });
   const askConfig = loadBackendNewConfig({ tools: { permissionMode: 'ask' } }, { cwd: process.cwd(), env: {} });
@@ -206,9 +231,72 @@ test('tool execution policy respects full ask and read-only permission modes', (
   assert.equal(evaluateToolExecutionPolicy({ config: askConfig, tool: readTool }).decision, 'ALLOW');
   assert.equal(evaluateToolExecutionPolicy({ config: askConfig, tool: writeTool }).decision, 'REQUIRE_APPROVAL');
   assert.equal(evaluateToolExecutionPolicy({ config: askConfig, tool: networkTool }).decision, 'REQUIRE_APPROVAL');
+  const hostObservationPolicy = evaluateToolExecutionPolicy({
+    config: askConfig,
+    tool: runCommandTool,
+    argumentsRecord: { command: 'Get-Process | Sort-Object CPU -Descending | Select-Object -First 5' }
+  });
+  assert.equal(hostObservationPolicy.decision, 'REQUIRE_APPROVAL');
+  assert.equal(hostObservationPolicy.riskCategory, 'host_observation');
   assert.equal(evaluateToolExecutionPolicy({ config: readOnlyConfig, tool: readTool }).decision, 'ALLOW');
   assert.equal(evaluateToolExecutionPolicy({ config: readOnlyConfig, tool: writeTool }).decision, 'DENY');
   assert.equal(evaluateToolExecutionPolicy({ config: readOnlyConfig, tool: networkTool }).decision, 'DENY');
+});
+
+test('approved task risk grant allows later host observation commands in ask mode', () => {
+  const askConfig = loadBackendNewConfig({ tools: { permissionMode: 'ask' } }, { cwd: process.cwd(), env: {} });
+  const invocation = createToolInvocationRecord({
+    correlationId: 'corr_tool',
+    sessionId: 'sess_tool',
+    turnId: 'turn_tool',
+    checkpointId: 'chk_turn_tool_20',
+    request: {
+      taskId: 'task_tools',
+      unitId: 'AGENT-002',
+      toolName: 'run-command',
+      arguments: {
+        command: 'Get-Process'
+      }
+    },
+    status: 'WAITING_APPROVAL',
+    metadata: {
+      riskCategory: 'host_observation'
+    }
+  });
+  const pending = createToolApprovalRecord({
+    invocation,
+    reason: 'Need host observation approval',
+    metadata: {
+      riskCategory: 'host_observation',
+      grantScope: 'task_risk_category'
+    }
+  });
+  const approved = resolveToolApprovalRecord(pending, {
+    status: 'APPROVED',
+    metadata: {
+      riskCategory: 'host_observation',
+      grantScope: 'task_risk_category'
+    }
+  });
+
+  const policy = evaluateToolExecutionPolicy({
+    config: askConfig,
+    tool: {
+      id: 'run-command',
+      name: 'run_command',
+      description: 'Run command',
+      source: 'builtin',
+      effect: 'PROCESS',
+      riskLevel: 'MEDIUM',
+      inputSchema: []
+    },
+    argumentsRecord: { command: 'tasklist /FO TABLE' },
+    taskApprovals: [approved]
+  });
+
+  assert.equal(policy.decision, 'ALLOW');
+  assert.equal(policy.riskCategory, 'host_observation');
+  assert.equal(policy.grantMatched, true);
 });
 
 test('tool result envelope and error taxonomy provide stable outcome semantics', () => {
@@ -231,23 +319,28 @@ test('tool result envelope and error taxonomy provide stable outcome semantics',
   assert.equal(failure.output, null);
 });
 
-test('validateBuiltinWriteFileContent rejects invalid quality json before a write executes', () => {
-  const invalid = validateBuiltinWriteFileContent(
-    'quality/system-audit.json',
-    '{"profile":"system_audit","facts":[{"name":"free_memory","sourceRegex":"FreePhysicalMemory\\s*:\\s*(\\d+)"}]}'
+test('validateBuiltinWriteFileContent does not impose task-specific JSON gates', () => {
+  assert.equal(
+    validateBuiltinWriteFileContent(
+      'quality/system-audit.json',
+      '{"profile":"system_audit","facts":[{"name":"free_memory","sourceRegex":"FreePhysicalMemory\\s*:\\s*(\\d+)"}]}'
+    ),
+    null
   );
-  const valid = validateBuiltinWriteFileContent(
-    'quality/system-audit.json',
-    '{"profile":"system_audit","facts":[{"name":"free_memory","sourceRegex":"FreePhysicalMemory\\\\s*:\\\\s*(\\\\d+)"}]}'
+  assert.equal(
+    validateBuiltinWriteFileContent(
+      'quality/system-audit.json',
+      '{not json'
+    ),
+    null
   );
-  const unrelated = validateBuiltinWriteFileContent(
-    'reports/system-health.md',
-    '# System Health\n'
+  assert.equal(
+    validateBuiltinWriteFileContent(
+      'reports/system-health.md',
+      '# System Health\n'
+    ),
+    null
   );
-
-  assert.match(invalid, /Invalid JSON for quality evidence file/i);
-  assert.equal(valid, null);
-  assert.equal(unrelated, null);
 });
 
 test('builtin write_file executor supports content_json and content_lines payloads', async () => {
@@ -286,7 +379,7 @@ test('builtin write_file executor supports content_json and content_lines payloa
         unitId: 'AGENT-001',
         toolName: 'write_file',
         arguments: {
-          path: 'quality/workspace-artifact-summary.json',
+          path: 'reports/workspace-artifact-summary.json',
           content_json: { profile: 'workspace_artifact_review', designFiles: ['workspace-demo/design/README.md'] }
         }
       },
@@ -309,9 +402,9 @@ test('builtin write_file executor supports content_json and content_lines payloa
     });
     assert.equal(linesResult.ok, true);
 
-    const qualityContent = await fs.readFile(path.join(layout.forTask(taskId).workspaceDir, 'quality', 'workspace-artifact-summary.json'), 'utf8');
+    const summaryContent = await fs.readFile(path.join(layout.forTask(taskId).workspaceDir, 'reports', 'workspace-artifact-summary.json'), 'utf8');
     const readmeContent = await fs.readFile(path.join(layout.forTask(taskId).workspaceDir, 'workspace-demo', 'prototype', 'README.md'), 'utf8');
-    assert.match(qualityContent, /"profile": "workspace_artifact_review"/);
+    assert.match(summaryContent, /"profile": "workspace_artifact_review"/);
     assert.equal(readmeContent, '# Workspace Prototype\n\nGrounded scaffold.');
   } finally {
     removeDir(root);
@@ -1090,6 +1183,38 @@ test('approval resolution and latest approval selection remain deterministic', (
   const latest = findLatestApprovalForInvocation([pending, approved], invocation.invocationId);
   assert.equal(latest.status, 'APPROVED');
   assert.equal(latest.grantedBy, 'user-1');
+  assert.throws(
+    () => resolveToolApprovalRecord(approved, {
+      status: 'REJECTED',
+      resolvedAt: 23
+    }),
+    /already APPROVED/
+  );
+});
+
+test('log sanitizer redacts sensitive keys and tolerates circular nested details', () => {
+  const circular = {
+    apiKey: 'sk-test-secret',
+    nested: {
+      token: 'token-secret',
+      content: 'x'.repeat(60)
+    }
+  };
+  circular.self = circular;
+
+  const sanitized = sanitizeLogDetails(circular, {
+    longTextLimit: 12,
+    shortTextLimit: 10,
+    maxObjectEntries: 10,
+    auditFileName: 'audit.jsonl',
+    retentionDays: 1,
+    cleanupOnInitialize: false
+  });
+
+  assert.equal(sanitized.apiKey, '[redacted]');
+  assert.equal(sanitized.nested.token, '[redacted]');
+  assert.equal(sanitized.self, '[circular]');
+  assert.match(sanitized.nested.content, /truncated/);
 });
 
 test('invocation resume policy waits denies or dispatches based on approval state and capability', () => {

@@ -127,8 +127,10 @@ The server uses a single `RuntimeWebSocketEnvelope` contract.
 | --- | --- |
 | `missing_task_id` | Task id missing or empty |
 | `invalid_payload` | Invalid JSON payload |
+| `invalid_command_payload` | Command envelope is missing a structured command type |
 | `unsupported_message_type` | Unknown message type |
 | `subscribe_failed` | Subscription setup failed |
+| `command_failed` | Command dispatch failed after a valid command envelope was received |
 
 ## Replay and reconnect
 

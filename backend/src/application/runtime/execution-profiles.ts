@@ -16,8 +16,8 @@ export const EXECUTION_PROFILES: Record<ExecutionProfileId, ExecutionProfile> = 
   analyze: {
     id: 'analyze',
     label: 'Analyze',
-    description: 'Read-heavy profile for requirements, discovery, and planning.',
-    allowedToolIds: ['read-file', 'list-files', 'search-files', 'request-working-directory'],
+    description: 'Read-heavy profile for requirements, discovery, planning, and safe host observation.',
+    allowedToolIds: ['read-file', 'list-files', 'search-files', 'request-working-directory', 'run-command'],
     contextMode: 'dependency_scope',
     historyScope: 'stage_chain',
     retainRecentToolTurns: false,

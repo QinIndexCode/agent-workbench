@@ -15,6 +15,7 @@ import {
   UserPreferenceProfile
 } from '../contracts/types';
 import {
+  CANONICAL_JSON_TOOL_NAMES_LINE,
   buildWorkspaceInstructionSection,
   PromptExtensionCapabilitySummary,
   PromptProviderSummary,
@@ -235,7 +236,7 @@ function buildStageResponsePolicy(params: {
       : 'Emit tool calls only for current-stage units.',
     ...(params.policy.toolCallFormat === 'json'
       ? [
-        'Accepted canonical tool names: read_file, inspect_file, write_file, create_folder, list_files, search_files, run_command, delegate_subtask.',
+        CANONICAL_JSON_TOOL_NAMES_LINE,
         'Do not use XML wrappers such as <tool>, <tool_call>, <tool_invocation>, or <invoke>.',
         'Canonical JSON tool object example:',
         '{"tool":"write_file","arguments":{"path":"relative/path.txt","content":"file content"}}',

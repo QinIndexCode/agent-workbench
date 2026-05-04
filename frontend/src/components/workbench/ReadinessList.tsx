@@ -5,7 +5,7 @@ export function ReadinessList({ items }: { items: PlatformReadinessItem[] }) {
   return (
     <div className="space-y-2">
       {items.map((item) => (
-        <div key={item.key} className="rounded-[16px] border border-border-subtle bg-surface/28 px-4 py-3">
+        <div key={item.key} className="rounded-lg border border-border-subtle bg-surface/28 px-4 py-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-sm font-semibold text-text-primary">{item.label}</p>

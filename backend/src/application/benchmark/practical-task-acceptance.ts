@@ -253,14 +253,6 @@ function createFailureExecutionAcceptance(message: string): TaskExecutionSummary
         summary: 'No grounding evidence was captured for the failed scenario.'
       }
     },
-    quality: {
-      profileId: null,
-      verdict: 'not_applicable',
-      passedChecks: [],
-      failedChecks: [],
-      requiredNextEvidence: [],
-      lastEvaluatedAt: null
-    },
     semanticReview: {
       status: 'not_requested',
       verdict: null,
@@ -297,7 +289,7 @@ function createScenarioFailureResult(params: {
     clarificationMode: 'not-needed',
     assumptionDisclosure: { status: 'missing', summary: null },
     executionSummary: {
-      issuePlane: 'harness',
+      issuePlane: 'core',
       issueCategory: 'recovery_inconsistency',
       issueSummary: params.message,
       suggestedAction: {
@@ -729,12 +721,7 @@ function createFailureAcceptance(
 }
 
 function hasRuntimeCompletionGate(summary: TaskExecutionSummary): boolean {
-  const quality = summary.acceptance.quality;
-  return summary.acceptance.deterministic.verdict === 'passed'
-    && (
-      quality.profileId === null
-      || quality.verdict === 'passed'
-    );
+  return summary.acceptance.deterministic.verdict === 'passed';
 }
 
 function shouldPassPracticalScenario(params: {

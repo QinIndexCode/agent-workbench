@@ -148,9 +148,9 @@ export const platformCommandModule: CliCommandModule = {
       if (subaction === 'delete') { writeJson(io, await requestJson(fetchImpl, `${serverUrl}/mcp/${id}`, { method: 'DELETE', body: JSON.stringify({}) })); return 0; }
     }
 
-    if (resource === 'scenarios') {
+    if (resource === 'scripts') {
       if (!subaction || subaction === 'list' || subaction === 'status') {
-        writeJson(io, await requestJson(fetchImpl, `${serverUrl}/scenario-packs`, { method: 'GET', headers: {} }));
+        writeJson(io, await requestJson(fetchImpl, `${serverUrl}/tools/script-catalog`, { method: 'GET', headers: {} }));
         return 0;
       }
     }

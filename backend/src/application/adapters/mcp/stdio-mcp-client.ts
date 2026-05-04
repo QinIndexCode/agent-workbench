@@ -9,7 +9,7 @@ import {
 } from '../../../foundation/mcp/types';
 
 interface PendingCall {
-  resolve: (value: any) => void;
+  resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
 }
 
@@ -101,7 +101,10 @@ export class StdioMcpClientAdapter implements McpClientAdapter {
     }
     const id = `${request.context.turnId}:discover:${Date.now()}`;
     const response = new Promise<McpCapabilityDiscoveryResult>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, {
+        resolve: (value: unknown) => resolve(value as McpCapabilityDiscoveryResult),
+        reject
+      });
     });
     this.process.stdin.write(`${JSON.stringify({
       id,
@@ -142,9 +145,13 @@ export class StdioMcpClientAdapter implements McpClientAdapter {
         metadata: {}
       };
     }
+    // 头脑图标
     const id = `${request.context.turnId}:${request.toolName}:${Date.now()}`;
-      const response = new Promise<McpToolCallResult>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+    const response = new Promise<McpToolCallResult>((resolve, reject) => {
+      this.pending.set(id, {
+        resolve: (value: unknown) => resolve(value as McpToolCallResult),
+        reject
+      });
     });
     this.process.stdin.write(`${JSON.stringify({
       id,

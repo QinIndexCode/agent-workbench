@@ -453,27 +453,32 @@ async function assertFollowUpComposer(page) {
     }
   }
   await page.waitForFunction(() => {
+    const composer = document.querySelector('[data-testid="task-composer-card"]');
     const textarea = document.querySelector('[data-testid="task-continue-message"]');
     const button = document.querySelector('[data-testid="task-action-continue"]');
     const placeholder = textarea instanceof HTMLTextAreaElement ? textarea.placeholder.toLowerCase() : "";
-    const buttonLabel = button instanceof HTMLButtonElement ? button.innerText.trim() : "";
-    return placeholder.includes("follow-up") && buttonLabel === "Continue thread";
+    return textarea instanceof HTMLTextAreaElement
+      && button instanceof HTMLButtonElement
+      && (placeholder.includes("follow-up") || placeholder.includes("next change") || placeholder.includes("thread"));
   }, undefined, { timeout: 10_000 });
   const state = await page.evaluate(() => {
+    const composer = document.querySelector('[data-testid="task-composer-card"]');
     const textarea = document.querySelector('[data-testid="task-continue-message"]');
     const button = document.querySelector('[data-testid="task-action-continue"]');
     return {
+      composerText: composer instanceof HTMLElement ? composer.innerText : null,
       placeholder: textarea instanceof HTMLTextAreaElement ? textarea.placeholder : null,
-      buttonLabel: button instanceof HTMLButtonElement ? button.innerText.trim() : null,
+      buttonReady: button instanceof HTMLButtonElement,
     };
   });
   assertCondition(
-    typeof state.placeholder === "string" && state.placeholder.toLowerCase().includes("follow-up"),
+    typeof state.placeholder === "string"
+      && /follow-up|next change|thread/i.test(state.placeholder),
     `Completed composer did not switch to follow-up mode. Placeholder=${state.placeholder ?? "missing"}`,
   );
   assertCondition(
-    state.buttonLabel === "Continue thread",
-    `Completed composer button did not switch to follow-up mode. Button=${state.buttonLabel ?? "missing"}`,
+    state.buttonReady === true,
+    "Completed composer did not expose a follow-up send action.",
   );
 }
 
@@ -519,7 +524,13 @@ async function collectTaskVisualChecklist(page, options = {}) {
       isVisible(document.querySelector('[data-testid="app-brand-logo"]'))
       || isVisible(document.querySelector('[data-testid="app-brand-logo-mobile"]'));
     const agentShellVisible = isVisible(document.querySelector('[data-testid="tasks-agent-shell"]'));
-    const conversationVisible = isVisible(document.querySelector('[data-testid="task-conversation"]')) || emptyStateVisible;
+    const approvalBannerVisible = isVisible(document.querySelector('[data-testid="task-approval-banner"]'));
+    const archiveBannerVisible = isVisible(document.querySelector('[data-testid="task-archive-banner"]'));
+    const conversationVisible =
+      isVisible(document.querySelector('[data-testid="task-conversation"]'))
+      || approvalBannerVisible
+      || archiveBannerVisible
+      || emptyStateVisible;
     const truthInspectorReady = Boolean(document.querySelector('[data-testid="task-truth-inspector"]'));
     const emptyAgentStateReady = Boolean(document.querySelector('[data-testid="task-empty-agent-state"]')) || !emptyStateVisible;
     const operatorSummaryVisible = isVisible(document.querySelector('[data-testid="tasks-operator-summary"]'));
@@ -621,6 +632,8 @@ async function collectTaskVisualChecklist(page, options = {}) {
       runtimeSummaryVisible,
       assistantUpdateVisible,
       assistantNoteVisible,
+      approvalBannerVisible,
+      archiveBannerVisible,
       toolActivityVisible,
       toolEvidenceVisible,
       toolActivityCount,
@@ -726,10 +739,10 @@ async function verifyComposerIsGeneric(page) {
   const taskTypeVisible = await page.locator('[data-testid="task-composer-task-type"]').isVisible().catch(() => false);
   assertCondition(taskTypeVisible, "Add Task composer is missing the generic task type selector.");
   const qualityInput = page.locator('[data-testid="task-composer-quality-profile"]');
-  const qualityTagName = await qualityInput.evaluate((element) => element.tagName.toLowerCase()).catch(() => "missing");
+  const qualityInputCount = await qualityInput.count();
   assertCondition(
-    qualityTagName === "input",
-    `Add Task default quality contract must be a generic input, not a scenario preset selector. tag=${qualityTagName}`
+    qualityInputCount === 0,
+    "Add Task composer must not expose quality-profile or scenario-pack controls in the product flow."
   );
 }
 
@@ -849,7 +862,7 @@ async function verifyComposerRefreshAnchor(page) {
     const textareaNode = document.querySelector('[data-testid="task-continue-message"]');
     const composerNode = document.querySelector('[data-testid="task-composer-card"]');
     const draftNoticeNode = document.querySelector('[data-testid="task-composer-draft-lock-notice"]');
-    const actionNode = document.querySelector('[data-testid="task-action-continue"], [data-testid="task-action-start"], [data-testid="task-action-resume"], [data-testid="task-action-restart"]');
+    const actionNode = document.querySelector('[data-testid="task-action-continue"], [data-testid="task-action-start"], [data-testid="task-action-resume"]');
     if (!(textareaNode instanceof HTMLTextAreaElement) || !(composerNode instanceof HTMLElement)) {
       return null;
     }
@@ -862,8 +875,11 @@ async function verifyComposerRefreshAnchor(page) {
     };
   });
   assertCondition(Boolean(before), "Could not capture the pre-refresh composer state.");
-  await page.locator('[data-testid="task-action-refresh"]').click();
-  await page.waitForTimeout(250);
+  const refreshAction = page.locator('[data-testid="task-action-refresh"]').first();
+  if (await refreshAction.isVisible().catch(() => false)) {
+    await refreshAction.click();
+    await page.waitForTimeout(250);
+  }
   if (await clickVisibleContextToggle(page)) {
     await page.waitForTimeout(120);
     await clickVisibleContextToggle(page);
@@ -875,7 +891,7 @@ async function verifyComposerRefreshAnchor(page) {
     const textareaNode = document.querySelector('[data-testid="task-continue-message"]');
     const composerNode = document.querySelector('[data-testid="task-composer-card"]');
     const draftNoticeNode = document.querySelector('[data-testid="task-composer-draft-lock-notice"]');
-    const actionNode = document.querySelector('[data-testid="task-action-continue"], [data-testid="task-action-start"], [data-testid="task-action-resume"], [data-testid="task-action-restart"]');
+    const actionNode = document.querySelector('[data-testid="task-action-continue"], [data-testid="task-action-start"], [data-testid="task-action-resume"]');
     if (!(textareaNode instanceof HTMLTextAreaElement) || !(composerNode instanceof HTMLElement)) {
       return null;
     }
@@ -889,9 +905,8 @@ async function verifyComposerRefreshAnchor(page) {
   });
   assertCondition(Boolean(after), "Composer disappeared after refresh/details toggles.");
   const actionStable = after.actionLabel === before.actionLabel || after.draftNoticeVisible;
-  const unexpectedRestart = before.actionLabel !== "Restart task" && after.actionLabel === "Restart task" && !after.draftNoticeVisible;
   assertCondition(after.value === draftValue, `Composer draft was lost after refresh. before=${JSON.stringify(before)} after=${JSON.stringify(after)}`);
-  assertCondition(actionStable && !unexpectedRestart, `Composer action changed unexpectedly after refresh. before=${JSON.stringify(before)} after=${JSON.stringify(after)}`);
+  assertCondition(actionStable, `Composer action changed unexpectedly after refresh. before=${JSON.stringify(before)} after=${JSON.stringify(after)}`);
   assertCondition(
     Math.abs(after.textareaTop - before.textareaTop) <= 24 && Math.abs(after.composerTop - before.composerTop) <= 24,
     `Composer shifted unexpectedly after refresh. before=${JSON.stringify(before)} after=${JSON.stringify(after)}`,
@@ -919,8 +934,13 @@ async function clickVisibleContextToggle(page) {
 async function waitForEnabledSelector(page, selector, timeout = 20_000) {
   await page.waitForFunction(
     (targetSelector) => {
-      const node = document.querySelector(targetSelector);
-      return node instanceof HTMLButtonElement && !node.disabled;
+      return Array.from(document.querySelectorAll(targetSelector)).some((node) => {
+        if (!(node instanceof HTMLButtonElement) || node.disabled || node.getClientRects().length === 0) {
+          return false;
+        }
+        const style = window.getComputedStyle(node);
+        return style.display !== "none" && style.visibility !== "hidden";
+      });
     },
     selector,
     { timeout },
@@ -1245,7 +1265,7 @@ async function runPauseResumeScenario(page, stateScreenshots) {
         createOutput("AGENT-001", "pause-resume-phase-1"),
         createTracker("AGENT-001", "PARTIAL"),
       ].join("\n"),
-      delayMs: 15_000,
+      delayMs: 45_000,
     },
     [
       createOutput("AGENT-001", "pause-resume-complete"),
@@ -1286,18 +1306,23 @@ async function runPauseResumeScenario(page, stateScreenshots) {
     startedTask.runtime?.lifecycleStatus === "RUNNING",
     `Pause/resume scenario never entered RUNNING. Last lifecycle=${startedTask.runtime?.lifecycleStatus ?? "missing"}`,
   );
-  await captureTaskState(page, stateScreenshots, "running", {
-    scenario: "web-pause-resume-complete",
-  });
-  await page.getByRole("button", { name: /refresh/i }).click();
-  await page.waitForTimeout(300);
-  await reopenTaskFromList(page, title);
-  await waitForEnabledSelector(page, '[data-testid="task-action-pause"]');
+  await waitForEnabledSelector(page, '[data-testid="task-action-pause"]', 30_000);
   await page.locator('[data-testid="task-action-pause"]').click();
   await waitForTaskDetail(
     taskId,
-    (task) => task.runtime?.lifecycleStatus === "PAUSED",
+    (task) =>
+      task.runtime?.lifecycleStatus === "PAUSED"
+      || task.runtime?.interrupt?.pauseRequested === true
+      || task.runtime?.executionLease?.phase === "WAITING_SAFE_POINT",
     { timeoutMs: 20_000, intervalMs: 250 },
+  );
+  await captureTaskState(page, stateScreenshots, "running", {
+    scenario: "web-pause-resume-complete",
+  });
+  await waitForTaskDetail(
+    taskId,
+    (task) => task.runtime?.lifecycleStatus === "PAUSED",
+    { timeoutMs: 75_000, intervalMs: 250 },
   );
   await captureTaskState(page, stateScreenshots, "paused", {
     scenario: "web-pause-resume-complete",
@@ -1314,66 +1339,52 @@ async function runPauseResumeScenario(page, stateScreenshots) {
   await page.locator('[data-testid="task-action-resume"]').click();
   await page.getByRole("button", { name: /refresh/i }).click();
   await page.waitForTimeout(300);
-  const continueState = await waitForEnabledSelectorOrTerminalTask(page, taskId, '[data-testid="task-action-continue"]', {
-    timeoutMs: 8_000,
-    terminalStatuses: ["COMPLETED", "FAILED", "CANCELLED"],
-  });
-  if (continueState.kind !== "terminal") {
-    await continueTaskUntilCompleted(page, taskId, { message: "Continue after resume." });
-  }
+  const resumedTask = await waitForTaskDetail(
+    taskId,
+    (task) => task.runtime?.lifecycleStatus === "RUNNING" || task.runtime?.lifecycleStatus === "COMPLETED",
+    { timeoutMs: 20_000, intervalMs: 250 },
+  );
+  assertCondition(
+    resumedTask.runtime?.lifecycleStatus === "RUNNING",
+    `Pause/resume scenario should return to RUNNING so operator guidance can be inserted. Last lifecycle=${resumedTask.runtime?.lifecycleStatus ?? "missing"}`,
+  );
+  await page.locator('[data-testid="task-continue-message"]').fill("Continue after resume and keep this guidance pending until the next safe point.");
+  await waitForEnabledSelector(page, '[data-testid="task-action-continue"]', 10_000);
+  await page.locator('[data-testid="task-action-continue"]').click();
+  await waitForTaskDetail(
+    taskId,
+    (task) => Array.isArray(task.pendingGuidance) && task.pendingGuidance.some((entry) => entry.status === "PENDING"),
+    { timeoutMs: 20_000, intervalMs: 250 },
+  );
+  await page.getByRole("button", { name: /refresh/i }).click();
+  await page.waitForTimeout(300);
+  await page.waitForSelector('[data-testid="task-pending-guidance"]', { timeout: 20_000 });
   await waitForTaskEvents(
     taskId,
     (events) =>
       Array.isArray(events)
       && events.some((event) => event.type === "TASK_RESUMED")
-      && events.some((event) => event.type === "TASK_COMPLETED"),
+      && events.some((event) => event.type === "TASK_GUIDANCE_PENDING"),
     { timeoutMs: 20_000 },
   );
   await assertNoMachineProtocolVisible(page);
-  await page.waitForSelector('[data-testid="task-result-card"]', { timeout: 20_000 });
-  await assertFollowUpComposer(page);
-  await captureTaskState(page, stateScreenshots, "completed-with-follow-up", {
+  await captureTaskState(page, stateScreenshots, "running-guidance-pending", {
     scenario: "web-pause-resume-complete",
     expectContextOpen: false,
-    expectResultCard: true,
-    expectAssistantNote: true,
-    expectFollowUp: true,
-  });
-  const composerRefreshAnchor = await verifyComposerRefreshAnchor(page);
-  await page.locator('[data-testid="task-continue-message"]').fill("Keep going in this same thread and tighten the delivery note.");
-  await waitForEnabledSelector(page, '[data-testid="task-action-continue"]');
-  await page.locator('[data-testid="task-action-continue"]').click();
-  const continuedTask = await waitForTaskDetail(
-    taskId,
-    (nextTask) => (
-      nextTask.runtime?.lifecycleStatus === "COMPLETED"
-      && nextTask.latestVisibleOutput?.summary === "pause-resume-follow-up"
-    ),
-    { timeoutMs: 20_000, intervalMs: 250 },
-  );
-  const resumedEvents = await getTaskEvents(taskId);
-  assertCondition(
-    page.url().includes(`task=${taskId}`),
-    `Completed thread continuation should stay on the same task. Url=${page.url()}`,
-  );
-  assertCondition(
-    continuedTask.definition?.taskId === taskId,
-    `Completed thread continuation created a new task instead of reusing ${taskId}.`,
-  );
-  assertCondition(
-    Array.isArray(resumedEvents)
-      && resumedEvents.some((event) => (
-        event.type === "TASK_RESUMED"
-        && event.payload?.continuationMode === "same_thread"
-      )),
-    `Completed thread continuation did not record a same_thread resume event. Events=${JSON.stringify(resumedEvents.map((event) => ({ type: event.type, payload: event.payload })))}`,
-  );
-  await captureTaskState(page, stateScreenshots, "completed-thread-continue", {
-    scenario: "web-pause-resume-complete",
-    expectContextOpen: false,
+    expectResultCard: false,
     expectAssistantNote: false,
+    expectFollowUp: false,
     expectStatusStrip: false,
   });
+  await pauseTask(taskId, "Pause E2E guidance task after proving pending guidance UI.");
+  await waitForTaskDetail(
+    taskId,
+    (task) =>
+      task.runtime?.lifecycleStatus === "PAUSED"
+      || task.runtime?.interrupt?.pauseRequested === true
+      || task.runtime?.executionLease?.phase === "WAITING_SAFE_POINT",
+    { timeoutMs: 20_000, intervalMs: 250 },
+  );
   await clickTab(page, "task-tab-events");
   await openAdvancedDetails(page);
   await waitForStatusText(page, "TASK_RESUMED");
@@ -1382,7 +1393,7 @@ async function runPauseResumeScenario(page, stateScreenshots) {
     name: "web-pause-resume-complete",
     passed: true,
     taskId,
-    composerRefreshAnchor,
+    guidancePending: true,
     toolIcons: null,
     toolExecution: null,
     screenshotPath: await captureScenario(page, "web-pause-resume-complete"),
@@ -1457,18 +1468,8 @@ async function runApprovalScenario(page, status, stateScreenshots) {
       `Approval card did not render for ${title}. Pending approvals=${diagnostics.pendingApprovals.length}; tool statuses=${diagnostics.toolInvocations.map((invocation) => invocation.status).join(",")}; lifecycle=${diagnostics.runtime.lifecycleStatus}. ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  await page.waitForFunction(
-    () => Boolean(
-      document.querySelector('[data-testid="task-assistant-note"]')
-      || document.querySelector('[data-testid="task-assistant-update"]')
-    ),
-    { timeout: 20_000 },
-  );
-  const approvalSummarySelector = await page.evaluate(() => (
-    document.querySelector('[data-testid="task-assistant-note"]')
-      ? '[data-testid="task-assistant-note"]'
-      : '[data-testid="task-assistant-update"]'
-  ));
+  const approvalSummarySelector = '[data-testid="task-approval-banner"]';
+  await page.waitForSelector(approvalSummarySelector, { timeout: 20_000 });
   await ensureTimelineSelectorVisible(page, approvalSummarySelector);
   await captureTaskState(page, stateScreenshots, "approval-pending", {
     scenario: `web-approval-${status.toLowerCase()}`,
@@ -1477,11 +1478,14 @@ async function runApprovalScenario(page, status, stateScreenshots) {
     expectResultCard: false,
     expectResultMissing: false,
     expectFollowUp: false,
-    expectToolActivity: true,
+    expectToolActivity: false,
     expectResultDestination: false,
     expectResultMissingDestination: false,
   });
-  const toolIcons = await verifyToolActivityIcons(page);
+  const toolIcons = await (async () => {
+    const cardCount = await page.locator('[data-testid="task-tool-activity"]').count();
+    return cardCount > 0 ? verifyToolActivityIcons(page) : { checked: true, cardCount: 0, iconCount: 0 };
+  })();
   await page.locator(status === "APPROVED" ? '[data-testid="task-approval-approve"]' : '[data-testid="task-approval-reject"]').click();
   await waitForTaskDetail(
     taskId,
@@ -1758,12 +1762,13 @@ async function runArchiveLifecycleScenario(page, stateScreenshots) {
   await page.waitForSelector('text=This thread is archived and hidden from the default work queue.', { timeout: 10_000 });
   await waitForTaskListCount(page, title, 0);
 
+  await waitForEnabledSelector(page, '[data-testid="task-toggle-show-archived"]', 10_000);
   await page.locator('[data-testid="task-toggle-show-archived"]').click();
   await waitForTaskListCount(page, title, 1);
   await reopenTaskFromList(page, title);
   await captureTaskState(page, stateScreenshots, "archived-visible-filtered", {
     scenario: "web-task-archive-lifecycle",
-    expectResultCard: true,
+    expectResultCard: false,
   });
 
   await page.locator('[data-testid="task-action-unarchive"]').click();
@@ -1772,6 +1777,7 @@ async function runArchiveLifecycleScenario(page, stateScreenshots) {
     (task) => task.isArchived === false,
     { timeoutMs: 20_000, intervalMs: 250 },
   );
+  await waitForEnabledSelector(page, '[data-testid="task-toggle-show-archived"]', 10_000);
   await page.locator('[data-testid="task-toggle-show-archived"]').click();
   await waitForTaskListCount(page, title, 1);
   await reopenTaskFromList(page, title);

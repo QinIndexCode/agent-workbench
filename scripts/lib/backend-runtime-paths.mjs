@@ -54,6 +54,5 @@ export function resolveKnownLegacyResiduePaths(rootDir) {
     path.resolve(rootDir, 'platform'),
     path.resolve(rootDir, 'secrets'),
     path.resolve(rootDir, 'workspace'),
-    path.resolve(rootDir, 'real-task-wave-run.log'),
   ];
 }

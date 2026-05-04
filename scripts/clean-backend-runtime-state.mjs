@@ -41,7 +41,6 @@ const LEGACY_RESIDUE_LABELS = new Map([
   ['platform', 'top_level_legacy_platform'],
   ['secrets', 'top_level_legacy_secrets'],
   ['workspace', 'top_level_legacy_workspace'],
-  ['real-task-wave-run.log', 'legacy_real_task_wave_log'],
 ]);
 
 async function removePath(target) {

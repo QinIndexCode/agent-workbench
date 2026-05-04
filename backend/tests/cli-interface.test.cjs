@@ -315,15 +315,15 @@ test('cli can submit list and get tasks through the stable REST interface', asyn
     assert.equal(diagnostics.taskId, submitted.command.taskId);
     assert.equal(typeof diagnostics.planner.stageCount, 'number');
     assert.equal(diagnostics.summary.progressState, 'completed');
-    assert.equal(diagnostics.summary.nextAction, 'Continue current thread');
+    assert.equal(diagnostics.summary.nextAction, 'Send follow-up');
     assert.equal(diagnostics.lifecycleStatus, detail.runtime.lifecycleStatus);
     assert.deepEqual(diagnostics.primaryAction, detail.primaryAction);
     assert.deepEqual(diagnostics.nextActionSummary, detail.nextActionSummary);
     assert.deepEqual(diagnostics.visibleToolActivities, detail.visibleToolActivities);
     assert.equal(diagnostics.lastError, detail.diagnostics.lastError);
     assert.equal(typeof diagnostics.providerSummary, 'object');
-    assert.equal(typeof diagnostics.quality, 'object');
     assert.equal(typeof diagnostics.acceptance, 'object');
+    assert.equal(Object.hasOwn(diagnostics, 'quality'), false);
     assert.equal(diagnostics.acceptance.deterministic.verdict, 'passed');
     assert.equal(Array.isArray(diagnostics.acceptance.deterministic.contract.passedChecks), true);
   } finally {
@@ -469,7 +469,7 @@ test('cli diagnostics exposes experience summary after approved experience reuse
     const humanDiagnostics = humanDiagnosticsCapture.stdout.join('');
     assert.match(humanDiagnostics, /Task diagnostics/);
     assert.match(humanDiagnostics, /Failure plane: core \/ artifact_destination_unresolved/);
-    assert.match(humanDiagnostics, /Acceptance and quality/);
+    assert.match(humanDiagnostics, /Acceptance/);
     assert.match(humanDiagnostics, /Artifact state/);
     assert.match(humanDiagnostics, /Experience summary/);
     assert.match(humanDiagnostics, /Experience: selected=1/);
@@ -713,7 +713,7 @@ test('cli inspect exposes delivered destination and same-thread continue action 
     assert.equal(payload.runtime.lifecycleStatus, 'COMPLETED');
     assert.equal(payload.statusSummary.label, 'Delivered to');
     assert.equal(payload.primaryAction.kind, 'continue_thread');
-    assert.equal(payload.nextActionSummary.label, 'Continue current thread');
+    assert.equal(payload.nextActionSummary.label, 'Send follow-up');
     assert.equal(payload.completionSummary.artifactApplyStatus, 'APPLIED');
     assert.deepEqual(payload.completionSummary.artifactDestinationPaths, [
       'backend/docs/cli-review/scratch/cli-handoff.md'
@@ -1441,6 +1441,8 @@ test('human chat keeps ambiguous "check" prompts in a completed interactive thre
     const output = capture.stdout.join('');
     assert.match(output, /\[session\] Interactive task created/);
     assert.match(output, /Current status: Completed/);
+    assert.match(output, /Suggested action: Send follow-up/);
+    assert.doesNotMatch(output, /Action detail: Task lifecycle is COMPLETED, so continue is not allowed/);
     assert.doesNotMatch(output, /Current status: Action required/);
 
     const taskIdMatch = output.match(/Interactive task created \((task_[^)]+)\)/);
@@ -2025,7 +2027,7 @@ test('platform REST surfaces channels schedules memories statistics and system v
     const diagnostics = await fetch(`${serverUrl}/tasks/diagnostics`).then((response) => response.json());
     const ecosystem = await fetch(`${serverUrl}/ecosystem`).then((response) => response.json());
     const toolsHealth = await fetch(`${serverUrl}/tools/health`).then((response) => response.json());
-    const scenarioPacks = await fetch(`${serverUrl}/scenario-packs`).then((response) => response.json());
+    const scriptCatalog = await fetch(`${serverUrl}/tools/script-catalog`).then((response) => response.json());
     const ecosystemSkills = await fetch(`${serverUrl}/ecosystem/skills`).then((response) => response.json());
     const ecosystemMcp = await fetch(`${serverUrl}/ecosystem/mcp`).then((response) => response.json());
 
@@ -2038,7 +2040,7 @@ test('platform REST surfaces channels schedules memories statistics and system v
     assert.equal(Array.isArray(ecosystem.tools), true);
     assert.equal(ecosystem.tools.every((tool) => tool.healthCheck && Array.isArray(tool.healthCheck.checks)), true);
     assert.equal(toolsHealth.every((tool) => tool.healthCheck && typeof tool.healthCheck.status === 'string'), true);
-    assert.equal(scenarioPacks.every((pack) => pack.modelPolicy && pack.timeoutPolicy && Array.isArray(pack.surfaceChecks)), true);
+    assert.equal(scriptCatalog.every((entry) => entry.commandTemplate && entry.riskCategory && entry.outputHint), true);
     assert.equal(Array.isArray(ecosystemSkills), true);
     assert.equal(Array.isArray(ecosystemMcp), true);
   } finally {
@@ -2236,14 +2238,14 @@ test('cli platform commands operate through the stable REST interface', async ()
     assert.equal(ecosystemMcpExit, 0);
     assert.equal(Array.isArray(JSON.parse(ecosystemMcpCapture.stdout.join(''))), true);
 
-    const scenariosCapture = createIoCapture();
-    const scenariosExit = await runBackendNewCli({
-      argv: ['platform', 'scenarios', 'list', '--server', serverUrl],
-      io: scenariosCapture.io
+    const scriptsCapture = createIoCapture();
+    const scriptsExit = await runBackendNewCli({
+      argv: ['platform', 'scripts', 'list', '--server', serverUrl],
+      io: scriptsCapture.io
     });
-    assert.equal(scenariosExit, 0);
-    const scenarios = JSON.parse(scenariosCapture.stdout.join(''));
-    assert.equal(scenarios.some((pack) => pack.id === 'database-design' && pack.timeoutPolicy), true);
+    assert.equal(scriptsExit, 0);
+    const scripts = JSON.parse(scriptsCapture.stdout.join(''));
+    assert.equal(scripts.some((entry) => entry.id === 'host-process-observation' && entry.riskCategory === 'host_observation'), true);
   } finally {
     server.close();
     removeDir(root);

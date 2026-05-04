@@ -27,6 +27,9 @@ const websocketUrl = (() => {
   }
 })();
 
+const MAX_TRACKED_TASK_CURSORS = 64;
+const MAX_TRACKED_EVENT_IDS_PER_TASK = 500;
+
 export class WebSocketClient {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -48,11 +51,21 @@ export class WebSocketClient {
 
   connect() {
     this.shouldReconnect = true;
+    if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
+      return;
+    }
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
     try {
-      this.ws = new WebSocket(websocketUrl);
+      const socket = new WebSocket(websocketUrl);
+      this.ws = socket;
 
-      this.ws.onopen = () => {
-        console.log('[WebSocket] Connected');
+      socket.onopen = () => {
+        if (this.ws !== socket) {
+          return;
+        }
         this.stopPolling();
         this.emitStatus({
           connected: true,
@@ -66,7 +79,10 @@ export class WebSocketClient {
         }
       };
 
-      this.ws.onmessage = (event) => {
+      socket.onmessage = (event) => {
+        if (this.ws !== socket) {
+          return;
+        }
         try {
           const data = JSON.parse(event.data);
           
@@ -82,18 +98,22 @@ export class WebSocketClient {
           }
 
           if (data.kind === 'subscribed') {
-            if (typeof data.taskId === 'string' && typeof data.latestEventId === 'string') {
-              this.latestEventIdByTask.set(data.taskId, data.latestEventId);
+            if (typeof data.taskId === 'string') {
+              if (typeof data.latestEventId === 'string') {
+                this.latestEventIdByTask.set(data.taskId, data.latestEventId);
+              }
+              this.rememberTaskTracking(data.taskId);
             }
-            console.log(`[WebSocket] Subscribed to ${data.taskId}`);
           }
-        } catch (error) {
-          console.error('[WebSocket] Parse error:', error);
+        } catch {
+          // Silently ignore parse errors to avoid flooding logs
         }
       };
 
-      this.ws.onclose = () => {
-        console.log('[WebSocket] Disconnected');
+      socket.onclose = () => {
+        if (this.ws !== socket) {
+          return;
+        }
         this.emitStatus({
           connected: false,
           taskId: this.subscribedTaskId || undefined,
@@ -107,7 +127,10 @@ export class WebSocketClient {
         }
       };
 
-      this.ws.onerror = () => {
+      socket.onerror = () => {
+        if (this.ws !== socket) {
+          return;
+        }
         this.emitStatus({
           connected: false,
           taskId: this.subscribedTaskId || undefined,
@@ -118,10 +141,12 @@ export class WebSocketClient {
           latestEventId: this.getLatestEventId(this.subscribedTaskId)
         });
         this.startPolling('WebSocket error; using REST event polling while reconnecting.');
+        if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
+          this.ws.close();
+        }
       };
-    } catch (error) {
+    } catch {
       if (this.shouldReconnect) {
-        console.warn('[WebSocket] Connection failed');
         this.emitStatus({
           connected: false,
           taskId: this.subscribedTaskId || undefined,
@@ -185,6 +210,7 @@ export class WebSocketClient {
     if (this.subscribedTaskId === taskId) {
       this.subscribedTaskId = null;
     }
+    this.emittedEventIdsByTask.delete(taskId);
     this.stopPolling();
   }
 
@@ -211,14 +237,61 @@ export class WebSocketClient {
     return taskId ? this.latestEventIdByTask.get(taskId) ?? null : null;
   }
 
+  private rememberTaskTracking(taskId: string): void {
+    const latestEventId = this.latestEventIdByTask.get(taskId);
+    if (latestEventId !== undefined) {
+      this.latestEventIdByTask.delete(taskId);
+      this.latestEventIdByTask.set(taskId, latestEventId);
+    }
+
+    const emittedEventIds = this.emittedEventIdsByTask.get(taskId);
+    if (emittedEventIds) {
+      this.emittedEventIdsByTask.delete(taskId);
+      this.emittedEventIdsByTask.set(taskId, emittedEventIds);
+    }
+
+    this.trimTaskTracking();
+  }
+
+  private trimTaskTracking(): void {
+    while (this.latestEventIdByTask.size > MAX_TRACKED_TASK_CURSORS) {
+      const oldestTaskId = [...this.latestEventIdByTask.keys()].find((candidate) => candidate !== this.subscribedTaskId);
+      if (!oldestTaskId) {
+        break;
+      }
+      this.latestEventIdByTask.delete(oldestTaskId);
+      this.emittedEventIdsByTask.delete(oldestTaskId);
+    }
+
+    while (this.emittedEventIdsByTask.size > MAX_TRACKED_TASK_CURSORS) {
+      const oldestTaskId = [...this.emittedEventIdsByTask.keys()].find((candidate) => candidate !== this.subscribedTaskId);
+      if (!oldestTaskId) {
+        break;
+      }
+      this.emittedEventIdsByTask.delete(oldestTaskId);
+    }
+  }
+
+  private trimSeenEvents(seen: Set<string>): void {
+    while (seen.size > MAX_TRACKED_EVENT_IDS_PER_TASK) {
+      const oldestEventId = seen.keys().next().value;
+      if (!oldestEventId) {
+        break;
+      }
+      seen.delete(oldestEventId);
+    }
+  }
+
   private markEventSeen(event: RuntimeEvent): boolean {
     const seen = this.emittedEventIdsByTask.get(event.taskId) ?? new Set<string>();
     if (seen.has(event.eventId)) {
       return false;
     }
     seen.add(event.eventId);
+    this.trimSeenEvents(seen);
     this.emittedEventIdsByTask.set(event.taskId, seen);
     this.latestEventIdByTask.set(event.taskId, event.eventId);
+    this.rememberTaskTracking(event.taskId);
     return true;
   }
 
@@ -300,5 +373,7 @@ export class WebSocketClient {
       this.ws.close();
       this.ws = null;
     }
+    this.latestEventIdByTask.clear();
+    this.emittedEventIdsByTask.clear();
   }
 }

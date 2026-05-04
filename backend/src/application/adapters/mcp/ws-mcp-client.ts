@@ -7,8 +7,8 @@ import {
   McpToolCallResult
 } from '../../../foundation/mcp/types';
 
-interface PendingEntry {
-  resolve: (value: any) => void;
+interface PendingEntry<T = unknown> {
+  resolve: (value: T | PromiseLike<T>) => void;
   reject: (reason?: unknown) => void;
 }
 
@@ -22,7 +22,7 @@ function resolveWsUrl(rawUrl: string | undefined): string {
 export class WsMcpClientAdapter implements McpClientAdapter {
   private socket: WebSocket | null = null;
   private socketUrl: string | null = null;
-  private readonly pending = new Map<string, PendingEntry>();
+  private readonly pending = new Map<string, PendingEntry<McpToolCallResult | McpCapabilityDiscoveryResult>>();
   private openPromise: Promise<void> | null = null;
 
   async connect(request: McpConnectionRequest): Promise<void> {
@@ -131,7 +131,7 @@ export class WsMcpClientAdapter implements McpClientAdapter {
     }
     const id = `${method}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
     const response = new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
     });
     this.socket.send(JSON.stringify({ id, method, params }));
     return response;

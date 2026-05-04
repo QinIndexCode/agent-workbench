@@ -7,6 +7,7 @@ const fsPromises = require('node:fs/promises');
 const path = require('node:path');
 const {
   applyToolInvocationTransition,
+  applyTrackerState,
   ProviderHttpError,
   applyLifecycleTransition,
   createBackendNewFoundation,
@@ -15,7 +16,8 @@ const {
   createTaskRuntimeState,
   createToolInvocationRecord,
   createToolFailureResult,
-  createToolSuccessResult
+  createToolSuccessResult,
+  getExecutionProfile
 } = require('../dist');
 const { createTempRoot, removeDir } = require('./helpers.cjs');
 
@@ -145,6 +147,46 @@ test('applyLifecycleTransition marks CANCELLED runtimes as interrupted and inact
   assert.equal(cancelled.executionLease.active, false);
 });
 
+test('tracker application caps progress history for long-running tasks', () => {
+  const definition = {
+    taskId: 'task_progress_history_cap',
+    title: 'Progress history cap',
+    intent: 'Keep long-running runtime state bounded.',
+    preferredProviderId: 'provider-main',
+    units: [
+      { id: 'AGENT-001', role: 'Worker', goal: 'Iterate', dependencies: [] }
+    ]
+  };
+  let runtime = createTaskRuntimeState(definition, Date.now());
+  for (let index = 0; index < 125; index += 1) {
+    runtime = applyTrackerState({
+      definition,
+      runtime,
+      tracker: {
+        currentUnit: 'AGENT-001',
+        status: 'PARTIAL',
+        progressPercent: index,
+        decision: 'CONTINUE',
+        reason: `iteration ${index}`,
+        nextUnit: 'AGENT-001',
+        filesCreated: []
+      },
+      acceptedInvocationIds: [],
+      approvalInvocationIds: [],
+      sessionId: `sess_${index}`,
+      correlationId: `corr_${index}`,
+      turnId: `turn_${index}`,
+      checkpointId: `chk_${index}`,
+      providerId: 'provider-main',
+      now: index
+    });
+  }
+
+  assert.equal(runtime.progressHistory.length, 100);
+  assert.equal(runtime.progressHistory[0].reason, 'iteration 25');
+  assert.equal(runtime.progressHistory.at(-1).reason, 'iteration 124');
+});
+
 test('task application runs multi-unit task sequentially to completion', async () => {
   const root = createTempRoot();
   try {
@@ -175,6 +217,68 @@ const completed = await runtime.tasks.continueTask({ taskId: submitted.command.t
     assert.equal(completed.task.runtime.lifecycleStatus, 'COMPLETED');
     assert.equal(completed.task.runtime.currentUnitId, null);
     assert.deepEqual(completed.task.runtime.completedUnits, ['AGENT-001', 'AGENT-002']);
+  } finally {
+    removeDir(root);
+  }
+});
+
+test('product runtime tasks do not inherit default quality profiles automatically', async () => {
+  const root = createTempRoot();
+  try {
+    const { runtime } = createRuntimeWithFoundation({
+      cwd: root,
+      config: {
+        paths: {
+          rootDir: root
+        }
+      }
+    });
+
+    const taskInput = createTaskInput([
+      { id: 'AGENT-001', role: 'Observer', goal: 'Inspect the current host state', outputContract: '{"summary":"string","issues":[]}', dependencies: [] }
+    ]);
+    taskInput.defaultQualityProfileId = 'system_audit';
+    taskInput.units[0].qualityProfileId = 'system_audit';
+    const submitted = await runtime.tasks.submitTask(taskInput);
+    const task = await runtime.tasks.getTask(submitted.command.taskId);
+
+    assert.equal(task.definition.metadata.executionMode, 'product_runtime');
+    assert.equal(Object.hasOwn(task.definition.units[0], 'qualityProfileId'), false);
+  } finally {
+    removeDir(root);
+  }
+});
+
+test('analyze profile allows safe host observation commands by default', () => {
+  const profile = getExecutionProfile('analyze');
+
+  assert.ok(profile);
+  assert.equal(profile.allowedToolIds.includes('run-command'), true);
+});
+
+test('legacy validation metadata cannot opt ordinary runtime into quality profiles', async () => {
+  const root = createTempRoot();
+  try {
+    const { runtime } = createRuntimeWithFoundation({
+      cwd: root,
+      config: {
+        paths: {
+          rootDir: root
+        }
+      }
+    });
+
+    const taskInput = createTaskInput([
+      { id: 'AGENT-001', role: 'Observer', goal: 'Inspect the current host state', outputContract: '{"summary":"string","issues":[]}', dependencies: [] }
+    ]);
+    taskInput.defaultQualityProfileId = 'system_audit';
+    taskInput.units[0].qualityProfileId = 'system_audit';
+    taskInput.metadata = { executionMode: 'validation_harness' };
+    const submitted = await runtime.tasks.submitTask(taskInput);
+    const task = await runtime.tasks.getTask(submitted.command.taskId);
+
+    assert.equal(task.definition.metadata.executionMode, 'validation_harness');
+    assert.equal(Object.hasOwn(task.definition.units[0], 'qualityProfileId'), false);
   } finally {
     removeDir(root);
   }
@@ -246,7 +350,7 @@ test('direct task actions can auto-run generic correction turns after tool evide
   }
 });
 
-test('analyze profile rejects write or command-style tools even if provider emits them', async () => {
+test('product runtime surfaces command-style tools as approval requests instead of hiding the capability', async () => {
   const root = createTempRoot();
   try {
     const { foundation, runtime } = createRuntimeWithFoundation({
@@ -274,11 +378,13 @@ test('analyze profile rejects write or command-style tools even if provider emit
     ]));
     const started = await runtime.tasks.startTask({ taskId: submitted.command.taskId });
 
+    const invocation = started.task.toolInvocations[0];
     assert.equal(started.task.runtime.lifecycleStatus, 'RUNNING');
-    assert.equal(started.task.runtime.pendingCorrection, 'AWAITING_TOOL_ACTION');
-    assert.equal(started.task.runtime.contractDiagnostics?.lastAcceptanceFailureCategory, 'tool_action_required_but_not_emitted');
-    assert.equal(started.task.runtime.contractDiagnostics?.lastPendingCorrectionKind, 'AWAITING_TOOL_ACTION');
-    assert.equal(started.task.toolInvocations.length, 0);
+    assert.equal(invocation.toolId, 'run_command');
+    assert.equal(invocation.status, 'WAITING_APPROVAL');
+    assert.equal(invocation.metadata.riskCategory, 'shell_command');
+    assert.equal(started.task.pendingApprovalItems.length, 1);
+    assert.equal(started.task.pendingApprovalItems[0].riskCategory, 'shell_command');
   } finally {
     removeDir(root);
   }
@@ -669,7 +775,7 @@ test('verify profile accepts successful verification-oriented run_command eviden
   }
 });
 
-test('quality-gated verify tasks treat earlier failed probes as resolved after later grounded evidence passes', async () => {
+test('verify tasks treat earlier failed probes as resolved after later grounded evidence passes', async () => {
   const root = createTempRoot();
   try {
     const { foundation, runtime } = createRuntimeWithFoundation({
@@ -716,8 +822,8 @@ test('quality-gated verify tasks treat earlier failed probes as resolved after l
           responseId: 'resp_finalized',
           providerId: 'provider-main',
           model: 'mock-model',
-          outputText: '[AGENT-001_OUTPUT]{"summary":"quality passed","details":"Grounded by HealthValue=42 replacement evidence.","issues":[]}[/AGENT-001_OUTPUT]\n'
-            + '{"current_unit":"AGENT-001","status":"COMPLETE","progress_percent":100,"decision":"CONTINUE","reason":"grounded quality evidence passed","files_created":["reports/system-health.md","quality/system-audit.json"]}',
+          outputText: '[AGENT-001_OUTPUT]{"summary":"verification passed","details":"Grounded by HealthValue=42 replacement evidence.","issues":[]}[/AGENT-001_OUTPUT]\n'
+            + '{"current_unit":"AGENT-001","status":"COMPLETE","progress_percent":100,"decision":"CONTINUE","reason":"grounded verification evidence passed","files_created":["reports/system-health.md"]}',
           finishReason: 'stop',
           usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
           metadata: {}
@@ -729,14 +835,13 @@ test('quality-gated verify tasks treat earlier failed probes as resolved after l
         && invocation.status === 'SUCCEEDED'
         && JSON.stringify(invocation.result ?? invocation.metadata ?? {}).includes('HealthValue')
       ));
-      assert.ok(evidence, 'expected successful replacement evidence before final quality write');
+      assert.ok(evidence, 'expected successful replacement evidence before final report write');
       return {
-        responseId: 'resp_quality_pass',
+        responseId: 'resp_report_write',
         providerId: 'provider-main',
         model: 'mock-model',
         outputText: '{"tool":"write_file","arguments":{"path":"reports/system-health.md","content":"# System Health\\nHealthValue=42\\n"}}\n'
-          + `{"tool":"write_file","arguments":{"path":"quality/system-audit.json","content_json":{"profile":"system_audit","reportFile":"reports/system-health.md","facts":[{"name":"health_value","reportedValue":42,"sourceInvocationId":"${evidence.invocationId}","sourceContains":["HealthValue : 42"]}]}}}\n`
-          + '{"current_unit":"AGENT-001","status":"IN_PROGRESS","progress_percent":90,"decision":"CONTINUE","reason":"quality evidence files written; ready to finalize","files_created":["reports/system-health.md","quality/system-audit.json"]}',
+          + '{"current_unit":"AGENT-001","status":"IN_PROGRESS","progress_percent":90,"decision":"CONTINUE","reason":"report evidence written; ready to finalize","files_created":["reports/system-health.md"]}',
         finishReason: 'stop',
         usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
         metadata: {}
@@ -747,9 +852,8 @@ test('quality-gated verify tasks treat earlier failed probes as resolved after l
       {
         id: 'AGENT-001',
         role: 'Verifier',
-        goal: 'Verify with quality evidence',
+        goal: 'Verify with runtime evidence',
         executionProfileId: 'verify',
-        qualityProfileId: 'system_audit',
         outputContract: '{"summary":"string","details":"string","issues":[]}',
         dependencies: []
       }
@@ -770,7 +874,6 @@ test('quality-gated verify tasks treat earlier failed probes as resolved after l
     const debug = await runtime.tasks.getTaskDebug(taskId);
 
     assert.equal(debug.task.runtime.lifecycleStatus, 'COMPLETED');
-    assert.equal(debug.executionSummary.acceptance.quality.verdict, 'passed');
     assert.equal(debug.executionSummary.acceptance.deterministic.verdict, 'passed');
     assert.equal(
       debug.executionSummary.acceptance.deterministic.evidence.failedChecks.includes('known_verification_failure'),
@@ -1485,7 +1588,7 @@ test('implement profile still blocks on real verification command failures after
   }
 });
 
-test('generic quality contract stays in core and does not run scenario quality gates', async () => {
+test('product runtime omits legacy validation projection by default', async () => {
   const root = createTempRoot();
   try {
     const { foundation, runtime } = createRuntimeWithFoundation({
@@ -1501,17 +1604,15 @@ test('generic quality contract stays in core and does not run scenario quality g
     ]);
 
     const submitted = await runtime.tasks.submitTask({
-      title: 'Docs synth quality gate',
+      title: 'Docs synthesis evidence flow',
       intent: 'Synthesize docs with explicit source grounding.',
       preferredProviderId: 'provider-main',
-      defaultQualityProfileId: 'docs_synthesize',
       units: [
         {
           id: 'AGENT-001',
           role: 'Synthesizer',
           goal: 'Produce handbook outputs',
           executionProfileId: 'analyze',
-          qualityProfileId: 'docs_synthesize',
           outputContract: '{"summary":"string","details":"string","issues":[]}',
           dependencies: []
         }
@@ -1534,20 +1635,7 @@ test('generic quality contract stays in core and does not run scenario quality g
 
     assert.equal(debug.task.runtime.lifecycleStatus, 'COMPLETED');
     assert.equal(debug.task.runtime.pendingCorrection, 'NONE');
-    assert.equal(debug.executionSummary.acceptance.quality.profileId, 'docs_synthesize');
-    assert.equal(debug.executionSummary.acceptance.quality.verdict, 'passed');
-    assert.equal(
-      debug.executionSummary.acceptance.quality.failedChecks.includes('missing_docs_synthesis_trace'),
-      false
-    );
-    assert.equal(
-      debug.executionSummary.acceptance.quality.requiredNextEvidence.includes('write quality/docs-synthesize-trace.json with claim-level grounding'),
-      false
-    );
-    assert.equal(
-      debug.executionSummary.acceptance.quality.passedChecks.includes('generic_quality_contract_has_runtime_evidence'),
-      true
-    );
+    assert.equal(Object.hasOwn(debug.executionSummary.acceptance, 'quality'), false);
   } finally {
     removeDir(root);
   }
@@ -2289,8 +2377,8 @@ test('instruction skill proposals stay scoped to their approved experience even 
       buildChecklistSuccessResponse('a-delta')
     ]);
 
-    const familyAToken = 'sharedfamilyscopealpha1';
-    const familyBToken = 'sharedfamilyscopebravo2';
+    const familyAToken = 'sharedfamilyscopecommonalpha1';
+    const familyBToken = 'sharedfamilyscopecommonbravo2';
     const outputContract = '{"summary":"string","artifact":"string","details":"string","issues":[]}';
     const createFamilyPayload = (title, intent, familyToken, metadata = undefined) => ({
       title,
@@ -4545,7 +4633,7 @@ test('delegate_subtask can reuse the required child contract when provider omits
   }
 });
 
-test('delegate_subtask rejects child tool scopes that would require separate approval under ask mode', async () => {
+test('delegate_subtask requests approval instead of script-rejecting approval-capable child tool scopes', async () => {
   const root = createTempRoot();
   try {
     const { foundation, runtime } = createRuntimeWithFoundation({
@@ -4585,14 +4673,12 @@ test('delegate_subtask rejects child tool scopes that would require separate app
     assert.equal(started.task.runtime.lifecycleStatus, 'RUNNING');
     assert.equal(
       started.task.toolInvocations.some(
-        (invocation) => invocation.toolId === 'delegate_subtask' && invocation.status === 'FAILED'
+        (invocation) => invocation.toolId === 'delegate_subtask' && invocation.status === 'WAITING_APPROVAL'
       ),
       true
     );
-    assert.match(
-      started.task.visibleToolActivities.find((activity) => activity.toolId === 'delegate_subtask')?.detail ?? '',
-      /permission boundary|requires approval/i
-    );
+    assert.equal(started.task.pendingApprovalItems.length, 1);
+    assert.equal(started.task.pendingApprovalItems[0].toolId, 'delegate_subtask');
     assert.equal(started.task.delegationSummary?.activeChildTask, null);
     const summaries = await runtime.tasks.listTasks();
     assert.equal(summaries.some((task) => task.title === 'Approval-blocked child'), false);
@@ -4692,20 +4778,29 @@ const queued = await runtime.tasks.submitCommand({
       actor: 'tester',
       message: 'remember this preference'
     });
+const pendingGuidance = await runtime.tasks.getTaskGuidance(submitted.command.taskId);
 const started = await runtime.tasks.submitCommand({
       taskId: submitted.command.taskId,
       type: 'START_TASK'
     });
 const commands = await runtime.tasks.getTaskCommands(submitted.command.taskId);
 const operatorMessages = await runtime.tasks.getTaskOperatorMessages(submitted.command.taskId);
+const consumedGuidance = await runtime.tasks.getTaskGuidance(submitted.command.taskId);
+const guidanceEvents = await runtime.tasks.getTaskEvents(submitted.command.taskId);
 
     assert.equal(queued.task.runtime.pendingOperatorInputs.length, 1);
+    assert.equal(queued.task.pendingGuidance.some(record => record.status === 'PENDING' && record.content === 'remember this preference'), true);
+    assert.equal(pendingGuidance.some(record => record.status === 'PENDING' && record.content === 'remember this preference'), true);
     assert.equal(started.task.runtime.lifecycleStatus, 'COMPLETED');
     assert.equal(started.task.runtime.promptBudget.operatorInputCount, 1);
     assert.equal(started.task.runtime.pendingOperatorInputs.length, 0);
+    assert.equal(started.task.pendingGuidance.some(record => record.status === 'CONSUMED' && record.content === 'remember this preference'), true);
     assert.equal(commands.some(record => record.type === 'SEND_OPERATOR_MESSAGE' && record.status === 'APPLIED'), true);
     assert.equal(commands.some(record => record.type === 'START_TASK' && record.status === 'APPLIED'), true);
     assert.equal(operatorMessages.some(record => record.status === 'CONSUMED'), true);
+    assert.equal(consumedGuidance.some(record => record.status === 'CONSUMED' && record.content === 'remember this preference'), true);
+    assert.equal(guidanceEvents.some(record => record.type === 'TASK_GUIDANCE_PENDING'), true);
+    assert.equal(guidanceEvents.some(record => record.type === 'TASK_GUIDANCE_CONSUMED'), true);
     const messageCommand = commands.find(record => record.type === 'SEND_OPERATOR_MESSAGE' && record.status === 'APPLIED');
     assert.equal(operatorMessages.some(record => record.commandId === messageCommand?.commandId), true);
   } finally {
@@ -5156,6 +5251,16 @@ test('http interfaces expose task commands queries and event stream coherently',
     const submitPayload = await submitResponse.json();
     const taskId = submitPayload.command.taskId;
 
+    const guidanceResponse = await fetch(`${baseUrl}/tasks/${taskId}/guidance`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        content: 'use a concise operator-facing summary',
+        actor: 'tester'
+      })
+    });
+    const pendingGuidanceResponse = await fetch(`${baseUrl}/tasks/${taskId}/guidance`);
+
     const startResponse = await fetch(`${baseUrl}/tasks/${taskId}/start`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -5168,12 +5273,20 @@ test('http interfaces expose task commands queries and event stream coherently',
     const eventsResponse = await fetch(`${baseUrl}/tasks/${taskId}/events`);
     const commandsResponse = await fetch(`${baseUrl}/tasks/${taskId}/commands`);
     const operatorMessageResponse = await fetch(`${baseUrl}/tasks/${taskId}/operator-messages`);
+    const consumedGuidanceResponse = await fetch(`${baseUrl}/tasks/${taskId}/guidance`);
     const eventsReplayResponse = await fetch(`${baseUrl}/tasks/${taskId}/events?afterEventId=evt_missing`);
+    const invalidJsonResponse = await fetch(`${baseUrl}/tasks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{'
+    });
     const controller = new AbortController();
     const streamResponse = await fetch(`${baseUrl}/tasks/${taskId}/events/stream`, {
       signal: controller.signal
     });
     const startedPayload = await startResponse.json();
+    const guidancePayload = await guidanceResponse.json();
+    const pendingGuidancePayload = await pendingGuidanceResponse.json();
     const taskPayload = await taskResponse.json();
     const discussionPayload = await discussionResponse.json();
     const debugPayload = await debugResponse.json();
@@ -5181,14 +5294,20 @@ test('http interfaces expose task commands queries and event stream coherently',
     const eventsPayload = await eventsResponse.json();
     const commandsPayload = await commandsResponse.json();
     const operatorMessagePayload = await operatorMessageResponse.json();
+    const consumedGuidancePayload = await consumedGuidanceResponse.json();
     const replayPayload = await eventsReplayResponse.json();
+    const invalidJsonPayload = await invalidJsonResponse.json();
     const reader = streamResponse.body.getReader();
     const firstChunk = await reader.read();
     controller.abort();
     const streamText = Buffer.from(firstChunk.value ?? []).toString('utf8');
 
     assert.equal(startedPayload.task.runtime.lifecycleStatus, 'COMPLETED');
+    assert.equal(guidancePayload.task.pendingGuidance.some(record => record.status === 'PENDING'), true);
+    assert.equal(pendingGuidancePayload.some(record => record.status === 'PENDING'), true);
+    assert.equal(consumedGuidancePayload.some(record => record.status === 'CONSUMED'), true);
     assert.equal(taskPayload.runtime.lifecycleStatus, 'COMPLETED');
+    assert.equal(taskPayload.pendingGuidance.some(record => record.status === 'CONSUMED'), true);
     assert.equal(Array.isArray(taskPayload.conversations), true);
     assert.equal(taskPayload.conversations.some((message) => message.role === 'runtime'), false);
     assert.equal(Array.isArray(discussionPayload.conversations), true);
@@ -5202,6 +5321,8 @@ test('http interfaces expose task commands queries and event stream coherently',
     assert.equal(Array.isArray(operatorMessagePayload), true);
     assert.equal(Array.isArray(replayPayload), true);
     assert.equal(replayPayload.length, eventsPayload.length);
+    assert.equal(invalidJsonResponse.status, 400);
+    assert.equal(invalidJsonPayload.code, 'invalid_json');
     assert.match(streamText, /event: TASK_SUBMITTED/);
     assert.match(streamText, /event: TURN_ANALYZED|event: TASK_COMPLETED/);
   } finally {
@@ -5396,7 +5517,7 @@ test('acceptance does not pass when the latest tracker is still in progress', as
     registerProvider(foundation, [
       '[AGENT-001_OUTPUT]{"summary":"normalized docs","details":"Files were written but final completion has not been declared.","producedFiles":["normalized/index.md"],"issues":[]}[/AGENT-001_OUTPUT]\n'
         + '{"current_unit":"AGENT-001","tool_name":"write_file","arguments":{"path":"normalized/index.md","content":"# Index\\n"}}\n'
-        + '{"current_unit":"AGENT-001","status":"IN_PROGRESS","progress_percent":80,"decision":"CONTINUE","reason":"quality gate should be checked before final completion","files_created":["normalized/index.md"]}'
+        + '{"current_unit":"AGENT-001","status":"IN_PROGRESS","progress_percent":80,"decision":"CONTINUE","reason":"work should be completed before final acceptance","files_created":["normalized/index.md"]}'
     ]);
 
     const submitted = await runtime.tasks.submitTask(createTaskInput([
@@ -6007,6 +6128,44 @@ test('websocket supports replay cursor and structured error envelopes', async ()
     assert.equal(typeof snapshot.task.statusSummary.label, 'string');
     assert.equal(Array.isArray(snapshot.task.visibleToolActivities), true);
     assert.equal(errorMessage.code, 'missing_task_id');
+
+    const commandErrorMessages = [];
+    await new Promise((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${address.port}/ws?taskId=${taskId}`);
+      socket.on('message', (raw) => {
+        const message = JSON.parse(String(raw));
+        commandErrorMessages.push(message);
+        if (message.kind === 'subscribed') {
+          socket.send(JSON.stringify({ type: 'command', taskId, command: {} }));
+        }
+        if (message.kind === 'error') {
+          socket.close();
+          resolve();
+        }
+      });
+      socket.on('error', reject);
+    });
+    const commandError = commandErrorMessages.find(message => message.kind === 'error');
+    assert.equal(commandError.code, 'invalid_command_payload');
+
+    const failedCommandMessages = [];
+    await new Promise((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${address.port}/ws?taskId=${taskId}`);
+      socket.on('message', (raw) => {
+        const message = JSON.parse(String(raw));
+        failedCommandMessages.push(message);
+        if (message.kind === 'subscribed') {
+          socket.send(JSON.stringify({ type: 'command', taskId, command: { type: 'NOT_A_REAL_COMMAND' } }));
+        }
+        if (message.kind === 'error') {
+          socket.close();
+          resolve();
+        }
+      });
+      socket.on('error', reject);
+    });
+    const failedCommandError = failedCommandMessages.find(message => message.kind === 'error');
+    assert.equal(failedCommandError.code, 'command_failed');
   } finally {
     server.close();
     removeDir(root);
@@ -6144,6 +6303,32 @@ test('runtime startup pauses stale running tasks after restart', async () => {
       { id: 'AGENT-001', role: 'Analyst', goal: 'Iterate until done', outputContract: '{"summary":"string","issues":[]}', dependencies: [] }
     ]));
     const started = await firstRuntimeState.runtime.tasks.startTask({ taskId: submitted.command.taskId });
+    const pausedLeaseTask = await firstRuntimeState.runtime.tasks.submitTask(createTaskInput([
+      { id: 'AGENT-001', role: 'Paused worker', goal: 'Recover stale paused lease', outputContract: '{"summary":"string","issues":[]}', dependencies: [] }
+    ]));
+    const pausedLeaseRecord = await firstRuntimeState.foundation.taskRuntimes.get(pausedLeaseTask.command.taskId);
+    await firstRuntimeState.foundation.taskRuntimes.save({
+      ...pausedLeaseRecord,
+      runtime: {
+        ...pausedLeaseRecord.runtime,
+        lifecycleStatus: 'PAUSED',
+        engineStatus: 'PAUSED',
+        executionLease: {
+          active: true,
+          phase: 'WAITING_SAFE_POINT',
+          leaseId: 'lease_stale_paused',
+          startedAt: Date.now(),
+          replayable: true
+        },
+        interrupt: {
+          ...pausedLeaseRecord.runtime.interrupt,
+          pauseRequested: true,
+          requestedAt: Date.now(),
+          reason: 'simulated pause crash'
+        },
+        updatedAt: Date.now()
+      }
+    });
 
     assert.equal(started.task.runtime.lifecycleStatus, 'RUNNING');
     await firstRuntimeState.runtime.close();
@@ -6156,10 +6341,14 @@ test('runtime startup pauses stale running tasks after restart', async () => {
       }
     });
     const recovered = await restartedRuntimeState.runtime.tasks.getTask(submitted.command.taskId);
+    const recoveredPausedLease = await restartedRuntimeState.runtime.tasks.getTask(pausedLeaseTask.command.taskId);
     const events = await restartedRuntimeState.runtime.tasks.getTaskEvents(submitted.command.taskId);
     const listed = await restartedRuntimeState.runtime.tasks.listTasks();
 
     assert.equal(recovered.runtime.lifecycleStatus, 'PAUSED');
+    assert.equal(recoveredPausedLease.runtime.lifecycleStatus, 'PAUSED');
+    assert.equal(recoveredPausedLease.runtime.executionLease.active, false);
+    assert.equal(recoveredPausedLease.runtime.executionLease.phase, 'PAUSED');
     assert.equal(listed.some(item => item.taskId === submitted.command.taskId && item.lifecycleStatus === 'PAUSED'), true);
     assert.equal(events.some(event => event.type === 'TASK_PAUSED' && event.payload.recovery === 'PROCESS_RESTART'), true);
 

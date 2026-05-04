@@ -11,6 +11,7 @@ import { acceptParsedTurn } from '../../domain/validation';
 import { BackendNewFoundation } from '../../foundation/bootstrap/types';
 import {
   OperatorCommandRecord,
+  OperatorMessageRecord,
   TaskMetadataRecord,
   TaskRuntimeRecord,
   ToolApprovalRecord,
@@ -32,6 +33,7 @@ import {
   TaskDelegatedChildSummary,
   TaskDelegationSummary,
   TaskCompletionSummary,
+  TaskGuidanceRecord,
   TaskNextActionSummary,
   TaskPendingApprovalItem,
   TaskPrimaryActionSummary,
@@ -49,6 +51,22 @@ const TERMINAL_TASK_LIFECYCLE_STATUSES = new Set<TaskLifecycleStatus>(['COMPLETE
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function toTaskGuidanceRecord(record: OperatorMessageRecord): TaskGuidanceRecord {
+  return {
+    guidanceId: record.messageId,
+    taskId: record.taskId,
+    content: record.content,
+    status: record.status === 'CONSUMED' ? 'CONSUMED' : 'PENDING',
+    createdAt: record.createdAt,
+    consumedAt: record.consumedAt,
+    actor: typeof record.metadata?.actor === 'string' ? record.metadata.actor : null,
+    metadata: {
+      ...record.metadata,
+      commandId: record.commandId
+    }
+  };
 }
 
 function normalizeToolId(toolId: string): string {
@@ -679,8 +697,10 @@ function buildPendingApprovalItems(params: {
       toolName: matchingInvocation?.toolId ?? approval.toolId,
       requestedAt: approval.createdAt,
       argumentsSummary: matchingInvocation ? summarizeInvocationArguments(matchingInvocation) : null,
+      riskCategory: typeof approval.metadata?.riskCategory === 'string' ? approval.metadata.riskCategory : null,
+      reason: approval.reason,
       status: approval.status,
-      availableActions: ['APPROVED', 'REJECTED']
+      availableActions: ['APPROVED', 'APPROVED_ONCE', 'REJECTED']
     };
   });
 }
@@ -932,18 +952,18 @@ function buildTaskPrimaryActionSummary(params: {
     case 'FAILED':
     case 'CANCELLED':
       return {
-        kind: 'restart_task',
-        label: 'Restart task',
-        description: 'Restart the thread from the current task definition.',
+        kind: 'send_guidance',
+        label: 'Send guidance',
+        description: 'Send concrete repair guidance or a follow-up instruction for this thread.',
         destinationDir: null
       };
     case 'COMPLETED':
       return {
         kind: 'continue_thread',
-        label: 'Continue current thread',
+        label: 'Send follow-up',
         description: params.completionSummary?.artifactDestinationDir
-          ? `Keep working from the delivered result in this thread.`
-          : 'Keep working from the latest completed result in this thread.',
+          ? 'Send a follow-up message that builds on the delivered result in this thread.'
+          : 'Send a follow-up message that builds on the latest completed result in this thread.',
         destinationDir: params.completionSummary?.artifactDestinationDir ?? null
       };
     default:
@@ -1012,11 +1032,18 @@ function buildTaskNextActionSummary(params: {
 
   if (params.primaryAction.kind === 'continue_thread') {
     return {
-      label: 'Continue current thread',
+      label: params.runtime.lifecycleStatus === 'COMPLETED' ? 'Send follow-up' : 'Continue current thread',
       reason: params.runtime.lifecycleStatus === 'COMPLETED'
-        ? 'The thread is complete, and the next message will continue work in the same thread.'
+        ? 'The task is complete; the next message will start follow-up work in this same thread.'
         : sanitizeContinueReason(continueAvailability.continueReason)
           ?? 'The runtime is ready for the next operator-guided step.'
+    };
+  }
+
+  if (params.primaryAction.kind === 'send_guidance') {
+    return {
+      label: 'Send guidance',
+      reason: 'The thread needs a concrete operator instruction before another product-runtime turn should run.'
     };
   }
 
@@ -1121,7 +1148,7 @@ function buildTaskStatusSummary(params: {
   if (params.runtime.lifecycleStatus === 'CANCELLED') {
     return {
       label: 'Cancelled',
-      detail: 'The thread was cancelled. Restart if you want to rebuild from the current task definition.',
+      detail: 'The thread was cancelled. Send guidance or create a new task if you want to continue from here.',
       tone: 'blocked'
     };
   }
@@ -2183,6 +2210,7 @@ export class TaskRecordService {
       realTaskArchiveStatus: improvementTruth.realTaskArchiveStatus,
       commands,
       operatorMessages,
+      pendingGuidance: operatorMessages.map(toTaskGuidanceRecord),
       interrupts,
       pendingApprovals: approvals.filter(record => record.status === 'PENDING'),
       pendingApprovalItems,

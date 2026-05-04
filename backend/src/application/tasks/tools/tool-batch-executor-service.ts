@@ -8,6 +8,7 @@ import { createToolExecutionAuditDetails } from '../../../foundation/tools/execu
 import { createToolInvocationRecord } from '../../../foundation/tools/create-invocation-record';
 import { evaluateToolExecutionPolicy } from '../../../foundation/tools/execution-policy';
 import { validateToolInvocationRequest } from '../../../foundation/tools/validate-invocation';
+import { validateHostObservationRunCommandBoundary } from '../../runtime/host-observation-policy';
 import { ToolDispatchOrchestrator } from './tool-dispatch-orchestrator';
 import { shouldMarkInvocationAsVerification } from './tool-verification';
 
@@ -188,6 +189,15 @@ export class ToolBatchExecutorService {
         rejected.push(`${request.toolName}: tool is not allowed for unit "${requestedUnitId}" execution profile.`);
         continue;
       }
+      const hostObservationBoundaryError = validateHostObservationRunCommandBoundary({
+        allowedToolIds,
+        toolId: validation.tool.id,
+        argumentsRecord: validation.normalizedArguments
+      });
+      if (hostObservationBoundaryError) {
+        rejected.push(`${request.toolName}: ${hostObservationBoundaryError}`);
+        continue;
+      }
       candidates.push({
         invocationKey: `${batch.batchId}:${callIndex}:${requestedUnitId}:${request.toolName}`,
         batchId: batch.batchId,
@@ -221,6 +231,7 @@ export class ToolBatchExecutorService {
       }))
     });
     const decisionByBatchId = new Map(admission.decisions.map((decision) => [decision.batchId, decision]));
+    const latestApprovals = await this.foundation.approvals.listLatest(params.taskId);
 
     for (const candidate of candidates) {
       const batch = batches.find((entry) => entry.batchId === candidate.batchId);
@@ -245,7 +256,9 @@ export class ToolBatchExecutorService {
           effect: candidate.tool.effect as 'READ' | 'WRITE' | 'NETWORK',
           riskLevel: candidate.tool.riskLevel as 'LOW' | 'MEDIUM' | 'HIGH',
           inputSchema: []
-        }
+        },
+        argumentsRecord: candidate.request.arguments,
+        taskApprovals: latestApprovals
       });
       const invocation = createToolInvocationRecord({
         correlationId: params.correlationId,
@@ -264,6 +277,8 @@ export class ToolBatchExecutorService {
           stageIndex: candidate.stageIndex,
           permissionDecision: policy.decision,
           permissionReason: policy.reason,
+          riskCategory: policy.riskCategory,
+          permissionGrantMatched: policy.grantMatched,
           verification: shouldMarkInvocationAsVerification({
             toolName: candidate.request.toolName,
             argumentsRecord: candidate.request.arguments
@@ -290,6 +305,8 @@ export class ToolBatchExecutorService {
             reason: policy.reason,
             metadata: {
               permissionDecision: policy.decision,
+              riskCategory: policy.riskCategory,
+              grantScope: 'task_risk_category',
               batchId: candidate.batchId
             }
           })

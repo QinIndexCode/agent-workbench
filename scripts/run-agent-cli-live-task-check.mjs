@@ -260,6 +260,61 @@ function deriveContinueMessage(debugPayload, taskWorkspacePath) {
   return undefined;
 }
 
+function collectToolActivities(debugPayload) {
+  return Array.isArray(debugPayload?.task?.visibleToolActivities)
+    ? debugPayload.task.visibleToolActivities
+    : Array.isArray(debugPayload?.visibleToolActivities)
+      ? debugPayload.visibleToolActivities
+      : [];
+}
+
+function collectToolInvocations(debugPayload) {
+  return Array.isArray(debugPayload?.task?.toolInvocations)
+    ? debugPayload.task.toolInvocations
+    : Array.isArray(debugPayload?.toolInvocations)
+      ? debugPayload.toolInvocations
+      : [];
+}
+
+function hasSuccessfulReadFileEvidence(debugPayload, taskWorkspacePath) {
+  const expectedPath = taskWorkspacePath.toLowerCase();
+  const activities = collectToolActivities(debugPayload);
+  const invocations = collectToolInvocations(debugPayload);
+  return [...activities, ...invocations].some((entry) => {
+    const toolId = String(entry?.toolId ?? '').toLowerCase();
+    const status = String(entry?.status ?? '').toUpperCase();
+    const summary = String(entry?.summary ?? entry?.resultSummary ?? '');
+    const args = entry?.arguments && typeof entry.arguments === 'object' ? entry.arguments : {};
+    const pathArg = String(args.path ?? '');
+    return toolId === 'read_file'
+      && status === 'SUCCEEDED'
+      && (
+        pathArg.toLowerCase() === expectedPath
+        || summary.toLowerCase().includes(expectedPath)
+      );
+  });
+}
+
+function shouldDrivePostCompletionToolCorrection(debugPayload, taskWorkspacePath) {
+  const acceptance = debugPayload?.executionSummary?.acceptance ?? null;
+  const deterministicVerdict = acceptance?.deterministic?.verdict ?? null;
+  const semanticReviewStatus = acceptance?.semanticReview?.status ?? null;
+  return deterministicVerdict === 'passed'
+    && semanticReviewStatus
+    && semanticReviewStatus !== 'passed'
+    && !hasSuccessfulReadFileEvidence(debugPayload, taskWorkspacePath);
+}
+
+function buildPostCompletionToolCorrectionMessage(taskWorkspacePath) {
+  return [
+    'The previous completed answer failed semantic review because it did not provide the required read_file evidence.',
+    `Emit exactly one read_file tool action for ${taskWorkspacePath} inside the task workspace now.`,
+    'Do not use list_files for this correction.',
+    'After the read_file tool succeeds, return one concise explicit output block that names one constraint from the file, then one COMPLETE tracker JSON block.',
+    'Do not claim completion until the read_file invocation succeeds.'
+  ].join(' ');
+}
+
 async function main() {
   const liveModel = process.env.XIAOMI_MIMO_LIVE_MODEL?.trim() || XIAOMI_MIMO_STRONG_MODEL;
   await assertLiveCostGuard({
@@ -424,16 +479,33 @@ async function main() {
       throw new Error(`Failed to retrieve tasks status for ${taskId}.`);
     }
 
-    const finalDebugResult = await runCli([...baseArgs, 'tasks', 'debug', taskId]);
-    const debugPayload = parseJsonOutput(finalDebugResult.stdout, 'tasks debug');
+    let finalDebugResult = await runCli([...baseArgs, 'tasks', 'debug', taskId]);
+    let debugPayload = parseJsonOutput(finalDebugResult.stdout, 'tasks debug');
+    if (shouldDrivePostCompletionToolCorrection(debugPayload, taskWorkspacePath)) {
+      const continueMessage = buildPostCompletionToolCorrectionMessage(taskWorkspacePath);
+      const continueResult = await runCli([
+        ...baseArgs,
+        'tasks',
+        'continue',
+        taskId,
+        '--message',
+        continueMessage,
+      ]);
+      continueAttempts.push({
+        attempt: continueAttempts.length + 1,
+        message: continueMessage,
+        payload: parseJsonOutput(continueResult.stdout, 'tasks continue'),
+      });
+      await sleep(2_000);
+      const refreshedStatusResult = await runCli([...baseArgs, 'tasks', 'status', taskId]);
+      statusPayload = parseJsonOutput(refreshedStatusResult.stdout, 'tasks status');
+      finalDebugResult = await runCli([...baseArgs, 'tasks', 'debug', taskId]);
+      debugPayload = parseJsonOutput(finalDebugResult.stdout, 'tasks debug');
+    }
     const diagnosticsResult = await runCli([...baseArgs, 'tasks', 'diagnostics', taskId]);
 
     const acceptance = debugPayload?.executionSummary?.acceptance ?? null;
-    const toolActivities = Array.isArray(debugPayload?.task?.visibleToolActivities)
-      ? debugPayload.task.visibleToolActivities
-      : Array.isArray(debugPayload?.visibleToolActivities)
-        ? debugPayload.visibleToolActivities
-        : [];
+    const toolActivities = collectToolActivities(debugPayload);
     const deterministicVerdict = acceptance?.deterministic?.verdict ?? null;
     const semanticReviewStatus = acceptance?.semanticReview?.status ?? null;
 
@@ -461,6 +533,9 @@ async function main() {
     }
     if (toolActivities.length === 0) {
       issues.push('Task completed without any visible tool activity even though the intent explicitly required read_file.');
+    }
+    if (!hasSuccessfulReadFileEvidence(debugPayload, taskWorkspacePath)) {
+      issues.push(`Task completed without successful read_file evidence for ${taskWorkspacePath}.`);
     }
 
     const report = {

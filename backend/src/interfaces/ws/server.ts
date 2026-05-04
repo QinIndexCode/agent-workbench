@@ -15,8 +15,16 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
 
 function sendEnvelope(socket: WebSocket, envelope: RuntimeWebSocketEnvelope): void {
   if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(envelope));
+    try {
+      socket.send(JSON.stringify(envelope));
+    } catch {
+      socket.close();
+    }
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 function toEventEnvelope(record: RuntimeEventRecord): RuntimeWebSocketEnvelope {
@@ -134,6 +142,18 @@ export function attachBackendNewWebSocketServer(server: http.Server, runtime: Ba
         timestamp: Date.now()
       });
     }, HEARTBEAT_INTERVAL_MS);
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) {
+        return;
+      }
+      cleanedUp = true;
+      clearInterval(heartbeat);
+      for (const unsubscribe of subscriptions.values()) {
+        unsubscribe();
+      }
+      subscriptions.clear();
+    };
 
     sendEnvelope(socket, {
       kind: 'ready',
@@ -197,6 +217,14 @@ export function attachBackendNewWebSocketServer(server: http.Server, runtime: Ba
       }
 
       if (payload.type === 'command') {
+        if (!isRecord(payload.command) || typeof payload.command.type !== 'string') {
+          sendEnvelope(socket, {
+            kind: 'error',
+            code: 'invalid_command_payload',
+            error: 'command.type is required for websocket command messages.'
+          });
+          return;
+        }
         const command = payload.command as RuntimeWebSocketClientMessage extends infer T
           ? T extends { type: 'command'; command: infer C } ? C : never
           : never;
@@ -212,7 +240,7 @@ export function attachBackendNewWebSocketServer(server: http.Server, runtime: Ba
         }).catch((error) => {
           sendEnvelope(socket, {
             kind: 'error',
-            code: 'subscribe_failed',
+            code: 'command_failed',
             error: error instanceof Error ? error.message : 'Failed to execute command.'
           });
         });
@@ -227,15 +255,11 @@ export function attachBackendNewWebSocketServer(server: http.Server, runtime: Ba
     });
 
     socket.on('close', () => {
-      clearInterval(heartbeat);
-      for (const unsubscribe of subscriptions.values()) {
-        unsubscribe();
-      }
-      subscriptions.clear();
+      cleanup();
     });
 
     socket.on('error', () => {
-      clearInterval(heartbeat);
+      cleanup();
     });
   });
 

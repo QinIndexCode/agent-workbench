@@ -13,26 +13,25 @@ export function buttonClassName({
 }: Pick<ButtonProps, 'variant' | 'size' | 'className'>) {
   const baseStyles = [
     'inline-flex items-center justify-center',
-    'font-medium transition-colors',
+    'font-medium transition-all',
     'duration-fast ease-out',
-    'rounded-lg focus:outline-none focus:ring-1 focus:ring-offset-0',
-    'focus:ring-offset-background',
+    'rounded-lg',
     'disabled:opacity-50 disabled:pointer-events-none',
   ];
   
   const variants = {
     primary: [
-      'bg-accent text-white hover:bg-accent-hover shadow-sm shadow-black/10',
-      'focus:ring-accent/50',
+      'bg-accent text-white hover:bg-accent-hover hover:shadow-[0_0_20px_rgba(59,130,246,0.35)] active:scale-[0.97] shadow-sm shadow-black/10',
+      'focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-0',
     ],
     secondary: [
       'bg-surface-elevated/80 text-text-secondary border border-border-default',
-      'hover:bg-surface-hover hover:border-border-strong',
-      'focus:ring-accent/50',
+      'hover:bg-surface-hover hover:border-border-strong hover:shadow-sm active:scale-[0.97]',
+      'focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-0',
     ],
     ghost: [
-      'text-text-muted hover:text-text-primary hover:bg-surface-elevated',
-      'focus:ring-accent/50',
+      'text-text-muted hover:text-text-primary hover:bg-surface-elevated active:scale-[0.97]',
+      'focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-0',
     ],
   };
 

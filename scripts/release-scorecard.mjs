@@ -594,11 +594,8 @@ function hasCanonicalLiveProviderTruth(provider) {
 function scenarioRuntimeCompletionGatePassed(scenario) {
   const summary = scenario?.executionSummary;
   const deterministicVerdict = summary?.acceptance?.deterministic?.verdict ?? null;
-  const qualityProfileId = summary?.acceptance?.quality?.profileId ?? null;
-  const qualityVerdict = summary?.acceptance?.quality?.verdict ?? null;
   return scenario?.finalLifecycleStatus === 'COMPLETED'
     && deterministicVerdict === 'passed'
-    && (qualityProfileId === null || qualityVerdict === 'passed')
     && scenario?.artifactQuality?.verdict === 'passed';
 }
 

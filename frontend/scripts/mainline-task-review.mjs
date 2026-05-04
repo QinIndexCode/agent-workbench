@@ -304,10 +304,8 @@ async function collectChecklist(page, options = {}) {
       const node = document.querySelector('[data-testid="task-inspector-scroll"]');
       return node instanceof HTMLElement ? node.innerText : "";
     })();
-    const footerText = (() => {
-      const node = document.querySelector('[data-testid="task-global-footer"]');
-      return node instanceof HTMLElement ? node.innerText : "";
-    })();
+    const workspaceFooterNode = document.querySelector('[data-testid="task-global-footer"]');
+    const footerText = workspaceFooterNode instanceof HTMLElement ? workspaceFooterNode.innerText : "";
     const artifactBlockerPhrase = "Artifacts are ready in the task workspace and still need a project-relative destination.";
     const artifactBlockerPhraseCount = bodyText.split(artifactBlockerPhrase).length - 1;
     const followUpEntryVisible =
@@ -317,8 +315,8 @@ async function collectChecklist(page, options = {}) {
     const brandLogoVisible =
       isVisible('[data-testid="app-brand-logo"]')
       || isVisible('[data-testid="app-brand-logo-mobile"]');
-    const threadRailRect = rect('[data-testid="task-thread-rail"]');
-    const footerRect = rect('[data-testid="task-global-footer"]');
+    const taskExplorerRect = rect('[data-testid="tasks-explorer-scroll"]');
+    const detailPaneRect = rect('[data-testid="task-detail-pane"]');
     const composerRect = rect('[data-testid="task-composer-card"]');
     const visibleTimelineGlyphs = Array.from(document.querySelectorAll('[data-testid^="task-timeline-glyph-"]'))
       .filter((node) => node instanceof HTMLElement && window.getComputedStyle(node).display !== "none" && node.getClientRects().length > 0);
@@ -328,26 +326,23 @@ async function collectChecklist(page, options = {}) {
       : "none";
     const desktopConceptLayout = window.innerWidth >= 1100
       ? Boolean(
-        threadRailRect
-        && threadRailRect.top <= 2
-        && threadRailRect.left <= 2
-        && threadRailRect.width >= 280
-        && footerRect
-        && footerRect.height >= 36
+        taskExplorerRect
+        && taskExplorerRect.width >= 240
+        && detailPaneRect
         && composerRect
-        && composerRect.bottom <= footerRect.top + 2
+        && composerRect.bottom <= detailPaneRect.bottom + 2
       )
       : true;
 
     const checklist = {
       brandLogoVisible,
       agentShellVisible: isVisible('[data-testid="tasks-agent-shell"]'),
-      threadRailVisible: isVisible('[data-testid="task-thread-rail"]') || Boolean(document.querySelector('[data-testid="task-thread-rail"]')),
+      taskExplorerReady: isVisible('[data-testid="tasks-explorer-scroll"]') || Boolean(document.querySelector('[data-testid="tasks-explorer-scroll"]')),
       conversationVisible: isVisible('[data-testid="task-conversation"]'),
       truthInspectorReady: Boolean(document.querySelector('[data-testid="task-truth-inspector"]')),
       conceptShellGeometry: desktopConceptLayout,
       runtimeChipStripVisible: window.innerWidth >= 1100 ? isVisible('[data-testid="app-runtime-chip-strip"]') : true,
-      footerVisible: window.innerWidth >= 1100 ? isVisible('[data-testid="task-global-footer"]') : true,
+      workspaceFooterRemoved: !workspaceFooterNode,
       footerRuntimeBadgesRemoved:
         !footerText.includes("Backend healthy")
         && !footerText.includes("Provider gated")
@@ -399,12 +394,12 @@ async function collectChecklist(page, options = {}) {
       checklist.rawProtocolHidden
       && checklist.brandLogoVisible
       && checklist.agentShellVisible
-      && checklist.threadRailVisible
+      && checklist.taskExplorerReady
       && checklist.conversationVisible
       && checklist.truthInspectorReady
       && checklist.conceptShellGeometry
       && checklist.runtimeChipStripVisible
-      && checklist.footerVisible
+      && checklist.workspaceFooterRemoved
       && checklist.footerRuntimeBadgesRemoved
       && checklist.compactTruthStripVisible
       && checklist.readyProviderCardCollapsed
@@ -852,6 +847,7 @@ async function runVisualProofScenario(browser, desktopPage, completedTaskId, att
       dashboardNavVisible: visible('[data-testid="app-sidebar-nav-dashboard"]'),
       queueNavVisible: visible('[data-testid="app-sidebar-nav-queue"]'),
       runtimeVisible: visible('[data-testid="app-sidebar-runtime"]'),
+      headerRuntimeChipStripHidden: !visible('[data-testid="app-runtime-chip-strip"]'),
     };
   });
   assertCondition(

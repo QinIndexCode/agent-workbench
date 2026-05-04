@@ -36,22 +36,36 @@ export function useTasks(options?: { includeArchived?: boolean }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const includeArchived = options?.includeArchived ?? false;
+  const requestSequence = useRef(0);
 
   const loadTasks = useCallback(async () => {
+    const currentRequest = requestSequence.current + 1;
+    requestSequence.current = currentRequest;
     try {
       setLoading(true);
       setError(null);
       const data = await api.getTasks(includeArchived);
+      if (requestSequence.current !== currentRequest) {
+        return;
+      }
       setTasks(data);
     } catch (err) {
+      if (requestSequence.current !== currentRequest) {
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Failed to load tasks');
     } finally {
-      setLoading(false);
+      if (requestSequence.current === currentRequest) {
+        setLoading(false);
+      }
     }
   }, [includeArchived]);
 
   useEffect(() => {
     loadTasks();
+    return () => {
+      requestSequence.current += 1;
+    };
   }, [loadTasks]);
 
   const applyTaskSnapshot = useCallback((task: TaskDetail) => {

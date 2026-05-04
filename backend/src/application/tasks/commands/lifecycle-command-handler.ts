@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { applyLifecycleTransition, createTaskRuntimeState } from '../../../domain/runtime/state-transition-applier';
 import { createRuntimeEventEnvelope } from '../../../foundation/projection/event-envelope';
 import { QueueItemRecord } from '../../../foundation/repository/types';
@@ -18,6 +19,10 @@ function normalizeAutoRunMaxTurns(value: unknown): number {
     return DEFAULT_DIRECT_AUTO_RUN_MAX_TURNS;
   }
   return Math.max(1, Math.min(MAX_DIRECT_AUTO_RUN_MAX_TURNS, Math.floor(value)));
+}
+
+function createLifecycleCorrelationPrefix(eventType: string, taskId: string): string {
+  return `${eventType.toLowerCase()}_${taskId}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 }
 
 export class LifecycleCommandHandler implements TaskLifecycleCommandHandler {
@@ -183,11 +188,12 @@ export class LifecycleCommandHandler implements TaskLifecycleCommandHandler {
       runtime,
       activeProviderId: restart ? record.definition.preferredProviderId : record.activeProviderId
     });
+    const lifecycleEventKey = createLifecycleCorrelationPrefix(eventType, input.taskId);
     await this.services.foundation.events.append(
       createRuntimeEventEnvelope({
-        correlationId: `corr_${eventType.toLowerCase()}`,
-        sessionId: `sess_${eventType.toLowerCase()}`,
-        turnId: `turn_${eventType.toLowerCase()}`,
+        correlationId: `corr_${lifecycleEventKey}`,
+        sessionId: `sess_${lifecycleEventKey}`,
+        turnId: `turn_${lifecycleEventKey}`,
         taskId: input.taskId,
         unitId: runtime.currentUnitId,
         checkpointId: runtime.latestCheckpointId,

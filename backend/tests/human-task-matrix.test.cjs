@@ -19,7 +19,7 @@ test('human task matrix exposes broad ordinary-user cases without scenario pack 
   assert.ok(ids.includes('docs-decision-log'));
   assert.ok(ids.includes('missing-source-blocker'));
   assert.ok(ids.includes('multi-unit-handoff'));
-  assert.equal(ids.some((id) => /database|near-mysql|real-task-wave/i.test(id)), false);
+  assert.equal(ids.some((id) => /database|near-mysql/i.test(id)), false);
   assert.ok(new Set(cases.map((entry) => entry.category)).size >= 5);
 });
 

@@ -170,6 +170,34 @@ async function walkFiles(rootDir: string, recursive: boolean): Promise<string[]>
   return files;
 }
 
+async function walkDirectoryEntries(rootDir: string, recursive: boolean): Promise<{
+  files: string[];
+  directories: string[];
+}> {
+  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
+  const files: string[] = [];
+  const directories: string[] = [];
+
+  for (const entry of entries) {
+    const resolved = path.join(rootDir, entry.name);
+    if (entry.isFile()) {
+      files.push(resolved);
+      continue;
+    }
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    directories.push(resolved);
+    if (recursive) {
+      const nested = await walkDirectoryEntries(resolved, true);
+      files.push(...nested.files);
+      directories.push(...nested.directories);
+    }
+  }
+
+  return { files, directories };
+}
+
 function getWorkspacePath(request: ToolExecutorRequest, relativePath: string | undefined): {
   layout: StorageLayout;
   workspaceRoot: string;
@@ -216,11 +244,6 @@ function getAccessiblePath(request: ToolExecutorRequest, targetPath: string | un
     resolvedPath: layout.resolveWorkspacePath(request.invocation.taskId, trimmedPath),
     absolutePathRequested: false
   };
-}
-
-function isQualityJsonEvidencePath(filePath: string): boolean {
-  const normalized = normalizeRelativePath(path.resolve(filePath)).toLowerCase();
-  return /(?:^|\/)quality\/[^/]+\.json$/.test(normalized);
 }
 
 function parsePositiveIntegerArgument(args: Record<string, unknown>, key: string): { value: number | null; error: string | null } {
@@ -380,16 +403,9 @@ async function buildInspectFileToolOutput(params: {
 }
 
 export function validateBuiltinWriteFileContent(filePath: string, content: string): string | null {
-  if (!isQualityJsonEvidencePath(filePath)) {
-    return null;
-  }
-  try {
-    JSON.parse(content);
-    return null;
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : 'Unknown JSON parse failure.';
-    return `Invalid JSON for quality evidence file "${normalizeRelativePath(path.resolve(filePath))}": ${reason}`;
-  }
+  void filePath;
+  void content;
+  return null;
 }
 
 export function resolveBuiltinWriteFileContent(argumentsRecord: Record<string, unknown>): {
@@ -902,12 +918,19 @@ async function executeListFiles(request: ToolExecutorRequest) {
       : '.';
     const recursive = request.invocation.arguments.recursive === true;
     const { workspaceRoot, resolvedPath, absolutePathRequested } = getAccessiblePath(request, basePath);
-    const files = await walkFiles(resolvedPath, recursive);
+    const listed = await walkDirectoryEntries(resolvedPath, recursive);
     const responseRoot = absolutePathRequested ? resolvedPath : workspaceRoot;
+    const directories = listed.directories.map(directoryPath => normalizePathForToolOutput(responseRoot, directoryPath, { absolute: absolutePathRequested }));
+    const files = listed.files.map(filePath => normalizePathForToolOutput(responseRoot, filePath, { absolute: absolutePathRequested }));
     return createToolSuccessResult({
       output: {
         path: normalizePathForToolOutput(responseRoot, resolvedPath, { absolute: absolutePathRequested }),
-        files: files.map(filePath => normalizePathForToolOutput(responseRoot, filePath, { absolute: absolutePathRequested }))
+        files,
+        directories,
+        entries: [
+          ...directories.map(entryPath => ({ path: entryPath, type: 'directory' })),
+          ...files.map(entryPath => ({ path: entryPath, type: 'file' }))
+        ]
       }
     });
   } catch (error) {

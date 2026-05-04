@@ -8,6 +8,8 @@ import {
 } from '../../foundation/extensions/skill-loader';
 import { SkillDefinition, SkillKind } from '../../foundation/extensions/types';
 import {
+  BulkDeleteResult,
+  GovernanceExportBundle,
   PlatformActionResult,
   SkillCatalogEntry,
   SkillDuplicateInput,
@@ -121,6 +123,28 @@ function getSkillContentFilePath(skill: SkillDefinition): string {
     return skill.instructionSource?.skillFile ?? path.join(skill.rootDir, 'SKILL.md');
   }
   return path.join(skill.rootDir, skill.entryFile ?? 'index.js');
+}
+
+function buildSkillExportMarkdown(records: SkillCatalogEntry[]): string {
+  const sections = records.map((entry) => [
+    `# ${entry.skill.name}`,
+    '',
+    `- ID: ${entry.skill.id}`,
+    `- Kind: ${entry.kind}`,
+    `- Source: ${entry.source}`,
+    `- Readiness: ${entry.readiness}`,
+    `- Editable: ${entry.editable ? 'yes' : 'no'}`,
+    `- Root: ${entry.skill.rootDir}`,
+    '',
+    '## Description',
+    entry.skill.description ?? 'No description.',
+    '',
+    '## Content',
+    '```',
+    entry.content ?? '',
+    '```'
+  ].join('\n'));
+  return `${sections.join('\n\n---\n\n')}\n`;
 }
 
 function isWithinDir(candidatePath: string, parentPath: string): boolean {
@@ -308,6 +332,35 @@ export class SkillService {
       await this.recorder.recordRejected(command, error);
       throw error;
     }
+  }
+
+  async bulkRemove(skillIds: string[]): Promise<PlatformActionResult<BulkDeleteResult>> {
+    const requestedIds = [...new Set(skillIds.map((id) => id.trim()).filter(Boolean))];
+    const deletedIds: string[] = [];
+    const failed: BulkDeleteResult['failed'] = [];
+    for (const skillId of requestedIds) {
+      try {
+        await this.remove(skillId);
+        deletedIds.push(skillId);
+      } catch (error) {
+        failed.push({ id: skillId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return this.recorder.applied({
+      resourceType: 'SKILL',
+      resourceId: 'skill-bulk-delete',
+      action: 'DELETE',
+      resource: { requestedIds, deletedIds, failed }
+    });
+  }
+
+  async export(format: 'json' | 'markdown' = 'json'): Promise<GovernanceExportBundle<SkillCatalogEntry>> {
+    const records = await this.list();
+    const generatedAt = Date.now();
+    const content = format === 'markdown'
+      ? buildSkillExportMarkdown(records)
+      : JSON.stringify({ generatedAt, records }, null, this.foundation.config.storage.jsonSpacing);
+    return { generatedAt, format, records, content };
   }
 
   async duplicate(skillId: string, input: SkillDuplicateInput): Promise<PlatformActionResult<SkillCatalogEntry>> {

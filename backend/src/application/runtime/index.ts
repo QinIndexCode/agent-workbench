@@ -5,4 +5,5 @@ export * from './prompt-capability-summary';
 export * from './memory-store';
 export * from './runtime-facades';
 export * from './execution-profiles';
+export * from './host-observation-policy';
 export * from './task-observation-hooks';

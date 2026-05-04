@@ -51,8 +51,7 @@ export type AcceptanceFailureCategory =
   | 'tool_action_required_but_not_emitted'
   | 'artifact_write_required_but_not_emitted'
   | 'required_delegation_missing'
-  | 'provider_style_incompatibility'
-  | 'quality_gate_failed';
+  | 'provider_style_incompatibility';
 
 export type CorrectionPromptMode =
   | 'FULL_PROTOCOL'
@@ -70,10 +69,6 @@ export type ExecutionProfileId =
   | 'analyze'
   | 'implement'
   | 'verify';
-
-export const TASK_QUALITY_PROFILE_IDS: string[] = [];
-
-export type QualityProfileId = string;
 
 export type OperatorCommandType =
   | 'START_TASK'
@@ -150,7 +145,6 @@ export interface AgentUnit {
   exitCondition?: string;
   permissionLevel?: PermissionLevel;
   executionProfileId?: ExecutionProfileId;
-  qualityProfileId?: QualityProfileId;
   delegationRequired?: boolean;
   delegationContract?: {
     title?: string;

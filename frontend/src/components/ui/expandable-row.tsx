@@ -18,7 +18,7 @@ export function ExpandableRow({
   onToggle,
 }: ExpandableRowProps) {
   return (
-    <div className="rounded-[16px] border border-border-subtle bg-surface/24" data-testid={testId}>
+    <div className="rounded-lg border border-border-subtle bg-surface/24" data-testid={testId}>
       <button
         type="button"
         onClick={onToggle}

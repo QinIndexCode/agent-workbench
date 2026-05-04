@@ -164,7 +164,6 @@ export function buildTaskPayloadFromFlags(args: ParsedCliArgs): TaskSubmitReques
     taskId: getFlagString(args, 'task-id'),
     title,
     intent,
-    defaultQualityProfileId: (getFlagString(args, 'quality-profile') as TaskSubmitRequest['defaultQualityProfileId']) ?? undefined,
     preferredProviderId: getFlagString(args, 'provider') ?? null,
     pathPolicy: (getFlagString(args, 'path-policy') as TaskSubmitRequest['pathPolicy']) ?? undefined,
     preferredArtifactDir: getFlagString(args, 'output-dir') ?? null,
@@ -305,7 +304,6 @@ function formatHumanAcceptance(summary: Record<string, unknown>): string[] {
   const acceptance = getRecordValue(summary, 'acceptance');
   const deterministic = getRecordValue(acceptance, 'deterministic');
   const semanticReview = getRecordValue(acceptance, 'semanticReview');
-  const quality = getRecordValue(acceptance, 'quality') ?? getRecordValue(summary, 'quality');
   const lines: string[] = [];
   if (deterministic) {
     lines.push(
@@ -313,9 +311,6 @@ function formatHumanAcceptance(summary: Record<string, unknown>): string[] {
     );
   } else {
     lines.push('Acceptance: inspect diagnostics for contract truth');
-  }
-  if (quality) {
-    lines.push(`Quality: ${getRecordString(quality, 'verdict', 'not_applicable')} (${getRecordString(quality, 'profileId', 'none')})`);
   }
   if (semanticReview) {
     lines.push(
@@ -539,7 +534,7 @@ export function formatTaskDiagnosticsHuman(diagnostics: Record<string, unknown>)
     `Suggested action: ${actionLabel}`,
     `Why: ${actionReason}`,
     '',
-    'Acceptance and quality',
+    'Acceptance',
     ...formatHumanAcceptance(diagnostics),
     '',
     'Artifact state',
@@ -764,7 +759,6 @@ export function summarizeTask(task: TaskQueryApiResponse, debug: TaskDebugRespon
     suggestedAction: debug?.executionSummary.suggestedAction ?? null,
     workingDirectory: debug?.executionSummary.workingDirectory ?? null,
     acceptance: debug?.executionSummary.acceptance ?? null,
-    quality: debug?.executionSummary.acceptance?.quality ?? null,
     lastSafeCheckpointAt: progress.lastSafeCheckpointAt,
     lastRecoverySource: progress.lastRecoverySource,
     conservativeModeReason: progress.conservativeModeReason,

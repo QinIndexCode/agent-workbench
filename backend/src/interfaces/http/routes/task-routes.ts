@@ -4,6 +4,7 @@ import {
   RuntimeEventStreamEnvelope,
   TaskActionRequest,
   TaskCommandRequest,
+  TaskGuidanceRequest,
   TaskSubmitRequest
 } from '../types';
 import { HttpRouteModule } from '../route-types';
@@ -17,16 +18,36 @@ function toSseEnvelope(record: Awaited<ReturnType<BackendNewRuntime['tasks']['ge
   };
 }
 
-function sendSse(response: import('node:http').ServerResponse, envelopes: RuntimeEventStreamEnvelope[]): void {
+function openSse(response: import('node:http').ServerResponse): void {
   response.statusCode = 200;
   response.setHeader('content-type', 'text/event-stream; charset=utf-8');
   response.setHeader('cache-control', 'no-cache');
   response.setHeader('connection', 'keep-alive');
-  for (const envelope of envelopes) {
+}
+
+function writeSseEnvelope(response: import('node:http').ServerResponse, envelope: RuntimeEventStreamEnvelope): boolean {
+  if (response.destroyed || response.writableEnded) {
+    return false;
+  }
+  try {
     response.write(`id: ${envelope.id}\n`);
     response.write(`event: ${envelope.event}\n`);
     response.write(`data: ${JSON.stringify(envelope.data)}\n\n`);
+    return true;
+  } catch {
+    response.destroy();
+    return false;
   }
+}
+
+function sendSse(response: import('node:http').ServerResponse, envelopes: RuntimeEventStreamEnvelope[]): boolean {
+  openSse(response);
+  for (const envelope of envelopes) {
+    if (!writeSseEnvelope(response, envelope)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export const taskRoutes: HttpRouteModule = {
@@ -119,6 +140,28 @@ export const taskRoutes: HttpRouteModule = {
       return true;
     }
 
+    if (request.method === 'GET' && segments[2] === 'guidance' && segments.length === 3) {
+      sendJson(response, 200, await runtime.tasks.getTaskGuidance(taskId));
+      return true;
+    }
+
+    if (request.method === 'POST' && segments[2] === 'guidance' && segments.length === 3) {
+      const body = await readJsonBody<TaskGuidanceRequest>(request);
+      const content = typeof body.content === 'string' && body.content.trim()
+        ? body.content
+        : typeof body.message === 'string'
+          ? body.message
+          : '';
+      sendJson(response, 200, await runtime.tasks.submitGuidance({
+        taskId,
+        content,
+        actor: body.actor,
+        reason: body.reason,
+        metadata: body.metadata
+      }));
+      return true;
+    }
+
     if (request.method === 'GET' && segments[2] === 'events' && segments[3] === 'stream') {
       if (!runtime.config.server.enableSseFallback) {
         sendJson(response, 404, { error: 'SSE fallback is disabled.' });
@@ -126,14 +169,32 @@ export const taskRoutes: HttpRouteModule = {
       }
       const afterEventId = url.searchParams.get('afterEventId') ?? undefined;
       const events = await runtime.tasks.getTaskEvents(taskId, afterEventId);
-      sendSse(response, events.map(toSseEnvelope));
-      const unsubscribe = runtime.tasks.subscribeTaskEvents(taskId, (event) => {
+      let unsubscribe: (() => void) | null = null;
+      let closed = false;
+      const cleanup = () => {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        unsubscribe?.();
+        unsubscribe = null;
+      };
+      request.once('close', cleanup);
+      response.once('close', cleanup);
+      response.once('error', cleanup);
+      if (!sendSse(response, events.map(toSseEnvelope))) {
+        cleanup();
+        return true;
+      }
+      unsubscribe = runtime.tasks.subscribeTaskEvents(taskId, (event) => {
+        if (closed) {
+          return;
+        }
         const envelope = toSseEnvelope(event);
-        response.write(`id: ${envelope.id}\n`);
-        response.write(`event: ${envelope.event}\n`);
-        response.write(`data: ${JSON.stringify(envelope.data)}\n\n`);
+        if (!writeSseEnvelope(response, envelope)) {
+          cleanup();
+        }
       });
-      request.on('close', unsubscribe);
       return true;
     }
 

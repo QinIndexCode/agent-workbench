@@ -49,6 +49,7 @@ export class RuntimeAnalysisService {
     const rejected: string[] = [];
     let accepted = 0;
     let approvalRequired = 0;
+    const latestApprovals = await this.foundation.approvals.listLatest(params.taskId);
 
     for (const call of params.parsedToolCalls) {
       const request = {
@@ -65,7 +66,9 @@ export class RuntimeAnalysisService {
 
       const policy = evaluateToolExecutionPolicy({
         config: this.foundation.config,
-        tool: validation.tool
+        tool: validation.tool,
+        argumentsRecord: validation.normalizedArguments,
+        taskApprovals: latestApprovals
       });
       if (policy.decision === 'DENY') {
         rejected.push(`${request.toolName}: ${policy.reason}`);
@@ -112,6 +115,8 @@ export class RuntimeAnalysisService {
           parserSource: call.source,
           permissionDecision: policy.decision,
           permissionReason: policy.reason,
+          riskCategory: policy.riskCategory,
+          permissionGrantMatched: policy.grantMatched,
           toolEffect: validation.tool.effect,
           toolRiskLevel: validation.tool.riskLevel
         }
@@ -125,6 +130,8 @@ export class RuntimeAnalysisService {
             reason: policy.reason,
             metadata: {
               permissionDecision: policy.decision,
+              riskCategory: policy.riskCategory,
+              grantScope: 'task_risk_category',
               toolEffect: validation.tool.effect,
               toolRiskLevel: validation.tool.riskLevel
             }

@@ -136,10 +136,21 @@
     height: 100vh;
     overflow: hidden;
   }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
 }
 
 /* ===== Utility Classes ===== */
 @layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-default) transparent;
+  }
+
   .scrollbar-thin::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -331,6 +342,56 @@
       height: 2rem;
       box-shadow: 0 10px 22px rgba(0, 0, 0, 0.26);
     }
+  }
+}
+
+@layer utilities {
+  @keyframes shimmer {
+    100% { transform: translateX(100%); }
+  }
+
+  @keyframes slow-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+
+  .animate-slow-pulse {
+    animation: slow-pulse 2.4s ease-in-out infinite;
+  }
+
+  @keyframes thinking-glow {
+    0%, 100% {
+      opacity: 1;
+      filter: drop-shadow(0 0 2px color-mix(in srgb, currentColor 40%, transparent));
+    }
+    50% {
+      opacity: 0.45;
+      filter: drop-shadow(0 0 6px color-mix(in srgb, currentColor 70%, transparent));
+    }
+  }
+
+  .animate-thinking-glow {
+    animation: thinking-glow 2.4s ease-in-out infinite;
+  }
+
+  .thinking-collapsed-hint {
+    position: relative;
+  }
+
+  .thinking-collapsed-hint::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 3.5rem;
+    background: linear-gradient(
+      to bottom,
+      transparent,
+      color-mix(in srgb, var(--color-surface) 55%, transparent)
+    );
+    pointer-events: none;
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   }
 }
 

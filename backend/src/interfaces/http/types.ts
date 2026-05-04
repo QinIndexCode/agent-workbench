@@ -5,6 +5,8 @@ import {
   TaskDebugResponse,
   TaskDiagnosticsSummary,
   TaskDiscussionResponse,
+  TaskGuidanceInput,
+  TaskGuidanceRecord,
   TaskActionInput,
   TaskQueryResponse,
   TaskSummaryResponse,
@@ -30,6 +32,9 @@ import { OperatorCommandRecord, OperatorMessageRecord, QueueItemRecord, RuntimeE
 
 export type TaskSubmitRequest = SubmitTaskInput;
 export type TaskActionRequest = TaskActionInput;
+export type TaskGuidanceRequest = Omit<TaskGuidanceInput, 'taskId'> & {
+  message?: string;
+};
 export type ApprovalResolutionRequest = ResolveApprovalInput;
 export type TaskCommandRequest = Omit<SubmitTaskCommandInput, 'taskId'>;
 export type TaskQueryApiResponse = TaskQueryResponse;
@@ -37,6 +42,7 @@ export type TaskListApiResponse = TaskSummaryResponse[];
 export type TaskEventsQueryResponse = RuntimeEventRecord[];
 export type TaskCommandsQueryResponse = OperatorCommandRecord[];
 export type TaskOperatorMessagesQueryResponse = OperatorMessageRecord[];
+export type TaskGuidanceQueryResponse = TaskGuidanceRecord[];
 export type TaskDiscussionApiResponse = TaskDiscussionResponse;
 export type TaskToolingApiResponse = TaskToolingResponse;
 export type TaskTracesApiResponse = TaskTraceEnvelope[];
@@ -92,8 +98,10 @@ export interface RuntimeEventStreamEnvelope {
 export type RuntimeWebSocketErrorCode =
   | 'missing_task_id'
   | 'invalid_payload'
+  | 'invalid_command_payload'
   | 'unsupported_message_type'
-  | 'subscribe_failed';
+  | 'subscribe_failed'
+  | 'command_failed';
 
 export interface RuntimeWebSocketEnvelope {
   kind: 'runtime_event' | 'task_snapshot' | 'subscribed' | 'unsubscribed' | 'error' | 'ready' | 'heartbeat';

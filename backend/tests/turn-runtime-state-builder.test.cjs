@@ -61,7 +61,7 @@ function createPromptBudget() {
   };
 }
 
-test('buildTurnRuntimeState preserves accepted tracker history when quality gate fails', () => {
+test('buildTurnRuntimeState preserves accepted tracker history when implement evidence gate fails', () => {
   const root = createTempRoot();
   try {
     const config = loadBackendNewConfig({}, { cwd: root, env: {} });
@@ -83,8 +83,7 @@ test('buildTurnRuntimeState preserves accepted tracker history when quality gate
           taskScope: 'Read incoming/ and write normalized markdown plus trace evidence.',
           outputContract: '{"summary":"string","details":"string","producedFiles":[],"issues":[]}',
           dependencies: [],
-          executionProfileId: 'implement',
-          qualityProfileId: 'docs_normalize'
+          executionProfileId: 'implement'
         }
       ]
     };
@@ -239,14 +238,14 @@ test('buildTurnRuntimeState preserves accepted tracker history when quality gate
     assert.equal(nextRuntime.progressHistory[0].status, 'IN_PROGRESS');
     assert.match(
       nextRuntime.invalidOutputUnits['AGENT-001'].join(' '),
-      /quality_gate_failed:generic_quality_contract_missing_runtime_evidence/
+      /did not produce a persistent write for implement completion/
     );
   } finally {
     removeDir(root);
   }
 });
 
-test('buildTurnRuntimeState feeds delivered artifact paths into quality evaluation', () => {
+test('buildTurnRuntimeState accepts delivered external artifact paths without diagnostic evidence', () => {
   const root = createTempRoot();
   try {
     const config = loadBackendNewConfig({}, { cwd: root, env: {} });
@@ -256,7 +255,7 @@ test('buildTurnRuntimeState feeds delivered artifact paths into quality evaluati
     const taskId = 'task_web_external_artifacts';
     const workspaceDir = layout.forTask(taskId).workspaceDir;
     const externalDir = path.join(root, 'AAA');
-    fs.mkdirSync(path.join(workspaceDir, 'quality'), { recursive: true });
+    fs.mkdirSync(workspaceDir, { recursive: true });
     fs.mkdirSync(externalDir, { recursive: true });
     fs.writeFileSync(
       path.join(externalDir, 'index.html'),
@@ -265,18 +264,6 @@ test('buildTurnRuntimeState feeds delivered artifact paths into quality evaluati
     );
     fs.writeFileSync(path.join(externalDir, 'styles.css'), 'button { color: #222; }', 'utf8');
     fs.writeFileSync(path.join(externalDir, 'script.js'), 'document.querySelector("[data-theme-toggle]").addEventListener("click", () => document.body.classList.toggle("light"));', 'utf8');
-    fs.writeFileSync(
-      path.join(workspaceDir, 'quality', 'web-audit.json'),
-      JSON.stringify({
-        profile: 'web_experience',
-        artifactKind: 'static_site',
-        entryFiles: ['index.html'],
-        supportingFiles: ['styles.css', 'script.js'],
-        interactionSelectors: ['[data-theme-toggle]'],
-        brandingTitle: 'External Artifact Site'
-      }),
-      'utf8'
-    );
 
     const definition = {
       taskId,
@@ -290,11 +277,10 @@ test('buildTurnRuntimeState feeds delivered artifact paths into quality evaluati
           id: 'AGENT-001',
           role: 'WebBuilder',
           goal: 'Build external web files.',
-          taskScope: 'Write the site to an explicit local destination and keep quality evidence in the workspace.',
+          taskScope: 'Write the site to an explicit local destination and keep evidence in the workspace.',
           outputContract: '{"summary":"string","details":"string","artifactDestination":"string","issues":[]}',
           dependencies: [],
-          executionProfileId: 'implement',
-          qualityProfileId: 'web_experience'
+          executionProfileId: 'implement'
         }
       ]
     };
@@ -316,20 +302,18 @@ test('buildTurnRuntimeState feeds delivered artifact paths into quality evaluati
       status: 'COMPLETE',
       progressPercent: 100,
       decision: 'CONTINUE',
-      reason: 'External files and quality evidence were written.',
+      reason: 'External files were written and delivered.',
       nextUnit: null,
       filesCreated: [
         path.join(externalDir, 'index.html'),
         path.join(externalDir, 'styles.css'),
-        path.join(externalDir, 'script.js'),
-        'quality/web-audit.json'
+        path.join(externalDir, 'script.js')
       ]
     };
     const latestToolInvocations = [
       path.join(externalDir, 'index.html'),
       path.join(externalDir, 'styles.css'),
-      path.join(externalDir, 'script.js'),
-      'quality/web-audit.json'
+      path.join(externalDir, 'script.js')
     ].map((filePath, index) => ({
       invocationId: `tool_${index + 1}`,
       toolId: 'write_file',

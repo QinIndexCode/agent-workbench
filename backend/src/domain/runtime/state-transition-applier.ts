@@ -25,8 +25,16 @@ import {
 } from './execution-plan';
 import { createEmptyPromptSectionAttribution } from './prompt-budgeter';
 
+const MAX_PROGRESS_HISTORY_ENTRIES = 100;
+
 function cloneRuntime(runtime: TaskRuntimeState): TaskRuntimeState {
   return structuredClone(runtime);
+}
+
+function trimProgressHistory(runtime: TaskRuntimeState): void {
+  if (runtime.progressHistory.length > MAX_PROGRESS_HISTORY_ENTRIES) {
+    runtime.progressHistory = runtime.progressHistory.slice(-MAX_PROGRESS_HISTORY_ENTRIES);
+  }
 }
 
 function toSchedulerUnitState(unit: AgentUnit, contract: UnitContract): SchedulerUnitState {
@@ -633,6 +641,7 @@ export function applyTrackerState(params: {
     ? 'AWAITING_BLOCKER_EXPLANATION'
     : 'NONE';
   next.progressHistory.push(params.tracker);
+  trimProgressHistory(next);
   next.awaitingToolDispatch = [...params.acceptedInvocationIds];
   next.awaitingApprovalInvocations = [...params.approvalInvocationIds];
   

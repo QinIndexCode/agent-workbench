@@ -4,7 +4,6 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { cleanRealTaskWaveState } from './clean-real-task-wave-state.mjs';
 import {
   buildXiaomiMimoFlashLiveEnv,
   readXiaomiMimoFlashProviderSource,
@@ -608,7 +607,6 @@ function buildTaskDefinition(testCase, providerId) {
       outputContract: unit.outputContract,
       dependencies: Array.isArray(unit.dependencies) ? unit.dependencies : [],
       executionProfileId: unit.executionProfileId,
-      qualityProfileId: unit.qualityProfileId ?? undefined,
       taskScope: unit.taskScope,
     })),
   };
@@ -1209,14 +1207,6 @@ async function runModelGroup({ model, entries, runRoot, report }) {
       allowCompatibleModelFallback: true,
       requireTextAgentModel: true,
     });
-    await cleanRealTaskWaveState({
-      rootDir,
-      externalPaths: [targetExternalPath],
-      preservedRepoPathPrefixes: [
-        '.codex-run/logs/real-task-wave-matrix',
-        '.codex-run/logs/human-task-matrix',
-      ],
-    });
     liveEnv = await buildXiaomiMimoFlashLiveEnv(rootDir, {
       model: providerSource.model,
       requireTextAgentModel: true,
@@ -1292,14 +1282,6 @@ async function runModelGroup({ model, entries, runRoot, report }) {
   } finally {
     await writeJson(path.join(runRoot, slugify(model), 'backend-logs.json'), readBackendLogs());
     await terminateChild(backend, `backend:${model}`);
-    await cleanRealTaskWaveState({
-      rootDir,
-      externalPaths: [targetExternalPath],
-      preservedRepoPathPrefixes: [
-        '.codex-run/logs/real-task-wave-matrix',
-        '.codex-run/logs/human-task-matrix',
-      ],
-    }).catch(() => null);
   }
 }
 

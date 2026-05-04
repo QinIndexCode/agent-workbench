@@ -424,6 +424,37 @@ export interface ApprovedExperienceRecord {
   updatedAt: number;
 }
 
+export interface ExperienceUpsertInput {
+  proposalId?: string;
+  patternKey?: string;
+  title: string;
+  referenceSummary: string;
+  applicableScenarios?: string[];
+  limitations?: string[];
+  confidence?: number;
+  validationStatus?: 'monitoring' | 'promotable' | 'conflicted';
+  successfulReuseTaskIds?: string[];
+  failedReuseTaskIds?: string[];
+  lastValidatedAt?: number | null;
+  draftExperienceMarkdown?: string;
+}
+
+export interface GovernanceExportBundle<TRecord> {
+  generatedAt: number;
+  format: 'json' | 'markdown';
+  records: TRecord[];
+  content: string;
+}
+
+export interface BulkDeleteResult {
+  requestedIds: string[];
+  deletedIds: string[];
+  failed: Array<{
+    id: string;
+    error: string;
+  }>;
+}
+
 export interface OptimizationRecommendationPayload {
   title: string;
   summary: string;
@@ -691,25 +722,14 @@ export interface ToolCapabilityEntry {
   };
 }
 
-export interface ScenarioPackSummary {
+export interface ScriptCatalogEntry {
   id: string;
   label: string;
-  focus: string;
-  qualityProfileId: string | null;
-  qualityGateId?: string | null;
-  artifactAudit: string;
-  surfaceChecks: string[];
-  cleanupHints: string[];
-  modelPolicy: {
-    defaultModelClass: 'fast' | 'strong' | 'provider-default';
-    reason: string;
-  };
-  timeoutPolicy: {
-    maxTurns: number;
-    maxIdleCorrections: number;
-    maxRuntimeMs: number;
-  };
-  status: EcosystemReadiness;
+  description: string;
+  commandTemplate: string;
+  defaultCwd: string | null;
+  riskCategory: string;
+  outputHint: string;
 }
 
 export interface ExperienceHealthSummary {
@@ -744,7 +764,7 @@ export interface EcosystemSummaryView {
     instructionSkills: number;
     tools: number;
     acceptanceEvidenceTools: number;
-    scenarioPacks: number;
+    scriptCatalogEntries: number;
     workspaceCommands: number;
     warnings: number;
   };
@@ -754,7 +774,7 @@ export interface EcosystemSummaryView {
   experiences: ExperienceHealthSummary;
   tools: ToolCapabilityEntry[];
   workspaceCommands: WorkspaceCommandView[];
-  scenarioPacks: ScenarioPackSummary[];
+  scriptCatalog: ScriptCatalogEntry[];
   warnings: Array<{
     code: string;
     message: string;

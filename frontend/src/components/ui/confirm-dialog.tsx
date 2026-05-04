@@ -68,7 +68,7 @@ export function ConfirmDialog({
         onClick={onCancel}
       />
       <div
-        className={`motion-fade relative z-[1] w-[min(36rem,calc(100vw-2rem))] max-w-[36rem] rounded-[24px] border border-border-subtle bg-surface-elevated p-5 shadow-2xl ${presence.state === 'open' ? 'motion-modal-open' : 'motion-modal-closed'}`}
+        className={`motion-fade relative z-[1] w-[min(36rem,calc(100vw-2rem))] max-w-[36rem] rounded-lg border border-border-subtle bg-surface-elevated p-5 shadow-2xl ${presence.state === 'open' ? 'motion-modal-open' : 'motion-modal-closed'}`}
         data-testid={testId ? `${testId}-panel` : undefined}
       >
         <div data-testid={testId ? `${testId}-body` : undefined}>
@@ -78,7 +78,7 @@ export function ConfirmDialog({
             <p className="mt-2 text-sm leading-6 text-text-secondary">{description}</p>
           ) : null}
           {details.length ? (
-            <div className="mt-4 rounded-[18px] border border-border-subtle bg-surface/40 px-4 py-3">
+            <div className="mt-4 rounded-lg border border-border-subtle bg-surface/40 px-4 py-3">
               <ul className="space-y-2 text-sm leading-6 text-text-secondary">
                 {details.map((detail) => (
                   <li key={detail}>{detail}</li>

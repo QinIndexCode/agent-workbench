@@ -17,6 +17,10 @@ export const platformRoutes: HttpRouteModule = {
       sendJson(response, 200, await runtime.platform.listToolCapabilities());
       return true;
     }
+    if (request.method === 'GET' && path === '/tools/script-catalog') {
+      sendJson(response, 200, await runtime.platform.listScriptCatalog());
+      return true;
+    }
     if (request.method === 'GET' && path === '/tools/health') {
       sendJson(response, 200, (await runtime.platform.listToolCapabilities()).map((tool) => ({
         id: tool.id,
@@ -25,10 +29,6 @@ export const platformRoutes: HttpRouteModule = {
         healthCheck: tool.healthCheck,
         acceptanceEvidence: tool.acceptanceEvidence
       })));
-      return true;
-    }
-    if (request.method === 'GET' && path === '/scenario-packs') {
-      sendJson(response, 200, await runtime.platform.listScenarioPacks());
       return true;
     }
     if (request.method === 'GET' && path === '/ecosystem/skills') {
@@ -58,6 +58,43 @@ export const platformRoutes: HttpRouteModule = {
     if (request.method === 'GET' && path === '/improvements/report') {
       sendJson(response, 200, await runtime.platform.getComplexTaskAcceptanceReport());
       return true;
+    }
+    if (request.method === 'GET' && path === '/experience') {
+      sendJson(response, 200, await runtime.platform.listExperiences());
+      return true;
+    }
+    if (request.method === 'POST' && path === '/experience') {
+      sendJson(response, 200, await runtime.platform.createExperience(await readJsonBody(request)));
+      return true;
+    }
+    if (request.method === 'POST' && path === '/experience/bulk-delete') {
+      const body = await readJsonBody<{ experienceIds?: string[] }>(request);
+      sendJson(response, 200, await runtime.platform.bulkDeleteExperiences(body.experienceIds ?? []));
+      return true;
+    }
+    if (request.method === 'GET' && path === '/experience/export') {
+      const format = url.searchParams.get('format') === 'markdown' ? 'markdown' : 'json';
+      sendJson(response, 200, await runtime.platform.exportExperiences(format));
+      return true;
+    }
+    if (segments[0] === 'experience' && segments[1]) {
+      const experienceId = segments[1];
+      if (request.method === 'GET' && segments.length === 2) {
+        sendJson(response, 200, await runtime.platform.getExperience(experienceId));
+        return true;
+      }
+      if (request.method === 'PUT' && segments.length === 2) {
+        sendJson(response, 200, await runtime.platform.updateExperience(experienceId, await readJsonBody(request)));
+        return true;
+      }
+      if (request.method === 'DELETE' && segments.length === 2) {
+        sendJson(response, 200, await runtime.platform.deleteExperience(experienceId));
+        return true;
+      }
+      if (request.method === 'POST' && segments[2] === 'promote-skill') {
+        sendJson(response, 200, await runtime.platform.promoteExperienceToSkill(experienceId));
+        return true;
+      }
     }
     if (segments[0] === 'improvements' && segments[1] === 'proposals' && segments[2]) {
       const proposalId = segments[2];
@@ -151,8 +188,18 @@ export const platformRoutes: HttpRouteModule = {
       sendJson(response, 200, await runtime.platform.listSkills());
       return true;
     }
+    if (request.method === 'GET' && path === '/skills/export') {
+      const format = url.searchParams.get('format') === 'markdown' ? 'markdown' : 'json';
+      sendJson(response, 200, await runtime.platform.exportSkills(format));
+      return true;
+    }
     if (request.method === 'POST' && path === '/skills') {
       sendJson(response, 200, await runtime.platform.createSkill(await readJsonBody(request)));
+      return true;
+    }
+    if (request.method === 'POST' && path === '/skills/bulk-delete') {
+      const body = await readJsonBody<{ skillIds?: string[] }>(request);
+      sendJson(response, 200, await runtime.platform.bulkDeleteSkills(body.skillIds ?? []));
       return true;
     }
     if (segments[0] === 'skills' && segments[1] && segments.length === 2 && request.method === 'GET') {

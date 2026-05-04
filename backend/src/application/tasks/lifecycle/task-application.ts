@@ -10,6 +10,8 @@ import {
   TaskDiagnosticsSummary,
   TaskDebugResponse,
   TaskDiscussionResponse,
+  TaskGuidanceInput,
+  TaskGuidanceRecord,
   TaskQueryResponse,
   TaskSummaryResponse,
   TaskToolingResponse,
@@ -45,6 +47,10 @@ export class BackendNewTaskApplication {
 
   async continueTask(input: TaskActionInput): Promise<TaskActionResponse> {
     return this.lifecycle.continueTask(input);
+  }
+
+  async submitGuidance(input: TaskGuidanceInput): Promise<TaskActionResponse> {
+    return this.lifecycle.submitGuidance(input);
   }
 
   async pauseTask(input: TaskActionInput): Promise<TaskActionResponse> {
@@ -97,6 +103,10 @@ export class BackendNewTaskApplication {
 
   async getTaskOperatorMessages(taskId: string) {
     return this.queries.getTaskOperatorMessages(taskId);
+  }
+
+  async getTaskGuidance(taskId: string): Promise<TaskGuidanceRecord[]> {
+    return this.queries.getTaskGuidance(taskId);
   }
 
   async getTaskDiscussion(taskId: string): Promise<TaskDiscussionResponse> {

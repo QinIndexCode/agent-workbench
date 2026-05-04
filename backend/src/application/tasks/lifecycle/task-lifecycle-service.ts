@@ -10,7 +10,7 @@ import { ToolDispatchOrchestrator } from '../tools/tool-dispatch-orchestrator';
 import { InterruptController } from '../control/interrupt-controller';
 import { OperatorCommandService } from '../control/operator-command-service';
 import { TaskPlannerService } from '../planning/task-planner-service';
-import { ResolveApprovalInput, SubmitTaskCommandInput, SubmitTaskInput, TaskActionInput, TaskActionResponse } from '../types';
+import { ResolveApprovalInput, SubmitTaskCommandInput, SubmitTaskInput, TaskActionInput, TaskActionResponse, TaskGuidanceInput } from '../types';
 import { runWorkspaceHooks } from '../../runtime/workspace-hook-runner';
 
 function now(): number {
@@ -142,6 +142,21 @@ export class TaskLifecycleService {
       autoRun: input.autoRun,
       maxTurns: input.maxTurns,
       metadata: input.metadata
+    });
+  }
+
+  async submitGuidance(input: TaskGuidanceInput): Promise<TaskActionResponse> {
+    return this.submitCommand({
+      taskId: input.taskId,
+      type: 'SEND_OPERATOR_MESSAGE',
+      actor: input.actor,
+      reason: input.reason ?? 'operator guidance',
+      message: input.content,
+      metadata: {
+        ...(input.metadata ?? {}),
+        productRuntime: true,
+        guidanceType: 'task_guidance'
+      }
     });
   }
 

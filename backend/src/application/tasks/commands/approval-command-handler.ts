@@ -1,4 +1,5 @@
 import { createRuntimeEventEnvelope } from '../../../foundation/projection/event-envelope';
+import { getDefaultApprovalGrantMetadata } from '../../../foundation/tools/risk-approval-policy';
 import { resolveToolApprovalRecord } from '../../../foundation/tools/approval-resolution';
 import { ResolveApprovalInput, TaskActionResponse } from '../types';
 import { TaskApprovalCommandHandler, TaskCommandHandlerServices } from './command-handler-types';
@@ -20,7 +21,12 @@ export class ApprovalCommandHandler implements TaskApprovalCommandHandler {
       status: input.status,
       grantedBy: input.grantedBy,
       reason: input.reason,
-      metadata: input.metadata
+      metadata: input.status === 'APPROVED'
+        ? getDefaultApprovalGrantMetadata({
+          approval: existing,
+          resolutionMetadata: input.metadata
+        })
+        : input.metadata
     });
     await this.services.foundation.approvals.append(resolved);
     await this.services.foundation.events.append(

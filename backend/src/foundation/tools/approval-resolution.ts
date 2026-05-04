@@ -12,6 +12,9 @@ export function resolveToolApprovalRecord(
   record: ToolApprovalRecord,
   resolution: ToolApprovalResolutionInput
 ): ToolApprovalRecord {
+  if (record.status !== 'PENDING') {
+    throw new Error(`Cannot resolve approval "${record.approvalId}" because it is already ${record.status}.`);
+  }
   const resolvedAt = resolution.resolvedAt ?? Date.now();
   return {
     ...record,

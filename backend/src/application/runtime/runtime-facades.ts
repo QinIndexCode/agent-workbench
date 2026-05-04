@@ -21,6 +21,8 @@ import {
   TaskDiagnosticsSummary,
   TaskDebugResponse,
   TaskDiscussionResponse,
+  TaskGuidanceInput,
+  TaskGuidanceRecord,
   TaskQueryResponse,
   TaskSummaryResponse,
   TaskToolingResponse,
@@ -31,10 +33,14 @@ import { BackendNewPlatformApplication } from '../platform';
 import {
   CapabilityHubView,
   ChannelUpsertInput,
+  ApprovedExperienceRecord,
+  BulkDeleteResult,
   ComplexTaskAcceptanceReport,
   ConfigStateView,
   ConfigUpdateInput,
   EcosystemSummaryView,
+  ExperienceUpsertInput,
+  GovernanceExportBundle,
   ImprovementProposal,
   MemoryUpsertInput,
   PlatformActionResult,
@@ -96,6 +102,7 @@ export interface BackendNewTasksFacade {
   submitTask(input: SubmitTaskInput): Promise<TaskActionResponse>;
   startTask(input: TaskActionInput): Promise<TaskActionResponse>;
   continueTask(input: TaskActionInput): Promise<TaskActionResponse>;
+  submitGuidance(input: TaskGuidanceInput): Promise<TaskActionResponse>;
   pauseTask(input: TaskActionInput): Promise<TaskActionResponse>;
   resumeTask(input: TaskActionInput): Promise<TaskActionResponse>;
   restartTask(input: TaskActionInput): Promise<TaskActionResponse>;
@@ -109,6 +116,7 @@ export interface BackendNewTasksFacade {
   getTaskEvents(taskId: string, afterEventId?: string): Promise<RuntimeEventRecord[]>;
   getTaskCommands(taskId: string): Promise<OperatorCommandRecord[]>;
   getTaskOperatorMessages(taskId: string): Promise<OperatorMessageRecord[]>;
+  getTaskGuidance(taskId: string): Promise<TaskGuidanceRecord[]>;
   getTaskDiscussion(taskId: string): Promise<TaskDiscussionResponse>;
   getTaskTooling(taskId: string): Promise<TaskToolingResponse>;
   getTaskTraces(taskId: string): Promise<TaskTraceEnvelope[]>;
@@ -163,6 +171,8 @@ export interface BackendNewPlatformFacade {
   createSkill(input: SkillUpsertInput): Promise<PlatformActionResult<SkillCatalogEntry>>;
   updateSkill(skillId: string, input: SkillUpsertInput): Promise<PlatformActionResult<SkillCatalogEntry>>;
   deleteSkill(skillId: string): Promise<PlatformActionResult<{ ok: true; skillId: string }>>;
+  bulkDeleteSkills(skillIds: string[]): Promise<PlatformActionResult<BulkDeleteResult>>;
+  exportSkills(format?: 'json' | 'markdown'): Promise<GovernanceExportBundle<SkillCatalogEntry>>;
   duplicateSkill(skillId: string, input: SkillDuplicateInput): Promise<PlatformActionResult<SkillCatalogEntry>>;
   importSkill(input: SkillImportInput): Promise<PlatformActionResult<import('../../foundation/extensions/types').SkillDefinition>>;
   importMarketplaceSkills(input: Parameters<BackendNewPlatformApplication['importMarketplaceSkills']>[0]): Promise<ReturnType<BackendNewPlatformApplication['importMarketplaceSkills']> extends Promise<infer T> ? T : never>;
@@ -177,7 +187,7 @@ export interface BackendNewPlatformFacade {
   getCapabilityHub(): Promise<CapabilityHubView>;
   getEcosystemSummary(): Promise<EcosystemSummaryView>;
   listToolCapabilities(): Promise<EcosystemSummaryView['tools']>;
-  listScenarioPacks(): Promise<EcosystemSummaryView['scenarioPacks']>;
+  listScriptCatalog(): Promise<EcosystemSummaryView['scriptCatalog']>;
   listEcosystemSkills(): Promise<EcosystemSummaryView['skills']>;
   listEcosystemMcpServers(): Promise<EcosystemSummaryView['mcpServers']>;
   getWorkspaceWorkflow(): Promise<WorkspaceWorkflowView>;
@@ -188,6 +198,14 @@ export interface BackendNewPlatformFacade {
   getImprovementProposal(proposalId: string): Promise<ImprovementProposal | null>;
   approveImprovementProposal(proposalId: string): Promise<PlatformActionResult<ImprovementProposal>>;
   rejectImprovementProposal(proposalId: string): Promise<PlatformActionResult<ImprovementProposal>>;
+  listExperiences(): Promise<ApprovedExperienceRecord[]>;
+  getExperience(experienceId: string): Promise<ApprovedExperienceRecord | null>;
+  createExperience(input: ExperienceUpsertInput): Promise<PlatformActionResult<ApprovedExperienceRecord>>;
+  updateExperience(experienceId: string, input: ExperienceUpsertInput): Promise<PlatformActionResult<ApprovedExperienceRecord>>;
+  deleteExperience(experienceId: string): Promise<PlatformActionResult<{ ok: true; experienceId: string }>>;
+  bulkDeleteExperiences(experienceIds: string[]): Promise<PlatformActionResult<BulkDeleteResult>>;
+  exportExperiences(format?: 'json' | 'markdown'): Promise<GovernanceExportBundle<ApprovedExperienceRecord>>;
+  promoteExperienceToSkill(experienceId: string): Promise<PlatformActionResult<SkillCatalogEntry>>;
   listRealTaskArchive(): Promise<RealTaskArchiveEntry[]>;
   getComplexTaskAcceptanceReport(): Promise<ComplexTaskAcceptanceReport>;
   getAuditTrail(resourceType: PlatformResourceType, resourceId: string): Promise<PlatformAuditTrailView>;
@@ -221,6 +239,7 @@ export function createTasksFacade(params: {
     submitTask: guardAsync(params.ensureReady, params.taskApplication.submitTask.bind(params.taskApplication)),
     startTask: guardAsync(params.ensureReady, params.taskApplication.startTask.bind(params.taskApplication)),
     continueTask: guardAsync(params.ensureReady, params.taskApplication.continueTask.bind(params.taskApplication)),
+    submitGuidance: guardAsync(params.ensureReady, params.taskApplication.submitGuidance.bind(params.taskApplication)),
     pauseTask: guardAsync(params.ensureReady, params.taskApplication.pauseTask.bind(params.taskApplication)),
     resumeTask: guardAsync(params.ensureReady, params.taskApplication.resumeTask.bind(params.taskApplication)),
     restartTask: guardAsync(params.ensureReady, params.taskApplication.restartTask.bind(params.taskApplication)),
@@ -234,6 +253,7 @@ export function createTasksFacade(params: {
     getTaskEvents: guardAsync(params.ensureReady, params.taskApplication.getTaskEvents.bind(params.taskApplication)),
     getTaskCommands: guardAsync(params.ensureReady, params.taskApplication.getTaskCommands.bind(params.taskApplication)),
     getTaskOperatorMessages: guardAsync(params.ensureReady, params.taskApplication.getTaskOperatorMessages.bind(params.taskApplication)),
+    getTaskGuidance: guardAsync(params.ensureReady, params.taskApplication.getTaskGuidance.bind(params.taskApplication)),
     getTaskDiscussion: guardAsync(params.ensureReady, params.taskApplication.getTaskDiscussion.bind(params.taskApplication)),
     getTaskTooling: guardAsync(params.ensureReady, params.taskApplication.getTaskTooling.bind(params.taskApplication)),
     getTaskTraces: guardAsync(params.ensureReady, params.taskApplication.getTaskTraces.bind(params.taskApplication)),
@@ -288,6 +308,8 @@ export function createPlatformFacade(params: {
     createSkill: guardAsync(params.ensureReady, params.platformApplication.createSkill.bind(params.platformApplication)),
     updateSkill: guardAsync(params.ensureReady, params.platformApplication.updateSkill.bind(params.platformApplication)),
     deleteSkill: guardAsync(params.ensureReady, params.platformApplication.deleteSkill.bind(params.platformApplication)),
+    bulkDeleteSkills: guardAsync(params.ensureReady, params.platformApplication.bulkDeleteSkills.bind(params.platformApplication)),
+    exportSkills: guardAsync(params.ensureReady, params.platformApplication.exportSkills.bind(params.platformApplication)),
     duplicateSkill: guardAsync(params.ensureReady, params.platformApplication.duplicateSkill.bind(params.platformApplication)),
     importSkill: guardAsync(params.ensureReady, params.platformApplication.importSkill.bind(params.platformApplication)),
     importMarketplaceSkills: guardAsync(params.ensureReady, params.platformApplication.importMarketplaceSkills.bind(params.platformApplication)),
@@ -302,7 +324,7 @@ export function createPlatformFacade(params: {
     getCapabilityHub: guardAsync(params.ensureReady, params.platformApplication.getCapabilityHub.bind(params.platformApplication)),
     getEcosystemSummary: guardAsync(params.ensureReady, params.platformApplication.getEcosystemSummary.bind(params.platformApplication)),
     listToolCapabilities: guardAsync(params.ensureReady, params.platformApplication.listToolCapabilities.bind(params.platformApplication)),
-    listScenarioPacks: guardAsync(params.ensureReady, params.platformApplication.listScenarioPacks.bind(params.platformApplication)),
+    listScriptCatalog: guardAsync(params.ensureReady, params.platformApplication.listScriptCatalog.bind(params.platformApplication)),
     listEcosystemSkills: guardAsync(params.ensureReady, params.platformApplication.listEcosystemSkills.bind(params.platformApplication)),
     listEcosystemMcpServers: guardAsync(params.ensureReady, params.platformApplication.listEcosystemMcpServers.bind(params.platformApplication)),
     getWorkspaceWorkflow: guardAsync(params.ensureReady, params.platformApplication.getWorkspaceWorkflow.bind(params.platformApplication)),
@@ -313,6 +335,14 @@ export function createPlatformFacade(params: {
     getImprovementProposal: guardAsync(params.ensureReady, params.platformApplication.getImprovementProposal.bind(params.platformApplication)),
     approveImprovementProposal: guardAsync(params.ensureReady, params.platformApplication.approveImprovementProposal.bind(params.platformApplication)),
     rejectImprovementProposal: guardAsync(params.ensureReady, params.platformApplication.rejectImprovementProposal.bind(params.platformApplication)),
+    listExperiences: guardAsync(params.ensureReady, params.platformApplication.listExperiences.bind(params.platformApplication)),
+    getExperience: guardAsync(params.ensureReady, params.platformApplication.getExperience.bind(params.platformApplication)),
+    createExperience: guardAsync(params.ensureReady, params.platformApplication.createExperience.bind(params.platformApplication)),
+    updateExperience: guardAsync(params.ensureReady, params.platformApplication.updateExperience.bind(params.platformApplication)),
+    deleteExperience: guardAsync(params.ensureReady, params.platformApplication.deleteExperience.bind(params.platformApplication)),
+    bulkDeleteExperiences: guardAsync(params.ensureReady, params.platformApplication.bulkDeleteExperiences.bind(params.platformApplication)),
+    exportExperiences: guardAsync(params.ensureReady, params.platformApplication.exportExperiences.bind(params.platformApplication)),
+    promoteExperienceToSkill: guardAsync(params.ensureReady, params.platformApplication.promoteExperienceToSkill.bind(params.platformApplication)),
     listRealTaskArchive: guardAsync(params.ensureReady, params.platformApplication.listRealTaskArchive.bind(params.platformApplication)),
     getComplexTaskAcceptanceReport: guardAsync(params.ensureReady, params.platformApplication.getComplexTaskAcceptanceReport.bind(params.platformApplication)),
     getAuditTrail: guardAsync(params.ensureReady, params.platformApplication.getAuditTrail.bind(params.platformApplication))

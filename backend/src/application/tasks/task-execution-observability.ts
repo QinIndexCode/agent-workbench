@@ -26,7 +26,6 @@ import {
 import { getTaskWorkingDirectorySettings } from './task-working-directory';
 import type { ToolInvocationRecord } from '../../foundation/repository/types';
 import { shouldMarkInvocationAsVerification } from './tools/tool-verification';
-import { evaluateTaskQuality } from '../../domain/quality/task-quality';
 import { parseTurn } from '../../domain/parser/unit-output-parser';
 import { validateExplicitOutput } from '../../domain/validation/validate-explicit-output';
 
@@ -704,7 +703,6 @@ function classifyIssuePlane(
     case 'artifact_policy_mismatch':
     case 'approval_deadlock':
     case 'required_delegation_missing':
-    case 'quality_gate_failed':
     case 'queue_runtime_divergence':
     case 'context_overload_planner_fallback':
     case 'invalid_lifecycle_transition':
@@ -724,6 +722,14 @@ function buildSuggestedAction(params: {
 }): TaskExecutionSummary['suggestedAction'] {
   const { task, issuePlane, issueCategory, issueSummary, turnContract } = params;
   const reason = issueSummary ?? turnContract.continueReason;
+  if (!issueCategory && task.runtime.lifecycleStatus === 'COMPLETED') {
+    return {
+      type: 'continue',
+      label: 'Send follow-up',
+      reason: 'The task is complete; send a new message to start follow-up work in this same thread.',
+      command: 'tasks chat'
+    };
+  }
   switch (issueCategory) {
     case 'provider_config_failure':
       return issuePlane === 'external_blocker'
@@ -773,13 +779,6 @@ function buildSuggestedAction(params: {
         label: 'Resolve pending approval',
         reason,
         command: 'tasks approvals resolve'
-      };
-    case 'quality_gate_failed':
-      return {
-        type: 'repair_quality_evidence',
-        label: 'Provide required quality evidence',
-        reason,
-        command: 'tasks continue'
       };
     case 'required_delegation_missing':
     case 'context_overload_planner_fallback':
@@ -1607,7 +1606,6 @@ function findLatestExplicitOutputEnvelope(task: TaskQueryResponse, unitId: strin
 function getAcceptanceUnit(task: TaskQueryResponse): {
   unitId: string | null;
   profileId: TaskExecutionSummary['acceptance']['deterministic']['profileId'];
-  qualityProfileId: TaskExecutionSummary['acceptance']['quality']['profileId'];
   outputContract: string | null;
 } {
   const preferredUnitId = task.latestVisibleOutput?.unitId
@@ -1621,7 +1619,6 @@ function getAcceptanceUnit(task: TaskQueryResponse): {
   return {
     unitId: unit?.id ?? preferredUnitId ?? null,
     profileId: unit?.executionProfileId ?? 'analyze',
-    qualityProfileId: unit?.qualityProfileId ?? null,
     outputContract: unit?.outputContract ?? null
   };
 }
@@ -1751,7 +1748,6 @@ function hasFailedVerification(
   task: TaskQueryResponse,
   profileId: TaskExecutionSummary['acceptance']['deterministic']['profileId'],
   options: {
-    qualityPassed?: boolean;
     unitId?: string | null;
     outputText?: string;
   } = {}
@@ -1774,15 +1770,6 @@ function hasFailedVerification(
     }));
   if (!unresolvedBlockingFailure) {
     return false;
-  }
-  if (options.qualityPassed) {
-    const latestSuccessfulVerification = task.toolInvocations
-      .map((invocation, index) => ({ invocation, index }))
-      .filter(({ invocation }) => invocation.status === 'SUCCEEDED' && isVerificationTool(invocation))
-      .at(-1);
-    if (latestSuccessfulVerification && latestSuccessfulVerification.index > unresolvedBlockingFailure.index) {
-      return false;
-    }
   }
   return true;
 }
@@ -2032,36 +2019,6 @@ function buildAcceptanceSummary(
     Array.from(new Set(executionRequiredNextEvidence))
   );
 
-  const quality = evaluateTaskQuality({
-    taskId: task.definition.taskId,
-    title: task.definition.title,
-    intent: task.definition.intent,
-    unitId: acceptanceUnit.unitId,
-    executionProfileId: acceptanceUnit.profileId,
-    qualityProfileId: acceptanceUnit.qualityProfileId,
-    workspaceDir: foundation?.layout.forTask(task.definition.taskId).workspaceDir
-      ?? '',
-    artifactPaths: [...artifactRouting.artifactPaths],
-    artifactDestinationPaths: [...artifactRouting.artifactDestinationPaths],
-    artifactDestinationDir: artifactRouting.lastArtifactApplyResult?.destinationDir ?? artifactRouting.selectedArtifactDir ?? null,
-    latestVisibleOutput: latestOutput
-      ? {
-        summary: latestOutput.summary,
-        details: latestOutput.details,
-        issues: [...latestOutput.issues]
-      }
-      : null,
-    completionSummary: task.completionSummary
-      ? {
-        summary: task.completionSummary.summary,
-        details: task.completionSummary.details,
-        issues: [...task.completionSummary.issues]
-      }
-      : null,
-    toolInvocations: task.toolInvocations,
-    events: task.events
-  });
-
   const evidencePassedChecks: string[] = [];
   const evidenceFailedChecks: string[] = [];
   const evidenceRequiredNextEvidence: string[] = [];
@@ -2091,7 +2048,6 @@ function buildAcceptanceSummary(
   }
   const blockingVerificationFailure = hasFailedVerification(task, acceptanceUnit.profileId, {
     unitId: acceptanceUnit.unitId,
-    qualityPassed: quality.profileId !== null && quality.verdict === 'passed',
     outputText
   });
   if (blockingVerificationFailure) {
@@ -2160,8 +2116,7 @@ function buildAcceptanceSummary(
   const deterministicPassed = contract.verdict === 'passed'
     && execution.verdict === 'passed'
     && evidence.verdict === 'passed'
-    && outcome.verdict === 'passed'
-    && (quality.profileId === null || quality.verdict === 'passed');
+    && outcome.verdict === 'passed';
 
   return {
     deterministic: {
@@ -2180,8 +2135,7 @@ function buildAcceptanceSummary(
       artifactEvidence,
       deliveryEvidence,
       groundingEvidence
-    },
-    quality
+    }
   };
 }
 
@@ -2284,14 +2238,7 @@ export function buildTaskExecutionSummary(
 
   const turnContract = buildTurnContract(task, artifactRouting);
   const acceptance = buildAcceptanceSummary(task, foundation, artifactRouting, turnContract);
-  const resolvedIssue = issue.issueCategory
-    ? issue
-    : acceptance.quality.verdict === 'failed'
-      ? {
-        issueCategory: 'quality_gate_failed' as const,
-        issueSummary: acceptance.quality.failedChecks[0] ?? 'The active quality profile has not passed yet.'
-      }
-      : issue;
+  const resolvedIssue = issue;
   const issuePlane = classifyIssuePlane(resolvedIssue.issueCategory, task);
   const suggestedAction = buildSuggestedAction({
     task,

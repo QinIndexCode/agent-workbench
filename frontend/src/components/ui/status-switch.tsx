@@ -23,16 +23,16 @@ export function StatusSwitch({
       disabled={disabled}
       data-testid={testId}
       onClick={onToggle}
-      className={`relative inline-flex h-8 w-[3.15rem] flex-shrink-0 items-center rounded-full border transition duration-fast ${
+      className={`relative inline-flex h-7 w-12 flex-shrink-0 items-center rounded-full border transition-all duration-fast ease-spring ${
         checked
-          ? 'border-accent bg-accent/90'
+          ? 'border-accent bg-accent shadow-[0_0_12px_rgba(59,130,246,0.35)]'
           : 'border-border-default bg-surface-hover'
-      } ${disabled ? 'cursor-not-allowed opacity-60' : 'hover:border-accent/60'}`}
+      } ${disabled ? 'cursor-not-allowed opacity-60' : 'hover:border-accent/60 active:scale-95'}`}
     >
       <span className="sr-only">{label}</span>
       <span
-        className={`inline-block h-6 w-6 transform rounded-full bg-white shadow transition duration-fast ${
-          checked ? 'translate-x-[1.45rem]' : 'translate-x-1'
+        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition-transform duration-fast ease-spring ${
+          checked ? 'translate-x-6' : 'translate-x-1'
         }`}
       />
     </button>

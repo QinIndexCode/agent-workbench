@@ -7,11 +7,12 @@ interface CardProps extends ComponentPropsWithoutRef<'div'> {
 
 export function Card({ children, className = '', onClick, ...props }: CardProps) {
   return (
-    <div 
+    <div
       className={[
         'bg-surface/72 backdrop-blur-sm',
         'border border-border-subtle rounded-lg shadow-none',
-        onClick && 'cursor-pointer hover:border-border-default hover:bg-surface-elevated/70 transition duration-fast',
+        'transition-all duration-fast',
+        onClick && 'cursor-pointer hover:border-border-default hover:bg-surface-elevated/70 hover:shadow-sm active:scale-[0.995]',
         className,
       ].filter(Boolean).join(' ')}
       onClick={onClick}

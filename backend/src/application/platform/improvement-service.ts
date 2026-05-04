@@ -4,9 +4,12 @@ import { BackendNewFoundation } from '../../foundation/bootstrap/types';
 import { TaskQueryResponse } from '../tasks/types';
 import {
   ApprovedExperienceRecord,
+  BulkDeleteResult,
   ComplexTaskAcceptanceReport,
   ExperienceReport,
   ExperienceProposalPayload,
+  ExperienceUpsertInput,
+  GovernanceExportBundle,
   ImprovementProposal,
   InstructionSkillProposalPayload,
   OptimizationRecommendationCategory,
@@ -220,6 +223,58 @@ function normalizeApprovedExperienceRecord(record: ApprovedExperienceRecord): Ap
     createdAt: record.createdAt ?? Date.now(),
     updatedAt: record.updatedAt ?? Date.now()
   };
+}
+
+function buildManualExperienceMarkdown(input: {
+  title: string;
+  referenceSummary: string;
+  applicableScenarios: string[];
+  limitations: string[];
+  evidenceTaskIds: string[];
+}): string {
+  return buildExperienceMarkdown({
+    title: input.title,
+    summary: input.referenceSummary,
+    applicableScenarios: input.applicableScenarios,
+    limitations: input.limitations,
+    evidenceTaskIds: input.evidenceTaskIds
+  });
+}
+
+function normalizeExperienceId(value: string | null | undefined): string {
+  return normalizeKey(value?.trim() || 'experience') || 'experience';
+}
+
+function isWithinDir(candidatePath: string, parentPath: string): boolean {
+  const resolvedCandidate = path.resolve(candidatePath);
+  const resolvedParent = path.resolve(parentPath);
+  return resolvedCandidate === resolvedParent || resolvedCandidate.startsWith(`${resolvedParent}${path.sep}`);
+}
+
+function buildExperienceExportMarkdown(records: ApprovedExperienceRecord[]): string {
+  const sections = records.map((record) => [
+    `# ${record.title}`,
+    '',
+    `- Proposal: ${record.proposalId}`,
+    `- Pattern: ${record.patternKey}`,
+    `- Status: ${record.validationStatus}`,
+    `- Confidence: ${record.confidence.toFixed(2)}`,
+    `- Materialized: ${record.materializedPath}`,
+    '',
+    '## Reference',
+    record.referenceSummary,
+    '',
+    '## Applicable Scenarios',
+    ...(record.applicableScenarios.length ? record.applicableScenarios.map((entry) => `- ${entry}`) : ['- none']),
+    '',
+    '## Limits',
+    ...(record.limitations.length ? record.limitations.map((entry) => `- ${entry}`) : ['- none']),
+    '',
+    '## Reuse Evidence',
+    `- Successful: ${record.successfulReuseTaskIds.join(', ') || 'none'}`,
+    `- Failed: ${record.failedReuseTaskIds.join(', ') || 'none'}`
+  ].join('\n'));
+  return `${sections.join('\n\n---\n\n')}\n`;
 }
 
 function normalizeArchiveStatus(
@@ -879,11 +934,7 @@ function getApprovedExperienceValidationOutcome(
     return isApprovedExperienceEnvironmentBlocker(task) ? 'environment_blocker' : 'failed';
   }
   const executionSummary = buildTaskExecutionSummary(task, foundation);
-  const passed = executionSummary.acceptance.deterministic.verdict === 'passed'
-    && (
-      executionSummary.acceptance.quality.profileId === null
-      || executionSummary.acceptance.quality.verdict === 'passed'
-    );
+  const passed = executionSummary.acceptance.deterministic.verdict === 'passed';
   if (passed) {
     return 'passed';
   }
@@ -1065,6 +1116,200 @@ export class ImprovementService {
 
   async listArchive(): Promise<RealTaskArchiveEntry[]> {
     return this.listArchiveCollection();
+  }
+
+  async listExperiences(): Promise<ApprovedExperienceRecord[]> {
+    return this.listApprovedExperienceCollection();
+  }
+
+  async getExperience(experienceId: string): Promise<ApprovedExperienceRecord | null> {
+    return (await this.listApprovedExperienceCollection()).find((record) => record.proposalId === experienceId) ?? null;
+  }
+
+  async createExperience(input: ExperienceUpsertInput): Promise<PlatformActionResult<ApprovedExperienceRecord>> {
+    const now = Date.now();
+    const proposalId = normalizeExperienceId(input.proposalId || input.title);
+    const existing = await this.getExperience(proposalId);
+    if (existing) {
+      throw new Error(`backend_new experience error: experience "${proposalId}" already exists.`);
+    }
+    const record = await this.materializeExperienceInput(input, {
+      proposalId,
+      createdAt: now,
+      updatedAt: now
+    });
+    const command = await this.recorder.recordCommand({
+      resourceType: 'IMPROVEMENT',
+      resourceId: record.proposalId,
+      action: 'UPSERT',
+      input: { kind: 'experience', proposalId: record.proposalId }
+    });
+    try {
+      await this.saveApprovedExperienceCollection([...(await this.listApprovedExperienceCollection()), record]);
+      return await this.recorder.recordApplied(command, record);
+    } catch (error) {
+      await this.recorder.recordRejected(command, error);
+      throw error;
+    }
+  }
+
+  async updateExperience(experienceId: string, input: ExperienceUpsertInput): Promise<PlatformActionResult<ApprovedExperienceRecord>> {
+    const records = await this.listApprovedExperienceCollection();
+    const existing = records.find((record) => record.proposalId === experienceId);
+    if (!existing) {
+      throw new Error(`backend_new experience error: unknown experience "${experienceId}".`);
+    }
+    const updated = await this.materializeExperienceInput(input, {
+      proposalId: existing.proposalId,
+      createdAt: existing.createdAt,
+      updatedAt: Date.now(),
+      existing
+    });
+    const command = await this.recorder.recordCommand({
+      resourceType: 'IMPROVEMENT',
+      resourceId: updated.proposalId,
+      action: 'UPDATE',
+      input: { kind: 'experience', proposalId: updated.proposalId }
+    });
+    try {
+      await this.saveApprovedExperienceCollection(records.map((record) => (
+        record.proposalId === experienceId ? updated : record
+      )));
+      return await this.recorder.recordApplied(command, updated);
+    } catch (error) {
+      await this.recorder.recordRejected(command, error);
+      throw error;
+    }
+  }
+
+  async deleteExperience(experienceId: string): Promise<PlatformActionResult<{ ok: true; experienceId: string }>> {
+    const records = await this.listApprovedExperienceCollection();
+    const existing = records.find((record) => record.proposalId === experienceId);
+    if (!existing) {
+      throw new Error(`backend_new experience error: unknown experience "${experienceId}".`);
+    }
+    const command = await this.recorder.recordCommand({
+      resourceType: 'IMPROVEMENT',
+      resourceId: existing.proposalId,
+      action: 'DELETE',
+      input: { kind: 'experience' }
+    });
+    try {
+      await this.saveApprovedExperienceCollection(records.filter((record) => record.proposalId !== experienceId));
+      if (isWithinDir(existing.materializedPath, this.foundation.layout.generatedExperiencesDirPath)) {
+        const rootDir = path.dirname(existing.materializedPath);
+        if (await this.foundation.storage.exists(existing.materializedPath)) {
+          await this.foundation.storage.deleteFile(existing.materializedPath);
+        }
+        if (isWithinDir(rootDir, this.foundation.layout.generatedExperiencesDirPath) && await this.foundation.storage.exists(rootDir)) {
+          await this.foundation.storage.deleteDir(rootDir);
+        }
+      }
+      return await this.recorder.recordApplied(command, { ok: true as const, experienceId });
+    } catch (error) {
+      await this.recorder.recordRejected(command, error);
+      throw error;
+    }
+  }
+
+  async bulkDeleteExperiences(experienceIds: string[]): Promise<PlatformActionResult<BulkDeleteResult>> {
+    const requestedIds = dedupeStrings(experienceIds);
+    const deletedIds: string[] = [];
+    const failed: BulkDeleteResult['failed'] = [];
+    for (const experienceId of requestedIds) {
+      try {
+        await this.deleteExperience(experienceId);
+        deletedIds.push(experienceId);
+      } catch (error) {
+        failed.push({ id: experienceId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return this.recorder.applied({
+      resourceType: 'IMPROVEMENT',
+      resourceId: 'experience-bulk-delete',
+      action: 'DELETE',
+      resource: { requestedIds, deletedIds, failed }
+    });
+  }
+
+  async exportExperiences(format: 'json' | 'markdown' = 'json'): Promise<GovernanceExportBundle<ApprovedExperienceRecord>> {
+    const records = await this.listApprovedExperienceCollection();
+    const generatedAt = Date.now();
+    const content = format === 'markdown'
+      ? buildExperienceExportMarkdown(records)
+      : JSON.stringify({ generatedAt, records }, null, this.foundation.config.storage.jsonSpacing);
+    return { generatedAt, format, records, content };
+  }
+
+  async promoteExperienceToSkill(experienceId: string) {
+    const experience = await this.getExperience(experienceId);
+    if (!experience) {
+      throw new Error(`backend_new experience error: unknown experience "${experienceId}".`);
+    }
+    const skillId = normalizeExperienceId(`skill-${experience.proposalId}`);
+    return this.skills.create({
+      id: skillId,
+      name: `${experience.title} skill`,
+      description: experience.referenceSummary,
+      kind: 'instruction-skill',
+      content: buildSkillMarkdown({
+        title: `${experience.title} skill`,
+        summary: experience.referenceSummary,
+        applicableScenarios: experience.applicableScenarios,
+        inputBoundaries: experience.limitations,
+        prohibitions: [
+          'Do not use when the current task falls outside the approved experience scope.',
+          'Do not use when failed reuse evidence exists for the same pattern.'
+        ],
+        evidenceTaskIds: experience.successfulReuseTaskIds
+      })
+    });
+  }
+
+  private async materializeExperienceInput(
+    input: ExperienceUpsertInput,
+    context: {
+      proposalId: string;
+      createdAt: number;
+      updatedAt: number;
+      existing?: ApprovedExperienceRecord;
+    }
+  ): Promise<ApprovedExperienceRecord> {
+    const title = truncateText(input.title, 120) || context.existing?.title || 'Managed experience';
+    const referenceSummary = truncateText(input.referenceSummary, 240) || context.existing?.referenceSummary || 'Managed reusable experience.';
+    const applicableScenarios = dedupeStrings(input.applicableScenarios ?? context.existing?.applicableScenarios ?? []);
+    const limitations = dedupeStrings(input.limitations ?? context.existing?.limitations ?? []);
+    const successfulReuseTaskIds = dedupeStrings(input.successfulReuseTaskIds ?? context.existing?.successfulReuseTaskIds ?? []);
+    const failedReuseTaskIds = dedupeStrings(input.failedReuseTaskIds ?? context.existing?.failedReuseTaskIds ?? []);
+    const rootDir = path.join(this.foundation.layout.generatedExperiencesDirPath, context.proposalId);
+    const materializedPath = context.existing?.materializedPath ?? path.join(rootDir, 'experience.md');
+    const markdown = input.draftExperienceMarkdown?.trim() || buildManualExperienceMarkdown({
+      title,
+      referenceSummary,
+      applicableScenarios,
+      limitations,
+      evidenceTaskIds: successfulReuseTaskIds
+    });
+    if (isWithinDir(materializedPath, this.foundation.layout.generatedExperiencesDirPath)) {
+      await this.foundation.storage.ensureDir(path.dirname(materializedPath));
+      await this.foundation.storage.writeText(materializedPath, markdown, this.foundation.config.storage.encoding);
+    }
+    return normalizeApprovedExperienceRecord({
+      proposalId: context.proposalId,
+      patternKey: input.patternKey?.trim() || context.existing?.patternKey || normalizeExperienceId(title),
+      title,
+      materializedPath,
+      referenceSummary,
+      applicableScenarios,
+      limitations,
+      confidence: typeof input.confidence === 'number' ? input.confidence : context.existing?.confidence ?? 0.5,
+      validationStatus: input.validationStatus ?? context.existing?.validationStatus ?? 'monitoring',
+      successfulReuseTaskIds,
+      failedReuseTaskIds,
+      lastValidatedAt: input.lastValidatedAt ?? context.existing?.lastValidatedAt ?? null,
+      createdAt: context.createdAt,
+      updatedAt: context.updatedAt
+    });
   }
 
   private async syncLessonMemoryFromProposal(proposal: ImprovementProposal): Promise<void> {

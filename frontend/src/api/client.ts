@@ -1,7 +1,11 @@
 import type {
   CapabilityHubView,
+  BulkDeleteResult,
   ConfigStateView,
   EcosystemSummaryView,
+  ExperienceRecord,
+  ExperienceUpsertPayload,
+  GovernanceExportBundle,
   McpCatalogEntry,
   McpTestResult,
   ImprovementProposal,
@@ -14,6 +18,7 @@ import type {
   ProviderSecretSummary,
   ProviderTestResult,
   RuntimeEvent,
+  TaskGuidanceRecord,
   SkillCatalogEntry,
   SubmitTaskPayload,
   TaskActionOptions,
@@ -31,6 +36,24 @@ import type {
 const BASE_URL = import.meta.env.VITE_BACKEND_SERVER_URL ?? 'http://127.0.0.1:3011';
 
 class ApiClient {
+  private formatErrorPayload(status: number, text: string): string {
+    if (!text.trim()) {
+      return `HTTP ${status}`;
+    }
+    try {
+      const payload = JSON.parse(text) as { error?: unknown; message?: unknown; code?: unknown };
+      const message = typeof payload.error === 'string'
+        ? payload.error
+        : typeof payload.message === 'string'
+          ? payload.message
+          : text;
+      const code = typeof payload.code === 'string' ? payload.code : null;
+      return code ? `${message} (${code})` : message;
+    } catch {
+      return text;
+    }
+  }
+
   private async request<T>(path: string, options?: RequestInit): Promise<T> {
     const response = await fetch(`${BASE_URL}${path}`, {
       headers: { 'Content-Type': 'application/json' },
@@ -39,7 +62,7 @@ class ApiClient {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(error || `HTTP ${response.status}`);
+      throw new Error(this.formatErrorPayload(response.status, error));
     }
 
     return response.json();
@@ -193,6 +216,17 @@ class ApiClient {
     });
   }
 
+  async bulkDeleteSkills(skillIds: string[]): Promise<PlatformActionResult<BulkDeleteResult>> {
+    return this.request<PlatformActionResult<BulkDeleteResult>>('/skills/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ skillIds }),
+    });
+  }
+
+  async exportSkills(format: 'json' | 'markdown'): Promise<GovernanceExportBundle<SkillCatalogEntry>> {
+    return this.request<GovernanceExportBundle<SkillCatalogEntry>>(`/skills/export?format=${encodeURIComponent(format)}`);
+  }
+
   async duplicateSkill(
     skillId: string,
     payload?: {
@@ -269,6 +303,48 @@ class ApiClient {
     return this.request<ImprovementProposal[]>('/improvements/proposals');
   }
 
+  async getExperiences(): Promise<ExperienceRecord[]> {
+    return this.request<ExperienceRecord[]>('/experience');
+  }
+
+  async createExperience(payload: ExperienceUpsertPayload): Promise<PlatformActionResult<ExperienceRecord>> {
+    return this.request<PlatformActionResult<ExperienceRecord>>('/experience', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateExperience(experienceId: string, payload: ExperienceUpsertPayload): Promise<PlatformActionResult<ExperienceRecord>> {
+    return this.request<PlatformActionResult<ExperienceRecord>>(`/experience/${experienceId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deleteExperience(experienceId: string): Promise<PlatformActionResult<{ ok: true; experienceId: string }>> {
+    return this.request<PlatformActionResult<{ ok: true; experienceId: string }>>(`/experience/${experienceId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async bulkDeleteExperiences(experienceIds: string[]): Promise<PlatformActionResult<BulkDeleteResult>> {
+    return this.request<PlatformActionResult<BulkDeleteResult>>('/experience/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ experienceIds }),
+    });
+  }
+
+  async exportExperiences(format: 'json' | 'markdown'): Promise<GovernanceExportBundle<ExperienceRecord>> {
+    return this.request<GovernanceExportBundle<ExperienceRecord>>(`/experience/export?format=${encodeURIComponent(format)}`);
+  }
+
+  async promoteExperienceToSkill(experienceId: string): Promise<PlatformActionResult<SkillCatalogEntry>> {
+    return this.request<PlatformActionResult<SkillCatalogEntry>>(`/experience/${experienceId}/promote-skill`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
   async getImprovementProposal(proposalId: string): Promise<ImprovementProposal | null> {
     return this.request<ImprovementProposal | null>(`/improvements/proposals/${proposalId}`);
   }
@@ -311,6 +387,10 @@ class ApiClient {
   async getTaskEvents(taskId: string, afterEventId?: string): Promise<RuntimeEvent[]> {
     const query = afterEventId ? `?afterEventId=${encodeURIComponent(afterEventId)}` : '';
     return this.request<RuntimeEvent[]>(`/tasks/${taskId}/events${query}`);
+  }
+
+  async getTaskGuidance(taskId: string): Promise<TaskGuidanceRecord[]> {
+    return this.request<TaskGuidanceRecord[]>(`/tasks/${taskId}/guidance`);
   }
 
   async submitTask(payload: SubmitTaskPayload): Promise<TaskActionResponse> {
@@ -363,6 +443,18 @@ class ApiClient {
     });
   }
 
+  async sendGuidance(taskId: string, content: string, options?: { actor?: string | null; reason?: string | null; metadata?: Record<string, unknown> }): Promise<TaskActionResponse> {
+    return this.request<TaskActionResponse>(`/tasks/${taskId}/guidance`, {
+      method: 'POST',
+      body: JSON.stringify({
+        content,
+        actor: options?.actor,
+        reason: options?.reason,
+        metadata: options?.metadata,
+      }),
+    });
+  }
+
   async archiveTask(taskId: string): Promise<{ ok: true; taskId: string; isArchived: boolean }> {
     return this.request<{ ok: true; taskId: string; isArchived: boolean }>(`/tasks/${taskId}/archive`, {
       method: 'POST',
@@ -395,6 +487,7 @@ class ApiClient {
     invocationId: string,
     status: 'APPROVED' | 'REJECTED' | 'EXPIRED',
     reason?: string,
+    metadata?: Record<string, unknown>,
   ): Promise<TaskActionResponse> {
     return this.request<TaskActionResponse>(`/tasks/${taskId}/approvals/resolve`, {
       method: 'POST',
@@ -402,6 +495,7 @@ class ApiClient {
         invocationId,
         status,
         reason: reason ?? null,
+        metadata: metadata ?? undefined,
       }),
     });
   }

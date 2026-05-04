@@ -340,6 +340,20 @@ export class SuccessfulTurnPersistence {
             consumedTurnId: params.turnId
           })
         );
+        await this.foundation.events.append(
+          createRuntimeEventEnvelope({
+            correlationId: params.correlationId,
+            sessionId: params.sessionId,
+            turnId: params.turnId,
+            taskId: params.taskId,
+            unitId: params.currentUnitId,
+            checkpointId: params.checkpointId,
+            type: 'TASK_GUIDANCE_CONSUMED',
+            payload: {
+              guidanceId: latestOperatorRecord.messageId
+            }
+          })
+        );
       }
     }
     if (params.nextRuntime.lifecycleStatus === 'COMPLETED') {

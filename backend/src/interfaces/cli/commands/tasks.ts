@@ -116,7 +116,7 @@ export const tasksCommandModule: CliCommandModule = {
         });
         await runTaskFlowStream({
           taskId,
-          context: { ...context, createWebSocket: createWebSocket ?? ((url) => new WebSocket(url) as any), sleep },
+          context: { ...context, createWebSocket: createWebSocket ?? ((url: string) => new WebSocket(url)), sleep },
           mode
         });
       }
@@ -140,7 +140,7 @@ export const tasksCommandModule: CliCommandModule = {
     if (action === 'watch' || action === 'stream' || action === 'tail') {
       await runTaskFlowStream({
         taskId: rest[0],
-        context: { ...context, createWebSocket: createWebSocket ?? ((url) => new WebSocket(url) as any), sleep },
+        context: { ...context, createWebSocket: createWebSocket ?? ((url: string) => new WebSocket(url)), sleep },
         mode: action
       });
       return 0;

@@ -9,6 +9,10 @@ logs
 data
 evaluation
 dist
+frontend/coverage/
+backend/docs/docs/
+backend/docs/e2e-artifacts/
+backend/docs/mainline-artifacts/
 
 token_api
 

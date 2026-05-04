@@ -1,6 +1,8 @@
 interface IconProps {
   className?: string;
 }
+//
+
 
 export function TasksIcon({ className = 'h-4 w-4' }: IconProps) {
   return (
@@ -69,6 +71,31 @@ export function SkillsIcon({ className = 'h-4 w-4' }: IconProps) {
   );
 }
 
+export function BrainIcon({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <path d="M10 3.75c-2.5 0-4.5 1.8-4.5 4 0 1.2.5 2.2 1.3 3-.8.8-1.3 1.8-1.3 3 0 2.2 2 4 4.5 4s4.5-1.8 4.5-4c0-1.2-.5-2.2-1.3-3 .8-.8 1.3-1.8 1.3-3 0-2.2-2-4-4.5-4Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M10 7.75v4.5M7.75 10h4.5" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function ChevronDown({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <path d="M5 7.5l5 5 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function ChevronUp({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <path d="M5 12.5l5-5 5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function StateIcon({ className = 'h-4 w-4' }: IconProps) {
   return (
     <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
@@ -82,6 +109,31 @@ export function ImprovementsIcon({ className = 'h-4 w-4' }: IconProps) {
   return (
     <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
       <path d="M10 3.75v2.188M10 14.063v2.187M4.844 6.094l1.562 1.562M13.594 14.844l1.562 1.562M3.75 10h2.188M14.063 10h2.187M4.844 13.906l1.562-1.562M13.594 5.156l1.562-1.562M12.5 10a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function CloseIcon({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function ArrowUp({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <path d="M10 4v12M5 9l5-5 5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function PauseIcon({ className = 'h-4 w-4' }: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <rect x="6.5" y="5" width="2.5" height="10" rx="0.5" fill="currentColor" />
+      <rect x="11" y="5" width="2.5" height="10" rx="0.5" fill="currentColor" />
     </svg>
   );
 }

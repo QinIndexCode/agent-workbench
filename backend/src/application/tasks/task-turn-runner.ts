@@ -4,7 +4,8 @@ import {
   requiresToolEvidenceForExecutionProfile
 } from '../../domain/contracts/types';
 import {
-  selectNextReadyUnit
+  selectNextReadyUnit,
+  applyLifecycleTransition
 } from '../../domain/runtime/state-transition-applier';
 import { canEarlyTerminateCurrentUnit } from '../../domain/runtime/execution-plan';
 import { orchestrateTurn } from '../../domain/runtime/turn-orchestrator';
@@ -41,8 +42,10 @@ import { mapFallbackTurnOutcome, mapPlannerStageOutcome } from './turns/turn-out
 import { PlannedToolSummary } from './turns/turn-phase-types';
 import { buildTurnRuntimeState } from './turns/turn-runtime-state-builder';
 import { getExecutionProfile } from '../runtime/execution-profiles';
+import { validateHostObservationRunCommandBoundary } from '../runtime/host-observation-policy';
 import { runWorkspaceHooks } from '../runtime/workspace-hook-runner';
 import { deriveTaskArtifactRoutingSummary } from './artifact-routing';
+import { isProductRuntimeTask } from './task-definition';
 import {
   DELEGATE_SUBTASK_TOOL_ID,
   extractDelegationMetadata,
@@ -363,6 +366,8 @@ export class TaskTurnRunner {
       };
     }
 
+    const latestApprovals = await this.foundation.approvals.listLatest(params.taskId);
+
     for (const call of params.parsedToolCalls) {
       if (params.toolCallFormat === 'json' && call.source === 'xml') {
         rejected.push(`${call.toolName}: XML tool wrappers are not allowed for the current JSON-only provider policy. Emit a canonical JSON tool object instead.`);
@@ -383,10 +388,21 @@ export class TaskTurnRunner {
         rejected.push(`${request.toolName}: tool is not allowed for the current execution profile.`);
         continue;
       }
+      const hostObservationBoundaryError = validateHostObservationRunCommandBoundary({
+        allowedToolIds: params.allowedToolIds,
+        toolId: validation.tool.id,
+        argumentsRecord: validation.normalizedArguments
+      });
+      if (hostObservationBoundaryError) {
+        rejected.push(`${request.toolName}: ${hostObservationBoundaryError}`);
+        continue;
+      }
 
       const policy = evaluateToolExecutionPolicy({
         config: this.foundation.config,
-        tool: validation.tool
+        tool: validation.tool,
+        argumentsRecord: validation.normalizedArguments,
+        taskApprovals: latestApprovals
       });
       const invocation = createToolInvocationRecord({
         correlationId: params.correlationId,
@@ -406,6 +422,8 @@ export class TaskTurnRunner {
           parserSource: call.source,
           permissionDecision: policy.decision,
           permissionReason: policy.reason,
+          riskCategory: policy.riskCategory,
+          permissionGrantMatched: policy.grantMatched,
           verification: shouldMarkInvocationAsVerification({
             toolName: request.toolName,
             argumentsRecord: validation.normalizedArguments
@@ -427,7 +445,9 @@ export class TaskTurnRunner {
             invocation,
             reason: policy.reason,
             metadata: {
-              permissionDecision: policy.decision
+              permissionDecision: policy.decision,
+              riskCategory: policy.riskCategory,
+              grantScope: 'task_risk_category'
             }
           })
         );
@@ -661,12 +681,11 @@ export class TaskTurnRunner {
   async runTurn(taskId: string, userMessage: string | undefined): Promise<TaskActionResponse> {
     await this.foundation.logs.initialize();
     const runtimeRecord = await this.records.loadRuntimeRecord(taskId);
-    const [latestToolInvocations, latestCommands, validatedOutputs, latestApprovals, allTaskRuntimes] = await Promise.all([
+    const [latestToolInvocations, latestCommands, validatedOutputs, latestApprovals] = await Promise.all([
       this.foundation.toolInvocations.listLatest(taskId),
       this.foundation.commands.listLatest(taskId),
       this.foundation.validatedOutputs.list(taskId),
-      this.foundation.approvals.listLatest(taskId),
-      this.foundation.taskRuntimes.list()
+      this.foundation.approvals.listLatest(taskId)
     ]);
     this.records.assertLifecycleAllowed(runtimeRecord.runtime, ['RUNNING'], 'run turn');
     const plannerPreview = this.plannerService.createTurn(runtimeRecord.definition, runtimeRecord.runtime).output;
@@ -697,17 +716,28 @@ export class TaskTurnRunner {
       destinationPaths: artifactRouting.artifactDestinationPaths,
       status: artifactRouting.lastArtifactApplyResult?.status ?? null
     });
-    const currentExecutionProfile = getExecutionProfile(currentUnit.executionProfileId);
+    const productRuntime = isProductRuntimeTask(runtimeRecord.definition);
+    const currentExecutionProfile = productRuntime
+      ? null
+      : getExecutionProfile(currentUnit.executionProfileId);
+    const delegationRuntimeLookupNeeded = this.foundation.config.runtime.delegation.enabled
+      && (
+        currentExecutionProfile?.allowedToolIds?.includes(DELEGATE_SUBTASK_TOOL_ID)
+        || runtimeRecord.definition.units.some((unit) => unit.delegationRequired === true)
+      );
+    const delegationTaskRuntimes = delegationRuntimeLookupNeeded
+      ? await this.foundation.taskRuntimes.list()
+      : [];
     const pendingApprovalCount = latestApprovals.filter((approval) => approval.status === 'PENDING').length;
     const hasRecoveryBlocker = runtimeRecord.runtime.lifecycleStatus === 'FAILED'
       || runtimeRecord.runtime.lifecycleStatus === 'CANCELLED'
       || Boolean(runtimeRecord.runtime.lastError);
-    const activeChildCount = getActiveDelegatedChildrenForParent(allTaskRuntimes, taskId).length;
+    const activeChildCount = getActiveDelegatedChildrenForParent(delegationTaskRuntimes, taskId).length;
     const historicalDelegationEvidenceByUnitId = new Map(
       runtimeRecord.definition.units.map((unit) => [
         unit.id,
         countDelegationEvidenceForUnit({
-          runtimes: allTaskRuntimes,
+          runtimes: delegationTaskRuntimes,
           parentTaskId: taskId,
           unitId: unit.id
         })
@@ -721,7 +751,7 @@ export class TaskTurnRunner {
       hasRecoveryBlocker,
       commands: latestCommands,
       invocations: latestToolInvocations,
-      baseAllowedToolIds: currentExecutionProfile?.allowedToolIds ?? null,
+      baseAllowedToolIds: productRuntime ? null : currentExecutionProfile?.allowedToolIds ?? null,
       activeChildCount
     });
     const plannerStageUnits = plannerPreview.activeStage
@@ -792,6 +822,7 @@ export class TaskTurnRunner {
         leaseReleased = true;
       }
     };
+    try {
     const leasedRuntime: TaskRuntimeState = {
       ...runtimeRecord.runtime,
       planner: {
@@ -895,6 +926,17 @@ export class TaskTurnRunner {
         ...executedExtensions.contextMessages
       ]
     };
+    const runtimeImmediatelyBeforeProvider = await this.records.loadRuntimeRecord(taskId);
+    const latestBeforeProviderInterrupt = await this.runtimeControl.resolveInterruptAtSafePoint({
+        taskId,
+        definition: runtimeRecord.definition,
+        runtime: runtimeImmediatelyBeforeProvider.runtime,
+        activeProviderId: assembled.selectedProvider.id,
+        message: 'Task stopped before provider call.'
+      });
+    if (latestBeforeProviderInterrupt) {
+      return latestBeforeProviderInterrupt;
+    }
 
     let providerResponse;
     try {
@@ -1005,8 +1047,6 @@ export class TaskTurnRunner {
         command: this.records.createCommandResult(taskId, 'FAILED', `Provider failed: ${failure.message}`, false),
         task: await this.records.buildTaskQuery(taskId)
       };
-    } finally {
-      releaseLease();
     }
 
     const parsed = parseTurn(providerResponse.outputText);
@@ -1038,7 +1078,7 @@ export class TaskTurnRunner {
               hasRecoveryBlocker,
               commands: latestCommands,
               invocations: latestToolInvocations,
-              baseAllowedToolIds: getExecutionProfile(unit.executionProfileId)?.allowedToolIds ?? null,
+              baseAllowedToolIds: productRuntime ? null : getExecutionProfile(unit.executionProfileId)?.allowedToolIds ?? null,
               activeChildCount
             })
           ])
@@ -1194,5 +1234,36 @@ export class TaskTurnRunner {
       interruptReason: latestRuntimeAfterProvider.runtime.interrupt.reason,
       precomputedToolDispatch: phaseOutcome.precomputedToolDispatch
     })).response;
+    } catch (error) {
+      const failure = normalizeProviderFailure(error);
+      await this.foundation.events.append(
+        createRuntimeEventEnvelope({
+          correlationId: correlation.correlationId,
+          sessionId: correlation.sessionId,
+          turnId: correlation.turnId,
+          taskId,
+          unitId: currentUnitId,
+          checkpointId,
+          type: 'TASK_FAILED',
+          payload: {
+            taskId,
+            error: failure.message,
+            kind: failure.kind,
+            category: failure.category,
+            statusCode: failure.statusCode,
+            retryable: failure.retryable,
+            providerId: assembled.selectedProvider.id,
+            timeoutOrigin: failure.timeoutOrigin,
+            elapsedMs: failure.elapsedMs,
+            requestTimeoutMs: failure.requestTimeoutMs,
+            retryAttempt: failure.retryAttempt,
+            requestContext: null
+          }
+        })
+      );
+      throw error;
+    } finally {
+      releaseLease();
+    }
   }
 }

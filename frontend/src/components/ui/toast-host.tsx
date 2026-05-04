@@ -72,11 +72,13 @@ export function ToastHost({
     <div
       className="pointer-events-none fixed bottom-6 right-6 z-[140] flex w-[min(24rem,calc(100vw-2rem))] flex-col gap-3"
       data-testid={testId}
+      aria-live="polite"
+      aria-relevant="additions text"
     >
       {renderedNotices.map((notice) => (
         <div
           key={notice.id}
-          className={`motion-fade pointer-events-auto rounded-[18px] border px-4 py-3 backdrop-blur-xl ${toneClass(notice.tone)} ${notice.leaving ? 'motion-toast-closed' : 'motion-toast-open'}`}
+          className={`motion-fade pointer-events-auto rounded-lg border px-4 py-3 backdrop-blur-xl ${toneClass(notice.tone)} ${notice.leaving ? 'motion-toast-closed' : 'motion-toast-open'}`}
           data-testid="settings-toast"
           role={notice.tone === 'error' ? 'alert' : 'status'}
         >

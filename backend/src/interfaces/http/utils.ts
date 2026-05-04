@@ -2,6 +2,19 @@ import { IncomingMessage, ServerResponse } from 'node:http';
 import { URL } from 'node:url';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+const MAX_JSON_BODY_BYTES = 1_000_000;
+
+export class HttpError extends Error {
+  readonly statusCode: number;
+  readonly code: string;
+
+  constructor(statusCode: number, code: string, message: string) {
+    super(message);
+    this.name = 'HttpError';
+    this.statusCode = statusCode;
+    this.code = code;
+  }
+}
 
 function normalizeRemoteAddress(value: string | undefined): string | null {
   if (!value) {
@@ -95,14 +108,24 @@ export function applyCorsHeaders(request: IncomingMessage, response: ServerRespo
 
 export async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.byteLength;
+    if (totalBytes > MAX_JSON_BODY_BYTES) {
+      throw new HttpError(413, 'request_body_too_large', 'Request body exceeds the JSON payload limit.');
+    }
+    chunks.push(buffer);
   }
   const body = Buffer.concat(chunks).toString('utf8').trim();
   if (!body) {
     return {} as T;
   }
-  return JSON.parse(body) as T;
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    throw new HttpError(400, 'invalid_json', 'Request body must be valid JSON.');
+  }
 }
 
 export function sendJson(response: ServerResponse, statusCode: number, payload: unknown): void {

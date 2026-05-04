@@ -15,7 +15,6 @@ import {
   AgentUnit,
   ContextGatingSummaryState,
   ExecutionProfileId,
-  QualityProfileId,
   TaskCommandResult,
   TaskDefinition,
   TaskLifecycleStatus,
@@ -31,7 +30,6 @@ export interface SubmitTaskInput {
   title: string;
   intent: string;
   units: AgentUnit[];
-  defaultQualityProfileId?: QualityProfileId;
   preferredProviderId?: string | null;
   pathPolicy?: TaskArtifactPathPolicy;
   preferredArtifactDir?: string | null;
@@ -47,6 +45,25 @@ export interface TaskActionInput {
   actor?: string | null;
   reason?: string | null;
   metadata?: Record<string, unknown>;
+}
+
+export interface TaskGuidanceInput {
+  taskId: string;
+  content: string;
+  actor?: string | null;
+  reason?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskGuidanceRecord {
+  guidanceId: string;
+  taskId: string;
+  content: string;
+  status: 'PENDING' | 'CONSUMED' | 'REJECTED';
+  createdAt: number;
+  consumedAt: number | null;
+  actor: string | null;
+  metadata: Record<string, unknown>;
 }
 
 export interface SubmitTaskCommandInput {
@@ -91,6 +108,7 @@ export interface TaskQueryResponse {
   realTaskArchiveStatus: RealTaskArchiveStatus;
   commands: OperatorCommandRecord[];
   operatorMessages: OperatorMessageRecord[];
+  pendingGuidance: TaskGuidanceRecord[];
   interrupts: InterruptRequestRecord[];
   pendingApprovals: ToolApprovalRecord[];
   pendingApprovalItems: TaskPendingApprovalItem[];
@@ -202,8 +220,10 @@ export interface TaskPendingApprovalItem {
   toolName: string;
   requestedAt: number;
   argumentsSummary: string | null;
+  riskCategory?: string | null;
+  reason?: string | null;
   status: ToolApprovalRecord['status'];
-  availableActions: Array<'APPROVED' | 'REJECTED'>;
+  availableActions: Array<'APPROVED' | 'APPROVED_ONCE' | 'REJECTED'>;
 }
 
 export type TaskStatusSummaryTone =
@@ -225,9 +245,9 @@ export type TaskPrimaryActionKind =
   | 'use_recommended_path'
   | 'choose_custom_path'
   | 'continue_thread'
+  | 'send_guidance'
   | 'start_task'
   | 'resume_task'
-  | 'restart_task'
   | 'wait';
 
 export interface TaskPrimaryActionSummary {
@@ -285,7 +305,6 @@ export const TASK_EXECUTION_ISSUE_CATEGORIES = [
   'artifact_policy_mismatch',
   'approval_deadlock',
   'required_delegation_missing',
-  'quality_gate_failed',
   'queue_runtime_divergence',
   'context_overload_planner_fallback',
   'invalid_lifecycle_transition',
@@ -297,7 +316,6 @@ export type TaskExecutionIssueCategory = typeof TASK_EXECUTION_ISSUE_CATEGORIES[
 export const TASK_EXECUTION_ISSUE_PLANES = [
   'core',
   'ecosystem',
-  'harness',
   'ui',
   'provider',
   'external_blocker'
@@ -316,7 +334,6 @@ export const TASK_EXECUTION_SUGGESTED_ACTION_TYPES = [
   'resolve_approval',
   'select_artifact_destination',
   'resolve_artifact_conflict',
-  'repair_quality_evidence',
   'resume',
   'restart',
   'open_runtime_state'
@@ -468,19 +485,9 @@ export interface TaskAcceptanceSemanticReview {
   error: string | null;
 }
 
-export interface TaskAcceptanceQualitySummary {
-  profileId: QualityProfileId | null;
-  verdict: TaskAcceptanceLayerVerdict;
-  passedChecks: string[];
-  failedChecks: string[];
-  requiredNextEvidence: string[];
-  lastEvaluatedAt: number | null;
-}
-
 export interface TaskAcceptanceSummary {
   deterministic: TaskAcceptanceDeterministicSummary;
   evidence: TaskAcceptanceEvidence;
-  quality: TaskAcceptanceQualitySummary;
   semanticReview: TaskAcceptanceSemanticReview;
 }
 

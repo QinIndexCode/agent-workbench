@@ -10,7 +10,7 @@ export function AdminPageShell({
   return (
     <div className="flex flex-col gap-4">
       {summary ? (
-        <div className="rounded-[20px] border border-border-subtle bg-surface/28 p-4">
+        <div className="rounded-lg border border-border-subtle bg-surface/28 p-4">
           {summary}
         </div>
       ) : null}

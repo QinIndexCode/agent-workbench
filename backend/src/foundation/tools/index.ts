@@ -5,6 +5,7 @@ export * from './result-envelope';
 export * from './error-taxonomy';
 export * from './invocation-state';
 export * from './execution-policy';
+export * from './risk-approval-policy';
 export * from './executor-types';
 export * from './executor-capability';
 export * from './execution-audit';

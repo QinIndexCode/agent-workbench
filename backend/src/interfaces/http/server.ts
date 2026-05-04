@@ -71,12 +71,22 @@ export function createBackendNewHttpServer(runtime: BackendNewRuntime): http.Ser
 
       sendJson(response, 404, { error: 'Route not found.' });
     } catch (error) {
+      if (response.headersSent) {
+        response.destroy(error instanceof Error ? error : undefined);
+        return;
+      }
       const statusCode =
         typeof (error as Error & { statusCode?: number }).statusCode === 'number'
           ? (error as Error & { statusCode: number }).statusCode
           : 500;
+      const code =
+        typeof (error as Error & { code?: string }).code === 'string'
+          ? (error as Error & { code: string }).code
+          : 'internal_error';
       sendJson(response, statusCode, {
-        error: error instanceof Error ? error.message : 'Unknown error.'
+        error: error instanceof Error ? error.message : 'Unknown error.',
+        code,
+        statusCode
       });
     }
   });

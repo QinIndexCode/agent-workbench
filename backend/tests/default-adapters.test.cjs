@@ -223,6 +223,18 @@ test('default builtin read/list/search executors work directly against workspace
       },
       context: commonContext
     });
+    const rootListResult = await listExecutor.execute({
+      tool: listTool,
+      invocation: {
+        taskId,
+        unitId: 'AGENT-001',
+        toolName: 'list_files',
+        arguments: {
+          path: '.'
+        }
+      },
+      context: commonContext
+    });
     const searchResult = await searchExecutor.execute({
       tool: searchTool,
       invocation: {
@@ -241,6 +253,10 @@ test('default builtin read/list/search executors work directly against workspace
     assert.match(readResult.output.content, /needle here/);
     assert.equal(listResult.ok, true);
     assert.deepEqual(listResult.output.files.sort(), ['docs/alpha.txt', 'docs/beta.txt']);
+    assert.equal(rootListResult.ok, true);
+    assert.deepEqual(rootListResult.output.files, []);
+    assert.deepEqual(rootListResult.output.directories, ['docs']);
+    assert.deepEqual(rootListResult.output.entries, [{ path: 'docs', type: 'directory' }]);
     assert.equal(searchResult.ok, true);
     assert.equal(searchResult.output.matches.length, 1);
     assert.equal(searchResult.output.matches[0].path, 'docs/alpha.txt');

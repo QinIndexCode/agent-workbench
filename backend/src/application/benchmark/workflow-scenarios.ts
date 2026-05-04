@@ -439,10 +439,9 @@ class WorkflowScenarioHarness {
     if (summary.issueCategory !== 'artifact_destination_unresolved') {
       return null;
     }
-    const destinationDir = summary.selectedArtifactDir ?? summary.recommendedArtifactDir;
-    if (!destinationDir) {
-      return null;
-    }
+    const destinationDir = summary.selectedArtifactDir
+      ?? summary.recommendedArtifactDir
+      ?? `benchmark-artifacts/workflow/${this.requireTaskId()}`;
     const applied = await this.requireRuntime().tasks.submitCommand({
       taskId: this.requireTaskId(),
       type: 'APPLY_ARTIFACTS',

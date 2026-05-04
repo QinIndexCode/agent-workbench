@@ -127,17 +127,18 @@ async function runDirectArtifactApplyScenario(): Promise<RuntimeStressValidation
     });
     await runtime.tasks.startTask({ taskId: submitted.command.taskId });
     const unresolved = await runtime.tasks.getTaskDebug(submitted.command.taskId);
+    const destinationDir = 'benchmark-artifacts/direct-artifact-apply-recovery';
     await runtime.tasks.submitCommand({
       taskId: submitted.command.taskId,
       type: 'APPLY_ARTIFACTS',
-      message: 'backend/docs',
+      message: destinationDir,
       metadata: {
-        destinationDir: 'backend/docs'
+        destinationDir
       }
     });
     const debug = await runtime.tasks.getTaskDebug(submitted.command.taskId);
     const completed = await runtime.tasks.getTask(submitted.command.taskId);
-    const destinationPath = path.join(root, 'backend', 'docs', 'scratch', 'output');
+    const destinationPath = path.join(root, destinationDir, 'scratch', 'output');
     const destinationExists = fs.existsSync(destinationPath);
     const executionSummary = buildTaskExecutionSummary(completed, foundation);
 

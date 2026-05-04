@@ -8,12 +8,9 @@ export type TaskLifecycleStatus =
 
 export type TaskPathPolicy = 'task_workspace' | 'project_relative' | 'ask_if_unclear';
 
-export type QualityProfileId = string;
-
 export type TaskExecutionIssuePlane =
   | 'core'
   | 'ecosystem'
-  | 'harness'
   | 'ui'
   | 'provider'
   | 'external_blocker';
@@ -50,7 +47,6 @@ export interface AgentUnit {
   outputContract?: string;
   exitCondition?: string;
   executionProfileId?: string;
-  qualityProfileId?: QualityProfileId;
   delegationRequired?: boolean;
   delegationContract?: {
     title?: string;
@@ -97,6 +93,17 @@ export interface OperatorMessage {
   } | null;
 }
 
+export interface TaskGuidanceRecord {
+  guidanceId: string;
+  taskId: string;
+  content: string;
+  status: 'PENDING' | 'CONSUMED' | 'REJECTED';
+  createdAt: number;
+  consumedAt: number | null;
+  actor: string | null;
+  metadata: Record<string, unknown>;
+}
+
 export interface ToolApproval {
   invocationId: string;
   toolId: string;
@@ -104,6 +111,8 @@ export interface ToolApproval {
   arguments: Record<string, unknown>;
   status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
   createdAt: number;
+  reason?: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 export interface PendingApprovalItem {
@@ -112,8 +121,10 @@ export interface PendingApprovalItem {
   toolName: string;
   requestedAt: number;
   argumentsSummary: string | null;
+  riskCategory?: string | null;
+  reason?: string | null;
   status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
-  availableActions: Array<'APPROVED' | 'REJECTED'>;
+  availableActions: Array<'APPROVED' | 'APPROVED_ONCE' | 'REJECTED'>;
 }
 
 export interface ToolInvocation {
@@ -224,6 +235,7 @@ export interface TaskDetail {
   realTaskArchiveStatus: RealTaskArchiveStatus;
   commands: OperatorCommand[];
   operatorMessages: OperatorMessage[];
+  pendingGuidance: TaskGuidanceRecord[];
   interrupts?: Array<Record<string, unknown>>;
   pendingApprovals: ToolApproval[];
   pendingApprovalItems: PendingApprovalItem[];
@@ -255,9 +267,9 @@ export type TaskPrimaryActionKind =
   | 'use_recommended_path'
   | 'choose_custom_path'
   | 'continue_thread'
+  | 'send_guidance'
   | 'start_task'
   | 'resume_task'
-  | 'restart_task'
   | 'wait';
 
 export interface TaskPrimaryActionSummary {
@@ -408,19 +420,9 @@ export interface TaskAcceptanceSemanticReview {
   error: string | null;
 }
 
-export interface TaskAcceptanceQualitySummary {
-  profileId: QualityProfileId | null;
-  verdict: TaskAcceptanceLayerVerdict;
-  passedChecks: string[];
-  failedChecks: string[];
-  requiredNextEvidence: string[];
-  lastEvaluatedAt: number | null;
-}
-
 export interface TaskAcceptanceSummary {
   deterministic: TaskAcceptanceDeterministicSummary;
   evidence: TaskAcceptanceEvidence;
-  quality: TaskAcceptanceQualitySummary;
   semanticReview: TaskAcceptanceSemanticReview;
 }
 
@@ -564,6 +566,54 @@ export interface ExperienceProposalPayload {
   lastValidatedAt: number | null;
 }
 
+export interface ExperienceRecord {
+  proposalId: string;
+  patternKey: string;
+  title: string;
+  materializedPath: string;
+  referenceSummary: string;
+  applicableScenarios: string[];
+  limitations: string[];
+  confidence: number;
+  validationStatus: 'monitoring' | 'promotable' | 'conflicted';
+  successfulReuseTaskIds: string[];
+  failedReuseTaskIds: string[];
+  lastValidatedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ExperienceUpsertPayload {
+  proposalId?: string;
+  patternKey?: string;
+  title: string;
+  referenceSummary: string;
+  applicableScenarios?: string[];
+  limitations?: string[];
+  confidence?: number;
+  validationStatus?: 'monitoring' | 'promotable' | 'conflicted';
+  successfulReuseTaskIds?: string[];
+  failedReuseTaskIds?: string[];
+  lastValidatedAt?: number | null;
+  draftExperienceMarkdown?: string;
+}
+
+export interface GovernanceExportBundle<TRecord> {
+  generatedAt: number;
+  format: 'json' | 'markdown';
+  records: TRecord[];
+  content: string;
+}
+
+export interface BulkDeleteResult {
+  requestedIds: string[];
+  deletedIds: string[];
+  failed: Array<{
+    id: string;
+    error: string;
+  }>;
+}
+
 export interface OptimizationRecommendationPayload {
   title: string;
   summary: string;
@@ -688,7 +738,6 @@ export interface SubmitTaskPayload {
   title: string;
   intent: string;
   units: AgentUnit[];
-  defaultQualityProfileId?: QualityProfileId;
   preferredProviderId?: string | null;
   pathPolicy?: TaskPathPolicy;
   preferredArtifactDir?: string | null;
@@ -1051,25 +1100,14 @@ export interface ToolCapabilityEntry {
   };
 }
 
-export interface ScenarioPackSummary {
+export interface ScriptCatalogEntry {
   id: string;
   label: string;
-  focus: string;
-  qualityProfileId: string | null;
-  qualityGateId?: string | null;
-  artifactAudit: string;
-  surfaceChecks: string[];
-  cleanupHints: string[];
-  modelPolicy: {
-    defaultModelClass: 'fast' | 'strong' | 'provider-default';
-    reason: string;
-  };
-  timeoutPolicy: {
-    maxTurns: number;
-    maxIdleCorrections: number;
-    maxRuntimeMs: number;
-  };
-  status: EcosystemReadiness;
+  description: string;
+  commandTemplate: string;
+  defaultCwd: string | null;
+  riskCategory: string;
+  outputHint: string;
 }
 
 export interface ExperienceHealthSummary {
@@ -1104,7 +1142,7 @@ export interface EcosystemSummaryView {
     instructionSkills: number;
     tools: number;
     acceptanceEvidenceTools: number;
-    scenarioPacks: number;
+    scriptCatalogEntries: number;
     workspaceCommands: number;
     warnings: number;
   };
@@ -1114,7 +1152,7 @@ export interface EcosystemSummaryView {
   experiences: ExperienceHealthSummary;
   tools: ToolCapabilityEntry[];
   workspaceCommands: WorkspaceWorkflowView['commands'];
-  scenarioPacks: ScenarioPackSummary[];
+  scriptCatalog: ScriptCatalogEntry[];
   warnings: Array<{
     code: string;
     message: string;

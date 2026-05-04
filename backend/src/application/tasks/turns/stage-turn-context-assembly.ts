@@ -17,11 +17,17 @@ import { SchedulerUnitState, UserPreferenceProfile } from '../../../domain/contr
 import { createStagePromptCapabilitySummary } from '../../runtime/prompt-capability-summary';
 import { loadUserPreferenceProfile } from '../../runtime/memory-store';
 import { loadWorkspaceWorkflowPromptContext } from '../../runtime/workspace-workflow-context';
-import { filterAllowedToolIdsForDelegation, getActiveDelegatedChildrenForParent } from '../delegation/delegation';
+import {
+  DELEGATE_SUBTASK_TOOL_ID,
+  filterAllowedToolIdsForDelegation,
+  getActiveDelegatedChildrenForParent,
+  isDelegationRequiredForUnit
+} from '../delegation/delegation';
 import { getTaskWorkingDirectorySettings } from '../task-working-directory';
 import { getExecutionProfile } from '../../runtime/execution-profiles';
 import { gateProviderRequestContext } from './request-context-gating';
 import { protectOperatorGuidanceForCorrection } from './operator-guidance';
+import { isProductRuntimeTask } from '../task-definition';
 
 function normalizeRuntimeCollections(
   runtime: TaskRuntimeRecord['runtime'],
@@ -166,6 +172,24 @@ export async function assembleStageTurnContext(params: {
     stageUnits,
     runtime
   });
+  const productRuntime = isProductRuntimeTask(runtimeRecord.definition);
+  const baseAllowedToolIds = productRuntime
+    ? null
+    : Array.from(new Set(stageUnitIds.flatMap((unitId) => {
+      const definitionUnit = runtimeRecord.definition.units.find((unit) => unit.id === unitId);
+      return getExecutionProfile(definitionUnit?.executionProfileId)?.allowedToolIds ?? [];
+    })));
+  const delegationRuntimeLookupNeeded = foundation.config.runtime.delegation.enabled
+    && (
+      Boolean(baseAllowedToolIds?.includes(DELEGATE_SUBTASK_TOOL_ID))
+      || stageUnitIds.some((unitId) => isDelegationRequiredForUnit({
+        definition: runtimeRecord.definition,
+        unitId
+      }))
+    );
+  const activeChildCount = delegationRuntimeLookupNeeded
+    ? getActiveDelegatedChildrenForParent(await foundation.taskRuntimes.list(), taskId).length
+    : 0;
   const capabilitySelection = createStagePromptCapabilitySummary({
     foundation,
     runtime,
@@ -179,11 +203,8 @@ export async function assembleStageTurnContext(params: {
       hasRecoveryBlocker: runtime.lifecycleStatus === 'FAILED' || runtime.lifecycleStatus === 'CANCELLED' || Boolean(runtime.lastError),
       commands: latestCommands,
       invocations: latestInvocations,
-      baseAllowedToolIds: Array.from(new Set(stageUnitIds.flatMap((unitId) => {
-        const definitionUnit = runtimeRecord.definition.units.find((unit) => unit.id === unitId);
-        return getExecutionProfile(definitionUnit?.executionProfileId)?.allowedToolIds ?? [];
-      }))),
-      activeChildCount: getActiveDelegatedChildrenForParent(await foundation.taskRuntimes.list(), taskId).length
+      baseAllowedToolIds,
+      activeChildCount
     })
   });
   const workingDirectory = getTaskWorkingDirectorySettings(runtimeRecord.definition);
