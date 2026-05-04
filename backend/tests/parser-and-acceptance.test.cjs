@@ -1213,13 +1213,13 @@ test('parseTurn flags malformed JSON tool objects instead of silently accepting 
   const parsed = parseTurn(
     'Creating files now.\n'
     + '{"tool":"write_file","arguments":{"path":"D:\\\\AAA\\\\index.html","content":"<span class="broken">bad</span>"}}\n'
-    + '{"tool":"write_file","arguments":{"path":"quality/web-audit.json","content_json":{"profile":"web_experience"}}}\n'
+    + '{"tool":"write_file","arguments":{"path":"reports/web-audit.json","content_json":{"profile":"web_experience"}}}\n'
     + '[AGENT-001_OUTPUT]{"summary":"done","details":"claimed","artifactDestination":"D:\\\\AAA","issues":[]}[/AGENT-001_OUTPUT]\n'
     + '{"current_unit":"AGENT-001","status":"COMPLETE","progress_percent":100,"decision":"CONTINUE","reason":"done","next_unit":null,"files_created":["D:\\\\AAA\\\\index.html"]}'
   );
 
   assert.equal(parsed.toolCalls.length, 1);
-  assert.equal(parsed.toolCalls[0].parameters.path, 'quality/web-audit.json');
+  assert.equal(parsed.toolCalls[0].parameters.path, 'reports/web-audit.json');
   assert.equal(parsed.warnings.length, 1);
   assert.match(parsed.warnings[0], /invalid_tool_json/);
 

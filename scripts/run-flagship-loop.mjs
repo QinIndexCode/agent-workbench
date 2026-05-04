@@ -156,7 +156,6 @@ function classifyFailure(step, outputText, report) {
   if (
     text.includes('acceptance') ||
     text.includes('artifactpathstate') ||
-    text.includes('quality contract') ||
     text.includes('contract')
   ) {
     return 'core';

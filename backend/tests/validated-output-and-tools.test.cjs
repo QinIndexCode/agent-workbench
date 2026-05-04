@@ -322,14 +322,14 @@ test('tool result envelope and error taxonomy provide stable outcome semantics',
 test('validateBuiltinWriteFileContent does not impose task-specific JSON gates', () => {
   assert.equal(
     validateBuiltinWriteFileContent(
-      'quality/system-audit.json',
-      '{"profile":"system_audit","facts":[{"name":"free_memory","sourceRegex":"FreePhysicalMemory\\s*:\\s*(\\d+)"}]}'
+      'reports/system-audit.json',
+      '{"profile":"system_audit","facts":[{"name":"free_memory","note":"FreePhysicalMemory sample"}]}'
     ),
     null
   );
   assert.equal(
     validateBuiltinWriteFileContent(
-      'quality/system-audit.json',
+      'reports/system-audit.json',
       '{not json'
     ),
     null

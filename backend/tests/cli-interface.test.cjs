@@ -148,7 +148,6 @@ test('human task summaries suppress raw tool JSON as recent result', () => {
     },
     acceptance: {
       deterministic: { verdict: 'failed', profileId: 'implement' },
-      quality: { verdict: 'not_applicable' },
       semanticReview: { status: 'not_requested' }
     },
     artifactPathState: 'sandbox_only',

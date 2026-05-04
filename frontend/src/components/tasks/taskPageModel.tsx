@@ -1656,7 +1656,7 @@ export function runtimeClearlyRequestsGuidance(task: TaskDetail, debug: TaskDebu
   if (!combined) {
     return false;
   }
-  return /(need more context|needs? context|ask for|operator guidance|required|blocked|clarify|missing|failed|failure|quality|evidence|non[- ]?convergent|cannot|destination|approval|correction|repair|provider)/i.test(combined);
+  return /(need more context|needs? context|ask for|operator guidance|required|blocked|clarify|missing|failed|failure|evidence|non[- ]?convergent|cannot|destination|approval|correction|repair|provider)/i.test(combined);
 }
 
 export function getComposerModel(task: TaskDetail | null, debug: TaskDebugResponse | null): ComposerModel {

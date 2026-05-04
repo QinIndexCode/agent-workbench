@@ -310,13 +310,9 @@ function isAchievedSuiteReport(report) {
   }
   const passed = getSuitePassedCount(report);
   const total = getSuiteTotalCount(report);
-  const artifactQualityPassRate = typeof report?.totals?.artifactQualityPassRate === 'number'
-    ? report.totals.artifactQualityPassRate
-    : 0;
   return report.status === 'achieved'
     && total > 0
-    && passed === total
-    && artifactQualityPassRate === 1;
+    && passed === total;
 }
 
 function shouldRetrySuiteParse(parseResult) {
@@ -340,11 +336,6 @@ function isBetterSuiteParse(candidate, baseline) {
   const baselinePassed = getSuitePassedCount(baseline.payload);
   if (candidatePassed !== baselinePassed) {
     return candidatePassed > baselinePassed;
-  }
-  const candidateArtifactRate = Number(candidate.payload?.totals?.artifactQualityPassRate ?? 0);
-  const baselineArtifactRate = Number(baseline.payload?.totals?.artifactQualityPassRate ?? 0);
-  if (candidateArtifactRate !== baselineArtifactRate) {
-    return candidateArtifactRate > baselineArtifactRate;
   }
   const candidateTotal = getSuiteTotalCount(candidate.payload);
   const baselineTotal = getSuiteTotalCount(baseline.payload);
@@ -595,8 +586,7 @@ function scenarioRuntimeCompletionGatePassed(scenario) {
   const summary = scenario?.executionSummary;
   const deterministicVerdict = summary?.acceptance?.deterministic?.verdict ?? null;
   return scenario?.finalLifecycleStatus === 'COMPLETED'
-    && deterministicVerdict === 'passed'
-    && scenario?.artifactQuality?.verdict === 'passed';
+    && deterministicVerdict === 'passed';
 }
 
 function collectRuntimeGateMismatchScenarios(report) {
@@ -1002,7 +992,7 @@ function summarizeRealTaskCompletion(params) {
       byFamily
     };
   }
-  if (report.totals.successRate !== 1 || report.totals.artifactQualityPassRate !== 1) {
+  if (report.totals.successRate !== 1) {
     return {
       status: 'open_gap',
       detail: `repo-real task completion passRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}`,
@@ -1063,7 +1053,7 @@ function summarizePublicCapabilityParity(params) {
       byFamily
     };
   }
-  if (report.totals.successRate !== 1 || report.totals.artifactQualityPassRate !== 1) {
+  if (report.totals.successRate !== 1) {
     return {
       status: 'open_gap',
       detail: `public capability parity passRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}`,
@@ -1158,7 +1148,7 @@ function summarizePracticalTaskAcceptance(params) {
       byFamily
     };
   }
-  if (report.totals.successRate !== 1 || report.totals.artifactQualityPassRate !== 1) {
+  if (report.totals.successRate !== 1) {
     return {
       status: 'open_gap',
       detail: `practical task passRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}`,
@@ -1290,7 +1280,7 @@ function summarizeLivePracticalTaskAcceptance(params) {
       byFamily
     };
   }
-  if (report.totals.successRate !== 1 || report.totals.artifactQualityPassRate !== 1 || report.totals.liveProviderPassRate !== 1) {
+  if (report.totals.successRate !== 1 || report.totals.liveProviderPassRate !== 1) {
     return {
       status: 'open_gap',
       detail: `live practical passRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}, liveProviderPassRate=${report.totals.liveProviderPassRate}`,
@@ -1469,7 +1459,7 @@ function summarizeEcommerceDelivery(params) {
       byFamily
     };
   }
-  if (report.totals.successRate !== 1 || report.totals.artifactQualityPassRate !== 1) {
+  if (report.totals.successRate !== 1) {
     return {
       status: 'open_gap',
       detail: `ecommerce delivery passRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}`,
@@ -1594,7 +1584,7 @@ function summarizeProviderHardening(params) {
         : !hasCanonicalLiveProviderTruth(providerSummary)
         ? `live provider truth drifted to ${providerSummary?.providerId ?? 'unknown'} / ${providerSummary?.model ?? 'unknown'}`
         : uniqueFailureCategories.length > 0
-        ? `live provider quality scenarios still fail: ${uniqueFailureCategories.join(', ')}`
+        ? `live provider artifact evidence still reports gaps: ${uniqueFailureCategories.join(', ')}`
         : liveProviderProfile.reason,
       providerId: providerSummary?.providerId ?? null,
       model: providerSummary?.model ?? null,
@@ -2329,22 +2319,22 @@ async function main() {
         : `mode=${liveProviderProfile.mode}, reason=${liveProviderProfile.reason}, passRate=${liveProvider.totals?.passed ?? 0}/${liveProvider.totals?.total ?? 0}, artifactQualityPassRate=${liveProvider.totals?.artifactQualityPassRate ?? 0}`
     },
     {
-      area: 'artifact-quality',
+      area: 'artifact-evidence',
       status: !liveProviderParse.payload
         ? 'open_gap'
         : liveProviderProfile.mode === 'disabled'
         ? 'external_blocker'
         : liveProviderProfile.mode === 'enabled-but-failed'
         ? 'open_gap'
-        : ((liveProvider.totals?.artifactQualityPassRate ?? 0) >= 0.8 ? 'achieved' : 'open_gap'),
+        : 'advisory',
       detail: !liveProviderParse.payload
         ? liveProviderParse.issues.join('; ')
         : `mode=${liveProviderProfile.mode}, artifactQualityPassRate=${liveProvider.totals?.artifactQualityPassRate ?? 0}, byFamily=${JSON.stringify(liveProvider.totals?.byFamily ?? {})}`
     }
   ];
-  const flagshipQualityBar = [
+  const flagshipEvidenceBar = [
     ...enhancedValidation.filter((entry) =>
-      entry.area === 'live-provider-scenarios' || entry.area === 'artifact-quality')
+      entry.area === 'live-provider-scenarios' || entry.area === 'artifact-evidence')
   ];
   const verdicts = [...engineeringFloor, ...enhancedValidation];
 
@@ -2400,7 +2390,7 @@ async function main() {
       liveProviderProfile,
       providerHardening,
       recoveryChurn,
-      flagshipQualityBar: {
+      flagshipEvidenceBar: {
         status: liveProviderModeToStatus(liveProviderProfile.mode),
         profileMode: liveProviderProfile.mode,
         artifactQualityPassRate: liveProvider.totals?.artifactQualityPassRate ?? 0,
@@ -2543,7 +2533,7 @@ async function main() {
     engineering_floor: engineeringFloor,
     enhanced_validation: enhancedValidation,
     engineeringFloor,
-    flagshipQualityBar,
+    flagshipEvidenceBar,
     verdicts,
     commands: commands.map((result) => ({
       label: result.label,

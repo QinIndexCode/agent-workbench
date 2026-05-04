@@ -151,7 +151,7 @@ export function ImprovementsSettings({ data, busyKey, onAction }: ImprovementsSe
                           {proposal.conflictsWithProposalIds.length > 0 ? <Badge variant="warning">conflict</Badge> : null}
                         </div>
                         <p className="mt-1 text-xs text-text-secondary">
-                          {proposal.kind.replace('_', ' ')} · {proposal.status.toLowerCase()} · Evidence: {proposal.evidenceTaskIds.length} · Quality: {proposal.qualityScore.toFixed(2)}
+                          {proposal.kind.replace('_', ' ')} · {proposal.status.toLowerCase()} · Evidence: {proposal.evidenceTaskIds.length} · Review score: {proposal.qualityScore.toFixed(2)}
                         </p>
                       </div>
                       <div className="shrink-0 text-right text-[11px] text-text-muted">
@@ -232,7 +232,7 @@ export function ImprovementsSettings({ data, busyKey, onAction }: ImprovementsSe
                     </Badge>
                   </div>
                   <p className="mt-1 text-xs text-text-secondary">
-                    Quality {entry.qualityScore.toFixed(2)} · {entry.patternKey}
+                    Review score {entry.qualityScore.toFixed(2)} · {entry.patternKey}
                   </p>
                 </div>
                 <div className="shrink-0 text-right text-[11px] text-text-muted">
