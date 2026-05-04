@@ -63,7 +63,7 @@ type GeneralComplexFailureCategory =
   | 'agent_profile_misapplied'
   | 'workspace_command_resolution_failed';
 
-interface ArtifactQualityAcceptance {
+interface ArtifactEvidenceAcceptance {
   verdict: 'passed' | 'failed';
   failureCategory: GeneralComplexFailureCategory | null;
   summary: string;
@@ -105,7 +105,7 @@ interface GeneralComplexScenarioDefinition {
   taskMetadata?: Record<string, unknown>;
   prepare?(harness: GeneralComplexScenarioHarness): Promise<void>;
   execute?(harness: GeneralComplexScenarioHarness): Promise<TaskQueryResponse>;
-  acceptance(harness: GeneralComplexScenarioHarness, task: TaskQueryResponse): Promise<ArtifactQualityAcceptance>;
+  acceptance(harness: GeneralComplexScenarioHarness, task: TaskQueryResponse): Promise<ArtifactEvidenceAcceptance>;
 }
 
 export interface TaskGeneralComplexScenarioMetrics {
@@ -155,7 +155,7 @@ export interface TaskGeneralComplexScenarioResult {
   missingRequiredEventTypes: string[];
   observedHooks: TaskObservationHookId[];
   executionSummary: TaskExecutionSummary;
-  artifactQuality: ArtifactQualityAcceptance;
+  artifactEvidence: ArtifactEvidenceAcceptance;
   metrics: TaskGeneralComplexScenarioMetrics;
   diagnostics: TaskGeneralComplexScenarioDiagnostics;
 }
@@ -169,7 +169,7 @@ export interface TaskGeneralComplexScenarioSuiteResult {
     passed: number;
     failed: number;
     successRate: number;
-    artifactQualityPassRate: number;
+    artifactEvidencePassRate: number;
     averageApiCallCount: number;
     averageExecutedToolBatchCount: number;
     byFamily: Record<GeneralComplexScenarioFamily, number>;
@@ -270,7 +270,7 @@ function createUnit(params: {
   };
 }
 
-function createPassedAcceptance(summary: string, files: string[]): ArtifactQualityAcceptance {
+function createPassedAcceptance(summary: string, files: string[]): ArtifactEvidenceAcceptance {
   return {
     verdict: 'passed',
     failureCategory: null,
@@ -330,8 +330,8 @@ async function readOptionalWorkspaceFile(harness: GeneralComplexScenarioHarness,
 function createFailureAcceptance(
   summary: string,
   failureCategory: GeneralComplexFailureCategory,
-  params: Partial<ArtifactQualityAcceptance> = {}
-): ArtifactQualityAcceptance {
+  params: Partial<ArtifactEvidenceAcceptance> = {}
+): ArtifactEvidenceAcceptance {
   return {
     verdict: 'failed',
     failureCategory,
@@ -784,12 +784,12 @@ class GeneralComplexScenarioHarness {
 
   async finalize(task: TaskQueryResponse): Promise<TaskGeneralComplexScenarioResult> {
     const summary = buildTaskExecutionSummary(task);
-    const artifactQuality = await this.definition.acceptance(this, task);
+    const artifactEvidence = await this.definition.acceptance(this, task);
     const missingRequiredEventTypes = this.definition.requiredEventTypes
       .filter((type) => !task.events.some((event) => event.type === type));
     const passed = task.runtime.lifecycleStatus === 'COMPLETED'
       && missingRequiredEventTypes.length === 0
-      && artifactQuality.verdict === 'passed';
+      && artifactEvidence.verdict === 'passed';
 
     const artifactSnapshots: TaskGeneralComplexScenarioDiagnostics['artifactSnapshots'] = [];
     for (const relativePath of this.definition.artifactFiles) {
@@ -825,7 +825,7 @@ class GeneralComplexScenarioHarness {
       missingRequiredEventTypes,
       observedHooks: [...summary.observedHooks],
       executionSummary: summary,
-      artifactQuality,
+      artifactEvidence,
       metrics: {
         apiCallCount: this.metrics.apiCallCount,
         promptTokens: this.metrics.promptTokens,
@@ -3070,8 +3070,8 @@ async function runTaskGeneralComplexScenarioSuiteOnce(): Promise<TaskGeneralComp
     } else {
       failed += 1;
     }
-    if (scenario.artifactQuality.failureCategory) {
-      byFailureCategory[scenario.artifactQuality.failureCategory] = (byFailureCategory[scenario.artifactQuality.failureCategory] ?? 0) + 1;
+    if (scenario.artifactEvidence.failureCategory) {
+      byFailureCategory[scenario.artifactEvidence.failureCategory] = (byFailureCategory[scenario.artifactEvidence.failureCategory] ?? 0) + 1;
     }
   }
 
@@ -3084,7 +3084,7 @@ async function runTaskGeneralComplexScenarioSuiteOnce(): Promise<TaskGeneralComp
       passed,
       failed,
       successRate: Number((passed / Math.max(1, scenarios.length)).toFixed(4)),
-      artifactQualityPassRate: Number((scenarios.filter((scenario) => scenario.artifactQuality.verdict === 'passed').length / Math.max(1, scenarios.length)).toFixed(4)),
+      artifactEvidencePassRate: Number((scenarios.filter((scenario) => scenario.artifactEvidence.verdict === 'passed').length / Math.max(1, scenarios.length)).toFixed(4)),
       averageApiCallCount: Number((totalApiCalls / Math.max(1, scenarios.length)).toFixed(4)),
       averageExecutedToolBatchCount: Number((totalExecutedToolBatches / Math.max(1, scenarios.length)).toFixed(4)),
       byFamily,

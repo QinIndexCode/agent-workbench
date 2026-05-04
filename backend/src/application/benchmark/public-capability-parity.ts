@@ -26,7 +26,7 @@ export type PublicCapabilityParityFamily =
   | 'opencode-mcp-capability-task'
   | 'opencode-provider-readiness-task';
 
-export interface PublicCapabilityParityArtifactQuality {
+export interface PublicCapabilityParityArtifactEvidence {
   verdict: 'passed' | 'failed';
   failureCategory: string | null;
   summary: string;
@@ -56,7 +56,7 @@ export interface PublicCapabilityParityScenarioResult {
   missingRequiredEventTypes: string[];
   observedHooks: TaskObservationHookId[];
   executionSummary: TaskExecutionSummary;
-  artifactQuality: PublicCapabilityParityArtifactQuality;
+  artifactEvidence: PublicCapabilityParityArtifactEvidence;
   diagnostics: PublicCapabilityParityDiagnostics;
 }
 
@@ -69,7 +69,7 @@ export interface PublicCapabilityParitySuiteResult {
     passed: number;
     failed: number;
     successRate: number;
-    artifactQualityPassRate: number;
+    artifactEvidencePassRate: number;
     byBaseline: Record<PublicCapabilityBaseline, number>;
     byFamily: Record<PublicCapabilityParityFamily, number>;
     byFailureCategory: Record<string, number>;
@@ -182,12 +182,12 @@ function normalizeDiagnostics(source: RepoRealTaskScenarioResult | TaskGeneralCo
   };
 }
 
-function normalizeArtifactQuality(source: RepoRealTaskScenarioResult | TaskGeneralComplexScenarioResult): PublicCapabilityParityArtifactQuality {
+function normalizeArtifactEvidence(source: RepoRealTaskScenarioResult | TaskGeneralComplexScenarioResult): PublicCapabilityParityArtifactEvidence {
   return {
-    verdict: source.artifactQuality.verdict,
-    failureCategory: source.artifactQuality.failureCategory,
-    summary: source.artifactQuality.summary,
-    files: [...source.artifactQuality.files]
+    verdict: source.artifactEvidence.verdict,
+    failureCategory: source.artifactEvidence.failureCategory,
+    summary: source.artifactEvidence.summary,
+    files: [...source.artifactEvidence.files]
   };
 }
 
@@ -243,7 +243,7 @@ export async function runPublicCapabilityParitySuite(): Promise<PublicCapability
       missingRequiredEventTypes: [...source.missingRequiredEventTypes],
       observedHooks: [...source.observedHooks],
       executionSummary: source.executionSummary,
-      artifactQuality: normalizeArtifactQuality(source),
+      artifactEvidence: normalizeArtifactEvidence(source),
       diagnostics: normalizeDiagnostics(source)
     } satisfies PublicCapabilityParityScenarioResult;
   });
@@ -261,13 +261,13 @@ export async function runPublicCapabilityParitySuite(): Promise<PublicCapability
   for (const scenario of scenarios) {
     byFamily[scenario.scenario] += 1;
     byBaseline[scenario.comparisonBaseline] += 1;
-    if (scenario.passed && scenario.artifactQuality.verdict === 'passed') {
+    if (scenario.passed && scenario.artifactEvidence.verdict === 'passed') {
       passed += 1;
     } else {
       failed += 1;
     }
-    if (scenario.artifactQuality.failureCategory) {
-      byFailureCategory[scenario.artifactQuality.failureCategory] = (byFailureCategory[scenario.artifactQuality.failureCategory] ?? 0) + 1;
+    if (scenario.artifactEvidence.failureCategory) {
+      byFailureCategory[scenario.artifactEvidence.failureCategory] = (byFailureCategory[scenario.artifactEvidence.failureCategory] ?? 0) + 1;
     }
     if (`${scenario.issueCategory ?? ''}` === 'unknown') {
       byFailureCategory.unknown = (byFailureCategory.unknown ?? 0) + 1;
@@ -283,7 +283,7 @@ export async function runPublicCapabilityParitySuite(): Promise<PublicCapability
       passed,
       failed,
       successRate: Number((passed / Math.max(1, scenarios.length)).toFixed(4)),
-      artifactQualityPassRate: Number((scenarios.filter((scenario) => scenario.artifactQuality.verdict === 'passed').length / Math.max(1, scenarios.length)).toFixed(4)),
+      artifactEvidencePassRate: Number((scenarios.filter((scenario) => scenario.artifactEvidence.verdict === 'passed').length / Math.max(1, scenarios.length)).toFixed(4)),
       byBaseline,
       byFamily,
       byFailureCategory

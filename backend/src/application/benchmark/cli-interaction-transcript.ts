@@ -25,7 +25,7 @@ export interface CliInteractionTranscriptSuiteResult {
     passed: number;
     failed: number;
     successRate: number;
-    artifactQualityPassRate: number;
+    artifactEvidencePassRate: number;
     byFamily: Record<CliInteractionTranscriptFamily, number>;
     byFailureCategory: Record<string, number>;
   };
@@ -870,7 +870,7 @@ export async function runCliInteractionTranscriptSuite(): Promise<CliInteraction
       passed,
       failed,
       successRate: Number((passed / Math.max(1, scenarios.length)).toFixed(4)),
-      artifactQualityPassRate: Number((passed / Math.max(1, scenarios.length)).toFixed(4)),
+      artifactEvidencePassRate: Number((passed / Math.max(1, scenarios.length)).toFixed(4)),
       byFamily,
       byFailureCategory
     }

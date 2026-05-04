@@ -29,7 +29,7 @@ export interface EcommerceDeliveryScenarioResult {
   finalLifecycleStatus: 'COMPLETED' | 'FAILED';
   issueCategory: string | null;
   issueSummary: string | null;
-  artifactQuality: {
+  artifactEvidence: {
     verdict: 'passed' | 'failed';
     failureCategory: string | null;
     summary: string;
@@ -61,7 +61,7 @@ export interface EcommerceDeliverySuiteResult {
     passed: number;
     failed: number;
     successRate: number;
-    artifactQualityPassRate: number;
+    artifactEvidencePassRate: number;
     byFamily: Record<EcommerceDeliveryFamily, number>;
     byFailureCategory: Record<string, number>;
   };
@@ -141,7 +141,7 @@ function scenarioResult(params: {
     finalLifecycleStatus: params.passed ? 'COMPLETED' : 'FAILED',
     issueCategory: params.failureCategory,
     issueSummary: params.issueSummary,
-    artifactQuality: {
+    artifactEvidence: {
       verdict: params.passed ? 'passed' : 'failed',
       failureCategory: params.failureCategory,
       summary: params.summary,
@@ -303,12 +303,12 @@ export async function runEcommerceDeliverySuite(): Promise<EcommerceDeliverySuit
 
   for (const scenario of scenarios) {
     byFamily[scenario.family] += 1;
-    if (scenario.passed && scenario.artifactQuality.verdict === 'passed') {
+    if (scenario.passed && scenario.artifactEvidence.verdict === 'passed') {
       passed += 1;
     } else {
       failed += 1;
-      if (scenario.artifactQuality.failureCategory) {
-        byFailureCategory[scenario.artifactQuality.failureCategory] = (byFailureCategory[scenario.artifactQuality.failureCategory] ?? 0) + 1;
+      if (scenario.artifactEvidence.failureCategory) {
+        byFailureCategory[scenario.artifactEvidence.failureCategory] = (byFailureCategory[scenario.artifactEvidence.failureCategory] ?? 0) + 1;
       }
     }
     if (scenario.manualAudit.verdict === 'passed') {
@@ -333,7 +333,7 @@ export async function runEcommerceDeliverySuite(): Promise<EcommerceDeliverySuit
       passed,
       failed,
       successRate: Number((passed / Math.max(1, scenarios.length)).toFixed(4)),
-      artifactQualityPassRate: Number((scenarios.filter((scenario) => scenario.artifactQuality.verdict === 'passed').length / Math.max(1, scenarios.length)).toFixed(4)),
+      artifactEvidencePassRate: Number((scenarios.filter((scenario) => scenario.artifactEvidence.verdict === 'passed').length / Math.max(1, scenarios.length)).toFixed(4)),
       byFamily,
       byFailureCategory
     }

@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const {
-  applyLiveProviderArtifactQualityGate,
+  applyLiveProviderArtifactEvidenceGate,
   extractLiveProviderWriteFileContent,
   runTaskLiveProviderScenarioSuite
 } = require('../dist');
@@ -23,7 +23,7 @@ test('live provider suite reports a structured external blocker when real-provid
   assert.equal(report.totals.externalBlocked, 5);
   assert.equal(report.totals.byVerdict.external_blocker, 5);
   assert.equal(typeof report.externalBlocker, 'string');
-  assert.equal(report.scenarios.every((scenario) => scenario.artifactQuality.verdict === 'external_blocker'), true);
+  assert.equal(report.scenarios.every((scenario) => scenario.artifactEvidence.verdict === 'external_blocker'), true);
   assert.equal(report.scenarios.every((scenario) => scenario.externalBlocker), true);
 });
 
@@ -47,7 +47,7 @@ test('live provider suite resolves the provider manifest from the backend worksp
 });
 
 test('live provider artifact gate rejects unresolved artifact apply conflicts even when the scenario acceptance initially passed', () => {
-  const gated = applyLiveProviderArtifactQualityGate({
+  const gated = applyLiveProviderArtifactEvidenceGate({
     issueCategory: 'artifact_apply_conflict',
     issueSummary: 'Destination file has conflicting local edits.',
     lastArtifactApplyResult: {

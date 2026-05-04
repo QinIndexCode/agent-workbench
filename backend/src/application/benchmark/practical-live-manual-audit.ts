@@ -77,8 +77,8 @@ function auditScenario(scenario: PracticalTaskScenarioResult): PracticalLiveManu
   if (!scenario.passed) {
     criticalGaps.push(`Scenario status is not passed (${scenario.issueCategory ?? 'no_issue_category'}).`);
   }
-  if (scenario.artifactQuality.verdict !== 'passed') {
-    criticalGaps.push(`Artifact quality verdict is ${scenario.artifactQuality.verdict}.`);
+  if (scenario.artifactEvidence.verdict !== 'passed') {
+    criticalGaps.push(`Artifact evidence verdict is ${scenario.artifactEvidence.verdict}.`);
   }
   if (scenario.finalLifecycleStatus !== 'COMPLETED') {
     criticalGaps.push(`Lifecycle ended in ${scenario.finalLifecycleStatus} instead of COMPLETED.`);

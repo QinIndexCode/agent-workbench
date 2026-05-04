@@ -10,9 +10,9 @@ async function main(): Promise<void> {
 
   const lines = [
     'public capability parity scenarios:',
-    ...report.scenarios.map((scenario) => `- ${scenario.scenario}: baseline=${scenario.comparisonBaseline}, family=${scenario.baselineFamily}, passed=${scenario.passed}, source=${scenario.sourceSuite}/${scenario.sourceFamily}, artifact=${scenario.artifactQuality.verdict}`),
+    ...report.scenarios.map((scenario) => `- ${scenario.scenario}: baseline=${scenario.comparisonBaseline}, family=${scenario.baselineFamily}, passed=${scenario.passed}, source=${scenario.sourceSuite}/${scenario.sourceFamily}, artifact=${scenario.artifactEvidence.verdict}`),
     '',
-    `totals: passed=${report.totals.passed}, failed=${report.totals.failed}, successRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}`
+    `totals: passed=${report.totals.passed}, failed=${report.totals.failed}, successRate=${report.totals.successRate}, artifactEvidencePassRate=${report.totals.artifactEvidencePassRate}`
   ];
 
   console.log(lines.join('\n'));

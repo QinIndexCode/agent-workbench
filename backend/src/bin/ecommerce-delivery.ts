@@ -10,9 +10,9 @@ async function main(): Promise<void> {
 
   const lines = [
     'ecommerce delivery scenarios:',
-    ...report.scenarios.map((scenario) => `- ${scenario.family}: passed=${scenario.passed}, artifact=${scenario.artifactQuality.verdict}, manual=${scenario.manualAudit.verdict}`),
+    ...report.scenarios.map((scenario) => `- ${scenario.family}: passed=${scenario.passed}, artifact=${scenario.artifactEvidence.verdict}, manual=${scenario.manualAudit.verdict}`),
     '',
-    `totals: passed=${report.totals.passed}, failed=${report.totals.failed}, successRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}`,
+    `totals: passed=${report.totals.passed}, failed=${report.totals.failed}, successRate=${report.totals.successRate}, artifactEvidencePassRate=${report.totals.artifactEvidencePassRate}`,
     `manualAudit: ${report.manualAudit.passed}/${report.manualAudit.total}`,
   ];
 

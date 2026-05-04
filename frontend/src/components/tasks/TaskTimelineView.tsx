@@ -804,7 +804,7 @@ function renderProposalEntry(entry: TimelineEntry & { kind: 'proposal' }) {
               Outcome: {entry.proposal.experienceReport.outcome} · Truth: {entry.proposal.experienceReport.truthCompleteness}
             </p>
             <p className="mt-1 text-sm text-text-secondary">
-              Review score: {entry.proposal.qualityScore.toFixed(2)} · Archive eligible
+              Review score: {entry.proposal.reviewScore.toFixed(2)} · Archive eligible
             </p>
           </div>
           <div className="rounded-lg border border-white/8 bg-black/10 px-3 py-3">

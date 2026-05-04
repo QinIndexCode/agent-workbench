@@ -1210,7 +1210,7 @@ test('functional long-running reliability line keeps streaks, checkpoints, and r
   const report = await runStableGeneralComplexScenarioSuite();
   const failedScenarios = report.scenarios
     .filter((scenario) => !scenario.passed)
-    .map((scenario) => `${scenario.scenario}:${scenario.artifactQuality.failureCategory ?? 'unknown'}`);
+    .map((scenario) => `${scenario.scenario}:${scenario.artifactEvidence.failureCategory ?? 'unknown'}`);
 
   assert.equal(report.status, 'achieved', failedScenarios.join(', '));
 

@@ -10,9 +10,9 @@ async function main(): Promise<void> {
 
   const lines = [
     'practical task acceptance scenarios:',
-    ...report.scenarios.map((scenario) => `- ${scenario.scenario}: passed=${scenario.passed}, clarificationMode=${scenario.clarificationMode}, assumptions=${scenario.assumptionDisclosure.status}, artifact=${scenario.artifactQuality.verdict}`),
+    ...report.scenarios.map((scenario) => `- ${scenario.scenario}: passed=${scenario.passed}, clarificationMode=${scenario.clarificationMode}, assumptions=${scenario.assumptionDisclosure.status}, artifact=${scenario.artifactEvidence.verdict}`),
     '',
-    `totals: passed=${report.totals.passed}, failed=${report.totals.failed}, successRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}`
+    `totals: passed=${report.totals.passed}, failed=${report.totals.failed}, successRate=${report.totals.successRate}, artifactEvidencePassRate=${report.totals.artifactEvidencePassRate}`
   ];
 
   console.log(lines.join('\n'));

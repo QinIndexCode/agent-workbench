@@ -393,7 +393,7 @@ async function main() {
     complexReport: {
       archive: complexReport.archive,
       truthCompleteness: complexReport.truthCompleteness,
-      proposalGenerationQuality: complexReport.proposalGenerationQuality,
+      proposalGenerationEvidence: complexReport.proposalGenerationEvidence,
     },
     screenshots,
   };

@@ -8,5 +8,5 @@ test('cli interaction transcript suite keeps operator guidance complete across s
   assert.equal(report.status, 'achieved');
   assert.equal(report.totals.failed, 0);
   assert.equal(report.totals.total >= 4, true);
-  assert.equal(report.totals.artifactQualityPassRate, 1);
+  assert.equal(report.totals.artifactEvidencePassRate, 1);
 });

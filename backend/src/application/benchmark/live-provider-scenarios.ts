@@ -26,10 +26,10 @@ type LiveScenarioFamily =
   | 'regression-diagnosis'
   | 'multi-file-implementation';
 
-export const ARTIFACT_QUALITY_VERDICTS = ['passed', 'failed', 'external_blocker'] as const;
-export type ArtifactQualityVerdict = typeof ARTIFACT_QUALITY_VERDICTS[number];
+export const ARTIFACT_EVIDENCE_VERDICTS = ['passed', 'failed', 'external_blocker'] as const;
+export type ArtifactEvidenceVerdict = typeof ARTIFACT_EVIDENCE_VERDICTS[number];
 
-export const ARTIFACT_QUALITY_FAILURE_CATEGORIES = [
+export const ARTIFACT_EVIDENCE_FAILURE_CATEGORIES = [
   'artifact_missing',
   'artifact_apply_conflict',
   'artifact_apply_failed',
@@ -49,7 +49,7 @@ export const ARTIFACT_QUALITY_FAILURE_CATEGORIES = [
   'task_failed',
   'unknown'
 ] as const;
-export type ArtifactQualityFailureCategory = typeof ARTIFACT_QUALITY_FAILURE_CATEGORIES[number];
+export type ArtifactEvidenceFailureCategory = typeof ARTIFACT_EVIDENCE_FAILURE_CATEGORIES[number];
 
 export interface LiveProviderExecutionSummary {
   enabled: boolean;
@@ -61,9 +61,9 @@ export interface LiveProviderExecutionSummary {
   retryBackoffMs: number;
 }
 
-export interface ArtifactQualityAcceptance {
-  verdict: ArtifactQualityVerdict;
-  failureCategory: ArtifactQualityFailureCategory | null;
+export interface ArtifactEvidenceAcceptance {
+  verdict: ArtifactEvidenceVerdict;
+  failureCategory: ArtifactEvidenceFailureCategory | null;
   summary: string;
   files: string[];
   testsPassed: boolean | null;
@@ -162,7 +162,7 @@ export interface TaskLiveProviderScenarioResult {
   observedHooks: TaskObservationHookId[];
   executionSummary: TaskExecutionSummary | null;
   provider: LiveProviderExecutionSummary | null;
-  artifactQuality: ArtifactQualityAcceptance;
+  artifactEvidence: ArtifactEvidenceAcceptance;
   metrics: TaskLiveProviderScenarioMetrics;
   diagnostics: TaskLiveProviderScenarioDiagnostics;
   externalBlocker: string | null;
@@ -180,7 +180,7 @@ export interface TaskLiveProviderScenarioSuiteResult {
     failed: number;
     externalBlocked: number;
     successRate: number;
-    artifactQualityPassRate: number;
+    artifactEvidencePassRate: number;
     liveProviderPassRate: number;
     totalApiCalls: number;
     totalPromptTokens: number;
@@ -200,7 +200,7 @@ export interface TaskLiveProviderScenarioSuiteResult {
     plannerFallbackScenarioCount: number;
     byIssueCategory: Partial<Record<TaskExecutionIssueCategory, number>>;
     byFamily: Record<LiveScenarioFamily, number>;
-    byVerdict: Record<ArtifactQualityVerdict, number>;
+    byVerdict: Record<ArtifactEvidenceVerdict, number>;
   };
 }
 
@@ -244,7 +244,7 @@ interface LiveProviderScenarioDefinition {
   allowedCommands: string[];
   requiredEventTypes: string[];
   artifactFiles: string[];
-  acceptance(harness: LiveProviderScenarioHarness, task: TaskQueryResponse): Promise<ArtifactQualityAcceptance>;
+  acceptance(harness: LiveProviderScenarioHarness, task: TaskQueryResponse): Promise<ArtifactEvidenceAcceptance>;
 }
 
 interface LiveProviderSuiteOptions {
@@ -399,8 +399,8 @@ function deriveUsageSource(breakdown: MutableMetrics['usageBreakdown']): Mutable
 
 function createExternalBlockerAcceptance(
   summary: string,
-  failureCategory: ArtifactQualityFailureCategory
-): ArtifactQualityAcceptance {
+  failureCategory: ArtifactEvidenceFailureCategory
+): ArtifactEvidenceAcceptance {
   return {
     verdict: 'external_blocker',
     failureCategory,
@@ -414,9 +414,9 @@ function createExternalBlockerAcceptance(
 
 function createFailureAcceptance(
   summary: string,
-  failureCategory: ArtifactQualityFailureCategory,
-  params: Partial<ArtifactQualityAcceptance> = {}
-): ArtifactQualityAcceptance {
+  failureCategory: ArtifactEvidenceFailureCategory,
+  params: Partial<ArtifactEvidenceAcceptance> = {}
+): ArtifactEvidenceAcceptance {
   return {
     verdict: 'failed',
     failureCategory,
@@ -428,7 +428,7 @@ function createFailureAcceptance(
   };
 }
 
-function createPassedAcceptance(summary: string, files: string[], params: Partial<ArtifactQualityAcceptance> = {}): ArtifactQualityAcceptance {
+function createPassedAcceptance(summary: string, files: string[], params: Partial<ArtifactEvidenceAcceptance> = {}): ArtifactEvidenceAcceptance {
   return {
     verdict: 'passed',
     failureCategory: null,
@@ -463,7 +463,7 @@ function hasRecordedUsage(usage: ProviderCompletionUsage | null): usage is Provi
     || usage.cacheWritePromptTokens !== null;
 }
 
-function preserveAcceptanceEvidence(acceptance: ArtifactQualityAcceptance): Partial<ArtifactQualityAcceptance> {
+function preserveAcceptanceEvidence(acceptance: ArtifactEvidenceAcceptance): Partial<ArtifactEvidenceAcceptance> {
   return {
     files: acceptance.files,
     testsPassed: acceptance.testsPassed,
@@ -472,15 +472,15 @@ function preserveAcceptanceEvidence(acceptance: ArtifactQualityAcceptance): Part
   };
 }
 
-export function applyLiveProviderArtifactQualityGate(
+export function applyLiveProviderArtifactEvidenceGate(
   summary: TaskExecutionSummary,
-  artifactQuality: ArtifactQualityAcceptance
-): ArtifactQualityAcceptance {
-  if (artifactQuality.verdict !== 'passed') {
-    return artifactQuality;
+  artifactEvidence: ArtifactEvidenceAcceptance
+): ArtifactEvidenceAcceptance {
+  if (artifactEvidence.verdict !== 'passed') {
+    return artifactEvidence;
   }
 
-  const preserved = preserveAcceptanceEvidence(artifactQuality);
+  const preserved = preserveAcceptanceEvidence(artifactEvidence);
   if (summary.lastArtifactApplyResult?.status === 'CONFLICT') {
     return createFailureAcceptance(
       summary.lastArtifactApplyResult.message || 'Generated artifacts could not be applied because the destination has conflicting edits.',
@@ -539,7 +539,7 @@ export function applyLiveProviderArtifactQualityGate(
     );
   }
 
-  return artifactQuality;
+  return artifactEvidence;
 }
 
 function hasRuntimeCompletionGate(summary: TaskExecutionSummary): boolean {
@@ -549,12 +549,12 @@ function hasRuntimeCompletionGate(summary: TaskExecutionSummary): boolean {
 function shouldPassLiveProviderScenario(params: {
   task: TaskQueryResponse;
   summary: TaskExecutionSummary;
-  artifactQuality: ArtifactQualityAcceptance;
+  artifactEvidence: ArtifactEvidenceAcceptance;
   missingRequiredEventTypes: string[];
 }): boolean {
   return params.task.runtime.lifecycleStatus === 'COMPLETED'
     && params.missingRequiredEventTypes.length === 0
-    && params.artifactQuality.verdict === 'passed'
+    && params.artifactEvidence.verdict === 'passed'
     && hasRuntimeCompletionGate(params.summary);
 }
 
@@ -566,7 +566,7 @@ function isProviderOrEnvironmentBlockerMessage(message: string): boolean {
   return /missing api key secret|api key|authentication failed|unable to verify the first certificate|certificate|network failure|request failed|upstream failed|rate-limited|timed out|timeout|\b408\b/i.test(message);
 }
 
-function classifyProviderBlocker(message: string): ArtifactQualityFailureCategory {
+function classifyProviderBlocker(message: string): ArtifactEvidenceFailureCategory {
   if (/missing api key secret|api key/i.test(message)) {
     return 'provider_credentials_missing';
   }
@@ -575,7 +575,7 @@ function classifyProviderBlocker(message: string): ArtifactQualityFailureCategor
 
 function mapAcceptanceFailureToArtifactCategory(
   value: NonNullable<TaskQueryResponse['runtime']['contractDiagnostics']>['lastAcceptanceFailureCategory'] | null | undefined
-): ArtifactQualityFailureCategory | null {
+): ArtifactEvidenceFailureCategory | null {
   switch (value) {
     case 'response_shape_mismatch':
       return 'response_shape_mismatch';
@@ -1558,7 +1558,7 @@ class LiveProviderScenarioHarness {
     const summary = this.buildSummary(task);
     const missingRequiredEventTypes = this.definition.requiredEventTypes
       .filter((type) => !task.events.some((event) => event.type === type));
-    const rawArtifactQuality = task.runtime.lifecycleStatus === 'COMPLETED'
+    const rawArtifactEvidence = task.runtime.lifecycleStatus === 'COMPLETED'
       ? await this.definition.acceptance(this, task)
       : (() => {
         const failureCategory = task.runtime.contractDiagnostics?.correctionLoopNonConvergent
@@ -1568,15 +1568,15 @@ class LiveProviderScenarioHarness {
             ?? 'task_failed'
           );
         const summaryText = task.runtime.contractDiagnostics?.correctionLoopNonConvergent
-          ? 'Task remained in a repeated non-convergent correction loop and did not reach an artifact-quality verdict.'
+          ? 'Task remained in a repeated non-convergent correction loop and did not reach an artifact-evidence verdict.'
           : `Task ended with lifecycle ${task.runtime.lifecycleStatus}.`;
         return createFailureAcceptance(summaryText, failureCategory, { files: [] });
       })();
-    const artifactQuality = applyLiveProviderArtifactQualityGate(summary, rawArtifactQuality);
+    const artifactEvidence = applyLiveProviderArtifactEvidenceGate(summary, rawArtifactEvidence);
     const passed = shouldPassLiveProviderScenario({
       task,
       summary,
-      artifactQuality,
+      artifactEvidence,
       missingRequiredEventTypes
     });
 
@@ -1594,7 +1594,7 @@ class LiveProviderScenarioHarness {
       observedHooks: [...summary.observedHooks],
       executionSummary: summary,
       provider,
-      artifactQuality,
+      artifactEvidence,
       metrics: {
         apiCallCount: this.metrics.apiCallCount,
         promptTokens: this.metrics.promptTokens,
@@ -1706,7 +1706,7 @@ async function driveToCompletion(
 
 function buildAcceptanceCorrectionMessage(
   definition: LiveProviderScenarioDefinition,
-  acceptance: ArtifactQualityAcceptance
+  acceptance: ArtifactEvidenceAcceptance
 ): string | null {
   if (acceptance.verdict !== 'failed') {
     return null;
@@ -1762,7 +1762,7 @@ async function driveExternalAcceptanceCorrection(
       return task;
     }
     const rawAcceptance = await definition.acceptance(harness, task);
-    const gatedAcceptance = applyLiveProviderArtifactQualityGate(harness.buildSummary(task), rawAcceptance);
+    const gatedAcceptance = applyLiveProviderArtifactEvidenceGate(harness.buildSummary(task), rawAcceptance);
     const correctionMessage = buildAcceptanceCorrectionMessage(definition, gatedAcceptance);
     if (!correctionMessage) {
       return task;
@@ -1966,7 +1966,7 @@ function createLiveProviderScenarioDefinitions(): LiveProviderScenarioDefinition
     {
       name: 'live-provider-bugfix',
       family: 'bugfix',
-      description: 'Fix a real arithmetic bug and prove the artifact quality with tests and content assertions.',
+      description: 'Fix a real arithmetic bug and prove the artifact evidence with tests and content assertions.',
       intent: [
         'You are fixing a real bug in a tiny Node workspace.',
         'The failing project is already in the task workspace.',
@@ -2478,7 +2478,7 @@ async function resolveLiveProvider(
   if (!isEnabled(env)) {
     return {
       summary: null,
-      blocker: 'live provider execution is disabled; set BACKEND_NEW_LIVE_PROVIDER_ENABLED=1 to run flagship quality scenarios'
+      blocker: 'live provider execution is disabled; set BACKEND_NEW_LIVE_PROVIDER_ENABLED=1 to run flagship evidence scenarios'
     };
   }
 
@@ -2619,7 +2619,7 @@ async function createExternalBlockerResult(params: {
     observedHooks: [],
     executionSummary: null,
     provider: params.provider,
-    artifactQuality: createExternalBlockerAcceptance(params.blocker, failureCategory),
+    artifactEvidence: createExternalBlockerAcceptance(params.blocker, failureCategory),
     metrics: createEmptyMetrics(),
     diagnostics: await createScenarioDiagnostics(null, null, []),
     externalBlocker: params.blocker
@@ -2674,7 +2674,7 @@ async function runSingleLiveScenario(
       observedHooks: [],
       executionSummary: null,
       provider,
-      artifactQuality: isProviderBlocker
+      artifactEvidence: isProviderBlocker
         ? createExternalBlockerAcceptance(message, failureCategory)
         : createFailureAcceptance(message, 'unknown'),
       metrics: createEmptyMetrics(),
@@ -2751,7 +2751,7 @@ export async function runTaskLiveProviderScenarioSuite(
     'regression-diagnosis': 0,
     'multi-file-implementation': 0
   };
-  const byVerdict: Record<ArtifactQualityVerdict, number> = {
+  const byVerdict: Record<ArtifactEvidenceVerdict, number> = {
     passed: 0,
     failed: 0,
     external_blocker: 0
@@ -2777,7 +2777,7 @@ export async function runTaskLiveProviderScenarioSuite(
     if (scenario.issueCategory) {
       byIssueCategory[scenario.issueCategory] = (byIssueCategory[scenario.issueCategory] ?? 0) + 1;
     }
-    if (scenario.artifactQuality.verdict === 'external_blocker') {
+    if (scenario.artifactEvidence.verdict === 'external_blocker') {
       externalBlocked += 1;
       byVerdict.external_blocker += 1;
     } else if (scenario.passed) {
@@ -2795,7 +2795,7 @@ export async function runTaskLiveProviderScenarioSuite(
     failed,
     externalBlocked,
     successRate: Number((passed / Math.max(1, scenarios.length)).toFixed(4)),
-    artifactQualityPassRate: Number((byVerdict.passed / Math.max(1, scenarios.length)).toFixed(4)),
+    artifactEvidencePassRate: Number((byVerdict.passed / Math.max(1, scenarios.length)).toFixed(4)),
     liveProviderPassRate: Number((passed / Math.max(1, scenarios.length - externalBlocked || 1)).toFixed(4)),
     totalApiCalls,
     totalPromptTokens,

@@ -222,7 +222,7 @@ const completed = await runtime.tasks.continueTask({ taskId: submitted.command.t
   }
 });
 
-test('product runtime tasks do not inherit default quality profiles automatically', async () => {
+test('product runtime tasks do not inherit default validation profiles automatically', async () => {
   const root = createTempRoot();
   try {
     const { runtime } = createRuntimeWithFoundation({
@@ -256,7 +256,7 @@ test('analyze profile allows safe host observation commands by default', () => {
   assert.equal(profile.allowedToolIds.includes('run-command'), true);
 });
 
-test('legacy validation metadata cannot opt ordinary runtime into quality profiles', async () => {
+test('legacy validation metadata cannot opt ordinary runtime into validation profiles', async () => {
   const root = createTempRoot();
   try {
     const { runtime } = createRuntimeWithFoundation({

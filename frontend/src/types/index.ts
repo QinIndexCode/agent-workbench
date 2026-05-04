@@ -524,7 +524,7 @@ export interface ExperienceReport {
   lifecycleStatus: 'COMPLETED' | 'FAILED' | 'CANCELLED';
   summary: string;
   outcome: 'success' | 'failed' | 'cancelled';
-  artifactQuality: 'delivered' | 'artifact_only' | 'none';
+  artifactEvidence: 'delivered' | 'artifact_only' | 'none';
   truthCompleteness: 'complete' | 'partial';
   failureTaxonomy: string[];
   keyFacts: string[];
@@ -634,7 +634,7 @@ export interface ImprovementProposal {
   archivedAt: number | null;
   patternKey: string;
   dedupeKey: string;
-  qualityScore: number;
+  reviewScore: number;
   archiveEligible: boolean;
   duplicateOfProposalId: string | null;
   conflictsWithProposalIds: string[];
@@ -669,7 +669,7 @@ export interface RealTaskArchiveEntry {
     reason: string;
     complexitySignals: string[];
   };
-  qualityScore: number;
+  reviewScore: number;
   patternKey: string;
   truthSummary: {
     statusSummary: string;
@@ -726,7 +726,7 @@ export interface ComplexTaskAcceptanceReport {
     complete: number;
     partial: number;
   };
-  proposalGenerationQuality: {
+  proposalGenerationEvidence: {
     lesson: number;
     experience: number;
     instructionSkill: number;

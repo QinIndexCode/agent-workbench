@@ -56,7 +56,7 @@ const SCRIPT_CATALOG: ScriptCatalogEntry[] = [
     commandTemplate: 'npm.cmd run test:unit -w frontend',
     defaultCwd: null,
     riskCategory: 'shell_command',
-    outputHint: 'Use failing tests and coverage gaps as feedback; do not treat coverage as task quality judgment.'
+    outputHint: 'Use failing tests and coverage gaps as feedback; do not treat coverage as a task completion judge.'
   },
   {
     id: 'host-process-observation',
@@ -230,7 +230,7 @@ function buildExperienceHealth(proposals: ImprovementProposal[]): EcosystemSumma
       successfulReuseTaskIds: [...(proposal.experienceProposal?.successfulReuseTaskIds ?? [])],
       failedReuseTaskIds: [...(proposal.experienceProposal?.failedReuseTaskIds ?? [])],
       limitations: [...(proposal.experienceProposal?.limitations ?? [])],
-      confidence: proposal.experienceProposal?.confidence ?? proposal.qualityScore
+      confidence: proposal.experienceProposal?.confidence ?? proposal.reviewScore
     })).sort((left, right) => left.title.localeCompare(right.title))
   };
 }

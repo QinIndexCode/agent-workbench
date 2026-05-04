@@ -19,7 +19,7 @@ test('public capability parity suite reconstructs public baseline tasks with str
   assert.equal(report.totals.passed, 12);
   assert.equal(report.totals.failed, 0);
   assert.equal(report.totals.successRate, 1);
-  assert.equal(report.totals.artifactQualityPassRate, 1);
+  assert.equal(report.totals.artifactEvidencePassRate, 1);
   assert.equal(report.totals.byBaseline['claude-code'], 5);
   assert.equal(report.totals.byBaseline['anthropic-swebench'], 1);
   assert.equal(report.totals.byBaseline.opencode, 6);
@@ -39,7 +39,7 @@ test('public capability parity suite reconstructs public baseline tasks with str
 
   assert.equal(planBuild.executionSummary.stageDurations.length >= 3, true);
   assert.equal(swebenchIssue.diagnostics.artifactSnapshots.some((snapshot) => snapshot.path === 'reports/issue-resolution.patch' && snapshot.exists), true);
-  assert.equal(claudeCommand.artifactQuality.verdict, 'passed');
+  assert.equal(claudeCommand.artifactEvidence.verdict, 'passed');
   assert.equal(opencodeProvider.executionSummary.providerSummary.variantId, 'reasoning');
 });
 

@@ -29,7 +29,7 @@ function createScenario(overrides = {}) {
         consistent: true
       }
     },
-    artifactQuality: {
+    artifactEvidence: {
       verdict: 'passed',
       failureCategory: null,
       summary: 'ok',
@@ -72,7 +72,7 @@ function createSourceReport(overrides = {}) {
       passed: 1,
       failed: 0,
       successRate: 1,
-      artifactQualityPassRate: 1,
+      artifactEvidencePassRate: 1,
       byFamily: {
         'vague-blog-request': 0,
         'explicit-blog-request': 0,

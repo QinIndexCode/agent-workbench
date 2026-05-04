@@ -35,7 +35,7 @@ type RepoRealTaskFailureCategory =
   | 'approval_flow_failed'
   | 'hook_visibility_failed';
 
-interface ArtifactQualityAcceptance {
+interface ArtifactEvidenceAcceptance {
   verdict: 'passed' | 'failed';
   failureCategory: RepoRealTaskFailureCategory | null;
   summary: string;
@@ -79,7 +79,7 @@ interface RepoRealTaskScenarioDefinition {
   taskMetadata?: Record<string, unknown>;
   prepare?(harness: RepoRealTaskHarness): Promise<void>;
   execute?(harness: RepoRealTaskHarness): Promise<TaskQueryResponse>;
-  acceptance(harness: RepoRealTaskHarness, task: TaskQueryResponse): Promise<ArtifactQualityAcceptance>;
+  acceptance(harness: RepoRealTaskHarness, task: TaskQueryResponse): Promise<ArtifactEvidenceAcceptance>;
 }
 
 export interface RepoRealTaskScenarioMetrics {
@@ -122,7 +122,7 @@ export interface RepoRealTaskScenarioResult {
   missingRequiredEventTypes: string[];
   observedHooks: TaskObservationHookId[];
   executionSummary: TaskExecutionSummary;
-  artifactQuality: ArtifactQualityAcceptance;
+  artifactEvidence: ArtifactEvidenceAcceptance;
   metrics: RepoRealTaskScenarioMetrics;
   diagnostics: RepoRealTaskScenarioDiagnostics;
 }
@@ -136,7 +136,7 @@ export interface RepoRealTaskSuiteResult {
     passed: number;
     failed: number;
     successRate: number;
-    artifactQualityPassRate: number;
+    artifactEvidencePassRate: number;
     byFamily: Record<RepoRealTaskFamily, number>;
     byFailureCategory: Partial<Record<RepoRealTaskFailureCategory, number>>;
   };
@@ -231,7 +231,7 @@ function createUnit(params: {
   };
 }
 
-function createPassedAcceptance(summary: string, files: string[]): ArtifactQualityAcceptance {
+function createPassedAcceptance(summary: string, files: string[]): ArtifactEvidenceAcceptance {
   return {
     verdict: 'passed',
     failureCategory: null,
@@ -244,7 +244,7 @@ function createFailureAcceptance(
   summary: string,
   failureCategory: RepoRealTaskFailureCategory,
   files: string[] = []
-): ArtifactQualityAcceptance {
+): ArtifactEvidenceAcceptance {
   return {
     verdict: 'failed',
     failureCategory,
@@ -643,13 +643,13 @@ class RepoRealTaskHarness {
 
   async finalize(task: TaskQueryResponse): Promise<RepoRealTaskScenarioResult> {
     const summary = this.buildSummary(task);
-    const artifactQuality = await this.definition.acceptance(this, task);
+    const artifactEvidence = await this.definition.acceptance(this, task);
     const missingRequiredEventTypes = this.definition.requiredEventTypes
       .filter((type) => !task.events.some((event) => event.type === type));
     const passed = task.runtime.lifecycleStatus === 'COMPLETED'
       && summary.queueRuntimeAlignment.consistent
       && missingRequiredEventTypes.length === 0
-      && artifactQuality.verdict === 'passed';
+      && artifactEvidence.verdict === 'passed';
 
     const artifactSnapshots: RepoRealTaskScenarioDiagnostics['artifactSnapshots'] = [];
     for (const relativePath of this.definition.artifactFiles) {
@@ -678,7 +678,7 @@ class RepoRealTaskHarness {
       missingRequiredEventTypes,
       observedHooks: [...summary.observedHooks],
       executionSummary: summary,
-      artifactQuality,
+      artifactEvidence,
       metrics: {
         apiCallCount: this.metrics.apiCallCount,
         promptTokens: this.metrics.promptTokens,
@@ -1658,8 +1658,8 @@ async function runRepoRealTaskSuiteOnce(): Promise<RepoRealTaskSuiteResult> {
     } else {
       failed += 1;
     }
-    if (scenario.artifactQuality.failureCategory) {
-      byFailureCategory[scenario.artifactQuality.failureCategory] = (byFailureCategory[scenario.artifactQuality.failureCategory] ?? 0) + 1;
+    if (scenario.artifactEvidence.failureCategory) {
+      byFailureCategory[scenario.artifactEvidence.failureCategory] = (byFailureCategory[scenario.artifactEvidence.failureCategory] ?? 0) + 1;
     }
   }
 
@@ -1672,7 +1672,7 @@ async function runRepoRealTaskSuiteOnce(): Promise<RepoRealTaskSuiteResult> {
       passed,
       failed,
       successRate: Number((passed / Math.max(1, scenarios.length)).toFixed(4)),
-      artifactQualityPassRate: Number((scenarios.filter((scenario) => scenario.artifactQuality.verdict === 'passed').length / Math.max(1, scenarios.length)).toFixed(4)),
+      artifactEvidencePassRate: Number((scenarios.filter((scenario) => scenario.artifactEvidence.verdict === 'passed').length / Math.max(1, scenarios.length)).toFixed(4)),
       byFamily,
       byFailureCategory
     }

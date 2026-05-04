@@ -18,7 +18,7 @@ test('repo real task suite validates actual repository task completion coverage'
   assert.equal(report.totals.passed, 10);
   assert.equal(report.totals.failed, 0);
   assert.equal(report.totals.successRate, 1);
-  assert.equal(report.totals.artifactQualityPassRate, 1);
+  assert.equal(report.totals.artifactEvidencePassRate, 1);
   assert.equal(report.totals.byFamily['plan-build-split-task'], 1);
   assert.equal(report.totals.byFamily['provider-variant-task'], 1);
   assert.equal(report.totals.byFamily['mcp-readiness-gated-task'], 1);
@@ -52,40 +52,40 @@ test('repo real task suite validates actual repository task completion coverage'
   assert.ok(swebenchIssue);
   assert.ok(subagent);
 
-  assert.equal(planBuild.artifactQuality.verdict, 'passed');
+  assert.equal(planBuild.artifactEvidence.verdict, 'passed');
   assert.equal(planBuild.executionSummary.stageDurations.length >= 3, true);
 
-  assert.equal(providerVariant.artifactQuality.verdict, 'passed');
+  assert.equal(providerVariant.artifactEvidence.verdict, 'passed');
   assert.equal(providerVariant.executionSummary.providerSummary.variantId, 'reasoning');
   assert.equal(providerVariant.executionSummary.providerSummary.readiness, 'ready');
 
-  assert.equal(mcpReadiness.artifactQuality.verdict, 'passed');
+  assert.equal(mcpReadiness.artifactEvidence.verdict, 'passed');
   assert.equal(mcpReadiness.executionSummary.mcpSummary.selectedTools.includes('mcp.real/summarize'), true);
   assert.equal(mcpReadiness.executionSummary.mcpSummary.selectedResources.includes('mcp.real/provider-guide'), true);
   assert.equal(mcpReadiness.executionSummary.mcpSummary.selectedPrompts.includes('mcp.real/review-prompt'), true);
 
-  assert.equal(runtimeSkill.artifactQuality.verdict, 'passed');
+  assert.equal(runtimeSkill.artifactEvidence.verdict, 'passed');
   assert.equal(runtimeSkill.executionSummary.skillSummary.recent[0].status, 'SUCCEEDED');
 
-  assert.equal(instructionSkill.artifactQuality.verdict, 'passed');
+  assert.equal(instructionSkill.artifactEvidence.verdict, 'passed');
   assert.equal(instructionSkill.executionSummary.instructionSkillSummary.selectedCount, 1);
   assert.equal(instructionSkill.executionSummary.instructionSkillSummary.selected[0].name, 'ui-review-guidance');
 
-  assert.equal(workspaceRule.artifactQuality.verdict, 'passed');
+  assert.equal(workspaceRule.artifactEvidence.verdict, 'passed');
   assert.equal(workspaceRule.executionSummary.ruleSummary.matchedRuleNames.includes('provider-review'), true);
 
-  assert.equal(permissionBlocked.artifactQuality.verdict, 'passed');
+  assert.equal(permissionBlocked.artifactEvidence.verdict, 'passed');
   assert.equal(permissionBlocked.executionSummary.permissionSummary.approvalRequiredCount >= 1, true);
 
-  assert.equal(hookRecovery.artifactQuality.verdict, 'passed');
+  assert.equal(hookRecovery.artifactEvidence.verdict, 'passed');
   assert.equal((hookRecovery.executionSummary.hookSummary.failedCount + hookRecovery.executionSummary.hookSummary.executedCount) >= 1, true);
   assert.equal(hookRecovery.executionSummary.mcpSummary.recent[0].status, 'FAILED');
 
-  assert.equal(swebenchIssue.artifactQuality.verdict, 'passed');
+  assert.equal(swebenchIssue.artifactEvidence.verdict, 'passed');
   assert.equal(swebenchIssue.diagnostics.artifactSnapshots.some((snapshot) => snapshot.path === 'reports/issue-resolution.patch' && snapshot.exists), true);
   assert.equal(swebenchIssue.executionSummary.stageDurations.length >= 3, true);
 
-  assert.equal(subagent.artifactQuality.verdict, 'passed');
+  assert.equal(subagent.artifactEvidence.verdict, 'passed');
   assert.equal(subagent.executionSummary.agentSummary.selectedAgent, 'review');
 
   for (const scenario of report.scenarios) {

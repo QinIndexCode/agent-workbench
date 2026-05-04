@@ -106,11 +106,11 @@ async function main() {
   );
   const delivered = countBy(
     archiveEntries,
-    (entry) => entry?.experienceReport?.artifactQuality === 'delivered',
+    (entry) => entry?.experienceReport?.artifactEvidence === 'delivered',
   );
   const artifactOnly = countBy(
     archiveEntries,
-    (entry) => entry?.experienceReport?.artifactQuality === 'artifact_only',
+    (entry) => entry?.experienceReport?.artifactEvidence === 'artifact_only',
   );
   const archiveEligibleCount = countBy(
     taskStateEntries,
@@ -172,7 +172,7 @@ async function main() {
       artifactOnly,
       proposalGenerated: archiveEntries.reduce((count, entry) => count + (Array.isArray(entry?.proposalIds) ? entry.proposalIds.length : 0), 0),
     },
-    archiveEligibilityQuality: {
+    archiveEligibilityEvidence: {
       archiveEligibleCount,
       archiveSkippedCount: archiveSkipped.length,
       skipReasons: [...skipReasonCounter.entries()].map(([reason, count]) => ({ reason, count })),
@@ -199,7 +199,7 @@ async function main() {
       completeRatio,
     },
     failureTaxonomy: [...failureCounter.entries()].map(([category, count]) => ({ category, count })),
-    proposalGenerationQuality: {
+    proposalGenerationEvidence: {
       lesson: countBy(proposalEntries, (entry) => entry?.kind === 'lesson'),
       instructionSkill: countBy(proposalEntries, (entry) => entry?.kind === 'instruction_skill'),
       optimization: countBy(proposalEntries, (entry) => entry?.kind === 'optimization'),

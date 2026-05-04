@@ -46,14 +46,14 @@ export interface PracticalTaskAssumptionDisclosure {
   summary: string | null;
 }
 
-export interface PracticalTaskArtifactQuality {
+export interface PracticalTaskArtifactEvidence {
   verdict: 'passed' | 'failed';
   failureCategory: PracticalTaskFailureCategory | null;
   summary: string;
   files: string[];
 }
 
-export interface PracticalTaskAcceptance extends PracticalTaskArtifactQuality {
+export interface PracticalTaskAcceptance extends PracticalTaskArtifactEvidence {
   clarificationMode: PracticalTaskClarificationMode;
   assumptionDisclosure: PracticalTaskAssumptionDisclosure;
 }
@@ -110,7 +110,7 @@ export interface PracticalTaskScenarioResult {
   clarificationMode: PracticalTaskClarificationMode;
   assumptionDisclosure: PracticalTaskAssumptionDisclosure;
   executionSummary: TaskExecutionSummary;
-  artifactQuality: PracticalTaskArtifactQuality;
+  artifactEvidence: PracticalTaskArtifactEvidence;
   shipReady: boolean;
   minorEditsNeededCount: number;
   criticalGapsCount: number;
@@ -151,7 +151,7 @@ export interface PracticalTaskAcceptanceSuiteResult {
     passed: number;
     failed: number;
     successRate: number;
-    artifactQualityPassRate: number;
+    artifactEvidencePassRate: number;
     shipReadyPassRate: number;
     minorEditsNeededCount: number;
     criticalGapsCount: number;
@@ -447,7 +447,7 @@ function createScenarioFailureResult(params: {
       },
       acceptance: createFailureExecutionAcceptance(params.message)
     },
-    artifactQuality: {
+    artifactEvidence: {
       verdict: 'failed',
       failureCategory: 'summary_mismatch',
       summary: params.message,
@@ -1452,7 +1452,7 @@ class PracticalTaskHarness {
       clarificationMode: acceptance.clarificationMode,
       assumptionDisclosure: acceptance.assumptionDisclosure,
       executionSummary: summary,
-      artifactQuality: {
+      artifactEvidence: {
         verdict: acceptance.verdict,
         failureCategory: acceptance.failureCategory,
         summary: acceptance.summary,
@@ -1527,7 +1527,7 @@ class PracticalTaskHarness {
       clarificationMode: 'not-needed',
       assumptionDisclosure: { status: 'missing', summary: null },
       executionSummary: summary,
-      artifactQuality: {
+      artifactEvidence: {
         verdict: 'failed',
         failureCategory: 'summary_mismatch',
         summary: message,
@@ -2535,7 +2535,7 @@ export function createScenarioDefinitions(): PracticalTaskScenarioDefinition[] {
               '## Core Sections',
               '1. Explainable execution',
               '2. Artifact routing and approvals',
-              '3. Live provider quality and auditability',
+              '3. Live provider evidence and auditability',
               '',
               '## CTA',
               'Primary CTA: Book an operator walkthrough',
@@ -2921,8 +2921,8 @@ function computePracticalSuiteTotals(scenarios: PracticalTaskScenarioResult[]): 
     }
     minorEditsNeededCount += Number(scenario.minorEditsNeededCount ?? 0);
     criticalGapsCount += Number(scenario.criticalGapsCount ?? 0);
-    if (scenario.artifactQuality.failureCategory) {
-      byFailureCategory[scenario.artifactQuality.failureCategory] = (byFailureCategory[scenario.artifactQuality.failureCategory] ?? 0) + 1;
+    if (scenario.artifactEvidence.failureCategory) {
+      byFailureCategory[scenario.artifactEvidence.failureCategory] = (byFailureCategory[scenario.artifactEvidence.failureCategory] ?? 0) + 1;
     }
   }
 
@@ -2931,7 +2931,7 @@ function computePracticalSuiteTotals(scenarios: PracticalTaskScenarioResult[]): 
     passed,
     failed,
     successRate: Number((passed / Math.max(1, scenarios.length)).toFixed(4)),
-    artifactQualityPassRate: Number((scenarios.filter((scenario) => scenario.artifactQuality.verdict === 'passed').length / Math.max(1, scenarios.length)).toFixed(4)),
+    artifactEvidencePassRate: Number((scenarios.filter((scenario) => scenario.artifactEvidence.verdict === 'passed').length / Math.max(1, scenarios.length)).toFixed(4)),
     shipReadyPassRate: Number((shipReadyCount / Math.max(1, scenarios.length)).toFixed(4)),
     minorEditsNeededCount,
     criticalGapsCount,

@@ -27,11 +27,11 @@ async function main(): Promise<void> {
 
   const lines = [
     'practical live task acceptance scenarios:',
-    ...report.scenarios.map((scenario) => `- ${scenario.scenario}: passed=${scenario.passed}, shipReady=${scenario.shipReady}, criticalGaps=${scenario.criticalGapsCount}, minorEdits=${scenario.minorEditsNeededCount}, clarificationMode=${scenario.clarificationMode}, assumptions=${scenario.assumptionDisclosure.status}, artifact=${scenario.artifactQuality.verdict}, usageSource=${scenario.metrics.usageSource}, tokens=${scenario.metrics.totalTokens}`),
+    ...report.scenarios.map((scenario) => `- ${scenario.scenario}: passed=${scenario.passed}, shipReady=${scenario.shipReady}, criticalGaps=${scenario.criticalGapsCount}, minorEdits=${scenario.minorEditsNeededCount}, clarificationMode=${scenario.clarificationMode}, assumptions=${scenario.assumptionDisclosure.status}, artifact=${scenario.artifactEvidence.verdict}, usageSource=${scenario.metrics.usageSource}, tokens=${scenario.metrics.totalTokens}`),
     '',
     `status=${report.status}, externalBlocker=${report.externalBlocker ?? 'none'}`,
     `provider=${report.provider?.providerId ?? 'none'} model=${report.provider?.model ?? 'none'}`,
-    `totals: passed=${report.totals.passed}, failed=${report.totals.failed}, successRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}, shipReadyPassRate=${report.totals.shipReadyPassRate}, criticalGaps=${report.totals.criticalGapsCount}, liveProviderPassRate=${report.totals.liveProviderPassRate}`,
+    `totals: passed=${report.totals.passed}, failed=${report.totals.failed}, successRate=${report.totals.successRate}, artifactEvidencePassRate=${report.totals.artifactEvidencePassRate}, shipReadyPassRate=${report.totals.shipReadyPassRate}, criticalGaps=${report.totals.criticalGapsCount}, liveProviderPassRate=${report.totals.liveProviderPassRate}`,
     `usage: apiCalls=${report.totals.totalApiCalls}, promptTokens=${report.totals.totalPromptTokens}, completionTokens=${report.totals.totalCompletionTokens}, totalTokens=${report.totals.totalTokens}, returnedCalls=${report.totals.usageBreakdown.returnedCalls}, estimatedCalls=${report.totals.usageBreakdown.estimatedCalls}, missingCalls=${report.totals.usageBreakdown.missingCalls}`
   ];
 

@@ -14,7 +14,7 @@ test('general complex scenario suite validates broader engineering task families
   const report = await runStableGeneralComplexScenarioSuite();
   const failedScenarios = report.scenarios
     .filter((scenario) => !scenario.passed)
-    .map((scenario) => `${scenario.scenario}:${scenario.artifactQuality.failureCategory ?? 'unknown'}`);
+    .map((scenario) => `${scenario.scenario}:${scenario.artifactEvidence.failureCategory ?? 'unknown'}`);
 
   assert.equal(report.status, 'achieved', failedScenarios.join(', '));
   assert.equal(report.scenarios.length, 31);
@@ -22,7 +22,7 @@ test('general complex scenario suite validates broader engineering task families
   assert.equal(report.totals.passed, 31);
   assert.equal(report.totals.failed, 0);
   assert.equal(report.totals.successRate, 1);
-  assert.equal(report.totals.artifactQualityPassRate, 1);
+  assert.equal(report.totals.artifactEvidencePassRate, 1);
   assert.equal(report.totals.byFamily['config-migration'], 1);
   assert.equal(report.totals.byFamily['script-repair'], 1);
   assert.equal(report.totals.byFamily['data-transformation'], 1);
@@ -107,31 +107,31 @@ test('general complex scenario suite validates broader engineering task families
   assert.ok(decisionLogSynthesis);
   assert.ok(importedDecisionDoc);
 
-  assert.equal(configMigration.artifactQuality.verdict, 'passed');
-  assert.equal(workspaceBootstrap.artifactQuality.verdict, 'passed');
-  assert.equal(correctionChurn.artifactQuality.verdict, 'passed');
-  assert.equal(checkpointRecovery.artifactQuality.verdict, 'passed');
-  assert.equal(providerFailureStreak.artifactQuality.verdict, 'passed');
-  assert.equal(extensionFailureStability.artifactQuality.verdict, 'passed');
-  assert.equal(workspaceDocsImport.artifactQuality.verdict, 'passed');
-  assert.equal(workspaceCommandDriven.artifactQuality.verdict, 'passed');
-  assert.equal(ruleConstrained.artifactQuality.verdict, 'passed');
-  assert.equal(hookObservable.artifactQuality.verdict, 'passed');
-  assert.equal(agentAssistedReview.artifactQuality.verdict, 'passed');
-  assert.equal(workspaceCommandWithDocMemory.artifactQuality.verdict, 'passed');
-  assert.equal(skillDrivenTask.artifactQuality.verdict, 'passed');
-  assert.equal(mcpToolAssistedTask.artifactQuality.verdict, 'passed');
-  assert.equal(skillFailureDiagnostics.artifactQuality.verdict, 'passed');
-  assert.equal(mcpFailureRecovery.artifactQuality.verdict, 'passed');
-  assert.equal(instructionSkillGuided.artifactQuality.verdict, 'passed');
-  assert.equal(instructionSkillAssets.artifactQuality.verdict, 'passed');
-  assert.equal(mixedSkillTask.artifactQuality.verdict, 'passed');
-  assert.equal(policySensitive.artifactQuality.verdict, 'passed');
-  assert.equal(richDoc.artifactQuality.verdict, 'passed');
-  assert.equal(workspaceIndexRebuild.artifactQuality.verdict, 'passed');
-  assert.equal(complexDocsBundle.artifactQuality.verdict, 'passed');
-  assert.equal(decisionLogSynthesis.artifactQuality.verdict, 'passed');
-  assert.equal(importedDecisionDoc.artifactQuality.verdict, 'passed');
+  assert.equal(configMigration.artifactEvidence.verdict, 'passed');
+  assert.equal(workspaceBootstrap.artifactEvidence.verdict, 'passed');
+  assert.equal(correctionChurn.artifactEvidence.verdict, 'passed');
+  assert.equal(checkpointRecovery.artifactEvidence.verdict, 'passed');
+  assert.equal(providerFailureStreak.artifactEvidence.verdict, 'passed');
+  assert.equal(extensionFailureStability.artifactEvidence.verdict, 'passed');
+  assert.equal(workspaceDocsImport.artifactEvidence.verdict, 'passed');
+  assert.equal(workspaceCommandDriven.artifactEvidence.verdict, 'passed');
+  assert.equal(ruleConstrained.artifactEvidence.verdict, 'passed');
+  assert.equal(hookObservable.artifactEvidence.verdict, 'passed');
+  assert.equal(agentAssistedReview.artifactEvidence.verdict, 'passed');
+  assert.equal(workspaceCommandWithDocMemory.artifactEvidence.verdict, 'passed');
+  assert.equal(skillDrivenTask.artifactEvidence.verdict, 'passed');
+  assert.equal(mcpToolAssistedTask.artifactEvidence.verdict, 'passed');
+  assert.equal(skillFailureDiagnostics.artifactEvidence.verdict, 'passed');
+  assert.equal(mcpFailureRecovery.artifactEvidence.verdict, 'passed');
+  assert.equal(instructionSkillGuided.artifactEvidence.verdict, 'passed');
+  assert.equal(instructionSkillAssets.artifactEvidence.verdict, 'passed');
+  assert.equal(mixedSkillTask.artifactEvidence.verdict, 'passed');
+  assert.equal(policySensitive.artifactEvidence.verdict, 'passed');
+  assert.equal(richDoc.artifactEvidence.verdict, 'passed');
+  assert.equal(workspaceIndexRebuild.artifactEvidence.verdict, 'passed');
+  assert.equal(complexDocsBundle.artifactEvidence.verdict, 'passed');
+  assert.equal(decisionLogSynthesis.artifactEvidence.verdict, 'passed');
+  assert.equal(importedDecisionDoc.artifactEvidence.verdict, 'passed');
   assert.equal(workspaceBootstrap.diagnostics.artifactSnapshots.some((snapshot) => snapshot.path === '.scc/project.md' && snapshot.exists), true);
   assert.equal(correctionChurn.executionSummary.correctionDepth >= 2, true);
   assert.equal(checkpointRecovery.executionSummary.lastSafeCheckpointAt !== null, true);

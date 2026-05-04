@@ -738,11 +738,11 @@ async function openComposer(page) {
 async function verifyComposerIsGeneric(page) {
   const taskTypeVisible = await page.locator('[data-testid="task-composer-task-type"]').isVisible().catch(() => false);
   assertCondition(taskTypeVisible, "Add Task composer is missing the generic task type selector.");
-  const qualityInput = page.locator('[data-testid="task-composer-quality-profile"]');
-  const qualityInputCount = await qualityInput.count();
+  const legacyValidationInput = page.locator('[data-testid="task-composer-quality-profile"]');
+  const legacyValidationInputCount = await legacyValidationInput.count();
   assertCondition(
-    qualityInputCount === 0,
-    "Add Task composer must not expose quality-profile or scenario-pack controls in the product flow."
+    legacyValidationInputCount === 0,
+    "Add Task composer must not expose legacy validation or scenario-pack controls in the product flow."
   );
 }
 

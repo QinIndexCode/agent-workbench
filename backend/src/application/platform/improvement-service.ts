@@ -36,7 +36,7 @@ interface TaskImprovementStateRecord {
   lifecycleStatus: ExperienceReport['lifecycleStatus'];
   updatedAt: number;
   patternKey: string;
-  qualityScore: number;
+  reviewScore: number;
   experienceReport: ExperienceReport;
   archiveStatus: RealTaskArchiveStatus;
   proposalIds: string[];
@@ -107,6 +107,26 @@ async function writeCollection<T>(
   await foundation.storage.writeJson(filePath, records, foundation.config.storage.jsonSpacing);
 }
 
+function readArtifactEvidence(report: Partial<ExperienceReport> | null | undefined): ExperienceReport['artifactEvidence'] {
+  const legacyReport = report as (Partial<ExperienceReport> & {
+    artifactQuality?: ExperienceReport['artifactEvidence'];
+  }) | null | undefined;
+  return (legacyReport?.artifactEvidence ?? legacyReport?.artifactQuality ?? 'none') as ExperienceReport['artifactEvidence'];
+}
+
+function readReviewScore(
+  record: { reviewScore?: unknown; qualityScore?: unknown } | null | undefined,
+  fallback = 0.5
+): number {
+  if (typeof record?.reviewScore === 'number' && Number.isFinite(record.reviewScore)) {
+    return record.reviewScore;
+  }
+  if (typeof record?.qualityScore === 'number' && Number.isFinite(record.qualityScore)) {
+    return record.qualityScore;
+  }
+  return fallback;
+}
+
 function normalizeExperienceReport(
   report: Partial<ExperienceReport> | null | undefined,
   defaults: {
@@ -127,7 +147,7 @@ function normalizeExperienceReport(
           ? 'failed'
           : 'cancelled'
     )) as ExperienceReport['outcome'],
-    artifactQuality: (report?.artifactQuality ?? 'none') as ExperienceReport['artifactQuality'],
+    artifactEvidence: readArtifactEvidence(report),
     truthCompleteness: (report?.truthCompleteness ?? 'partial') as ExperienceReport['truthCompleteness'],
     failureTaxonomy: Array.isArray(report?.failureTaxonomy) ? report.failureTaxonomy : [],
     keyFacts: Array.isArray(report?.keyFacts) ? report.keyFacts : [],
@@ -150,7 +170,7 @@ function normalizeImprovementProposal(record: ImprovementProposal): ImprovementP
     archivedAt: record.archivedAt ?? null,
     patternKey: record.patternKey ?? normalizeKey(`${record.kind}-${record.taskId}`),
     dedupeKey: record.dedupeKey ?? normalizeKey(`${record.kind}-${record.taskId}-${record.title}`),
-    qualityScore: typeof record.qualityScore === 'number' ? record.qualityScore : 0.5,
+    reviewScore: readReviewScore(record),
     archiveEligible: record.archiveEligible ?? false,
     duplicateOfProposalId: record.duplicateOfProposalId ?? null,
     conflictsWithProposalIds: Array.isArray(record.conflictsWithProposalIds) ? dedupeStrings(record.conflictsWithProposalIds) : [],
@@ -311,7 +331,7 @@ function normalizeArchiveEntry(record: RealTaskArchiveEntry): RealTaskArchiveEnt
       reason: record.archiveEligibility?.reason ?? 'legacy_archived',
       complexitySignals
     },
-    qualityScore: typeof record.qualityScore === 'number' ? record.qualityScore : 0.5,
+    reviewScore: readReviewScore(record),
     patternKey: record.patternKey ?? normalizeKey(`${record.lifecycleStatus}-${record.taskId}`),
     experienceReport: normalizedExperience
   };
@@ -329,7 +349,7 @@ function normalizeTaskImprovementState(record: TaskImprovementStateRecord): Task
     lifecycleStatus,
     updatedAt: record.updatedAt ?? Date.now(),
     patternKey: record.patternKey ?? normalizeKey(`${record.taskTitle}-${record.taskId}`),
-    qualityScore: typeof record.qualityScore === 'number' ? record.qualityScore : 0.5,
+    reviewScore: readReviewScore(record),
     experienceReport: normalizedExperience,
     archiveStatus: normalizeArchiveStatus(record.archiveStatus, record.taskId),
     proposalIds: Array.isArray(record.proposalIds) ? dedupeStrings(record.proposalIds) : []
@@ -374,7 +394,7 @@ function getActionBearingSignals(complexitySignals: string[]): string[] {
   return complexitySignals.filter((signal) => ACTION_BEARING_COMPLEXITY_SIGNALS.has(signal));
 }
 
-function computeArtifactQuality(task: TaskQueryResponse): ExperienceReport['artifactQuality'] {
+function computeArtifactEvidence(task: TaskQueryResponse): ExperienceReport['artifactEvidence'] {
   if ((task.completionSummary?.artifactDestinationPaths.length ?? 0) > 0 || task.completionSummary?.artifactDestinationDir) {
     return 'delivered';
   }
@@ -433,7 +453,7 @@ function computeFailureTaxonomy(task: TaskQueryResponse): string[] {
 
 function buildExperienceReport(task: TaskQueryResponse): ExperienceReport {
   const complexitySignals = extractComplexitySignals(task);
-  const artifactQuality = computeArtifactQuality(task);
+  const artifactEvidence = computeArtifactEvidence(task);
   const truthCompleteness = computeTruthCompleteness(task);
   const failureTaxonomy = computeFailureTaxonomy(task);
   const resultSummary = truncateText(
@@ -453,7 +473,7 @@ function buildExperienceReport(task: TaskQueryResponse): ExperienceReport {
     lifecycleStatus: task.runtime.lifecycleStatus as ExperienceReport['lifecycleStatus'],
     summary: resultSummary || `${task.definition.title} ended with ${task.runtime.lifecycleStatus.toLowerCase()}.`,
     outcome,
-    artifactQuality,
+    artifactEvidence,
     truthCompleteness,
     failureTaxonomy,
     keyFacts: dedupeStrings([
@@ -488,7 +508,7 @@ function computeArchiveEligibility(task: TaskQueryResponse, experienceReport: Ex
   };
 }
 
-function computeQualityScore(params: {
+function computeReviewScore(params: {
   task: TaskQueryResponse;
   experienceReport: ExperienceReport;
   evidenceCount?: number;
@@ -497,9 +517,9 @@ function computeQualityScore(params: {
   let score = 0.42;
   score += Math.min(params.experienceReport.complexitySignals.length, 4) * 0.07;
   score += params.experienceReport.truthCompleteness === 'complete' ? 0.16 : 0.05;
-  score += params.experienceReport.artifactQuality === 'delivered'
+  score += params.experienceReport.artifactEvidence === 'delivered'
     ? 0.16
-    : params.experienceReport.artifactQuality === 'artifact_only'
+    : params.experienceReport.artifactEvidence === 'artifact_only'
       ? 0.08
       : 0;
   score += params.task.runtime.lifecycleStatus === 'COMPLETED'
@@ -554,7 +574,7 @@ function buildLessonProposal(task: TaskQueryResponse, experienceReport: Experien
     archivedAt: null,
     patternKey,
     dedupeKey,
-    qualityScore: computeQualityScore({ task, experienceReport }),
+    reviewScore: computeReviewScore({ task, experienceReport }),
     archiveEligible: true,
     duplicateOfProposalId: null,
     conflictsWithProposalIds: [],
@@ -706,7 +726,7 @@ function buildExperienceProposal(params: {
     archivedAt: null,
     patternKey: params.patternKey,
     dedupeKey: normalizeKey(`experience-${params.patternKey}`),
-    qualityScore: computeQualityScore({
+    reviewScore: computeReviewScore({
       task: params.task,
       experienceReport: params.experienceReport,
       evidenceCount: evidenceTaskIds.length,
@@ -794,7 +814,7 @@ function buildInstructionSkillProposal(params: {
       params.patternKey,
       params.approvedExperience.proposalId
     ]),
-    qualityScore: computeQualityScore({
+    reviewScore: computeReviewScore({
       task: params.task,
       experienceReport: params.experienceReport,
       evidenceCount: evidenceTaskIds.length,
@@ -866,7 +886,7 @@ function buildOptimizationProposal(params: {
       params.summary ? normalizeKey(params.summary).slice(0, 24) : null,
       params.patternKey
     ].filter(Boolean).join('-')),
-    qualityScore: computeQualityScore({
+    reviewScore: computeReviewScore({
       task: params.task,
       experienceReport: params.experienceReport,
       optimisticBonus: 0.02
@@ -992,7 +1012,7 @@ function mergeProposalEvidence(existing: ImprovementProposal, incoming: Improvem
     ...existing,
     evidenceTaskIds: mergeEvidenceTaskIds(existing.evidenceTaskIds, incoming.evidenceTaskIds),
     updatedAt: Date.now(),
-    qualityScore: Math.max(existing.qualityScore, incoming.qualityScore),
+    reviewScore: Math.max(existing.reviewScore, incoming.reviewScore),
     archiveEligible: existing.archiveEligible || incoming.archiveEligible,
     experienceReport: incoming.experienceReport,
     lessonProposal: existing.lessonProposal && incoming.lessonProposal
@@ -1436,8 +1456,8 @@ export class ImprovementService {
         completed: archive.filter((entry) => entry.lifecycleStatus === 'COMPLETED').length,
         failed: archive.filter((entry) => entry.lifecycleStatus === 'FAILED').length,
         cancelled: archive.filter((entry) => entry.lifecycleStatus === 'CANCELLED').length,
-        delivered: archive.filter((entry) => entry.experienceReport.artifactQuality === 'delivered').length,
-        artifactOnly: archive.filter((entry) => entry.experienceReport.artifactQuality === 'artifact_only').length,
+        delivered: archive.filter((entry) => entry.experienceReport.artifactEvidence === 'delivered').length,
+        artifactOnly: archive.filter((entry) => entry.experienceReport.artifactEvidence === 'artifact_only').length,
         proposalGenerated: archive.reduce((count, entry) => count + entry.proposalIds.length, 0)
       },
       archiveEligibleCount: taskStates.filter((entry) => entry.archiveStatus.eligible).length,
@@ -1454,7 +1474,7 @@ export class ImprovementService {
         complete,
         partial
       },
-      proposalGenerationQuality: {
+      proposalGenerationEvidence: {
         lesson,
         experience,
         instructionSkill,
@@ -1472,7 +1492,7 @@ export class ImprovementService {
     const experienceReport = buildExperienceReport(task);
     const patternKey = getTaskPatternKeyFromDefinition(task.definition);
     const archiveDecision = computeArchiveEligibility(task, experienceReport);
-    const archiveQualityScore = computeQualityScore({ task, experienceReport });
+    const archiveReviewScore = computeReviewScore({ task, experienceReport });
 
     const [archive, proposals, taskStates, approvedExperiences] = await Promise.all([
       this.listArchiveCollection(),
@@ -1689,7 +1709,7 @@ export class ImprovementService {
           reason: archiveDecision.reason,
           complexitySignals: archiveDecision.complexitySignals
         },
-        qualityScore: archiveQualityScore,
+        reviewScore: archiveReviewScore,
         patternKey,
         truthSummary: {
           statusSummary: task.statusSummary.label,
@@ -1733,7 +1753,7 @@ export class ImprovementService {
       lifecycleStatus: task.runtime.lifecycleStatus as ExperienceReport['lifecycleStatus'],
       updatedAt: now,
       patternKey,
-      qualityScore: archiveQualityScore,
+      reviewScore: archiveReviewScore,
       experienceReport,
       archiveStatus,
       proposalIds

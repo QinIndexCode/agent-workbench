@@ -26,7 +26,7 @@ export interface RuntimeStressValidationScenarioResult {
   issueCategory: TaskExecutionIssueCategory | null;
   summary: string;
   queueRuntimeConsistent: boolean;
-  artifactQualityVerdict: 'passed' | 'failed';
+  artifactEvidenceVerdict: 'passed' | 'failed';
   failureCategory: string | null;
   evidence: string[];
   executionSummary: TaskExecutionSummary | null;
@@ -41,7 +41,7 @@ export interface RuntimeStressValidationSuiteResult {
     passed: number;
     failed: number;
     successRate: number;
-    artifactQualityPassRate: number;
+    artifactEvidencePassRate: number;
     byFamily: Record<RuntimeStressValidationFamily, number>;
     byFailureCategory: Record<string, number>;
   };
@@ -162,7 +162,7 @@ async function runDirectArtifactApplyScenario(): Promise<RuntimeStressValidation
         ? 'Artifact routing blocks on unresolved destination, applies sandbox outputs, and auto-completes without drift once no further parent work remains.'
         : 'Artifact apply recovery did not preserve the unresolved blocker, explicit apply, and final completion chain.',
       queueRuntimeConsistent: executionSummary.queueRuntimeAlignment.consistent,
-      artifactQualityVerdict: destinationExists ? 'passed' : 'failed',
+      artifactEvidenceVerdict: destinationExists ? 'passed' : 'failed',
       failureCategory: passed ? null : 'artifact_apply_recovery_failed',
       evidence: [
         `preApplyState=${unresolved.executionSummary.artifactPathState}`,
@@ -212,7 +212,7 @@ export async function runRuntimeStressValidationSuite(): Promise<RuntimeStressVa
       sourceScenario: eventStability.scenario,
       passed:
         eventStability.executionSummary.queueRuntimeAlignment.consistent
-        && eventStability.artifactQuality.verdict === 'passed'
+        && eventStability.artifactEvidence.verdict === 'passed'
         && eventStability.executionSummary.skillFailureStreak >= 1
         && eventStability.executionSummary.mcpFailureStreak >= 1
         && eventStability.metrics.eventCount >= 20
@@ -220,8 +220,8 @@ export async function runRuntimeStressValidationSuite(): Promise<RuntimeStressVa
       issueCategory: eventStability.issueCategory,
       summary: 'High event density stays explainable and aligned under extension failure stability coverage.',
       queueRuntimeConsistent: eventStability.executionSummary.queueRuntimeAlignment.consistent,
-      artifactQualityVerdict: eventStability.artifactQuality.verdict,
-      failureCategory: eventStability.artifactQuality.failureCategory,
+      artifactEvidenceVerdict: eventStability.artifactEvidence.verdict,
+      failureCategory: eventStability.artifactEvidence.failureCategory,
       evidence: [
         `turnCount=${eventStability.executionSummary.turnCount}`,
         `eventCount=${eventStability.metrics.eventCount}`,
@@ -237,8 +237,8 @@ export async function runRuntimeStressValidationSuite(): Promise<RuntimeStressVa
       issueCategory: approvalRecovery.issueCategory,
       summary: 'Approval backlog recovery remains explainable through summary-first permission and queue/runtime state.',
       queueRuntimeConsistent: approvalRecovery.executionSummary.queueRuntimeAlignment.consistent,
-      artifactQualityVerdict: approvalRecovery.artifactQuality.verdict,
-      failureCategory: approvalRecovery.artifactQuality.failureCategory,
+      artifactEvidenceVerdict: approvalRecovery.artifactEvidence.verdict,
+      failureCategory: approvalRecovery.artifactEvidence.failureCategory,
       evidence: [
         `approvalRequiredCount=${approvalRecovery.executionSummary.permissionSummary.approvalRequiredCount}`,
         `queueRuntimeConsistent=${String(approvalRecovery.executionSummary.queueRuntimeAlignment.consistent)}`
@@ -253,8 +253,8 @@ export async function runRuntimeStressValidationSuite(): Promise<RuntimeStressVa
       issueCategory: correctionLoop.issueCategory,
       summary: 'Correction churn remains categorized and does not fall into unknown non-convergent drift.',
       queueRuntimeConsistent: correctionLoop.executionSummary.queueRuntimeAlignment.consistent,
-      artifactQualityVerdict: correctionLoop.artifactQuality.verdict,
-      failureCategory: correctionLoop.artifactQuality.failureCategory,
+      artifactEvidenceVerdict: correctionLoop.artifactEvidence.verdict,
+      failureCategory: correctionLoop.artifactEvidence.failureCategory,
       evidence: [
         `correctionDepth=${correctionLoop.executionSummary.correctionDepth}`,
         `issueCategory=${correctionLoop.issueCategory ?? 'none'}`
@@ -270,8 +270,8 @@ export async function runRuntimeStressValidationSuite(): Promise<RuntimeStressVa
       issueCategory: providerFailure.issueCategory,
       summary: 'Provider failure streak recovery keeps conservative-mode and blocker guidance explainable.',
       queueRuntimeConsistent: providerFailure.executionSummary.queueRuntimeAlignment.consistent,
-      artifactQualityVerdict: providerFailure.artifactQuality.verdict,
-      failureCategory: providerFailure.artifactQuality.failureCategory,
+      artifactEvidenceVerdict: providerFailure.artifactEvidence.verdict,
+      failureCategory: providerFailure.artifactEvidence.failureCategory,
       evidence: [
         `providerFailureStreak=${providerFailure.executionSummary.providerFailureStreak}`,
         `conservativeModeReason=${providerFailure.executionSummary.conservativeModeReason ?? 'none'}`
@@ -288,8 +288,8 @@ export async function runRuntimeStressValidationSuite(): Promise<RuntimeStressVa
       issueCategory: hookRecovery.issueCategory,
       summary: 'Hook and MCP failure recovery remain operator-visible instead of degrading into opaque failure.',
       queueRuntimeConsistent: hookRecovery.executionSummary.queueRuntimeAlignment.consistent,
-      artifactQualityVerdict: hookRecovery.artifactQuality.verdict,
-      failureCategory: hookRecovery.artifactQuality.failureCategory,
+      artifactEvidenceVerdict: hookRecovery.artifactEvidence.verdict,
+      failureCategory: hookRecovery.artifactEvidence.failureCategory,
       evidence: [
         `mcpRecentStatuses=${hookRecovery.executionSummary.mcpSummary.recent.map((record) => record.status).join(',')}`,
         `hookCounts=${hookRecovery.executionSummary.hookSummary.executedCount}/${hookRecovery.executionSummary.hookSummary.failedCount}`
@@ -304,8 +304,8 @@ export async function runRuntimeStressValidationSuite(): Promise<RuntimeStressVa
       issueCategory: queueAlignment.issueCategory,
       summary: 'Restart and checkpoint recovery preserve queue/runtime/projection alignment.',
       queueRuntimeConsistent: queueAlignment.executionSummary.queueRuntimeAlignment.consistent,
-      artifactQualityVerdict: queueAlignment.artifactQuality.verdict,
-      failureCategory: queueAlignment.artifactQuality.failureCategory,
+      artifactEvidenceVerdict: queueAlignment.artifactEvidence.verdict,
+      failureCategory: queueAlignment.artifactEvidence.failureCategory,
       evidence: [
         `lastRecoverySource=${queueAlignment.executionSummary.lastRecoverySource ?? 'none'}`,
         `queueRuntimeConsistent=${String(queueAlignment.executionSummary.queueRuntimeAlignment.consistent)}`
@@ -329,7 +329,7 @@ export async function runRuntimeStressValidationSuite(): Promise<RuntimeStressVa
 
   for (const scenario of scenarios) {
     byFamily[scenario.family] += 1;
-    if (scenario.passed && scenario.artifactQualityVerdict === 'passed' && scenario.queueRuntimeConsistent) {
+    if (scenario.passed && scenario.artifactEvidenceVerdict === 'passed' && scenario.queueRuntimeConsistent) {
       passed += 1;
     } else {
       failed += 1;
@@ -347,7 +347,7 @@ export async function runRuntimeStressValidationSuite(): Promise<RuntimeStressVa
       passed,
       failed,
       successRate: Number((passed / Math.max(1, scenarios.length)).toFixed(4)),
-      artifactQualityPassRate: Number((scenarios.filter((scenario) => scenario.artifactQualityVerdict === 'passed').length / Math.max(1, scenarios.length)).toFixed(4)),
+      artifactEvidencePassRate: Number((scenarios.filter((scenario) => scenario.artifactEvidenceVerdict === 'passed').length / Math.max(1, scenarios.length)).toFixed(4)),
       byFamily,
       byFailureCategory
     }

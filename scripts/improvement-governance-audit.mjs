@@ -218,7 +218,7 @@ async function injectGovernanceFixtures(params) {
     duplicateOfProposalId: lessonProposal.proposalId,
     conflictsWithProposalIds: [],
     supersededByProposalId: null,
-    qualityScore: 0.54,
+    reviewScore: 0.54,
     metadata: {
       ...(lessonProposal.metadata ?? {}),
       injectedBy: 'improvement-governance-audit',
@@ -239,7 +239,7 @@ async function injectGovernanceFixtures(params) {
     duplicateOfProposalId: null,
     conflictsWithProposalIds: [lessonProposal.proposalId],
     supersededByProposalId: null,
-    qualityScore: 0.58,
+    reviewScore: 0.58,
     experienceReport: {
       ...lessonProposal.experienceReport,
       lifecycleStatus: 'FAILED',

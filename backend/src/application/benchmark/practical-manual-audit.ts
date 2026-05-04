@@ -38,8 +38,8 @@ function auditScenario(scenario: PracticalTaskScenarioResult): PracticalManualAu
   if (!scenario.passed) {
     findings.push(`Scenario status is not passed (${scenario.issueCategory ?? 'no_issue_category'}).`);
   }
-  if (scenario.artifactQuality.verdict !== 'passed') {
-    findings.push(`Artifact quality verdict is ${scenario.artifactQuality.verdict}.`);
+  if (scenario.artifactEvidence.verdict !== 'passed') {
+    findings.push(`Artifact evidence verdict is ${scenario.artifactEvidence.verdict}.`);
   }
   if (scenario.finalLifecycleStatus !== 'COMPLETED') {
     findings.push(`Lifecycle ended in ${scenario.finalLifecycleStatus} instead of COMPLETED.`);

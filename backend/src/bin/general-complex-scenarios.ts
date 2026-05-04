@@ -7,7 +7,7 @@ function formatScenarioLine(result: Awaited<ReturnType<typeof runTaskGeneralComp
     `lifecycle=${result.finalLifecycleStatus}`,
     `queue=${result.finalQueueState ?? 'none'}`,
     `issue=${result.issueCategory ?? 'none'}`,
-    `artifact=${result.artifactQuality.verdict}`,
+    `artifact=${result.artifactEvidence.verdict}`,
     `calls=${result.metrics.apiCallCount}`,
     `toolBatches=${result.metrics.executedToolBatchCount}`,
     `tools=${result.metrics.toolInvocationCount}`
@@ -26,7 +26,7 @@ async function main(): Promise<void> {
     'general complex scenarios:',
     ...report.scenarios.map((scenario) => `- ${formatScenarioLine(scenario)}`),
     '',
-    `totals: passed=${report.totals.passed}, failed=${report.totals.failed}, successRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}`,
+    `totals: passed=${report.totals.passed}, failed=${report.totals.failed}, successRate=${report.totals.successRate}, artifactEvidencePassRate=${report.totals.artifactEvidencePassRate}`,
     `averages: apiCalls=${report.totals.averageApiCallCount}, executedToolBatches=${report.totals.averageExecutedToolBatchCount}`
   ];
 

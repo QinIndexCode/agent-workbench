@@ -630,12 +630,12 @@ function summarizeCliInteractionTranscript(params) {
   if (!isAchievedSuiteReport(params.report)) {
     return {
       status: 'open_gap',
-      detail: `CLI transcript passRate=${formatPassRate(params.report)}, artifactQualityPassRate=${params.report?.totals?.artifactQualityPassRate ?? 0}`
+      detail: `CLI transcript passRate=${formatPassRate(params.report)}, artifactEvidencePassRate=${params.report?.totals?.artifactEvidencePassRate ?? 0}`
     };
   }
   return {
     status: 'achieved',
-    detail: `passRate=${formatPassRate(params.report)}, artifactQualityPassRate=${params.report.totals?.artifactQualityPassRate ?? 0}`
+    detail: `passRate=${formatPassRate(params.report)}, artifactEvidencePassRate=${params.report.totals?.artifactEvidencePassRate ?? 0}`
   };
 }
 
@@ -655,12 +655,12 @@ function summarizeRuntimeStressValidation(params) {
   if (!isAchievedSuiteReport(params.report)) {
     return {
       status: 'open_gap',
-      detail: `runtime stress passRate=${formatPassRate(params.report)}, artifactQualityPassRate=${params.report?.totals?.artifactQualityPassRate ?? 0}`
+      detail: `runtime stress passRate=${formatPassRate(params.report)}, artifactEvidencePassRate=${params.report?.totals?.artifactEvidencePassRate ?? 0}`
     };
   }
   return {
     status: 'achieved',
-    detail: `passRate=${formatPassRate(params.report)}, artifactQualityPassRate=${params.report.totals?.artifactQualityPassRate ?? 0}`
+    detail: `passRate=${formatPassRate(params.report)}, artifactEvidencePassRate=${params.report.totals?.artifactEvidencePassRate ?? 0}`
   };
 }
 
@@ -995,7 +995,7 @@ function summarizeRealTaskCompletion(params) {
   if (report.totals.successRate !== 1) {
     return {
       status: 'open_gap',
-      detail: `repo-real task completion passRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}`,
+      detail: `repo-real task completion passRate=${report.totals.successRate}, artifactEvidencePassRate=${report.totals.artifactEvidencePassRate}`,
       byFamily
     };
   }
@@ -1056,7 +1056,7 @@ function summarizePublicCapabilityParity(params) {
   if (report.totals.successRate !== 1) {
     return {
       status: 'open_gap',
-      detail: `public capability parity passRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}`,
+      detail: `public capability parity passRate=${report.totals.successRate}, artifactEvidencePassRate=${report.totals.artifactEvidencePassRate}`,
       byFamily
     };
   }
@@ -1151,7 +1151,7 @@ function summarizePracticalTaskAcceptance(params) {
   if (report.totals.successRate !== 1) {
     return {
       status: 'open_gap',
-      detail: `practical task passRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}`,
+      detail: `practical task passRate=${report.totals.successRate}, artifactEvidencePassRate=${report.totals.artifactEvidencePassRate}`,
       byFamily
     };
   }
@@ -1283,7 +1283,7 @@ function summarizeLivePracticalTaskAcceptance(params) {
   if (report.totals.successRate !== 1 || report.totals.liveProviderPassRate !== 1) {
     return {
       status: 'open_gap',
-      detail: `live practical passRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}, liveProviderPassRate=${report.totals.liveProviderPassRate}`,
+      detail: `live practical passRate=${report.totals.successRate}, artifactEvidencePassRate=${report.totals.artifactEvidencePassRate}, liveProviderPassRate=${report.totals.liveProviderPassRate}`,
       byFamily
     };
   }
@@ -1462,7 +1462,7 @@ function summarizeEcommerceDelivery(params) {
   if (report.totals.successRate !== 1) {
     return {
       status: 'open_gap',
-      detail: `ecommerce delivery passRate=${report.totals.successRate}, artifactQualityPassRate=${report.totals.artifactQualityPassRate}`,
+      detail: `ecommerce delivery passRate=${report.totals.successRate}, artifactEvidencePassRate=${report.totals.artifactEvidencePassRate}`,
       byFamily
     };
   }
@@ -1557,8 +1557,8 @@ function summarizeProviderHardening(params) {
   const providerTruthMismatches = collectScenarioProviderTruthMismatches(liveProvider);
   const scenarioFailures = Array.isArray(liveProvider?.scenarios)
     ? liveProvider.scenarios
-      .filter((scenario) => scenario?.artifactQuality?.failureCategory)
-      .map((scenario) => scenario.artifactQuality.failureCategory)
+      .filter((scenario) => scenario?.artifactEvidence?.failureCategory)
+      .map((scenario) => scenario.artifactEvidence.failureCategory)
     : [];
   const uniqueFailureCategories = [...new Set(scenarioFailures)];
 
@@ -2316,7 +2316,7 @@ async function main() {
       status: liveProviderParse.payload ? liveProviderModeToStatus(liveProviderProfile.mode) : 'open_gap',
       detail: !liveProviderParse.payload
         ? liveProviderParse.issues.join('; ')
-        : `mode=${liveProviderProfile.mode}, reason=${liveProviderProfile.reason}, passRate=${liveProvider.totals?.passed ?? 0}/${liveProvider.totals?.total ?? 0}, artifactQualityPassRate=${liveProvider.totals?.artifactQualityPassRate ?? 0}`
+        : `mode=${liveProviderProfile.mode}, reason=${liveProviderProfile.reason}, passRate=${liveProvider.totals?.passed ?? 0}/${liveProvider.totals?.total ?? 0}, artifactEvidencePassRate=${liveProvider.totals?.artifactEvidencePassRate ?? 0}`
     },
     {
       area: 'artifact-evidence',
@@ -2329,7 +2329,7 @@ async function main() {
         : 'advisory',
       detail: !liveProviderParse.payload
         ? liveProviderParse.issues.join('; ')
-        : `mode=${liveProviderProfile.mode}, artifactQualityPassRate=${liveProvider.totals?.artifactQualityPassRate ?? 0}, byFamily=${JSON.stringify(liveProvider.totals?.byFamily ?? {})}`
+        : `mode=${liveProviderProfile.mode}, artifactEvidencePassRate=${liveProvider.totals?.artifactEvidencePassRate ?? 0}, byFamily=${JSON.stringify(liveProvider.totals?.byFamily ?? {})}`
     }
   ];
   const flagshipEvidenceBar = [
@@ -2393,27 +2393,27 @@ async function main() {
       flagshipEvidenceBar: {
         status: liveProviderModeToStatus(liveProviderProfile.mode),
         profileMode: liveProviderProfile.mode,
-        artifactQualityPassRate: liveProvider.totals?.artifactQualityPassRate ?? 0,
+        artifactEvidencePassRate: liveProvider.totals?.artifactEvidencePassRate ?? 0,
         externalBlocker: liveProvider.externalBlocker ?? null,
         byFamily: liveProvider.totals?.byFamily ?? {}
       },
       generalComplex: {
         status: generalComplexParse.payload ? (generalComplex.status ?? 'open_gap') : 'open_gap',
-        artifactQualityPassRate: generalComplex.totals?.artifactQualityPassRate ?? 0,
+        artifactEvidencePassRate: generalComplex.totals?.artifactEvidencePassRate ?? 0,
         byFamily: generalComplex.totals?.byFamily ?? {},
         byFailureCategory: generalComplex.totals?.byFailureCategory ?? {},
         parsingIssues: generalComplexParse.issues
       },
       realTaskCompletion: {
         status: realTaskCompletionParse.payload ? (realTaskCompletionReport.status ?? 'open_gap') : 'open_gap',
-        artifactQualityPassRate: realTaskCompletionReport.totals?.artifactQualityPassRate ?? 0,
+        artifactEvidencePassRate: realTaskCompletionReport.totals?.artifactEvidencePassRate ?? 0,
         byFamily: realTaskCompletionReport.totals?.byFamily ?? {},
         byFailureCategory: realTaskCompletionReport.totals?.byFailureCategory ?? {},
         parsingIssues: realTaskCompletionParse.issues
       },
       publicCapabilityParity: {
         status: publicCapabilityParityParse.payload ? (publicCapabilityParityReport.status ?? 'open_gap') : 'open_gap',
-        artifactQualityPassRate: publicCapabilityParityReport.totals?.artifactQualityPassRate ?? 0,
+        artifactEvidencePassRate: publicCapabilityParityReport.totals?.artifactEvidencePassRate ?? 0,
         byBaseline: publicCapabilityParityReport.totals?.byBaseline ?? {},
         byFamily: publicCapabilityParityReport.totals?.byFamily ?? {},
         byFailureCategory: publicCapabilityParityReport.totals?.byFailureCategory ?? {},
@@ -2427,7 +2427,7 @@ async function main() {
       },
       practicalTaskAcceptance: {
         status: practicalTaskAcceptanceParse.payload ? (practicalTaskAcceptanceReport.status ?? 'open_gap') : 'open_gap',
-        artifactQualityPassRate: practicalTaskAcceptanceReport.totals?.artifactQualityPassRate ?? 0,
+        artifactEvidencePassRate: practicalTaskAcceptanceReport.totals?.artifactEvidencePassRate ?? 0,
         passRate: practicalTaskAcceptanceParse.payload && practicalTaskAcceptanceReport.totals ? `${practicalTaskAcceptanceReport.totals.passed}/${practicalTaskAcceptanceReport.totals.total}` : 'parse_error',
         reportPath: practicalTaskAcceptanceReportPath,
         byFamily: practicalTaskAcceptanceReport.totals?.byFamily ?? {},
@@ -2442,7 +2442,7 @@ async function main() {
       },
       livePracticalTaskAcceptance: {
         status: practicalLiveTaskAcceptanceParse.payload ? (practicalLiveTaskAcceptanceReport.status ?? 'open_gap') : 'open_gap',
-        artifactQualityPassRate: practicalLiveTaskAcceptanceReport.totals?.artifactQualityPassRate ?? 0,
+        artifactEvidencePassRate: practicalLiveTaskAcceptanceReport.totals?.artifactEvidencePassRate ?? 0,
         liveProviderPassRate: practicalLiveTaskAcceptanceReport.totals?.liveProviderPassRate ?? 0,
         shipReadyPassRate: practicalLiveTaskAcceptanceReport.totals?.shipReadyPassRate ?? 0,
         minorEditsNeededCount: practicalLiveTaskAcceptanceReport.totals?.minorEditsNeededCount ?? 0,
@@ -2479,7 +2479,7 @@ async function main() {
       },
       ecommerceDelivery: {
         status: ecommerceDeliveryParse.payload ? (ecommerceDeliveryReport.status ?? 'open_gap') : 'open_gap',
-        artifactQualityPassRate: ecommerceDeliveryReport.totals?.artifactQualityPassRate ?? 0,
+        artifactEvidencePassRate: ecommerceDeliveryReport.totals?.artifactEvidencePassRate ?? 0,
         passRate: ecommerceDeliveryParse.payload && ecommerceDeliveryReport.totals ? `${ecommerceDeliveryReport.totals.passed}/${ecommerceDeliveryReport.totals.total}` : 'parse_error',
         reportPath: ecommerceDeliveryReportPath,
         byFamily: ecommerceDeliveryReport.totals?.byFamily ?? {},

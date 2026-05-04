@@ -20,7 +20,7 @@ test('practical task acceptance suite validates mixed practical tasks with hybri
   assert.equal(report.totals.passed, 12);
   assert.equal(report.totals.failed, 0);
   assert.equal(report.totals.successRate, 1);
-  assert.equal(report.totals.artifactQualityPassRate, 1);
+  assert.equal(report.totals.artifactEvidencePassRate, 1);
   assert.equal(report.totals.shipReadyPassRate, 1);
   assert.equal(report.totals.byFamily['vague-blog-request'], 1);
   assert.equal(report.totals.byFamily['practical-review-task'], 1);
@@ -50,7 +50,7 @@ test('practical task acceptance suite validates mixed practical tasks with hybri
   assert.equal(vagueSummary.assumptionDisclosure.status, 'not-needed');
   assert.equal(landingPage.clarificationMode, 'assumption-led');
   assert.equal(landingPage.assumptionDisclosure.status, 'declared');
-  assert.equal(explicitDoc.artifactQuality.verdict, 'passed');
+  assert.equal(explicitDoc.artifactEvidence.verdict, 'passed');
   assert.equal(multiArtifact.diagnostics.artifactSnapshots.filter((snapshot) => snapshot.exists).length, 2);
   assert.equal(engineeringTask.diagnostics.artifactSnapshots.some((snapshot) => snapshot.path === 'patches/task-progress.patch' && snapshot.exists), true);
   assert.equal(
@@ -59,7 +59,7 @@ test('practical task acceptance suite validates mixed practical tasks with hybri
   );
 });
 
-test('practical manual audit keeps practical task outputs at ship-ready-with-minor-edits quality', async () => {
+test('practical manual audit keeps practical task outputs ship-ready with minor edits', async () => {
   const report = await runPracticalManualAudit();
 
   assert.equal(report.status, 'achieved');

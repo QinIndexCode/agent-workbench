@@ -13,7 +13,7 @@ test('ecommerce delivery suite validates a layered full-chain commerce reference
   assert.equal(report.totals.passed, 12);
   assert.equal(report.totals.failed, 0);
   assert.equal(report.totals.successRate, 1);
-  assert.equal(report.totals.artifactQualityPassRate, 1);
+  assert.equal(report.totals.artifactEvidencePassRate, 1);
   assert.equal(report.manualAudit.status, 'achieved');
   assert.equal(report.manualAudit.passed, 12);
   assert.equal(report.manualAudit.failed, 0);
@@ -28,7 +28,7 @@ test('ecommerce delivery suite validates a layered full-chain commerce reference
   assert.ok(inventory);
   assert.ok(admin);
 
-  assert.equal(payment.artifactQuality.verdict, 'passed');
+  assert.equal(payment.artifactEvidence.verdict, 'passed');
   assert.equal(payment.diagnostics.artifactSnapshots.some((snapshot) => snapshot.path === 'src/domain/payment/payment-webhook.mjs' && snapshot.exists), true);
   assert.equal(inventory.diagnostics.artifactSnapshots.some((snapshot) => snapshot.path === 'src/domain/inventory/reservation-ledger.mjs' && snapshot.exists), true);
   assert.equal(admin.manualAudit.verdict, 'passed');
