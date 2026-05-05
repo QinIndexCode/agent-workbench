@@ -32,9 +32,10 @@ export class ConfiguredToolModelClient implements ModelClient {
   constructor(private readonly command: string) {}
 
   async next(task: TaskDetail): Promise<ModelTurn> {
-    const lastToolResult = [...task.events].reverse().find((event) => event.type === "tool_result");
-    const lastAssistant = [...task.events].reverse().find((event) => event.type === "assistant_message");
-    if (lastToolResult && (!lastAssistant || lastToolResult.createdAt > lastAssistant.createdAt)) {
+    const lastToolResultIndex = findLastEventIndex(task, "tool_result");
+    const lastAssistantIndex = findLastEventIndex(task, "assistant_message");
+    const lastToolResult = lastToolResultIndex >= 0 ? task.events[lastToolResultIndex] : undefined;
+    if (lastToolResult && lastToolResultIndex > lastAssistantIndex) {
       const output = String(lastToolResult.payload["output"] ?? "");
       return { kind: "final", message: output ? `Tool evidence returned:\n\n${output.slice(0, 4000)}` : "Tool completed with no output." };
     }
@@ -44,4 +45,11 @@ export class ConfiguredToolModelClient implements ModelClient {
       calls: [{ id: createId("tool_call"), toolName: "run_command", args: { command: this.command } }]
     };
   }
+}
+
+function findLastEventIndex(task: TaskDetail, type: TaskDetail["events"][number]["type"]): number {
+  for (let index = task.events.length - 1; index >= 0; index--) {
+    if (task.events[index]?.type === type) return index;
+  }
+  return -1;
 }

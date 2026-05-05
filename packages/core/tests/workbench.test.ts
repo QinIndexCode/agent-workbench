@@ -131,6 +131,34 @@ describe("AgentWorkbench", () => {
     expect(tools.calls).toHaveLength(1);
   });
 
+  it("rehydrates task-scoped approval grants from stored task approvals", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const firstTools = new StubToolExecutor();
+    const firstWorkbench = new AgentWorkbench({
+      store,
+      tools: firstTools,
+      model: new ConfiguredToolModelClient("Get-Process")
+    });
+
+    const created = await firstWorkbench.createTask("check running processes");
+    const approval = created.approvals[0];
+    if (!approval) throw new Error("expected approval");
+    await firstWorkbench.decideApproval(created.id, approval.id, "allow_for_task");
+
+    const secondTools = new StubToolExecutor();
+    const reloadedWorkbench = new AgentWorkbench({
+      store,
+      tools: secondTools,
+      model: new ConfiguredToolModelClient("Get-Process")
+    });
+
+    const continued = await reloadedWorkbench.appendMessage(created.id, "check again");
+
+    expect(continued.status).toBe("completed");
+    expect(continued.approvals.filter((item) => item.status === "pending")).toHaveLength(0);
+    expect(secondTools.calls).toHaveLength(1);
+  });
+
   it("revokes global grants so approvals appear again", async () => {
     const workbench = new AgentWorkbench({
       store: new InMemoryWorkbenchStore(),
@@ -198,6 +226,28 @@ describe("ShellToolExecutor", () => {
 
     expect(result.ok).toBe(true);
     expect(result.output).toContain("ok");
+  });
+
+  it("requires expectedHash before editing existing files", async () => {
+    const temp = mkdtempSync(join(process.cwd(), "tmp-scc-tools-"));
+    try {
+      const file = join(temp, "note.txt");
+      writeFileSync(file, "before");
+      const executor = new ShellToolExecutor();
+      const result = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "edit_file",
+        args: {
+          path: file,
+          edits: [{ startLine: 1, endLine: 1, newText: "after" }]
+        }
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("Missing expectedHash");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 });
 

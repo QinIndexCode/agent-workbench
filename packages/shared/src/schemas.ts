@@ -42,6 +42,7 @@ export const ToolApprovalSchema = z.object({
   riskCategory: RiskCategorySchema,
   reason: z.string(),
   status: z.enum(["pending", "approved", "denied"]),
+  decision: ApprovalDecisionSchema.optional(),
   createdAt: z.string(),
   decidedAt: z.string().optional()
 });

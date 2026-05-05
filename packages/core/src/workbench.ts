@@ -89,9 +89,10 @@ export class AgentWorkbench {
     if (!approval) throw new Error(`Pending approval not found: ${approvalId}`);
 
     approval.status = decision === "deny" ? "denied" : "approved";
+    approval.decision = decision;
     approval.decidedAt = nowIso();
     if (decision === "allow_for_task") {
-      this.stateFor(task.id).allowedForTask.add(approval.riskCategory);
+      this.stateFor(task.id, task).allowedForTask.add(approval.riskCategory);
     }
     if (decision === "allow_globally") {
       await this.store.saveGlobalPermission(this.createGlobalGrant(approval.riskCategory, approval.reason));
@@ -277,7 +278,7 @@ export class AgentWorkbench {
           toolName: call.toolName,
           riskCategory: assessment.category
         });
-      } else if (this.permissions.needsApproval(assessment.category, this.stateFor(task.id))) {
+      } else if (this.permissions.needsApproval(assessment.category, this.stateFor(task.id, task))) {
         const approval = this.permissions.createApproval({ taskId: task.id, toolCall: call, assessment });
         task.approvals.push(approval);
         this.addApprovalPendingEvent(task, approval);
@@ -405,10 +406,18 @@ export class AgentWorkbench {
     return task;
   }
 
-  private stateFor(taskId: string): PermissionState {
+  private stateFor(taskId: string, task?: TaskDetail): PermissionState {
     const existing = this.permissionState.get(taskId);
     if (existing) return existing;
-    const created: PermissionState = { allowedForTask: new Set() };
+    const allowedForTask = new Set<RiskCategory>();
+    if (task) {
+      for (const approval of task.approvals) {
+        if (approval.status === "approved" && approval.decision === "allow_for_task") {
+          allowedForTask.add(approval.riskCategory);
+        }
+      }
+    }
+    const created: PermissionState = { allowedForTask };
     this.permissionState.set(taskId, created);
     return created;
   }

@@ -95,9 +95,14 @@ export class ShellToolExecutor implements ToolExecutor {
       const edits = Array.isArray(call.args["edits"]) ? call.args["edits"] : [];
       if (edits.length === 0) return this.result(call, false, "No edits provided.");
 
-      const current = existsSync(path) ? await readFile(path, "utf8") : "";
+      const fileExists = existsSync(path);
+      const current = fileExists ? await readFile(path, "utf8") : "";
       const expectedHash = String(call.args["expectedHash"] ?? "");
-      if (expectedHash && expectedHash !== hash(current)) {
+      if (!expectedHash) {
+        return this.result(call, false, "Missing expectedHash. Read the file first, or use __new__ when creating a new file.");
+      }
+      const isNewFileIntent = !fileExists && expectedHash === "__new__";
+      if (!isNewFileIntent && expectedHash !== hash(current)) {
         return this.result(call, false, `File changed before edit. Expected ${expectedHash}, actual ${hash(current)}.`);
       }
 

@@ -266,7 +266,7 @@ function toolDefinitions(): OpenAI.Chat.Completions.ChatCompletionTool[] {
           path: { type: "string" },
           offset: { type: "number", description: "Start line, default 1" },
           limit: { type: "number", description: "Maximum lines, default 200" }
-        }, ["path", "offset", "limit"])
+        }, ["path"])
       }
     },
     {
@@ -279,7 +279,7 @@ function toolDefinitions(): OpenAI.Chat.Completions.ChatCompletionTool[] {
           additionalProperties: false,
           properties: {
             path: { type: "string" },
-            expectedHash: { type: "string" },
+          expectedHash: { type: "string", description: "Hash from read_file; use __new__ only when creating a new file." },
             edits: {
               type: "array",
               items: {
@@ -306,7 +306,7 @@ function toolDefinitions(): OpenAI.Chat.Completions.ChatCompletionTool[] {
         parameters: strictObject({
           query: { type: "string" },
           path: { type: "string", description: "Directory to search, default workspace root" }
-        }, ["query", "path"])
+        }, ["query"])
       }
     },
     {
@@ -317,7 +317,7 @@ function toolDefinitions(): OpenAI.Chat.Completions.ChatCompletionTool[] {
         parameters: strictObject({
           path: { type: "string", description: "Directory path, default ." },
           recursive: { type: "boolean", description: "Whether to recurse" }
-        }, ["path", "recursive"])
+        }, [])
       }
     },
     {

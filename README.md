@@ -14,7 +14,7 @@ SCC Agent Workbench is rebuilt as an agent-first local workbench. The runtime ow
 - Simple loop first: model turn, tool request, approval or execution, evidence returned, next turn.
 - Scripts and commands are evidence, not task judges.
 - User guidance can arrive during execution and stays pending until the next safe point.
-- Tool permissions are risk-class based: allow once, allow for task, or deny.
+- Tool permissions are risk-class based: allow once, allow for task, allow globally, or deny.
 - Experience records become skills through a guarded promotion path.
 
 ## Model Provider
@@ -33,3 +33,5 @@ npm.cmd run dev
 ```
 
 The web UI runs on `http://127.0.0.1:5173`; the API runs on `http://127.0.0.1:5177`.
+
+MCP support is a planned extension point. The current implementation does not yet expose MCP discovery or remote tool execution.
