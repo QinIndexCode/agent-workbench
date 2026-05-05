@@ -14,6 +14,7 @@
   "dependencies": {
     "@fastify/cors": "^11.0.1",
     "@fastify/websocket": "^11.0.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@scc/core": "0.1.0",
     "@scc/shared": "0.1.0",
     "better-sqlite3": "^11.10.0",

@@ -4,10 +4,12 @@ import Database from "better-sqlite3";
 import type {
   ExperienceRecord,
   GlobalPermissionGrant,
+  McpServerConfig,
   PatternRecord,
   ProjectMemory,
   ReflectionSession,
   RiskCategory,
+  SkillConflict,
   SkillRecord,
   TaskDetail,
   TaskMemory,
@@ -21,6 +23,8 @@ type Namespace =
   | "task_memories"
   | "patterns"
   | "skills"
+  | "skill_conflicts"
+  | "mcp_servers"
   | "global_permissions"
   | "preferences"
   | "reflection_sessions"
@@ -87,6 +91,30 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
 
   async getSkill(skillId: string): Promise<SkillRecord | undefined> {
     return this.get<SkillRecord>("skills", skillId);
+  }
+
+  async saveSkillConflict(record: SkillConflict): Promise<void> {
+    this.upsert("skill_conflicts", record.id, record);
+  }
+
+  async listSkillConflicts(): Promise<SkillConflict[]> {
+    return this.list<SkillConflict>("skill_conflicts").sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async saveMcpServer(record: McpServerConfig): Promise<void> {
+    this.upsert("mcp_servers", record.id, record);
+  }
+
+  async getMcpServer(serverId: string): Promise<McpServerConfig | undefined> {
+    return this.get<McpServerConfig>("mcp_servers", serverId);
+  }
+
+  async listMcpServers(): Promise<McpServerConfig[]> {
+    return this.list<McpServerConfig>("mcp_servers").sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  async deleteMcpServer(serverId: string): Promise<void> {
+    this.db.prepare("DELETE FROM records WHERE namespace = ? AND key = ?").run("mcp_servers", serverId);
   }
 
   async saveGlobalPermission(record: GlobalPermissionGrant): Promise<void> {

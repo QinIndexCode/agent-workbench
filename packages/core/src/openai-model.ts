@@ -12,12 +12,27 @@ export interface OpenAIModelClientOptions {
   baseURL?: string;
   model?: string;
   contextAssembler?: ContextAssembler | undefined;
+  toolProvider?: ModelToolProvider | undefined;
+}
+
+export interface ModelToolDefinition {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export interface ModelToolProvider {
+  listModelTools(): Promise<ModelToolDefinition[]>;
 }
 
 export class OpenAIModelClient implements ModelClient {
   private readonly client: OpenAI;
   private readonly model: string;
   private readonly contextAssembler: ContextAssembler | undefined;
+  private readonly toolProvider: ModelToolProvider | undefined;
 
   constructor(options: OpenAIModelClientOptions) {
     this.client = new OpenAI({
@@ -26,6 +41,7 @@ export class OpenAIModelClient implements ModelClient {
     });
     this.model = options.model ?? process.env["SCC_MODEL"] ?? "gpt-5.4-mini";
     this.contextAssembler = options.contextAssembler;
+    this.toolProvider = options.toolProvider;
   }
 
   async next(task: TaskDetail): Promise<ModelTurn> {
@@ -34,6 +50,7 @@ export class OpenAIModelClient implements ModelClient {
 
   private async nextWithSkillRetries(task: TaskDetail, skillRetryCount: number): Promise<ModelTurn> {
     const context = this.contextAssembler ? await this.contextAssembler.assemble(task) : null;
+    const dynamicTools = (await this.toolProvider?.listModelTools()) ?? [];
     const response = await this.client.chat.completions.create({
       model: this.model,
       messages: [
@@ -41,7 +58,7 @@ export class OpenAIModelClient implements ModelClient {
         { role: "user", content: context?.input ?? buildInput(task) }
       ],
       tool_choice: "auto" as const,
-      tools: toolDefinitions()
+      tools: [...toolDefinitions(), ...dynamicTools] as OpenAI.Chat.Completions.ChatCompletionTool[]
     });
 
     const message = response.choices[0]?.message;
@@ -61,7 +78,9 @@ export class OpenAIModelClient implements ModelClient {
   }
 }
 
-export function createModelClientFromEnvironment(options: { contextAssembler?: ContextAssembler } = {}): ModelClient {
+export function createModelClientFromEnvironment(
+  options: { contextAssembler?: ContextAssembler; toolProvider?: ModelToolProvider } = {}
+): ModelClient {
   if (process.env["SCC_TEST_TOOL_COMMAND"]) {
     return new ConfiguredToolModelClient(process.env["SCC_TEST_TOOL_COMMAND"]);
   }
@@ -71,7 +90,8 @@ export function createModelClientFromEnvironment(options: { contextAssembler?: C
         apiKey: config.apiKey,
         ...(config.baseURL ? { baseURL: config.baseURL } : {}),
         ...(config.model ? { model: config.model } : {}),
-        ...(options.contextAssembler ? { contextAssembler: options.contextAssembler } : {})
+        ...(options.contextAssembler ? { contextAssembler: options.contextAssembler } : {}),
+        ...(options.toolProvider ? { toolProvider: options.toolProvider } : {})
       })
     : new FallbackModelClient();
 }
@@ -245,7 +265,7 @@ function extractToolCalls(toolCalls: unknown): ToolCall[] {
   return calls;
 }
 
-function toolDefinitions(): OpenAI.Chat.Completions.ChatCompletionTool[] {
+function toolDefinitions(): ModelToolDefinition[] {
   return [
     {
       type: "function",
@@ -253,7 +273,8 @@ function toolDefinitions(): OpenAI.Chat.Completions.ChatCompletionTool[] {
         name: "run_command",
         description: "Request a local shell command. The application classifies risk and may ask the user before running it.",
         parameters: strictObject({
-          command: { type: "string", description: "The command to run. Prefer read-only observation unless the user asked for changes." }
+          command: { type: "string", description: "The command to run. Prefer read-only observation unless the user asked for changes." },
+          cwd: { type: "string", description: "Workspace-relative working directory. Defaults to the workspace root." }
         }, ["command"])
       }
     },

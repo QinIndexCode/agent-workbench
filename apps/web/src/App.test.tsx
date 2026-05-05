@@ -7,6 +7,7 @@ import { App } from "./App.js";
 import { ApprovalCard } from "./components/ApprovalCard.js";
 import { Composer } from "./components/Composer.js";
 import { CompactList } from "./components/LearningPanel.js";
+import { McpPanel } from "./components/McpPanel.js";
 import { TaskList } from "./components/TaskList.js";
 import { Timeline } from "./components/Timeline.js";
 
@@ -119,6 +120,38 @@ describe("Workbench components", () => {
     expect(screen.getByText("active")).toBeInTheDocument();
   });
 
+  it("renders MCP servers and tools", () => {
+    const onConnect = vi.fn();
+    render(
+      <McpPanel
+        servers={[
+          {
+            id: "mock",
+            label: "Mock MCP",
+            transport: "stdio",
+            command: "node",
+            args: [],
+            env: {},
+            enabled: true,
+            toolRiskOverrides: {},
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            status: { serverId: "mock", connected: false, state: "disconnected", toolCount: 1 }
+          }
+        ]}
+        tools={[{ id: "mcp__mock__echo", serverId: "mock", name: "echo", displayName: "echo", inputSchema: {}, riskCategory: "shell" }]}
+        onCreate={vi.fn()}
+        onConnect={onConnect}
+        onDisconnect={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+    expect(screen.getByText("Mock MCP")).toBeInTheDocument();
+    expect(screen.getByText("echo")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Connect"));
+    expect(onConnect).toHaveBeenCalledWith("mock");
+  });
+
   it("creates a task and resolves an approval from the app shell", async () => {
     const approval: ToolApproval = {
       id: "approval_1",
@@ -169,9 +202,12 @@ describe("Workbench components", () => {
           url === "/api/task-memories" ||
           url === "/api/patterns" ||
           url === "/api/skills" ||
+          url === "/api/skill-conflicts" ||
           url === "/api/permissions/global" ||
           url === "/api/reflections" ||
-          url === "/api/project-memories"
+          url === "/api/project-memories" ||
+          url === "/api/mcp/servers" ||
+          url === "/api/mcp/tools"
         ) {
           return jsonResponse([]);
         }

@@ -1,19 +1,31 @@
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
-import { AgentWorkbench, ContextAssembler, createModelClientFromEnvironment } from "@scc/core";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import {
+  AgentWorkbench,
+  CompositeToolExecutor,
+  ContextAssembler,
+  McpRegistry,
+  ShellToolExecutor,
+  createModelClientFromEnvironment
+} from "@scc/core";
 import {
   ApprovalRequestSchema,
   ControlRequestSchema,
   CreateTaskRequestSchema,
   GlobalPermissionRequestSchema,
   MessageRequestSchema,
+  McpServerCreateRequestSchema,
+  McpServerPatchRequestSchema,
   PreferencesPatchSchema,
   ProjectMemoryCreateRequestSchema,
   SkillCorrectionRequestSchema,
-  SkillStatusPatchSchema
+  SkillStatusPatchSchema,
+  type TaskEvent
 } from "@scc/shared";
 import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError, z } from "zod";
+import { createSccMcpServer } from "./scc-mcp-server.js";
 import { SqliteWorkbenchStore } from "./sqlite-store.js";
 
 function generateRequestId(): string {
@@ -22,6 +34,7 @@ function generateRequestId(): string {
 
 export interface AppOptions {
   workbench?: AgentWorkbench;
+  mcpRegistry?: McpRegistry;
 }
 
 export async function createApp(options: AppOptions = {}): Promise<FastifyInstance> {
@@ -40,7 +53,13 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   await app.register(cors, { origin: true });
   await app.register(websocket);
 
-  const workbench = options.workbench ?? createDefaultWorkbench();
+  const events = new TaskEventBroadcaster();
+  const runtime = options.workbench
+    ? { workbench: options.workbench, mcpRegistry: options.mcpRegistry }
+    : createDefaultRuntime((event) => events.publish(event));
+  const workbench = runtime.workbench;
+  const mcpRegistry = runtime.mcpRegistry;
+  await workbench.recoverInterruptedTasks();
 
   app.get("/health", async () => ({ ok: true }));
 
@@ -68,6 +87,8 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const task = await workbench.getTask(id);
     socket.send(JSON.stringify({ type: "snapshot", events: task?.events ?? [] }));
+    const unsubscribe = events.subscribe(id, (event) => socket.send(JSON.stringify({ type: "event", event })));
+    socket.on("close", unsubscribe);
   });
 
   app.post("/api/tasks/:id/messages", async (request, reply) => {
@@ -114,6 +135,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   });
 
   app.get("/api/skills", async () => workbench.listSkills());
+  app.get("/api/skill-conflicts", async () => workbench.listSkillConflicts());
 
   app.get("/api/skills/:id", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
@@ -140,6 +162,70 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
       return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
     }
   });
+
+  app.get("/api/skills/:id/export", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    try {
+      return await workbench.exportSkill(id);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get("/api/mcp/servers", async () => requireMcp(mcpRegistry).listServers());
+
+  app.post("/api/mcp/servers", async (request, reply) => {
+    const input = McpServerCreateRequestSchema.parse(request.body);
+    return reply.code(201).send(await requireMcp(mcpRegistry).createServer(input));
+  });
+
+  app.patch("/api/mcp/servers/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = McpServerPatchRequestSchema.parse(request.body);
+    try {
+      return await requireMcp(mcpRegistry).patchServer(id, input);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete("/api/mcp/servers/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    await requireMcp(mcpRegistry).deleteServer(id);
+    return reply.code(204).send();
+  });
+
+  app.post("/api/mcp/servers/:id/connect", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    return reply.code(202).send(await requireMcp(mcpRegistry).connectServer(id));
+  });
+
+  app.post("/api/mcp/servers/:id/disconnect", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    return requireMcp(mcpRegistry).disconnectServer(id);
+  });
+
+  app.get("/api/mcp/tools", async () => requireMcp(mcpRegistry).listTools());
+
+  app.post("/api/mcp/server", async (request, reply) => {
+    const server = createSccMcpServer(workbench);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined } as never);
+    await server.connect(transport as never);
+    reply.raw.on("close", () => {
+      void transport.close();
+      void server.close();
+    });
+    await transport.handleRequest(request.raw, reply.raw, request.body);
+    return reply.hijack();
+  });
+
+  app.get("/api/mcp/server", async (request, reply) =>
+    reply.code(405).send({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null })
+  );
+
+  app.delete("/api/mcp/server", async (request, reply) =>
+    reply.code(405).send({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null })
+  );
 
   app.get("/api/permissions/global", async () => workbench.listGlobalPermissions());
 
@@ -185,18 +271,49 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   return app;
 }
 
-function createDefaultWorkbench(): AgentWorkbench {
+function createDefaultRuntime(onEvent: (event: TaskEvent) => void): { workbench: AgentWorkbench; mcpRegistry: McpRegistry } {
   const store = new SqliteWorkbenchStore(process.env["SCC_DB_PATH"] ?? "data/workbench.sqlite");
   const contextAssembler = new ContextAssembler(store);
-  return new AgentWorkbench({
+  const mcpRegistry = new McpRegistry(store);
+  const tools = new CompositeToolExecutor(new ShellToolExecutor(), [mcpRegistry]);
+  const workbench = new AgentWorkbench({
     store,
     contextAssembler,
-    model: createModelClientFromEnvironment({ contextAssembler })
+    model: createModelClientFromEnvironment({ contextAssembler, toolProvider: mcpRegistry }),
+    tools,
+    toolRiskProvider: mcpRegistry,
+    onEvent
   });
+  return { workbench, mcpRegistry };
 }
 
 function redactSensitiveText(input: string): string {
   return input
     .replace(/\bsk-[A-Za-z0-9_\-*]{8,}/g, "[redacted-api-key]")
     .replace(/(OPENAI_API_KEY\s*=\s*)\S+/gi, "$1[redacted]");
+}
+
+function requireMcp(registry: McpRegistry | undefined): McpRegistry {
+  if (!registry) throw new Error("MCP registry is not configured.");
+  return registry;
+}
+
+class TaskEventBroadcaster {
+  private readonly subscribers = new Map<string, Set<(event: TaskEvent) => void>>();
+
+  subscribe(taskId: string, listener: (event: TaskEvent) => void): () => void {
+    const listeners = this.subscribers.get(taskId) ?? new Set<(event: TaskEvent) => void>();
+    listeners.add(listener);
+    this.subscribers.set(taskId, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.subscribers.delete(taskId);
+    };
+  }
+
+  publish(event: TaskEvent): void {
+    for (const listener of this.subscribers.get(event.taskId) ?? []) {
+      listener(event);
+    }
+  }
 }

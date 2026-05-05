@@ -15,18 +15,24 @@ import type {
   ToolCall
 } from "@scc/shared";
 import { ContextAssembler } from "./context-assembler.js";
-import { createExperience, createTaskMemory, promoteExperience, reflectMemories } from "./experience.js";
+import { createExperience, createTaskMemory, detectSkillConflicts, exportSkill, promoteExperience, reflectMemories } from "./experience.js";
 import { FallbackModelClient, type ModelClient } from "./fallback-model.js";
 import { createId, nowIso } from "./ids.js";
-import { PermissionEngine, type PermissionState } from "./permission-engine.js";
+import { PermissionEngine, type PermissionState, type RiskAssessment } from "./permission-engine.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
 import { ShellToolExecutor, type ToolExecutor } from "./tools.js";
+
+export interface ToolRiskProvider {
+  assessTool(call: ToolCall): Promise<RiskAssessment | undefined>;
+}
 
 export interface AgentWorkbenchOptions {
   store?: WorkbenchStore;
   model?: ModelClient;
   tools?: ToolExecutor;
   contextAssembler?: ContextAssembler;
+  toolRiskProvider?: ToolRiskProvider;
+  onEvent?: (event: TaskEvent) => void;
 }
 
 export class AgentWorkbench {
@@ -34,6 +40,8 @@ export class AgentWorkbench {
   private readonly model: ModelClient;
   private readonly tools: ToolExecutor;
   private readonly contextAssembler: ContextAssembler;
+  private readonly toolRiskProvider: ToolRiskProvider | undefined;
+  private readonly onEvent: ((event: TaskEvent) => void) | undefined;
   private readonly permissions = new PermissionEngine();
   private readonly permissionState = new Map<string, PermissionState>();
 
@@ -42,6 +50,8 @@ export class AgentWorkbench {
     this.model = options.model ?? new FallbackModelClient();
     this.tools = options.tools ?? new ShellToolExecutor();
     this.contextAssembler = options.contextAssembler ?? new ContextAssembler(this.store);
+    this.toolRiskProvider = options.toolRiskProvider;
+    this.onEvent = options.onEvent;
   }
 
   async createTask(goal: string, title = goal.slice(0, 72)): Promise<TaskDetail> {
@@ -139,6 +149,10 @@ export class AgentWorkbench {
     return this.store.listSkills();
   }
 
+  async listSkillConflicts() {
+    return this.store.listSkillConflicts();
+  }
+
   async getSkill(skillId: string): Promise<SkillRecord | undefined> {
     return this.store.getSkill(skillId);
   }
@@ -175,11 +189,17 @@ export class AgentWorkbench {
     return updated;
   }
 
+  async exportSkill(skillId: string): Promise<{ markdown: string; manifest: Record<string, unknown> }> {
+    const skill = await this.store.getSkill(skillId);
+    if (!skill) throw new Error(`Skill not found: ${skillId}`);
+    return exportSkill(skill);
+  }
+
   async promoteExperience(experienceId: string): Promise<SkillRecord> {
     const experience = (await this.store.listExperiences()).find((item) => item.id === experienceId);
     if (!experience) throw new Error(`Experience not found: ${experienceId}`);
     const skill = promoteExperience(experience);
-    await this.store.saveSkill(skill);
+    await this.saveSkillWithConflicts(skill);
     return skill;
   }
 
@@ -215,7 +235,7 @@ export class AgentWorkbench {
     const result = reflectMemories(await this.store.listTaskMemories(), await this.store.listPatterns());
     await this.store.saveReflectionSession(result.session);
     for (const pattern of result.patterns) await this.store.savePattern(pattern);
-    for (const skill of result.promotedSkills) await this.store.saveSkill(skill);
+    for (const skill of result.promotedSkills) await this.saveSkillWithConflicts(skill);
     return result.session;
   }
 
@@ -247,13 +267,26 @@ export class AgentWorkbench {
     await this.store.deleteProjectMemory(id);
   }
 
+  async recoverInterruptedTasks(): Promise<void> {
+    for (const task of await this.store.listTasks()) {
+      if (task.status === "running") {
+        this.setStatus(task, "paused");
+        this.addEvent(task, "status_changed", "Recovered paused task", { recoverable: true });
+        await this.store.saveTask(task);
+      }
+    }
+  }
+
   private async step(taskId: string): Promise<TaskDetail> {
     const task = await this.requiredTask(taskId);
     if (task.status !== "running") return task;
 
     this.consumePendingGuidance(task);
     const turn = await this.safeModelNext(task);
+    this.addLoadedSkillEvents(task);
     if (!turn) return task;
+    const stoppedAfterModel = await this.stoppedTask(task.id);
+    if (stoppedAfterModel) return stoppedAfterModel;
     if (turn.kind === "final") {
       this.addEvent(task, "assistant_message", turn.message);
       this.setStatus(task, "completed");
@@ -263,7 +296,10 @@ export class AgentWorkbench {
     }
 
     for (const call of turn.calls) {
-      const assessment = this.permissions.assess(call.toolName, call.args);
+      const stoppedBeforeTool = await this.stoppedTask(task.id);
+      if (stoppedBeforeTool) return stoppedBeforeTool;
+
+      const assessment = (await this.toolRiskProvider?.assessTool(call)) ?? this.permissions.assess(call.toolName, call.args);
       this.addEvent(task, "tool_requested", call.toolName, {
         toolCallId: call.id,
         toolName: call.toolName,
@@ -296,6 +332,8 @@ export class AgentWorkbench {
         output: result.output
       });
       this.contextAssembler.getFileStateTracker(task.id).updateFromToolResult(task.events[task.events.length - 1]!);
+      const stoppedAfterTool = await this.stoppedTask(task.id);
+      if (stoppedAfterTool) return stoppedAfterTool;
     }
 
     await this.store.saveTask(task);
@@ -303,12 +341,13 @@ export class AgentWorkbench {
   }
 
   private async recordExperience(task: TaskDetail): Promise<void> {
+    await this.updateLoadedSkillStats(task, true);
     const experience = createExperience(task);
     const memory = createTaskMemory(task);
     const skill = promoteExperience(experience);
     await this.store.saveExperience(experience);
     await this.store.saveTaskMemory(memory);
-    await this.store.saveSkill(skill);
+    await this.saveSkillWithConflicts(skill);
     this.addEvent(task, "task_memory_created", memory.title, { memoryId: memory.id });
     this.addEvent(task, "skill_promoted", skill.title, { skillId: skill.id, status: skill.status });
     if ((await this.store.getPreferences()).reflectionEnabled) {
@@ -318,7 +357,7 @@ export class AgentWorkbench {
         await this.store.savePattern(pattern);
         this.addEvent(task, "pattern_discovered", pattern.title, { patternId: pattern.id, status: pattern.status });
       }
-      for (const promoted of reflection.promotedSkills) await this.store.saveSkill(promoted);
+      for (const promoted of reflection.promotedSkills) await this.saveSkillWithConflicts(promoted);
       this.addEvent(task, "reflection_completed", reflection.session.progress.phase, { sessionId: reflection.session.id });
     }
     this.contextAssembler.cleanupTask(task.id);
@@ -331,8 +370,17 @@ export class AgentWorkbench {
       const message = sanitizeProviderError(error instanceof Error ? error.message : String(error));
       this.addEvent(task, "assistant_message", `Model provider failed: ${message}`);
       this.setStatus(task, "failed");
+      await this.updateLoadedSkillStats(task, false);
       await this.store.saveTask(task);
       return null;
+    }
+  }
+
+  private async saveSkillWithConflicts(skill: SkillRecord): Promise<void> {
+    const existing = await this.store.listSkills();
+    await this.store.saveSkill(skill);
+    for (const conflict of detectSkillConflicts(skill, existing)) {
+      await this.store.saveSkillConflict(conflict);
     }
   }
 
@@ -386,18 +434,57 @@ export class AgentWorkbench {
     summary: string,
     payload: Record<string, unknown> = {}
   ): void {
-    task.events.push({
+    const event: TaskEvent = {
       id: createId("event"),
       taskId: task.id,
       type,
       summary,
       payload,
       createdAt: nowIso()
-    });
+    };
+    task.events.push(event);
     task.updatedAt = nowIso();
     task.pendingGuidance = task.events.filter(
       (event) => event.type === "guidance_pending" && event.payload["status"] === "pending"
     );
+    this.onEvent?.(event);
+  }
+
+  private addLoadedSkillEvents(task: TaskDetail): void {
+    for (const skill of this.contextAssembler.drainLoadedSkillEvents(task.id)) {
+      this.addEvent(task, "skill_loaded", skill.title, { skillId: skill.id });
+    }
+  }
+
+  private async updateLoadedSkillStats(task: TaskDetail, success: boolean): Promise<void> {
+    for (const skillId of this.contextAssembler.getLoadedSkillIds(task.id)) {
+      const skill = await this.store.getSkill(skillId);
+      if (!skill) continue;
+      const totalUses = skill.stats.totalUses + 1;
+      const successUses = skill.stats.successUses + (success ? 1 : 0);
+      const failureUses = skill.stats.failureUses + (success ? 0 : 1);
+      const updated: SkillRecord = {
+        ...skill,
+        stats: {
+          ...skill.stats,
+          totalUses,
+          successUses,
+          failureUses,
+          successRate: successUses / Math.max(1, totalUses),
+          consecutiveFailures: success ? 0 : skill.stats.consecutiveFailures + 1,
+          ...(success ? {} : { lastFailureAt: nowIso() })
+        },
+        lastUsedAt: nowIso(),
+        updatedAt: nowIso()
+      };
+      await this.store.saveSkill(updated);
+    }
+  }
+
+  private async stoppedTask(taskId: string): Promise<TaskDetail | null> {
+    const current = await this.store.getTask(taskId);
+    if (!current || current.status === "running") return null;
+    return current;
   }
 
   private async requiredTask(taskId: string): Promise<TaskDetail> {

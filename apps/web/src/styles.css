@@ -413,6 +413,17 @@ pre {
   border-bottom: 1px solid var(--border);
 }
 
+.inlineActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mcpPanel .memoryForm {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
 .compactRow span {
   overflow: hidden;
   font-size: 13px;

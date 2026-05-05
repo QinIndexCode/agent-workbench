@@ -1,10 +1,12 @@
 import type {
   ExperienceRecord,
   GlobalPermissionGrant,
+  McpServerConfig,
   PatternRecord,
   ProjectMemory,
   ReflectionSession,
   RiskCategory,
+  SkillConflict,
   SkillRecord,
   TaskDetail,
   TaskMemory,
@@ -29,6 +31,12 @@ export interface WorkbenchStore {
   saveSkill(record: SkillRecord): Promise<void>;
   listSkills(): Promise<SkillRecord[]>;
   getSkill(skillId: string): Promise<SkillRecord | undefined>;
+  saveSkillConflict(record: SkillConflict): Promise<void>;
+  listSkillConflicts(): Promise<SkillConflict[]>;
+  saveMcpServer(record: McpServerConfig): Promise<void>;
+  getMcpServer(serverId: string): Promise<McpServerConfig | undefined>;
+  listMcpServers(): Promise<McpServerConfig[]>;
+  deleteMcpServer(serverId: string): Promise<void>;
   saveGlobalPermission(record: GlobalPermissionGrant): Promise<void>;
   listGlobalPermissions(): Promise<GlobalPermissionGrant[]>;
   deleteGlobalPermission(riskCategory: RiskCategory): Promise<void>;
@@ -47,6 +55,8 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
   private readonly taskMemories = new Map<string, TaskMemory>();
   private readonly patterns = new Map<string, PatternRecord>();
   private readonly skills = new Map<string, SkillRecord>();
+  private readonly skillConflicts = new Map<string, SkillConflict>();
+  private readonly mcpServers = new Map<string, McpServerConfig>();
   private readonly globalPermissions = new Map<RiskCategory, GlobalPermissionGrant>();
   private readonly reflectionSessions = new Map<string, ReflectionSession>();
   private readonly projectMemories = new Map<string, ProjectMemory>();
@@ -102,6 +112,31 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
   async getSkill(skillId: string): Promise<SkillRecord | undefined> {
     const skill = this.skills.get(skillId);
     return skill ? clone(skill) : undefined;
+  }
+
+  async saveSkillConflict(record: SkillConflict): Promise<void> {
+    this.skillConflicts.set(record.id, clone(record));
+  }
+
+  async listSkillConflicts(): Promise<SkillConflict[]> {
+    return [...this.skillConflicts.values()].map((record) => clone(record));
+  }
+
+  async saveMcpServer(record: McpServerConfig): Promise<void> {
+    this.mcpServers.set(record.id, clone(record));
+  }
+
+  async getMcpServer(serverId: string): Promise<McpServerConfig | undefined> {
+    const server = this.mcpServers.get(serverId);
+    return server ? clone(server) : undefined;
+  }
+
+  async listMcpServers(): Promise<McpServerConfig[]> {
+    return [...this.mcpServers.values()].map((record) => clone(record)).sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  async deleteMcpServer(serverId: string): Promise<void> {
+    this.mcpServers.delete(serverId);
   }
 
   async saveGlobalPermission(record: GlobalPermissionGrant): Promise<void> {

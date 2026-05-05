@@ -13,6 +13,22 @@ export interface ToolExecutor {
   execute(call: ToolCall): Promise<ToolResult>;
 }
 
+export interface ToolExecutorDelegate extends ToolExecutor {
+  canExecute(toolName: string): boolean;
+}
+
+export class CompositeToolExecutor implements ToolExecutor {
+  constructor(
+    private readonly fallback: ToolExecutor,
+    private readonly delegates: ToolExecutorDelegate[] = []
+  ) {}
+
+  async execute(call: ToolCall): Promise<ToolResult> {
+    const delegate = this.delegates.find((item) => item.canExecute(call.toolName));
+    return delegate ? delegate.execute(call) : this.fallback.execute(call);
+  }
+}
+
 export class ShellToolExecutor implements ToolExecutor {
   async execute(call: ToolCall): Promise<ToolResult> {
     if (call.toolName === "run_command") {
@@ -45,10 +61,11 @@ export class ShellToolExecutor implements ToolExecutor {
       process.platform === "win32"
         ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]
         : ["-lc", command];
+    const cwd = resolveWorkspacePath(String(call.args["cwd"] ?? "."));
 
     try {
       const { stdout, stderr } = await execFileAsync(shell, args, {
-        cwd: process.cwd(),
+        cwd,
         timeout: 30_000,
         maxBuffer: 1024 * 1024
       });
@@ -175,12 +192,13 @@ export class ShellToolExecutor implements ToolExecutor {
     }
   }
 
-  private result(call: ToolCall, ok: boolean, output: string): ToolResult {
+  private async result(call: ToolCall, ok: boolean, output: string): Promise<ToolResult> {
+    const id = createId("tool_result");
     return {
-      id: createId("tool_result"),
+      id,
       toolCallId: call.id,
       ok,
-      output,
+      output: await materializeOutput(id, output),
       createdAt: nowIso()
     };
   }
@@ -234,4 +252,21 @@ function isTextFile(path: string): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+async function materializeOutput(resultId: string, output: string): Promise<string> {
+  if (output.length <= 12000) return output;
+  const rawOutputRef = resolve(process.cwd(), "data", "tool-output", `${resultId}.txt`);
+  await mkdir(dirname(rawOutputRef), { recursive: true });
+  await writeFile(rawOutputRef, output, "utf8");
+  return JSON.stringify(
+    {
+      truncated: true,
+      totalChars: output.length,
+      rawOutputRef,
+      summary: `${output.slice(0, 4000)}\n\n... output truncated; raw output is stored on disk ...\n\n${output.slice(-3000)}`
+    },
+    null,
+    2
+  );
 }

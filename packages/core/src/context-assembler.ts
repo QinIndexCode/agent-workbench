@@ -17,6 +17,7 @@ export interface LoadedSkillSession {
   loadedSkills: Set<string>;
   unavailableSkills: Set<string>;
   loadedSkillBodies: SkillRecord[];
+  pendingLoadedSkills: SkillRecord[];
   loadCount: number;
 }
 
@@ -99,8 +100,22 @@ export class ContextAssembler {
     }
     session.loadedSkills.add(skillId);
     session.loadedSkillBodies.push(skill);
+    session.pendingLoadedSkills.push(skill);
     session.loadCount += 1;
     return skill;
+  }
+
+  getLoadedSkillIds(taskId: string): string[] {
+    const session = this.skillSessions.get(taskId);
+    return session ? [...session.loadedSkills] : [];
+  }
+
+  drainLoadedSkillEvents(taskId: string): SkillRecord[] {
+    const session = this.skillSessions.get(taskId);
+    if (!session) return [];
+    const pending = [...session.pendingLoadedSkills];
+    session.pendingLoadedSkills = [];
+    return pending;
   }
 
   loadedSkillPrompt(taskId: string): string {
@@ -159,7 +174,13 @@ export class ContextAssembler {
   private sessionFor(taskId: string): LoadedSkillSession {
     const existing = this.skillSessions.get(taskId);
     if (existing) return existing;
-    const created = { loadedSkills: new Set<string>(), unavailableSkills: new Set<string>(), loadedSkillBodies: [], loadCount: 0 };
+    const created: LoadedSkillSession = {
+      loadedSkills: new Set<string>(),
+      unavailableSkills: new Set<string>(),
+      loadedSkillBodies: [],
+      pendingLoadedSkills: [],
+      loadCount: 0
+    };
     this.skillSessions.set(taskId, created);
     return created;
   }

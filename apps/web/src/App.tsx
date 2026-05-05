@@ -5,6 +5,7 @@ import { ApprovalCard } from "./components/ApprovalCard.js";
 import { Composer } from "./components/Composer.js";
 import { InspectorPanel } from "./components/InspectorPanel.js";
 import { LearningPanel } from "./components/LearningPanel.js";
+import { McpPanel } from "./components/McpPanel.js";
 import { PermissionsPanel } from "./components/PermissionsPanel.js";
 import { ProjectMemoryPanel } from "./components/ProjectMemoryPanel.js";
 import { TaskList } from "./components/TaskList.js";
@@ -60,9 +61,11 @@ export function App() {
               memories={data.memories}
               patterns={data.patterns}
               skills={data.skills}
+              conflicts={data.skillConflicts}
               reflections={data.reflections}
               onRunReflection={() => void data.runSideAction(() => api.runReflection())}
               onSkillStatus={(skillId, status) => void updateSkillStatus(skillId, status)}
+              onExportSkill={(skillId) => void exportSkill(skillId)}
             />
           ),
           permissions: (
@@ -83,6 +86,16 @@ export function App() {
                 )
               }
               onDelete={(id) => void data.runSideAction(() => api.deleteProjectMemory(id))}
+            />
+          ),
+          mcp: (
+            <McpPanel
+              servers={data.mcpServers}
+              tools={data.mcpTools}
+              onCreate={(input) => void data.runSideAction(() => api.createMcpServer(input))}
+              onConnect={(serverId) => void data.runSideAction(() => api.connectMcpServer(serverId))}
+              onDisconnect={(serverId) => void data.runSideAction(() => api.disconnectMcpServer(serverId))}
+              onDelete={(serverId) => void data.runSideAction(() => api.deleteMcpServer(serverId))}
             />
           )
         }}
@@ -112,5 +125,18 @@ export function App() {
 
   function updateSkillStatus(skillId: string, status: SkillRecord["status"]) {
     void data.runSideAction(() => api.patchSkill(skillId, { status }));
+  }
+
+  async function exportSkill(skillId: string) {
+    await data.runSideAction(async () => {
+      const payload = await api.exportSkill(skillId);
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${skillId}-skill-export.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    });
   }
 }

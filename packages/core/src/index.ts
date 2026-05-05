@@ -2,6 +2,7 @@ export * from "./context-assembler.js";
 export * from "./experience.js";
 export * from "./fallback-model.js";
 export * from "./ids.js";
+export * from "./mcp.js";
 export * from "./openai-model.js";
 export * from "./permission-engine.js";
 export * from "./store.js";

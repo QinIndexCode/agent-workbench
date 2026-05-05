@@ -1,13 +1,14 @@
 import { useState, type ReactNode } from "react";
 import type { TaskDetail } from "@scc/shared";
 
-type InspectorTab = "details" | "learning" | "permissions" | "memory";
+type InspectorTab = "details" | "learning" | "permissions" | "memory" | "mcp";
 
 const tabs: Array<{ id: InspectorTab; label: string }> = [
   { id: "details", label: "Details" },
   { id: "learning", label: "Learning" },
   { id: "permissions", label: "Permissions" },
-  { id: "memory", label: "Memory" }
+  { id: "memory", label: "Memory" },
+  { id: "mcp", label: "MCP" }
 ];
 
 export function InspectorPanel({
@@ -15,7 +16,7 @@ export function InspectorPanel({
   children
 }: {
   selected: TaskDetail | null;
-  children: { learning: ReactNode; permissions: ReactNode; memory: ReactNode };
+  children: { learning: ReactNode; permissions: ReactNode; memory: ReactNode; mcp: ReactNode };
 }) {
   const [activeTab, setActiveTab] = useState<InspectorTab>("details");
 
@@ -38,6 +39,7 @@ export function InspectorPanel({
         {activeTab === "learning" ? children.learning : null}
         {activeTab === "permissions" ? children.permissions : null}
         {activeTab === "memory" ? children.memory : null}
+        {activeTab === "mcp" ? children.mcp : null}
       </div>
     </aside>
   );

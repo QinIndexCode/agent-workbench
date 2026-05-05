@@ -1,4 +1,4 @@
-import type { ExperienceRecord, PatternRecord, ReflectionSession, SkillRecord, TaskDetail, TaskMemory } from "@scc/shared";
+import type { ExperienceRecord, PatternRecord, ReflectionSession, SkillConflict, SkillRecord, TaskDetail, TaskMemory } from "@scc/shared";
 import { createId, nowIso } from "./ids.js";
 
 export function createTaskMemory(task: TaskDetail): TaskMemory {
@@ -227,6 +227,47 @@ export function findRelevantSkills(taskTitle: string, skills: SkillRecord[], lim
     .map((item) => item.skill);
 }
 
+export function detectSkillConflicts(skill: SkillRecord, existingSkills: SkillRecord[]): SkillConflict[] {
+  const conflicts: SkillConflict[] = [];
+  for (const existing of existingSkills) {
+    if (existing.id === skill.id || existing.status === "retired") continue;
+    const sharedKeywords = intersection(new Set(skill.applicability.keywords), new Set(existing.applicability.keywords));
+    const toolMismatch =
+      skill.applicability.requiredTools.length > 0 &&
+      existing.applicability.requiredTools.length > 0 &&
+      intersection(new Set(skill.applicability.requiredTools), new Set(existing.applicability.requiredTools)).length === 0;
+    if (sharedKeywords.length < 2 || !toolMismatch) continue;
+    const now = nowIso();
+    conflicts.push({
+      id: createId("skill_conflict"),
+      skillIds: [existing.id, skill.id],
+      reason: `Similar triggers (${sharedKeywords.slice(0, 5).join(", ")}) use different tool sequences.`,
+      severity: sharedKeywords.length >= 4 ? "high" : "medium",
+      status: "open",
+      createdAt: now,
+      updatedAt: now
+    });
+  }
+  return conflicts;
+}
+
+export function exportSkill(skill: SkillRecord): { markdown: string; manifest: Record<string, unknown> } {
+  return {
+    markdown: skill.body,
+    manifest: {
+      id: skill.id,
+      title: skill.title,
+      status: skill.status,
+      version: skill.version,
+      applicability: skill.applicability,
+      stats: skill.stats,
+      sourceMemoryIds: skill.sourceMemoryIds,
+      sourcePatternId: skill.sourcePatternId,
+      exportedAt: nowIso()
+    }
+  };
+}
+
 export function calculateRelevance(taskTitle: string, skill: SkillRecord): number {
   const titleWords = new Set(tokenize(taskTitle));
   const keywordWords = new Set(skill.applicability.keywords.flatMap(tokenize));
@@ -321,6 +362,10 @@ function compositeScore(skill: SkillRecord, relevance: number): number {
   const daysSinceUse = (Date.now() - new Date(skill.lastUsedAt).getTime()) / (1000 * 60 * 60 * 24);
   const recency = Math.max(0.5, 1 - daysSinceUse / 60);
   return relevance * (0.4 + 0.4 * skill.stats.successRate + 0.2 * recency);
+}
+
+function intersection<T>(left: Set<T>, right: Set<T>): T[] {
+  return [...left].filter((value) => right.has(value));
 }
 
 function inferDomains(toolText: string, goal: string): string[] {

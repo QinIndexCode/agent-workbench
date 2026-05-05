@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore } from "@scc/core";
+import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore, McpRegistry } from "@scc/core";
 import type { ToolCall, ToolResult } from "@scc/shared";
 import { createApp } from "../src/server.js";
 import { SqliteWorkbenchStore } from "../src/sqlite-store.js";
@@ -112,6 +112,7 @@ describe("server API", () => {
 
     expect((await app.inject("/api/task-memories")).json().length).toBeGreaterThan(0);
     expect((await app.inject("/api/patterns")).statusCode).toBe(200);
+    expect((await app.inject("/api/skill-conflicts")).statusCode).toBe(200);
     expect((await app.inject("/api/preferences")).json().language).toBe("zh-CN");
 
     const grantResponse = await app.inject({
@@ -132,6 +133,35 @@ describe("server API", () => {
     });
     expect(memoryResponse.statusCode).toBe(201);
     expect((await app.inject("/api/project-memories")).json()[0].title).toBe("Convention");
+    await app.close();
+  });
+
+  it("serves MCP management endpoints", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const mcpRegistry = new McpRegistry(store);
+    const app = await createApp({
+      workbench: new AgentWorkbench({ store }),
+      mcpRegistry
+    });
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/mcp/servers",
+      payload: {
+        id: "mock",
+        label: "Mock MCP",
+        transport: "stdio",
+        command: process.execPath,
+        args: ["--version"],
+        env: {},
+        enabled: false,
+        toolRiskOverrides: {}
+      }
+    });
+    expect(createResponse.statusCode).toBe(201);
+    expect((await app.inject("/api/mcp/servers")).json()[0].id).toBe("mock");
+    expect((await app.inject("/api/mcp/tools")).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: "/api/mcp/server", payload: { jsonrpc: "2.0", id: 1, method: "tools/list" } })).statusCode).toBeLessThan(500);
     await app.close();
   });
 });

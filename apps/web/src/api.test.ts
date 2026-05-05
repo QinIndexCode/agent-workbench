@@ -32,6 +32,23 @@ describe("api client", () => {
       "/api/permissions/global",
       expect.objectContaining({ method: "POST", body: JSON.stringify({ riskCategory: "host_observation", reason: "ok" }) })
     );
+
+    await api.createMcpServer({
+      label: "Mock MCP",
+      transport: "stdio",
+      command: "node",
+      args: [],
+      env: {},
+      enabled: true,
+      toolRiskOverrides: {}
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/mcp/servers",
+      expect.objectContaining({ method: "POST", body: expect.stringContaining("Mock MCP") })
+    );
+
+    await api.connectMcpServer("mock");
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/mcp/servers/mock/connect", expect.objectContaining({ method: "POST" }));
   });
 
   it("raises failed responses", async () => {

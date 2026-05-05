@@ -1,6 +1,11 @@
 import type {
   ApprovalDecision,
   GlobalPermissionGrant,
+  McpServerConfig,
+  McpServerCreateRequest,
+  McpServerPatchRequest,
+  McpServerStatus,
+  McpToolSummary,
   PatternRecord,
   PreferencesPatch,
   ProjectMemory,
@@ -8,6 +13,7 @@ import type {
   ReflectionSession,
   RiskCategory,
   SkillCorrectionRequest,
+  SkillConflict,
   SkillRecord,
   SkillStatusPatch,
   TaskDetail,
@@ -31,6 +37,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  taskEventsWebSocketUrl(taskId: string): string {
+    const url = new URL(`${apiBase}/api/tasks/${taskId}/events/ws`, window.location.origin);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    return url.toString();
+  },
   createTask(goal: string): Promise<TaskDetail> {
     return request("/api/tasks", { method: "POST", body: JSON.stringify({ goal }) });
   },
@@ -57,6 +68,12 @@ export const api = {
   },
   listSkills(): Promise<SkillRecord[]> {
     return request("/api/skills");
+  },
+  listSkillConflicts(): Promise<SkillConflict[]> {
+    return request("/api/skill-conflicts");
+  },
+  exportSkill(skillId: string): Promise<{ markdown: string; manifest: Record<string, unknown> }> {
+    return request(`/api/skills/${skillId}/export`);
   },
   patchSkill(skillId: string, patch: SkillStatusPatch): Promise<SkillRecord> {
     return request(`/api/skills/${skillId}`, { method: "PATCH", body: JSON.stringify(patch) });
@@ -96,5 +113,26 @@ export const api = {
   },
   deleteProjectMemory(id: string): Promise<void> {
     return request(`/api/project-memories/${id}`, { method: "DELETE" });
+  },
+  listMcpServers(): Promise<Array<McpServerConfig & { status: McpServerStatus }>> {
+    return request("/api/mcp/servers");
+  },
+  createMcpServer(input: McpServerCreateRequest): Promise<McpServerConfig> {
+    return request("/api/mcp/servers", { method: "POST", body: JSON.stringify(input) });
+  },
+  patchMcpServer(serverId: string, input: McpServerPatchRequest): Promise<McpServerConfig> {
+    return request(`/api/mcp/servers/${serverId}`, { method: "PATCH", body: JSON.stringify(input) });
+  },
+  deleteMcpServer(serverId: string): Promise<void> {
+    return request(`/api/mcp/servers/${serverId}`, { method: "DELETE" });
+  },
+  connectMcpServer(serverId: string): Promise<McpServerStatus> {
+    return request(`/api/mcp/servers/${serverId}/connect`, { method: "POST" });
+  },
+  disconnectMcpServer(serverId: string): Promise<McpServerStatus> {
+    return request(`/api/mcp/servers/${serverId}/disconnect`, { method: "POST" });
+  },
+  listMcpTools(): Promise<McpToolSummary[]> {
+    return request("/api/mcp/tools");
   }
 };

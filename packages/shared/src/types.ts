@@ -5,6 +5,13 @@ import type {
   ExperienceRecordSchema,
   GlobalPermissionGrantSchema,
   MessageRequestSchema,
+  McpServerConfigSchema,
+  McpServerCreateRequestSchema,
+  McpServerPatchRequestSchema,
+  McpServerStatusSchema,
+  McpToolCallResultSchema,
+  McpToolSummarySchema,
+  McpTransportKindSchema,
   PatternRecordSchema,
   PreferencesPatchSchema,
   ProjectMemoryCreateRequestSchema,
@@ -12,6 +19,7 @@ import type {
   ReflectionSessionSchema,
   RiskCategorySchema,
   SkillCorrectionRequestSchema,
+  SkillConflictSchema,
   SkillRecordSchema,
   SkillStatusPatchSchema,
   TaskMemorySchema,
@@ -29,6 +37,13 @@ export type RiskCategory = z.infer<typeof RiskCategorySchema>;
 export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>;
 export type ToolCall = z.infer<typeof ToolCallSchema>;
 export type ToolResult = z.infer<typeof ToolResultSchema>;
+export type McpTransportKind = z.infer<typeof McpTransportKindSchema>;
+export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
+export type McpServerStatus = z.infer<typeof McpServerStatusSchema>;
+export type McpToolSummary = z.infer<typeof McpToolSummarySchema>;
+export type McpToolCallResult = z.infer<typeof McpToolCallResultSchema>;
+export type McpServerCreateRequest = z.infer<typeof McpServerCreateRequestSchema>;
+export type McpServerPatchRequest = z.infer<typeof McpServerPatchRequestSchema>;
 export type ToolApproval = z.infer<typeof ToolApprovalSchema>;
 export type TaskEvent = z.infer<typeof TaskEventSchema>;
 export type TaskDetail = z.infer<typeof TaskDetailSchema>;
@@ -41,6 +56,7 @@ export type PreferencesPatch = z.infer<typeof PreferencesPatchSchema>;
 export type TaskMemory = z.infer<typeof TaskMemorySchema>;
 export type PatternRecord = z.infer<typeof PatternRecordSchema>;
 export type SkillRecord = z.infer<typeof SkillRecordSchema>;
+export type SkillConflict = z.infer<typeof SkillConflictSchema>;
 export type SkillStatusPatch = z.infer<typeof SkillStatusPatchSchema>;
 export type SkillCorrectionRequest = z.infer<typeof SkillCorrectionRequestSchema>;
 export type ReflectionSession = z.infer<typeof ReflectionSessionSchema>;

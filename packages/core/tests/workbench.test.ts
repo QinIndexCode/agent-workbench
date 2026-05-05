@@ -6,9 +6,14 @@ import type { ToolCall, ToolResult } from "@scc/shared";
 import { ShellToolExecutor } from "../src/tools.js";
 import {
   AgentWorkbench,
+  CompositeToolExecutor,
   ConfiguredToolModelClient,
   InMemoryWorkbenchStore,
+  McpRegistry,
+  type ModelClient,
+  type ModelTurn,
   PermissionEngine,
+  detectSkillConflicts,
   createExperience,
   createId,
   loadOpenAiConfig,
@@ -29,6 +34,23 @@ class StubToolExecutor {
       ok: true,
       createdAt: nowIso(),
       output: JSON.stringify([{ ProcessName: "node", Id: 42, CPU: 100, WorkingSet64: 1024 * 1024 * 200 }])
+    };
+  }
+}
+
+class SingleToolModel implements ModelClient {
+  constructor(
+    private readonly toolName: string,
+    private readonly args: Record<string, unknown> = {}
+  ) {}
+
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (task.events.some((event) => event.type === "tool_result")) {
+      return { kind: "final", message: "MCP evidence accepted." };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{ id: createId("tool_call"), toolName: this.toolName, args: this.args }]
     };
   }
 }
@@ -213,6 +235,131 @@ describe("AgentWorkbench", () => {
     const experience = createExperience(base);
     expect(promoteExperience(experience).status).toBe("candidate");
   });
+
+  it("records skill load events and updates skill stats after successful use", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const source = promoteExperience({
+      id: "experience_1",
+      taskId: "task_seed",
+      title: "process check",
+      goal: "check process",
+      body: "Use host observation evidence.",
+      readOnly: true,
+      toolsUsed: [],
+      result: "ok",
+      assessment: { goalAchieved: true, confidence: 0.9, issues: [], learnings: [], suggestedPatterns: ["host_observation"] },
+      meta: {
+        outcome: "success",
+        complexity: "simple",
+        domains: ["host_observation"],
+        tools: ["run_command"],
+        hasSideEffects: false,
+        duration: 1
+      },
+      reflectionCount: 0,
+      reflectionStatus: "pending",
+      createdAt: nowIso()
+    });
+    await store.saveSkill({ ...source, id: "skill_process", status: "active", applicability: { ...source.applicability, keywords: ["process"] } });
+    const contextAssembler = new (await import("../src/context-assembler.js")).ContextAssembler(store);
+    const workbench = new AgentWorkbench({
+      store,
+      contextAssembler,
+      model: {
+        async next(task) {
+          if (!task.events.some((event) => event.type === "skill_loaded")) {
+            await contextAssembler.loadSkill(task.id, "skill_process");
+            return { kind: "final", message: "used skill" };
+          }
+          return { kind: "final", message: "done" };
+        }
+      }
+    });
+
+    const completed = await workbench.createTask("process check");
+    const skill = await workbench.getSkill("skill_process");
+
+    expect(completed.events.some((event) => event.type === "skill_loaded")).toBe(true);
+    expect(skill?.stats.totalUses).toBe(1);
+    expect(skill?.stats.successUses).toBe(1);
+  });
+});
+
+describe("McpRegistry", () => {
+  it("discovers stdio MCP tools, routes execution through approval, and reuses global permission", async () => {
+    const temp = mkdtempSync(join(process.cwd(), "tmp-scc-mcp-"));
+    try {
+      const script = join(temp, "mock-mcp.mjs");
+      writeFileSync(script, mockMcpServerSource());
+      const store = new InMemoryWorkbenchStore();
+      const registry = new McpRegistry(store);
+      await registry.createServer({
+        id: "mock",
+        label: "Mock MCP",
+        transport: "stdio",
+        command: process.execPath,
+        args: [script],
+        env: {},
+        enabled: true,
+        toolRiskOverrides: { echo: "host_observation" }
+      });
+
+      const status = await registry.connectServer("mock");
+      expect(status.state).toBe("connected");
+      expect((await registry.listTools())[0]?.id).toBe("mcp__mock__echo");
+
+      const workbench = new AgentWorkbench({
+        store,
+        model: new SingleToolModel("mcp__mock__echo", { text: "hello" }),
+        tools: new CompositeToolExecutor(new ShellToolExecutor(), [registry]),
+        toolRiskProvider: registry
+      });
+      const pending = await workbench.createTask("call mock MCP");
+      expect(pending.status).toBe("waiting_approval");
+      expect(pending.approvals[0]?.riskCategory).toBe("host_observation");
+
+      const approval = pending.approvals[0];
+      if (!approval) throw new Error("expected approval");
+      const completed = await workbench.decideApproval(pending.id, approval.id, "allow_globally");
+      expect(completed.status).toBe("completed");
+      expect(completed.events.some((event) => String(event.payload["output"] ?? "").includes("echo:hello"))).toBe(true);
+
+      const second = await workbench.createTask("call mock MCP again");
+      expect(second.approvals).toHaveLength(0);
+      expect(second.events.some((event) => event.type === "approval_auto_granted")).toBe(true);
+      await registry.disconnectServer("mock");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("detects skill conflicts without auto-merging them", () => {
+    const first = promoteExperience({
+      id: "experience_a",
+      taskId: "task_a",
+      title: "host process audit",
+      goal: "host process audit",
+      body: "Use command evidence.",
+      readOnly: true,
+      toolsUsed: [],
+      result: "ok",
+      assessment: { goalAchieved: true, confidence: 0.9, issues: [], learnings: [], suggestedPatterns: [] },
+      meta: { outcome: "success", complexity: "simple", domains: ["host"], tools: ["run_command"], hasSideEffects: false, duration: 1 },
+      reflectionCount: 0,
+      reflectionStatus: "pending",
+      createdAt: nowIso()
+    });
+    const second = {
+      ...first,
+      id: "skill_b",
+      applicability: { ...first.applicability, keywords: ["host", "process", "audit"], requiredTools: ["mcp__mock__echo"] }
+    };
+    const conflicts = detectSkillConflicts(
+      { ...first, id: "skill_a", applicability: { ...first.applicability, keywords: ["host", "process", "audit"], requiredTools: ["run_command"] } },
+      [second]
+    );
+    expect(conflicts[0]?.status).toBe("open");
+  });
 });
 
 describe("ShellToolExecutor", () => {
@@ -323,4 +470,26 @@ function restoreEnv(name: string, value: string | undefined): void {
     return;
   }
   process.env[name] = value;
+}
+
+function mockMcpServerSource(): string {
+  return `
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import * as z from "zod/v4";
+
+const server = new McpServer({ name: "mock-mcp", version: "1.0.0" });
+server.registerTool(
+  "echo",
+  {
+    description: "Echo input text.",
+    inputSchema: { text: z.string().optional() },
+    annotations: { readOnlyHint: true }
+  },
+  async ({ text }) => ({
+    content: [{ type: "text", text: "echo:" + (text ?? "") }]
+  })
+);
+await server.connect(new StdioServerTransport());
+`;
 }

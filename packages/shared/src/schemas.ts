@@ -35,6 +35,50 @@ export const ToolResultSchema = z.object({
   createdAt: z.string()
 });
 
+export const McpTransportKindSchema = z.enum(["stdio", "streamable_http"]);
+
+export const McpServerConfigSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  transport: McpTransportKindSchema,
+  command: z.string().optional(),
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string()).default({}),
+  cwd: z.string().optional(),
+  url: z.string().optional(),
+  enabled: z.boolean().default(true),
+  toolRiskOverrides: z.record(RiskCategorySchema).default({}),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const McpServerStatusSchema = z.object({
+  serverId: z.string(),
+  connected: z.boolean(),
+  state: z.enum(["disconnected", "connecting", "connected", "error"]),
+  lastError: z.string().optional(),
+  connectedAt: z.string().optional(),
+  toolCount: z.number().int().nonnegative()
+});
+
+export const McpToolSummarySchema = z.object({
+  id: z.string(),
+  serverId: z.string(),
+  name: z.string(),
+  displayName: z.string(),
+  description: z.string().optional(),
+  inputSchema: z.record(z.unknown()).default({}),
+  riskCategory: RiskCategorySchema
+});
+
+export const McpToolCallResultSchema = z.object({
+  serverId: z.string(),
+  toolName: z.string(),
+  ok: z.boolean(),
+  output: z.string(),
+  isError: z.boolean().optional()
+});
+
 export const ToolApprovalSchema = z.object({
   id: z.string(),
   taskId: z.string(),
@@ -259,6 +303,16 @@ export const ProjectMemorySchema = z.object({
   updatedAt: z.string()
 });
 
+export const SkillConflictSchema = z.object({
+  id: z.string(),
+  skillIds: z.array(z.string()).min(2),
+  reason: z.string(),
+  severity: z.enum(["low", "medium", "high"]),
+  status: z.enum(["open", "acknowledged", "resolved"]),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
 export const GlobalPermissionRequestSchema = z
   .object({
     riskCategory: RiskCategorySchema,
@@ -277,6 +331,43 @@ export const ProjectMemoryCreateRequestSchema = z
     category: ProjectMemorySchema.shape.category,
     tags: z.array(z.string()).default([]),
     projectId: z.string().default("default")
+  })
+  .strict();
+
+export const McpServerCreateRequestSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    label: z.string().min(1),
+    transport: McpTransportKindSchema,
+    command: z.string().min(1).optional(),
+    args: z.array(z.string()).default([]),
+    env: z.record(z.string()).default({}),
+    cwd: z.string().optional(),
+    url: z.string().url().optional(),
+    enabled: z.boolean().default(true),
+    toolRiskOverrides: z.record(RiskCategorySchema).default({})
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.transport === "stdio" && !value.command) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "stdio MCP servers require command.", path: ["command"] });
+    }
+    if (value.transport === "streamable_http" && !value.url) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "streamable_http MCP servers require url.", path: ["url"] });
+    }
+  });
+
+export const McpServerPatchRequestSchema = z
+  .object({
+    label: z.string().min(1).optional(),
+    transport: McpTransportKindSchema.optional(),
+    command: z.string().min(1).optional(),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string()).optional(),
+    cwd: z.string().optional(),
+    url: z.string().url().optional(),
+    enabled: z.boolean().optional(),
+    toolRiskOverrides: z.record(RiskCategorySchema).optional()
   })
   .strict();
 
