@@ -3,6 +3,7 @@ dist
 dist-types
 .env
 .env.*
+dont_touch_(APIKEY).md
 data
 coverage
 playwright-report
