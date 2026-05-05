@@ -9,6 +9,8 @@ import {
   McpRegistry,
   ShellToolExecutor,
   createModelClientFromEnvironment,
+  loadOpenAiProviderConfig,
+  type OpenAIProviderConfigWithName,
   type ResolvedModelProviderConfig
 } from "@scc/core";
 import {
@@ -33,6 +35,7 @@ import {
   SkillStatusPatchSchema,
   SkillUpdateRequestSchema,
   TaskDeleteRequestSchema,
+  type ModelPreset,
   type TaskEvent
 } from "@scc/shared";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -62,7 +65,11 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
       requestId
     });
   });
-  await app.register(cors, { origin: true });
+  await app.register(cors, {
+    origin: true,
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["content-type"]
+  });
   await app.register(websocket);
 
   const events = new TaskEventBroadcaster();
@@ -71,6 +78,9 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     : createDefaultRuntime((event) => events.publish(event));
   const workbench = runtime.workbench;
   const mcpRegistry = runtime.mcpRegistry;
+  const closeRuntime = "close" in runtime ? runtime.close : undefined;
+  app.addHook("onClose", async () => closeRuntime?.());
+  if (!options.workbench) await bootstrapMimoProviderFromApiKeyDoc(workbench);
   await workbench.recoverInterruptedTasks();
 
   app.get("/health", async () => ({ ok: true }));
@@ -369,7 +379,48 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   return app;
 }
 
-function createDefaultRuntime(onEvent: (event: TaskEvent) => void): { workbench: AgentWorkbench; mcpRegistry: McpRegistry } {
+async function bootstrapMimoProviderFromApiKeyDoc(workbench: AgentWorkbench): Promise<void> {
+  if ((await workbench.listModelProviders()).length > 0) return;
+  const config = loadOpenAiProviderConfig();
+  if (!config.apiKey || !config.baseURL || !config.model) return;
+  if (!isMimoProviderConfig(config)) return;
+
+  await workbench.createModelProvider({
+    vendor: "mimo",
+    label: "Mimo",
+    protocol: "openai_compatible",
+    baseUrl: config.baseURL,
+    apiKey: config.apiKey,
+    models: [toBootstrapModelPreset(config.model)],
+    defaultModelId: config.model,
+    enabled: true,
+    makeActive: true
+  });
+}
+
+function isMimoProviderConfig(config: OpenAIProviderConfigWithName): boolean {
+  const haystack = [config.providerName, config.baseURL, config.model].filter(Boolean).join(" ").toLowerCase();
+  return haystack.includes("mimo") || haystack.includes("xiaomi") || haystack.includes("xiaomimimo");
+}
+
+function toBootstrapModelPreset(model: string): ModelPreset {
+  return {
+    id: model,
+    label: model,
+    contextWindow: contextWindowForModel(model),
+    supportsTools: true,
+    supportsThinking: true
+  };
+}
+
+function contextWindowForModel(model: string): number {
+  const normalized = model.toLowerCase();
+  if (normalized.includes("2.5-pro") || normalized.includes("200k")) return 200000;
+  if (normalized.includes("1m")) return 1000000;
+  return 128000;
+}
+
+function createDefaultRuntime(onEvent: (event: TaskEvent) => void): { workbench: AgentWorkbench; mcpRegistry: McpRegistry; close: () => void } {
   const store = new SqliteWorkbenchStore(process.env["SCC_DB_PATH"] ?? "data/workbench.sqlite");
   const contextAssembler = new ContextAssembler(store);
   const mcpRegistry = new McpRegistry(store);
@@ -405,7 +456,7 @@ function createDefaultRuntime(onEvent: (event: TaskEvent) => void): { workbench:
     toolRiskProvider: mcpRegistry,
     onEvent
   });
-  return { workbench, mcpRegistry };
+  return { workbench, mcpRegistry, close: () => store.close() };
 }
 
 function redactSensitiveText(input: string): string {

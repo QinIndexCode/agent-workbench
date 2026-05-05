@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -121,9 +121,10 @@ describe("server API", () => {
     const patchResponse = await app.inject({
       method: "PATCH",
       url: `/api/skills/${skill.id}`,
-      payload: { status: "active", applicability: { keywords: ["process", "software"] } }
+      payload: { title: "Host process review updated", status: "active", applicability: { keywords: ["process", "software"] } }
     });
     expect(patchResponse.json().status).toBe("active");
+    expect(patchResponse.json().title).toBe("Host process review updated");
     expect((await app.inject("/api/skills/duplicates")).statusCode).toBe(200);
     expect((await app.inject({ method: "POST", url: "/api/skills/bulk-delete", payload: { skillIds: [skill.id] } })).json().deleted).toBe(1);
 
@@ -162,9 +163,10 @@ describe("server API", () => {
     const providerPatch = await app.inject({
       method: "PATCH",
       url: `/api/model-providers/${provider.id}`,
-      payload: { enabled: false }
+      payload: { label: "Mimo updated", enabled: false }
     });
     expect(providerPatch.json().enabled).toBe(false);
+    expect(providerPatch.json().label).toBe("Mimo updated");
 
     const grantResponse = await app.inject({
       method: "POST",
@@ -279,6 +281,57 @@ describe("server API", () => {
     await app.close();
   });
 
+  it("bootstraps a Mimo model provider from the local API key document without exposing the key", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-server-bootstrap-"));
+    const previous = {
+      dbPath: process.env["SCC_DB_PATH"],
+      apiKeyFile: process.env["SCC_API_KEY_FILE"],
+      provider: process.env["SCC_API_PROVIDER"],
+      openAiProvider: process.env["OPENAI_PROVIDER"]
+    };
+
+    try {
+      const apiKeyFile = join(dir, "dont_touch_(APIKEY).md");
+      writeFileSync(
+        apiKeyFile,
+        [
+          "xiaomi mimo",
+          "apiKey: test-mimo-secret-6789",
+          "baseUrl: https://token-plan-cn.xiaomimimo.com/v1",
+          "canonicalLiveModel: mimo-v2.5"
+        ].join("\n")
+      );
+      process.env["SCC_DB_PATH"] = join(dir, "workbench.sqlite");
+      process.env["SCC_API_KEY_FILE"] = apiKeyFile;
+      delete process.env["SCC_API_PROVIDER"];
+      delete process.env["OPENAI_PROVIDER"];
+
+      const app = await createApp();
+      const providers = (await app.inject("/api/model-providers")).json();
+      const preferences = (await app.inject("/api/preferences")).json();
+
+      expect(providers).toHaveLength(1);
+      expect(providers[0]).toMatchObject({
+        vendor: "mimo",
+        label: "Mimo",
+        protocol: "openai_compatible",
+        baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+        defaultModelId: "mimo-v2.5"
+      });
+      expect(providers[0].apiKeyRef.last4).toBe("6789");
+      expect(JSON.stringify(providers)).not.toContain("test-mimo-secret");
+      expect(preferences.activeModelProviderId).toBe(providers[0].id);
+      expect(preferences.defaultModel).toBe("mimo-v2.5");
+      await app.close();
+    } finally {
+      restoreEnv("SCC_DB_PATH", previous.dbPath);
+      restoreEnv("SCC_API_KEY_FILE", previous.apiKeyFile);
+      restoreEnv("SCC_API_PROVIDER", previous.provider);
+      restoreEnv("OPENAI_PROVIDER", previous.openAiProvider);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("serves SCC tools through a real MCP streamable HTTP client", async () => {
     const app = await createApp({
       workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ConfiguredToolModelClient("Get-Process") })
@@ -304,6 +357,14 @@ describe("server API", () => {
     }
   });
 });
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+    return;
+  }
+  process.env[name] = value;
+}
 
 async function waitForTask(app: Awaited<ReturnType<typeof createApp>>, taskId: string, predicate: (task: TaskDetail) => boolean): Promise<TaskDetail> {
   for (let attempt = 0; attempt < 30; attempt++) {

@@ -2,11 +2,11 @@ import type { ApprovalDecision, TaskDetail, UserPreferences } from "@scc/shared"
 import { BookOpen, Code2, Cpu, Menu, Settings, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
 import { getUiCopy } from "../i18n.js";
-import { Composer, type ComposerMode, type PermissionPreset } from "./Composer.js";
+import { Composer, type ComposerMode, type ComposerPermissionMode, type PermissionPreset } from "./Composer.js";
 import type { EngineStatus } from "./TaskList.js";
 import { Timeline } from "./Timeline.js";
 
-const continueStatuses = new Set(["idle", "paused", "completed", "failed", "cancelled"]);
+const continueStatuses = new Set(["idle", "paused"]);
 
 export function TaskThread({
   task,
@@ -21,6 +21,7 @@ export function TaskThread({
   permissionScopeLabel,
   onModelChange,
   onOpenConnect,
+  onOpenPermissionSettings,
   onPermissionPresetChange,
   onOpenTasks,
   onSubmit,
@@ -35,10 +36,11 @@ export function TaskThread({
   preferences: UserPreferences | null;
   modelLabel: string;
   modelOptions: Array<{ label: string; value: string }>;
-  permissionPreset: PermissionPreset;
+  permissionPreset: ComposerPermissionMode;
   permissionScopeLabel: string;
   onModelChange: (modelId: string) => void;
   onOpenConnect: () => void;
+  onOpenPermissionSettings: () => void;
   onPermissionPresetChange: (preset: PermissionPreset) => void;
   onOpenTasks: () => void;
   onSubmit: (mode: ComposerMode, text: string) => void;
@@ -90,6 +92,7 @@ export function TaskThread({
         mode={mode}
         onDraftChange={setDraft}
         onModelChange={onModelChange}
+        onOpenPermissionSettings={onOpenPermissionSettings}
         onPermissionPresetChange={onPermissionPresetChange}
         onSubmit={(content) => onSubmit(mode, content)}
         onStop={onStop}

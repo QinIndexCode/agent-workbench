@@ -8,11 +8,13 @@ import { LibraryView, type LibrarySection } from "./components/LibraryView.js";
 import { McpPanel } from "./components/McpPanel.js";
 import { ModelProvidersPanel } from "./components/ModelProvidersPanel.js";
 import { PermissionsPanel } from "./components/PermissionsPanel.js";
+import { ReflectionPanel } from "./components/ReflectionPanel.js";
 import { SettingsView, type SettingsSection } from "./components/SettingsView.js";
 import { SkillPanel } from "./components/SkillPanel.js";
+import { SupportDialog } from "./components/SupportDialog.js";
 import { TaskList } from "./components/TaskList.js";
 import { TaskThread } from "./components/TaskThread.js";
-import type { ComposerMode, PermissionPreset } from "./components/Composer.js";
+import type { ComposerMode, ComposerPermissionMode, PermissionPreset } from "./components/Composer.js";
 import { normalizeContextPatch, providerById } from "./llm-presets.js";
 import { useWorkbenchData } from "./useWorkbenchData.js";
 
@@ -25,8 +27,11 @@ export function App() {
   const data = useWorkbenchData();
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>("tasks");
+  const [previousView, setPreviousView] = useState<Exclude<ActiveView, "docs">>("tasks");
+  const [supportOpen, setSupportOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("providers");
   const [librarySection, setLibrarySection] = useState<LibrarySection>("skills");
+  const [libraryQuery, setLibraryQuery] = useState("");
   const language = data.preferences?.language ?? "zh-CN";
   const engineStatus = data.error ? "attention" : data.realtimeConnected ? "streaming" : "running";
   const activeProvider = data.modelProviders.find((provider) => provider.id === data.preferences?.activeModelProviderId) ?? data.modelProviders.find((provider) => provider.enabled);
@@ -39,49 +44,47 @@ export function App() {
     modelProvider.models.map((model) => ({ label: model.id, value: model.id }));
 
   return (
-    <main className="shell">
-      <TaskList
-        activeView={activeView}
-        engineStatus={engineStatus}
-        language={language}
-        open={taskDrawerOpen}
-        tasks={data.tasks}
-        selectedId={data.selectedId}
-        onClose={() => setTaskDrawerOpen(false)}
-        onNewTask={() => {
-          setActiveView("tasks");
-          setTaskDrawerOpen(false);
-          data.clearSelection();
-        }}
-        onOpenDocs={() => {
-          setActiveView("docs");
-          setTaskDrawerOpen(false);
-        }}
-        onOpenHistory={() => {
-          setActiveView("history");
-          setTaskDrawerOpen(false);
-        }}
-        onOpenLibrary={() => {
-          setLibrarySection("skills");
-          setActiveView("library");
-          setTaskDrawerOpen(false);
-        }}
-        onOpenSettings={() => {
-          setActiveView("settings");
-          setTaskDrawerOpen(false);
-        }}
-        onOpenSupport={() => {
-          setSettingsSection("permissions");
-          setActiveView("settings");
-          setTaskDrawerOpen(false);
-        }}
-        onDelete={(taskId, options) => data.deleteTask(taskId, options)}
-        onSelect={(taskId) => {
-          setActiveView("tasks");
-          setTaskDrawerOpen(false);
-          void data.selectTask(taskId);
-        }}
-      />
+    <main className={activeView === "docs" ? "shell docsShell" : "shell"}>
+      {activeView !== "docs" ? (
+        <TaskList
+          activeView={activeView}
+          engineStatus={engineStatus}
+          language={language}
+          open={taskDrawerOpen}
+          tasks={data.tasks}
+          selectedId={data.selectedId}
+          onClose={() => setTaskDrawerOpen(false)}
+          onNewTask={() => {
+            setActiveView("tasks");
+            setTaskDrawerOpen(false);
+            data.clearSelection();
+          }}
+          onOpenDocs={() => openDocs()}
+          onOpenHistory={() => {
+            setActiveView("history");
+            setTaskDrawerOpen(false);
+          }}
+          onOpenLibrary={() => {
+            setLibrarySection("skills");
+            setActiveView("library");
+            setTaskDrawerOpen(false);
+          }}
+          onOpenSettings={() => {
+            setActiveView("settings");
+            setTaskDrawerOpen(false);
+          }}
+          onOpenSupport={() => {
+            setSupportOpen(true);
+            setTaskDrawerOpen(false);
+          }}
+          onDelete={(taskId, options) => data.deleteTask(taskId, options)}
+          onSelect={(taskId) => {
+            setActiveView("tasks");
+            setTaskDrawerOpen(false);
+            void data.selectTask(taskId);
+          }}
+        />
+      ) : null}
 
       {activeView === "tasks" ? (
         <TaskThread
@@ -97,6 +100,10 @@ export function App() {
           permissionScopeLabel={permissionScopeLabel}
           onModelChange={(modelId) => updateModelSelection(modelId)}
           onOpenConnect={() => {
+            setSettingsSection("permissions");
+            setActiveView("settings");
+          }}
+          onOpenPermissionSettings={() => {
             setSettingsSection("permissions");
             setActiveView("settings");
           }}
@@ -121,12 +128,14 @@ export function App() {
         <LibraryView
           activeSection={librarySection}
           language={language}
-          onOpenTasks={() => setTaskDrawerOpen(true)}
+          query={libraryQuery}
+          onQuery={setLibraryQuery}
           onSection={(section) => setLibrarySection(section)}
         >
           {{
             skills: (
               <SkillPanel
+                query={libraryQuery}
                 language={language}
                 skills={data.skills}
                 duplicates={data.skillDuplicates}
@@ -143,6 +152,7 @@ export function App() {
             ),
             knowledge: (
               <KnowledgePanel
+                query={libraryQuery}
                 language={language}
                 items={data.knowledgeItems}
                 onCreate={(input) => data.runSideAction(() => api.createKnowledgeItem(input))}
@@ -150,11 +160,20 @@ export function App() {
                 onUpdate={(id, input) => data.runSideAction(() => api.patchKnowledgeItem(id, input))}
                 onUpload={(input) => data.runSideAction(() => api.uploadKnowledgeFile(input))}
               />
+            ),
+            reflections: (
+              <ReflectionPanel
+                conflicts={data.skillConflicts}
+                duplicates={data.skillDuplicates}
+                language={language}
+                reflections={data.reflections}
+                onRunReflection={() => void data.runSideAction(() => api.runReflection())}
+              />
             )
           }}
         </LibraryView>
       ) : activeView === "docs" ? (
-        <DocsView language={language} onOpenTasks={() => setTaskDrawerOpen(true)} />
+        <DocsView language={language} onBack={() => setActiveView(previousView)} />
       ) : (
         <SettingsView
           activeSection={settingsSection}
@@ -165,7 +184,8 @@ export function App() {
           {{
             providers: (
               <ModelProvidersPanel
-                activeProviderId={data.preferences?.activeModelProviderId ?? null}
+                activeProviderId={activeProvider?.id ?? null}
+                currentModelLabel={modelLabel === "not configured" ? null : modelLabel}
                 language={language}
                 providers={data.modelProviders}
                 onCreate={(input) => data.runSideAction(() => api.createModelProvider(input))}
@@ -180,17 +200,20 @@ export function App() {
                 preferences={data.preferences}
                 onGrant={(risk) => void grantGlobal(risk)}
                 onRevoke={(risk) => void data.runSideAction(() => api.revokeGlobalPermission(risk))}
+                onPermissionPresetChange={(preset) => applyPermissionPreset(preset)}
                 onPreference={(patch) => void updatePreference(patch)}
               />
             ),
             mcp: (
               <McpPanel
+                language={language}
                 servers={data.mcpServers}
                 tools={data.mcpTools}
-                onCreate={(input) => void data.runSideAction(() => api.createMcpServer(input))}
-                onConnect={(serverId) => void data.runSideAction(() => api.connectMcpServer(serverId))}
-                onDisconnect={(serverId) => void data.runSideAction(() => api.disconnectMcpServer(serverId))}
-                onDelete={(serverId) => void data.runSideAction(() => api.deleteMcpServer(serverId))}
+                onCreate={(input) => data.runSideAction(() => api.createMcpServer(input))}
+                onUpdate={(serverId, input) => data.runSideAction(() => api.patchMcpServer(serverId, input))}
+                onConnect={(serverId) => data.runSideAction(() => api.connectMcpServer(serverId))}
+                onDisconnect={(serverId) => data.runSideAction(() => api.disconnectMcpServer(serverId))}
+                onDelete={(serverId) => data.runSideAction(() => api.deleteMcpServer(serverId))}
               />
             ),
             preferences: (
@@ -201,14 +224,22 @@ export function App() {
                 preferencesOnly
                 onGrant={(risk) => void grantGlobal(risk)}
                 onRevoke={(risk) => void data.runSideAction(() => api.revokeGlobalPermission(risk))}
+                onPermissionPresetChange={(preset) => applyPermissionPreset(preset)}
                 onPreference={(patch) => void updatePreference(patch)}
               />
             )
           }}
         </SettingsView>
       )}
+      <SupportDialog language={language} open={supportOpen} onClose={() => setSupportOpen(false)} onOpenDocs={() => openDocs()} />
     </main>
   );
+
+  function openDocs() {
+    if (activeView !== "docs") setPreviousView(activeView);
+    setActiveView("docs");
+    setTaskDrawerOpen(false);
+  }
 
   function submitComposer(mode: ComposerMode, text: string) {
     void data.runTaskAction(() => {
@@ -295,17 +326,19 @@ export function App() {
   }
 }
 
-function getPermissionPreset(permissions: Array<{ riskCategory: RiskCategory }>): PermissionPreset {
+function getPermissionPreset(permissions: Array<{ riskCategory: RiskCategory }>): ComposerPermissionMode {
   const granted = new Set(permissions.map((permission) => permission.riskCategory));
   if (allRiskCategories.every((risk) => granted.has(risk))) return "all";
   if (readOnlyRiskCategories.every((risk) => granted.has(risk)) && allRiskCategories.every((risk) => readOnlyRiskCategories.includes(risk) || !granted.has(risk))) {
     return "read_only";
   }
-  return "ask";
+  if (allRiskCategories.every((risk) => !granted.has(risk))) return "ask";
+  return "custom";
 }
 
-function formatPermissionPreset(preset: PermissionPreset, language: string): string {
+function formatPermissionPreset(preset: ComposerPermissionMode, language: string): string {
   if (preset === "all") return "All";
+  if (preset === "custom") return "Custom";
   if (preset === "read_only") return "Read only";
-  return language === "zh-CN" ? "Ask" : "Ask";
+  return "Ask";
 }

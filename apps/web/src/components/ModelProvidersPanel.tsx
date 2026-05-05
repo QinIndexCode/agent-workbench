@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ModelPreset, ModelProviderCreateRequest, ModelProviderPatchRequest, ModelProviderRecord, ProviderProtocol } from "@scc/shared";
-import { CheckCircle2, Edit3, KeyRound, Plus, Trash2, X } from "lucide-react";
+import { CheckCircle2, Edit3, Plus, SlidersHorizontal, Trash2, X, type LucideIcon } from "lucide-react";
 import { MODEL_PROVIDER_PRESETS, type ModelProviderPreset } from "../llm-presets.js";
+import { AccordionSelect } from "./AccordionSelect.js";
+import { ConfirmDialog } from "./ConfirmDialog.js";
 
 type ProviderDraft = {
   vendor: string;
@@ -19,6 +21,7 @@ type ProviderDraft = {
 
 export function ModelProvidersPanel({
   activeProviderId,
+  currentModelLabel,
   language,
   providers,
   onCreate,
@@ -26,6 +29,7 @@ export function ModelProvidersPanel({
   onUpdate
 }: {
   activeProviderId?: string | null;
+  currentModelLabel?: string | null;
   language?: string | null;
   providers: ModelProviderRecord[];
   onCreate: (input: ModelProviderCreateRequest) => Promise<void> | void;
@@ -34,8 +38,10 @@ export function ModelProvidersPanel({
 }) {
   const text = getProviderCopy(language);
   const [editing, setEditing] = useState<ModelProviderRecord | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ModelProviderRecord | null>(null);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<ProviderDraft>(() => draftFromPreset(MODEL_PROVIDER_PRESETS[0]!));
+  const activeProvider = providers.find((provider) => provider.id === activeProviderId) ?? providers.find((provider) => provider.enabled) ?? null;
   const selectedPreset = useMemo(() => MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor === draft.vendor) ?? MODEL_PROVIDER_PRESETS[0]!, [draft.vendor]);
   const modelPresets = selectedPreset.models;
   const selectedModel = modelPresets.find((model) => model.id === draft.modelId) ?? modelPresets[0] ?? null;
@@ -59,13 +65,20 @@ export function ModelProvidersPanel({
         </button>
       </header>
 
+      <section className="activeModelSummary">
+        <ProviderIcon modelId={activeProvider?.defaultModelId ?? currentModelLabel ?? undefined} vendor={activeProvider?.vendor} />
+        <div>
+          <small>{text.currentModel}</small>
+          <strong>{activeProvider?.defaultModelId ?? currentModelLabel ?? text.notConfigured}</strong>
+          <span>{activeProvider ? `${activeProvider.label} · ${activeProvider.protocol.replace("_", " ")}` : currentModelLabel ? text.fromPreferences : text.addFirst}</span>
+        </div>
+      </section>
+
       <div className="providerRows">
         {providers.length === 0 ? <p className="muted">{text.empty}</p> : null}
         {providers.map((provider) => (
           <article className={provider.id === activeProviderId ? "providerRow active" : "providerRow"} key={provider.id}>
-            <div className="providerBadge">
-              <KeyRound size={16} />
-            </div>
+            <ProviderIcon modelId={provider.defaultModelId} vendor={provider.vendor} />
             <div className="providerMain">
               <strong>{provider.label}</strong>
               <span>{provider.defaultModelId}</span>
@@ -87,7 +100,7 @@ export function ModelProvidersPanel({
               <button aria-label={text.edit} className="iconButton" type="button" onClick={() => startEdit(provider)}>
                 <Edit3 size={15} />
               </button>
-              <button aria-label={text.delete} className="iconButton dangerIcon" type="button" onClick={() => void onDelete(provider.id)}>
+              <button aria-label={text.delete} className="iconButton dangerIcon" type="button" onClick={() => setDeleteTarget(provider)}>
                 <Trash2 size={15} />
               </button>
             </div>
@@ -117,21 +130,25 @@ export function ModelProvidersPanel({
             <div className="providerFormGrid">
               <label className="fieldStack">
                 <span>{text.vendor}</span>
-                <select value={draft.vendor} onChange={(event) => applyPreset(event.target.value)}>
-                  {MODEL_PROVIDER_PRESETS.map((preset) => (
-                    <option key={preset.vendor} value={preset.vendor}>
-                      {preset.label}
-                    </option>
-                  ))}
-                </select>
+                <AccordionSelect
+                  ariaLabel={text.vendor}
+                  value={draft.vendor}
+                  options={MODEL_PROVIDER_PRESETS.map((preset) => ({ value: preset.vendor, label: preset.label }))}
+                  onChange={applyPreset}
+                />
               </label>
               <label className="fieldStack">
                 <span>{text.protocol}</span>
-                <select value={draft.protocol} onChange={(event) => setDraft({ ...draft, protocol: event.target.value as ProviderProtocol })}>
-                  <option value="openai_compatible">OpenAI-compatible</option>
-                  <option value="anthropic_messages">Anthropic Messages</option>
-                  <option value="gemini">Gemini</option>
-                </select>
+                <AccordionSelect
+                  ariaLabel={text.protocol}
+                  value={draft.protocol}
+                  options={[
+                    { value: "openai_compatible", label: "OpenAI-compatible" },
+                    { value: "anthropic_messages", label: "Anthropic Messages" },
+                    { value: "gemini", label: "Gemini" }
+                  ]}
+                  onChange={(value) => setDraft({ ...draft, protocol: value as ProviderProtocol })}
+                />
               </label>
               <label className="fieldStack">
                 <span>{text.label}</span>
@@ -143,14 +160,15 @@ export function ModelProvidersPanel({
               </label>
               <label className="fieldStack">
                 <span>{text.model}</span>
-                <select value={draft.modelMode === "custom" ? "__custom__" : draft.modelId} onChange={(event) => selectModel(event.target.value)}>
-                  {modelPresets.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.id}
-                    </option>
-                  ))}
-                  <option value="__custom__">{text.customModel}</option>
-                </select>
+                <AccordionSelect
+                  ariaLabel={text.model}
+                  value={draft.modelMode === "custom" ? "__custom__" : draft.modelId}
+                  options={[
+                    ...modelPresets.map((model) => ({ value: model.id, label: model.id })),
+                    { value: "__custom__", label: text.customModel }
+                  ]}
+                  onChange={selectModel}
+                />
               </label>
               {draft.modelMode === "custom" ? (
                 <>
@@ -173,16 +191,16 @@ export function ModelProvidersPanel({
                 <span>{text.apiKey}</span>
                 <input autoComplete="off" placeholder={editing?.apiKeyRef?.last4 ? `•••• ${editing.apiKeyRef.last4}` : ""} type="password" value={draft.apiKey} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} />
               </label>
-              <label className="toggleField enabled">
+              <label className={draft.enabled ? "toggleField enabled" : "toggleField"}>
                 <span>{text.enabled}</span>
-                <button type="button" onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}>
-                  {draft.enabled ? text.on : text.off}
+                <button className="switchControl" type="button" onClick={() => setDraft({ ...draft, enabled: !draft.enabled })} aria-pressed={draft.enabled} aria-label={text.enabled}>
+                  <span aria-hidden="true" />
                 </button>
               </label>
-              <label className="toggleField enabled">
+              <label className={draft.makeActive ? "toggleField enabled" : "toggleField"}>
                 <span>{text.makeActive}</span>
-                <button type="button" onClick={() => setDraft({ ...draft, makeActive: !draft.makeActive })}>
-                  {draft.makeActive ? text.on : text.off}
+                <button className="switchControl" type="button" onClick={() => setDraft({ ...draft, makeActive: !draft.makeActive })} aria-pressed={draft.makeActive} aria-label={text.makeActive}>
+                  <span aria-hidden="true" />
                 </button>
               </label>
             </div>
@@ -197,6 +215,22 @@ export function ModelProvidersPanel({
           </form>
         </div>
       ) : null}
+
+      <ConfirmDialog
+        cancelLabel={text.cancel}
+        confirmLabel={text.delete}
+        open={Boolean(deleteTarget)}
+        title={text.deleteTitle}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          const providerId = deleteTarget.id;
+          setDeleteTarget(null);
+          void onDelete(providerId);
+        }}
+      >
+        <p>{deleteTarget ? text.deleteBody(deleteTarget.label, deleteTarget.defaultModelId) : ""}</p>
+      </ConfirmDialog>
     </section>
   );
 
@@ -243,6 +277,54 @@ export function ModelProvidersPanel({
     else await onCreate(payload);
     setOpen(false);
   }
+}
+
+type ProviderIconMeta = { label: string; mark?: string; Icon?: LucideIcon };
+
+const providerIconMeta = {
+  mimo: { label: "Mimo", mark: "M" },
+  openai: { label: "OpenAI", mark: "AI" },
+  anthropic: { label: "Anthropic", mark: "A" },
+  gemini: { label: "Gemini", mark: "G" },
+  deepseek: { label: "DeepSeek", mark: "DS" },
+  qwen: { label: "Qwen", mark: "Q" },
+  kimi: { label: "Kimi", mark: "K" },
+  openrouter: { label: "OpenRouter", mark: "OR" },
+  custom: { label: "Custom model", Icon: SlidersHorizontal }
+} satisfies Record<string, ProviderIconMeta>;
+
+type ProviderIconKind = keyof typeof providerIconMeta;
+
+function ProviderIcon({ vendor, modelId }: { vendor: string | null | undefined; modelId: string | null | undefined }) {
+  const kind = resolveProviderIconKind(vendor, modelId);
+  const meta: ProviderIconMeta = providerIconMeta[kind];
+  const Icon = meta.Icon;
+  return (
+    <span aria-label={meta.label} className={`providerBadge providerLogo-${kind}`} role="img" title={meta.label}>
+      {Icon ? <Icon size={16} aria-hidden="true" /> : <span className="providerLogoText">{meta.mark ?? ""}</span>}
+    </span>
+  );
+}
+
+function resolveProviderIconKind(vendor?: string | null, modelId?: string | null): ProviderIconKind {
+  const normalizedVendor = vendor?.trim().toLowerCase();
+  const normalizedModel = modelId?.trim();
+  const vendorPreset = normalizedVendor ? MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor === normalizedVendor) : null;
+  if (vendorPreset?.vendor && vendorPreset.vendor !== "custom") {
+    if (!normalizedModel || vendorPreset.models.some((model) => model.id === normalizedModel)) {
+      return asProviderIconKind(vendorPreset.vendor);
+    }
+    return "custom";
+  }
+  if (normalizedModel) {
+    const inferredPreset = MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor !== "custom" && preset.models.some((model) => model.id === normalizedModel));
+    if (inferredPreset) return asProviderIconKind(inferredPreset.vendor);
+  }
+  return "custom";
+}
+
+function asProviderIconKind(value: string): ProviderIconKind {
+  return value in providerIconMeta ? (value as ProviderIconKind) : "custom";
 }
 
 function draftFromPreset(preset: ModelProviderPreset): ProviderDraft {
@@ -299,18 +381,27 @@ function buildModel(draft: ProviderDraft): ModelPreset {
 function getProviderCopy(language?: string | null) {
   const zh = language === "zh-CN";
   return {
-    title: zh ? "模型服务商" : "Model providers",
-    subtitle: zh ? "以列表管理厂商、模型和本地加密密钥。运行时会使用当前激活的 Provider。" : "Manage vendors, models, and encrypted local API keys. The active provider is used at runtime.",
-    add: zh ? "添加 Provider" : "Add provider",
-    edit: zh ? "编辑 Provider" : "Edit provider",
-    delete: zh ? "删除 Provider" : "Delete provider",
-    empty: zh ? "还没有模型 Provider。" : "No model providers yet.",
+    title: zh ? "模型配置" : "Model configuration",
+    subtitle: zh ? "从预设厂商或自定义接口添加模型。API Key 只保存在本机，运行时使用当前激活模型。" : "Add models from presets or custom endpoints. API keys stay local; the active model is used at runtime.",
+    add: zh ? "添加模型" : "Add model",
+    edit: zh ? "编辑模型" : "Edit model",
+    delete: zh ? "删除模型" : "Delete model",
+    deleteTitle: zh ? "删除模型配置" : "Delete model configuration",
+    deleteBody: (label: string, modelId: string) =>
+      zh
+        ? `将删除 ${label}（${modelId}）的配置和本地保存的密钥。已创建的任务记录不会被删除。`
+        : `This removes ${label} (${modelId}) and its locally stored key. Existing task history is kept.`,
+    empty: zh ? "还没有添加模型。" : "No models added yet.",
+    currentModel: zh ? "当前使用模型" : "Current model",
+    notConfigured: zh ? "未配置" : "Not configured",
+    addFirst: zh ? "添加一个模型后即可运行 Agent。" : "Add a model before running the agent.",
+    fromPreferences: zh ? "来自当前偏好；添加模型配置后可管理密钥、上下文和预设。" : "From current preferences; add a model configuration to manage keys, context, and presets.",
     active: zh ? "当前使用" : "Active",
     enabled: zh ? "启用" : "Enabled",
     disabled: zh ? "停用" : "Disabled",
     noKey: zh ? "未保存密钥" : "No key",
-    dialogHelp: zh ? "选择预设或自定义模型。API Key 只会加密保存在本机。" : "Choose a preset or custom model. API keys are encrypted locally.",
-    vendor: zh ? "厂商" : "Vendor",
+    dialogHelp: zh ? "选择预设模型厂商，或选择 Custom 手动填写接口与上下文窗口。" : "Choose a preset vendor, or choose Custom and enter the endpoint and context window manually.",
+    vendor: zh ? "预设厂商" : "Preset vendor",
     protocol: zh ? "协议" : "Protocol",
     label: zh ? "显示名称" : "Display name",
     baseUrl: "Base URL",

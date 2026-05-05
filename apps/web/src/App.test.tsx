@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GlobalPermissionGrant, KnowledgeItem, ModelProviderRecord, SkillRecord, TaskDetail, ToolApproval, UserPreferences } from "@scc/shared";
 import { App } from "./App.js";
@@ -160,6 +160,7 @@ describe("Workbench components", () => {
         permissionScopeLabel="Approval"
         onModelChange={vi.fn()}
         onOpenConnect={vi.fn()}
+        onOpenPermissionSettings={vi.fn()}
         onPermissionPresetChange={vi.fn()}
         onOpenTasks={vi.fn()}
         onSubmit={onSubmit}
@@ -379,8 +380,11 @@ describe("Workbench components", () => {
     );
 
     expect(screen.getByRole("heading", { name: "权限与偏好" })).toBeInTheDocument();
-    fireEvent.click(screen.getByText("撤销"));
+    fireEvent.click(screen.getByRole("radio", { name: /自定义/ }));
+    fireEvent.click(screen.getByLabelText("取消自动通过 主机观察"));
     expect(onRevoke).toHaveBeenCalledWith("host_observation");
+    fireEvent.click(screen.getByRole("radio", { name: /Read only/ }));
+    expect(onGrant).toHaveBeenCalledWith("workspace_read");
 
     rerender(
       <PermissionsPanel
@@ -393,7 +397,8 @@ describe("Workbench components", () => {
         onPreference={onPreference}
       />
     );
-    fireEvent.change(screen.getByLabelText("界面与回复语言"), { target: { value: "en-US" } });
+    fireEvent.click(screen.getByLabelText("界面与回复语言"));
+    fireEvent.click(screen.getByRole("option", { name: "English" }));
     expect(onPreference).toHaveBeenCalledWith(expect.objectContaining({ language: "en-US" }));
   });
 
@@ -435,8 +440,9 @@ describe("Workbench components", () => {
     );
 
     expect(screen.getByText("Mimo")).toBeInTheDocument();
-    expect(screen.getByText("mimo-v2.5")).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText("Edit provider"));
+    expect(screen.getAllByText("mimo-v2.5").length).toBeGreaterThan(0);
+    expect(screen.getAllByLabelText("Mimo").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByLabelText("Edit model"));
     fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "test-key-123456" } });
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() =>
@@ -449,7 +455,9 @@ describe("Workbench components", () => {
       )
     );
 
-    fireEvent.click(screen.getByLabelText("Delete provider"));
+    fireEvent.click(screen.getByLabelText("Delete model"));
+    expect(screen.getByText("This removes Mimo (mimo-v2.5) and its locally stored key. Existing task history is kept.")).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Delete model configuration" })).getByRole("button", { name: "Delete model" }));
     expect(onDelete).toHaveBeenCalledWith("provider_1");
   });
 
@@ -482,8 +490,9 @@ describe("Workbench components", () => {
       />
     );
 
-    expect(screen.getByText("Runtime notes")).toBeInTheDocument();
+    expect(screen.getAllByText("Runtime notes").length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { name: "Runtime" })).toBeInTheDocument();
+    fireEvent.click(screen.getAllByLabelText("Edit item Runtime notes")[0]!);
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Updated notes" } });
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(onUpdate).toHaveBeenCalledWith("knowledge_1", expect.objectContaining({ title: "Updated notes" })));
@@ -544,7 +553,7 @@ describe("Workbench components", () => {
         onExport={vi.fn()}
       />
     );
-    expect(screen.getByText("Legacy skill without stats")).toBeInTheDocument();
+    expect(screen.getAllByText("Legacy skill without stats").length).toBeGreaterThan(0);
     expect(screen.getByText("active · not used yet")).toBeInTheDocument();
   });
 
@@ -569,6 +578,7 @@ describe("Workbench components", () => {
         ]}
         tools={[{ id: "mcp__mock__echo", serverId: "mock", name: "echo", displayName: "echo", inputSchema: {}, riskCategory: "shell" }]}
         onCreate={vi.fn()}
+        onUpdate={vi.fn()}
         onConnect={onConnect}
         onDisconnect={vi.fn()}
         onDelete={vi.fn()}
@@ -576,11 +586,11 @@ describe("Workbench components", () => {
     );
     expect(screen.getByText("Mock MCP")).toBeInTheDocument();
     expect(screen.getByText("echo")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Connect"));
+    fireEvent.click(screen.getByLabelText("Connect server"));
     expect(onConnect).toHaveBeenCalledWith("mock");
   });
 
-  it("creates a task, resolves an approval, and continues a completed thread", async () => {
+  it("creates a task, resolves an approval, and starts a new task from a completed thread", async () => {
     const approval: ToolApproval = {
       id: "approval_1",
       taskId: "task_1",
@@ -701,8 +711,9 @@ describe("Workbench components", () => {
 
     fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "second goal" } });
     fireEvent.click(screen.getByLabelText("Send"));
-    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith("/api/tasks/task_1/messages"));
-    expect(createTask).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(createTask).toHaveBeenCalledWith("second goal"));
+    expect(createTask).toHaveBeenCalledTimes(2);
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 
   it("moves governance surfaces into settings", async () => {

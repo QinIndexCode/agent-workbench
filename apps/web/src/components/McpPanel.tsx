@@ -1,159 +1,298 @@
 import { useState } from "react";
-import type { McpServerConfig, McpServerCreateRequest, McpServerStatus, McpToolSummary, McpTransportKind, RiskCategory } from "@scc/shared";
+import type { McpServerConfig, McpServerCreateRequest, McpServerPatchRequest, McpServerStatus, McpToolSummary, McpTransportKind, RiskCategory } from "@scc/shared";
+import { Edit3, Plug, Plus, Search, Server, Trash2, Unplug, Wrench, X } from "lucide-react";
+import { AccordionSelect } from "./AccordionSelect.js";
 
 const riskCategories: RiskCategory[] = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
 
+type McpServerWithStatus = McpServerConfig & { status: McpServerStatus };
+
+type McpDraft = {
+  label: string;
+  transport: McpTransportKind;
+  command: string;
+  argsText: string;
+  cwd: string;
+  url: string;
+  enabled: boolean;
+  overrideTool: string;
+  overrideRisk: RiskCategory;
+};
+
 export function McpPanel({
+  language,
   servers,
   tools,
   onCreate,
+  onUpdate,
   onConnect,
   onDisconnect,
   onDelete
 }: {
-  servers: Array<McpServerConfig & { status: McpServerStatus }>;
+  language?: string | null;
+  servers: McpServerWithStatus[];
   tools: McpToolSummary[];
   onCreate: (input: McpServerCreateRequest) => void;
+  onUpdate: (serverId: string, input: McpServerPatchRequest) => void;
   onConnect: (serverId: string) => void;
   onDisconnect: (serverId: string) => void;
   onDelete: (serverId: string) => void;
 }) {
-  const [label, setLabel] = useState("");
-  const [transport, setTransport] = useState<McpTransportKind>("stdio");
-  const [command, setCommand] = useState("");
-  const [argsText, setArgsText] = useState("");
-  const [cwd, setCwd] = useState("");
-  const [url, setUrl] = useState("");
-  const [overrideTool, setOverrideTool] = useState("");
-  const [overrideRisk, setOverrideRisk] = useState<RiskCategory>("shell");
+  const text = getMcpCopy(language);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState<McpServerWithStatus | null>(null);
+  const [draft, setDraft] = useState<McpDraft>(() => emptyDraft());
   const [toolFilter, setToolFilter] = useState("");
   const safeServers = Array.isArray(servers) ? servers : [];
   const safeTools = Array.isArray(tools) ? tools : [];
   const visibleTools = safeTools.filter((tool) =>
     [tool.displayName, tool.name, tool.serverId, tool.riskCategory].filter(Boolean).join(" ").toLowerCase().includes(toolFilter.trim().toLowerCase())
   );
-  const canSubmit = Boolean(label.trim() && (transport === "stdio" ? command.trim() : url.trim()));
+  const canSubmit = Boolean(draft.label.trim() && (draft.transport === "stdio" ? draft.command.trim() : draft.url.trim()));
 
   return (
     <section className="mcpPanel">
-      <div className="panelHeader">
-        <h2>MCP</h2>
-        <small>{safeTools.length} tools</small>
-      </div>
-
-      <form
-        className="memoryForm"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!canSubmit) return;
-          const toolRiskOverrides = overrideTool.trim() ? { [overrideTool.trim()]: overrideRisk } : {};
-          const base = {
-            label: label.trim(),
-            transport,
-            args: parseArgs(argsText),
-            env: {},
-            enabled: true,
-            toolRiskOverrides,
-            ...(cwd.trim() ? { cwd: cwd.trim() } : {})
-          };
-          const input: McpServerCreateRequest =
-            transport === "stdio"
-              ? { ...base, transport, command: command.trim() }
-              : { ...base, transport, url: url.trim() };
-          onCreate(input);
-          setLabel("");
-          setCommand("");
-          setArgsText("");
-          setCwd("");
-          setUrl("");
-          setOverrideTool("");
-        }}
-      >
-        <input aria-label="MCP server label" placeholder="Server label" value={label} onChange={(event) => setLabel(event.target.value)} />
-        <select aria-label="MCP transport" value={transport} onChange={(event) => setTransport(event.target.value as McpTransportKind)}>
-          <option value="stdio">stdio</option>
-          <option value="streamable_http">streamable http</option>
-        </select>
-        {transport === "stdio" ? (
-          <>
-            <input aria-label="MCP command" placeholder="stdio command" value={command} onChange={(event) => setCommand(event.target.value)} />
-            <input aria-label="MCP args" placeholder="args, e.g. server.mjs --flag" value={argsText} onChange={(event) => setArgsText(event.target.value)} />
-            <input aria-label="MCP cwd" placeholder="cwd (optional)" value={cwd} onChange={(event) => setCwd(event.target.value)} />
-          </>
-        ) : (
-          <input aria-label="MCP url" placeholder="https://host.example/mcp" value={url} onChange={(event) => setUrl(event.target.value)} />
-        )}
-        <div className="riskOverrideRow">
-          <input
-            aria-label="MCP risk override tool"
-            placeholder="tool risk override (optional)"
-            value={overrideTool}
-            onChange={(event) => setOverrideTool(event.target.value)}
-          />
-          <select aria-label="MCP risk override category" value={overrideRisk} onChange={(event) => setOverrideRisk(event.target.value as RiskCategory)}>
-            {riskCategories.map((risk) => (
-              <option key={risk} value={risk}>
-                {risk.replace("_", " ")}
-              </option>
-            ))}
-          </select>
+      <header className="panelHero">
+        <div>
+          <h2>{text.title}</h2>
+          <p>{text.subtitle}</p>
         </div>
-        <button className="subtleButton" type="submit" disabled={!canSubmit}>
-          Add server
+        <button className="subtleButton iconText" type="button" onClick={startCreate}>
+          <Plus size={15} aria-hidden="true" />
+          {text.add}
         </button>
-      </form>
+      </header>
 
-      <section className="compactList">
-        <h3>Servers</h3>
-        {safeServers.length === 0 ? <p className="muted">No MCP servers</p> : null}
-        {safeServers.map((server) => (
-          <div className="compactRow mcpServerRow" key={server.id}>
-            <span>{server.label ?? server.id}</span>
-            <small>
-              {formatTransport(server.transport)} · {server.status?.state ?? "disconnected"} · {server.status?.toolCount ?? 0} tools
-            </small>
-            {server.status?.lastError ? <small className="dangerText">{server.status.lastError}</small> : null}
-            <div className="inlineActions">
-              {server.status?.connected ? (
-                <button className="textButton" type="button" onClick={() => onDisconnect(server.id)}>
-                  Disconnect
+      <section className="mcpListPanel">
+        <div className="panelHeader">
+          <div>
+            <h3>{text.servers}</h3>
+            <p>{text.serverHint}</p>
+          </div>
+          <small>{safeServers.length}</small>
+        </div>
+        <div className="mcpRows">
+          {safeServers.length === 0 ? (
+            <div className="emptyState">
+              <Server size={18} aria-hidden="true" />
+              <span>{text.emptyServers}</span>
+            </div>
+          ) : null}
+          {safeServers.map((server) => (
+            <article className={server.status?.connected ? "mcpServerListRow connected" : "mcpServerListRow"} key={server.id}>
+              <span className="providerBadge">
+                <Server size={16} aria-hidden="true" />
+              </span>
+              <div className="providerMain">
+                <strong>{server.label ?? server.id}</strong>
+                <span>{formatTransport(server.transport)} · {server.status?.toolCount ?? 0} {text.tools}</span>
+                {server.status?.lastError ? <small className="dangerText">{server.status.lastError}</small> : <small>{server.command ?? server.url ?? text.noEndpoint}</small>}
+              </div>
+              <span className={server.status?.connected ? "mcpState connected" : "mcpState"}>
+                {server.status?.state ?? "disconnected"}
+              </span>
+              <div className="rowIconActions">
+                {server.status?.connected ? (
+                  <button aria-label={text.disconnect} className="iconButton" type="button" onClick={() => onDisconnect(server.id)}>
+                    <Unplug size={15} aria-hidden="true" />
+                  </button>
+                ) : (
+                  <button aria-label={text.connect} className="iconButton" type="button" onClick={() => onConnect(server.id)}>
+                    <Plug size={15} aria-hidden="true" />
+                  </button>
+                )}
+                <button aria-label={text.editServer(server.label ?? server.id)} className="iconButton" type="button" onClick={() => startEdit(server)}>
+                  <Edit3 size={15} aria-hidden="true" />
                 </button>
-              ) : (
-                <button className="textButton" type="button" onClick={() => onConnect(server.id)}>
-                  Connect
+                <button aria-label={text.deleteServer(server.label ?? server.id)} className="iconButton dangerIcon" type="button" onClick={() => onDelete(server.id)}>
+                  <Trash2 size={15} aria-hidden="true" />
                 </button>
-              )}
-              <button className="textButton" type="button" onClick={() => onDelete(server.id)}>
-                Delete
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="mcpListPanel">
+        <div className="panelHeader">
+          <div>
+            <h3>{text.discoveredTools}</h3>
+            <p>{text.toolHint}</p>
+          </div>
+          <label className="searchField compactToolSearch">
+            <Search size={14} aria-hidden="true" />
+            <input aria-label={text.filterTools} placeholder={text.filter} value={toolFilter} onChange={(event) => setToolFilter(event.target.value)} />
+          </label>
+        </div>
+        <div className="mcpToolRows">
+          {safeTools.length === 0 ? (
+            <div className="emptyState">
+              <Wrench size={18} aria-hidden="true" />
+              <span>{text.emptyTools}</span>
+            </div>
+          ) : null}
+          {visibleTools.slice(0, 14).map((tool) => (
+            <article className="mcpToolRow" key={tool.id}>
+              <span className="toolGlyph">
+                <Wrench size={14} aria-hidden="true" />
+              </span>
+              <div>
+                <strong>{tool.displayName ?? tool.name ?? tool.id}</strong>
+                <small>{tool.serverId ?? text.unknownServer}</small>
+              </div>
+              <span className="permissionStatus">{formatRisk(tool.riskCategory)}</span>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      {dialogOpen ? (
+        <div className="modalOverlay" role="presentation">
+          <form aria-label={editing ? text.edit : text.add} className="providerDialog mcpDialog" onSubmit={(event) => {
+            event.preventDefault();
+            if (canSubmit) save();
+          }}>
+            <div className="dialogHeader">
+              <div>
+                <h3>{editing ? text.edit : text.add}</h3>
+                <p>{text.dialogHelp}</p>
+              </div>
+              <button className="iconButton" type="button" onClick={() => setDialogOpen(false)}>
+                <X size={16} aria-hidden="true" />
               </button>
             </div>
-          </div>
-        ))}
-      </section>
-
-      <section className="compactList">
-        <div className="panelHeader">
-          <h3>Tools</h3>
-          <input
-            aria-label="MCP tool filter"
-            className="compactSearch"
-            placeholder="filter"
-            value={toolFilter}
-            onChange={(event) => setToolFilter(event.target.value)}
-          />
+            <div className="providerFormGrid">
+              <label className="fieldStack">
+                <span>{text.label}</span>
+                <input aria-label={text.label} value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} />
+              </label>
+              <label className="fieldStack">
+                <span>{text.transport}</span>
+                <AccordionSelect
+                  ariaLabel={text.transport}
+                  value={draft.transport}
+                  options={[
+                    { value: "stdio", label: "stdio" },
+                    { value: "streamable_http", label: "streamable http" }
+                  ]}
+                  onChange={(value) => setDraft({ ...draft, transport: value as McpTransportKind })}
+                />
+              </label>
+              {draft.transport === "stdio" ? (
+                <>
+                  <label className="fieldStack">
+                    <span>{text.command}</span>
+                    <input aria-label={text.command} value={draft.command} onChange={(event) => setDraft({ ...draft, command: event.target.value })} />
+                  </label>
+                  <label className="fieldStack">
+                    <span>{text.args}</span>
+                    <input aria-label={text.args} value={draft.argsText} onChange={(event) => setDraft({ ...draft, argsText: event.target.value })} />
+                  </label>
+                  <label className="fieldStack">
+                    <span>{text.cwd}</span>
+                    <input aria-label={text.cwd} value={draft.cwd} onChange={(event) => setDraft({ ...draft, cwd: event.target.value })} />
+                  </label>
+                </>
+              ) : (
+                <label className="fieldStack wideField">
+                  <span>{text.url}</span>
+                  <input aria-label={text.url} value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} />
+                </label>
+              )}
+              <label className="fieldStack">
+                <span>{text.overrideTool}</span>
+                <input aria-label={text.overrideTool} value={draft.overrideTool} onChange={(event) => setDraft({ ...draft, overrideTool: event.target.value })} />
+              </label>
+              <label className="fieldStack">
+                <span>{text.overrideRisk}</span>
+                <AccordionSelect
+                  ariaLabel={text.overrideRisk}
+                  value={draft.overrideRisk}
+                  options={riskCategories.map((risk) => ({ value: risk, label: formatRisk(risk) }))}
+                  onChange={(value) => setDraft({ ...draft, overrideRisk: value as RiskCategory })}
+                />
+              </label>
+              <label className={draft.enabled ? "toggleField enabled" : "toggleField"}>
+                <span>{text.enabled}</span>
+                <button className="switchControl" type="button" aria-label={text.enabled} aria-pressed={draft.enabled} onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}>
+                  <span aria-hidden="true" />
+                </button>
+              </label>
+            </div>
+            <div className="dialogActions">
+              <button className="textButton" type="button" onClick={() => setDialogOpen(false)}>
+                {text.cancel}
+              </button>
+              <button className="subtleButton" type="submit" disabled={!canSubmit}>
+                {text.save}
+              </button>
+            </div>
+          </form>
         </div>
-        {safeTools.length === 0 ? <p className="muted">Connect a server to discover tools.</p> : null}
-        {visibleTools.slice(0, 12).map((tool) => (
-          <div className="compactRow" key={tool.id}>
-            <span>{tool.displayName ?? tool.name ?? tool.id}</span>
-            <small>
-              {tool.serverId ?? "unknown server"} · {formatRisk(tool.riskCategory)}
-            </small>
-          </div>
-        ))}
-      </section>
+      ) : null}
     </section>
   );
+
+  function startCreate() {
+    setEditing(null);
+    setDraft(emptyDraft());
+    setDialogOpen(true);
+  }
+
+  function startEdit(server: McpServerWithStatus) {
+    setEditing(server);
+    setDraft(draftFromServer(server));
+    setDialogOpen(true);
+  }
+
+  function save() {
+    const toolRiskOverrides = draft.overrideTool.trim() ? { [draft.overrideTool.trim()]: draft.overrideRisk } : {};
+    const base = {
+      label: draft.label.trim(),
+      transport: draft.transport,
+      args: parseArgs(draft.argsText),
+      env: {},
+      enabled: draft.enabled,
+      toolRiskOverrides,
+      ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {})
+    };
+    const input =
+      draft.transport === "stdio"
+        ? { ...base, command: draft.command.trim(), url: undefined }
+        : { ...base, url: draft.url.trim(), command: undefined };
+    if (editing) onUpdate(editing.id, input);
+    else onCreate(input);
+    setDialogOpen(false);
+  }
+}
+
+function emptyDraft(): McpDraft {
+  return {
+    label: "",
+    transport: "stdio",
+    command: "",
+    argsText: "",
+    cwd: "",
+    url: "",
+    enabled: true,
+    overrideTool: "",
+    overrideRisk: "shell"
+  };
+}
+
+function draftFromServer(server: McpServerConfig): McpDraft {
+  const firstOverride = Object.entries(server.toolRiskOverrides ?? {})[0];
+  return {
+    label: server.label ?? server.id,
+    transport: server.transport,
+    command: server.command ?? "",
+    argsText: (server.args ?? []).join(" "),
+    cwd: server.cwd ?? "",
+    url: server.url ?? "",
+    enabled: server.enabled,
+    overrideTool: firstOverride?.[0] ?? "",
+    overrideRisk: firstOverride?.[1] ?? "shell"
+  };
 }
 
 function formatTransport(value: McpTransportKind | undefined): string {
@@ -169,4 +308,41 @@ function parseArgs(value: string): string[] {
     .match(/(?:[^\s"]+|"[^"]*")+/g)
     ?.map((part) => part.replace(/^"|"$/g, ""))
     .filter(Boolean) ?? [];
+}
+
+function getMcpCopy(language?: string | null) {
+  const zh = language === "zh-CN";
+  return {
+    title: "MCP",
+    subtitle: zh ? "连接外部工具服务器。工具调用仍会经过 SCC 的同一套权限审批。" : "Connect external tool servers. Tool calls still go through SCC permissions.",
+    add: zh ? "添加服务器" : "Add server",
+    edit: zh ? "编辑服务器" : "Edit server",
+    dialogHelp: zh ? "添加 stdio 或 streamable HTTP MCP 服务器；风险覆盖只影响指定工具。" : "Add a stdio or streamable HTTP MCP server. Risk overrides apply only to named tools.",
+    servers: zh ? "服务器" : "Servers",
+    serverHint: zh ? "连接状态、工具数量和最近错误集中展示。" : "Connection state, tool count, and latest errors in one list.",
+    tools: zh ? "tools" : "tools",
+    discoveredTools: zh ? "已发现工具" : "Discovered tools",
+    toolHint: zh ? "工具被 Agent 使用时会作为普通工具证据进入时间线。" : "When the agent uses these tools, results appear as normal tool evidence.",
+    emptyServers: zh ? "还没有 MCP 服务器。" : "No MCP servers yet.",
+    emptyTools: zh ? "连接服务器后会显示工具。" : "Connect a server to discover tools.",
+    noEndpoint: zh ? "未配置入口" : "No endpoint",
+    unknownServer: zh ? "未知服务器" : "unknown server",
+    filter: zh ? "筛选工具" : "filter tools",
+    filterTools: zh ? "筛选 MCP 工具" : "Filter MCP tools",
+    connect: zh ? "连接服务器" : "Connect server",
+    disconnect: zh ? "断开连接" : "Disconnect server",
+    editServer: (label: string) => (zh ? `编辑 ${label}` : `Edit ${label}`),
+    deleteServer: (label: string) => (zh ? `删除 ${label}` : `Delete ${label}`),
+    label: zh ? "服务器名称" : "Server label",
+    transport: zh ? "传输方式" : "Transport",
+    command: zh ? "命令" : "Command",
+    args: zh ? "参数" : "Arguments",
+    cwd: zh ? "工作目录（可选）" : "Working directory (optional)",
+    url: "URL",
+    overrideTool: zh ? "工具风险覆盖（可选）" : "Tool risk override (optional)",
+    overrideRisk: zh ? "覆盖风险" : "Override risk",
+    enabled: zh ? "启用" : "Enabled",
+    cancel: zh ? "取消" : "Cancel",
+    save: zh ? "保存" : "Save"
+  };
 }

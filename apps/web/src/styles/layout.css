@@ -8,8 +8,14 @@
   background: var(--app-bg);
 }
 
+.shell.docsShell {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .thread,
-.settingsView {
+.settingsView,
+.libraryView,
+.docsView {
   min-width: 0;
   height: 100vh;
   overflow: hidden;
@@ -65,6 +71,7 @@
 .mobileTaskToggle,
 .closeDrawerButton,
 .subtleButton,
+.dangerButton,
 .textButton,
 .settingsNavItem,
 .newTaskButton,
@@ -84,6 +91,7 @@
 .mobileTaskToggle:hover,
 .closeDrawerButton:hover,
 .subtleButton:hover,
+.dangerButton:hover,
 .textButton:hover,
 .settingsNavItem:hover,
 .newTaskButton:hover,
@@ -94,13 +102,20 @@
   border-color: color-mix(in srgb, var(--border-strong) 72%, var(--accent) 28%);
 }
 
+.dangerButton {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
 button:active:not(:disabled) {
   transform: translateY(1px);
 }
 
 .subtleButton:disabled,
 .newTaskButton:disabled,
-.iconNavButton:disabled {
+.iconNavButton:disabled,
+.iconButton:disabled {
   cursor: default;
   opacity: 0.45;
 }

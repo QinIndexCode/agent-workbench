@@ -86,22 +86,29 @@
   border-color: var(--border);
 }
 
-.sidebarNavButton.selected,
-.sidebarNavButton.primary.selected {
+.sidebarNavButton.selected {
   color: var(--text);
   background: var(--surface-selected);
   border-color: color-mix(in srgb, var(--accent-border) 80%, transparent);
 }
 
 .sidebarNavButton.primary {
-  min-height: 60px;
-  color: var(--text);
-  background: var(--surface-selected);
-  border-color: color-mix(in srgb, var(--accent-border) 60%, transparent);
+  min-height: 52px;
+  color: var(--muted-strong);
+  background: transparent;
+  border: 1px solid transparent;
 }
 
 .sidebarNavButton.primary:hover {
-  background: color-mix(in srgb, var(--surface-selected) 82%, var(--accent-soft) 18%);
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.sidebarNavButton.primary.selected {
+  color: var(--text);
+  background: var(--surface-selected);
+  border-color: color-mix(in srgb, var(--accent-border) 80%, transparent);
 }
 
 .taskSearch {
@@ -297,6 +304,36 @@
 }
 
 .taskDeleteConfirm .disabledOption {
+  color: var(--muted);
+  opacity: 0.55;
+}
+
+.deleteOptions {
+  display: grid;
+  gap: 10px;
+}
+
+.deleteOptions p {
+  margin: 0;
+  color: var(--muted-strong);
+  line-height: 1.45;
+}
+
+.deleteOptions label {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: var(--muted-strong);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.deleteOptions input {
+  margin: 2px 0 0;
+}
+
+.deleteOptions .disabledOption {
   color: var(--muted);
   opacity: 0.55;
 }

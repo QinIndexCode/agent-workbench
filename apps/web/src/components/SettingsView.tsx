@@ -1,11 +1,18 @@
 import type { ReactNode } from "react";
-import { Menu } from "lucide-react";
+import { Menu, Cpu, Shield, Blocks, SlidersHorizontal } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
 import { PanelBoundary } from "./PanelBoundary.js";
 
 export type SettingsSection = "providers" | "permissions" | "mcp" | "preferences";
 
 const sectionIds: SettingsSection[] = ["providers", "permissions", "mcp", "preferences"];
+
+const sectionIcons: Record<SettingsSection, ReactNode> = {
+  providers: <Cpu size={16} />,
+  permissions: <Shield size={16} />,
+  mcp: <Blocks size={16} />,
+  preferences: <SlidersHorizontal size={16} />
+};
 
 export function SettingsView({
   activeSection,
@@ -23,10 +30,8 @@ export function SettingsView({
   const text = getUiCopy(language);
   const sections = sectionIds.map((id) => ({
     id,
-    label: text.settings.sections[id][0],
-    description: text.settings.sections[id][1]
+    label: text.settings.sections[id][0]
   }));
-  const active = sections.find((section) => section.id === activeSection) ?? sections[0]!;
 
   return (
     <section className="settingsView" aria-label="Settings">
@@ -37,7 +42,6 @@ export function SettingsView({
         </button>
         <div>
           <h1>{text.settings.title}</h1>
-          <p>{active.description}</p>
         </div>
       </header>
       <div className="settingsBody">
@@ -49,13 +53,15 @@ export function SettingsView({
               onClick={() => onSection(section.id)}
               type="button"
             >
+              {sectionIcons[section.id]}
               <span>{section.label}</span>
-              <small>{section.description}</small>
             </button>
           ))}
         </nav>
         <div className="settingsPanel">
-          <PanelBoundary name={active.label}>{children[activeSection]}</PanelBoundary>
+          <PanelBoundary name={sections.find((s) => s.id === activeSection)?.label ?? sections[0]!.label}>
+            {children[activeSection]}
+          </PanelBoundary>
         </div>
       </div>
     </section>

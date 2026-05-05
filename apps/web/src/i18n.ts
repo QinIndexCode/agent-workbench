@@ -42,7 +42,7 @@ const copy = {
     settings: {
       title: "设置",
       sections: {
-        providers: ["模型服务商", "管理本地加密密钥、协议、模型预设和当前模型"],
+        providers: ["模型配置", "添加模型、管理本地密钥、预设厂商和当前使用模型"],
         permissions: ["权限", "全局风险授权、审批策略和 Agent 偏好"],
         mcp: ["MCP", "连接的工具服务器和已发现工具"],
         preferences: ["偏好", "语言、思考展示、反思和敏感数据处理"]
@@ -102,11 +102,13 @@ const copy = {
       permissionPresets: {
         ask: "Ask",
         read_only: "Read only",
+        custom: "Custom",
         all: "All"
       },
       permissionPresetDescriptions: {
         ask: "每次按风险请求确认",
         read_only: "只读观察自动通过",
+        custom: "自定义风险类别",
         all: "允许所有风险类别"
       },
       keyboardHint: "Shift + Enter 换行 / Enter 发送"
@@ -114,10 +116,21 @@ const copy = {
     permissions: {
       title: "权限与偏好",
       subtitle: "全局授权会跳过同类风险的审批 UI。撤销后，下一次同类工具请求会重新进入审批。",
+      modeTitle: "权限模式",
+      modeSubtitle: "选择默认授权范围。需要更高风险时，Agent 仍会按真实动作请求确认。",
+      modeCustomDescription: "当前授权来自单次全局审批，和预设模式不完全一致。可以一键切回 Ask、Read only 或 All。",
+      resetAsk: "重置为 Ask",
+      coverageTitle: "风险覆盖",
+      coverageSubtitle: "这里展示哪些风险会自动通过；单项撤销只用于修正已有全局授权。",
       granted: "已全局允许",
       notGranted: "需要审批",
+      autoAllowed: "自动通过",
+      approvalRequired: "需要确认",
       allow: "全局允许",
       revoke: "撤销",
+      revokeRisk: (risk: string) => `撤销 ${risk}`,
+      enableRisk: (risk: string) => `自动通过 ${risk}`,
+      disableRisk: (risk: string) => `取消自动通过 ${risk}`,
       grantedAt: "授权时间",
       reason: "原因",
       noReason: "未记录原因",
@@ -157,6 +170,24 @@ const copy = {
         confirm_each: "每次确认",
         confirm_dangerous: "仅高风险确认",
         auto: "自动"
+      },
+      permissionModes: {
+        ask: {
+          label: "Ask",
+          description: "每次确认"
+        },
+        read_only: {
+          label: "Read only",
+          description: "只读自动"
+        },
+        custom: {
+          label: "Custom",
+          description: "自定义"
+        },
+        all: {
+          label: "All",
+          description: "全部自动"
+        }
       },
       contextModeOptions: {
         auto: "自动",
@@ -203,7 +234,7 @@ const copy = {
     settings: {
       title: "Settings",
       sections: {
-        providers: ["Model providers", "Manage encrypted local keys, protocols, presets, and active model"],
+        providers: ["Model configuration", "Add models, manage local keys, presets, and the active model"],
         permissions: ["Permissions", "Global risk grants, approval policy, and agent preferences"],
         mcp: ["MCP", "Connected tool servers and discovered tools"],
         preferences: ["Preferences", "Language, thinking display, reflection, and sensitive data handling"]
@@ -263,11 +294,13 @@ const copy = {
       permissionPresets: {
         ask: "Ask",
         read_only: "Read only",
+        custom: "Custom",
         all: "All"
       },
       permissionPresetDescriptions: {
         ask: "Ask before each risk class",
         read_only: "Auto-allow read-only observation",
+        custom: "Choose risk classes",
         all: "Allow every risk class"
       },
       keyboardHint: "Shift + Enter for newline / Enter to send"
@@ -275,10 +308,21 @@ const copy = {
     permissions: {
       title: "Permissions and preferences",
       subtitle: "Global grants skip approval UI for matching risk categories. After revoke, the next matching tool request asks again.",
+      modeTitle: "Permission mode",
+      modeSubtitle: "Choose the default authorization scope. Higher-risk actions can still ask when the agent needs them.",
+      modeCustomDescription: "Current grants came from individual approvals and do not match a preset. Switch back to Ask, Read only, or All at any time.",
+      resetAsk: "Reset to Ask",
+      coverageTitle: "Risk coverage",
+      coverageSubtitle: "Shows what can run automatically. Per-risk revoke is only for correcting existing global grants.",
       granted: "Globally allowed",
       notGranted: "Approval required",
+      autoAllowed: "Auto allowed",
+      approvalRequired: "Ask first",
       allow: "Allow globally",
       revoke: "Revoke",
+      revokeRisk: (risk: string) => `Revoke ${risk}`,
+      enableRisk: (risk: string) => `Auto-allow ${risk}`,
+      disableRisk: (risk: string) => `Stop auto-allowing ${risk}`,
       grantedAt: "Granted at",
       reason: "Reason",
       noReason: "No reason recorded",
@@ -318,6 +362,24 @@ const copy = {
         confirm_each: "Confirm each",
         confirm_dangerous: "Confirm dangerous",
         auto: "Auto"
+      },
+      permissionModes: {
+        ask: {
+          label: "Ask",
+          description: "Confirm first"
+        },
+        read_only: {
+          label: "Read only",
+          description: "Read auto"
+        },
+        custom: {
+          label: "Custom",
+          description: "Fine tune"
+        },
+        all: {
+          label: "All",
+          description: "All auto"
+        }
       },
       contextModeOptions: {
         auto: "Auto",

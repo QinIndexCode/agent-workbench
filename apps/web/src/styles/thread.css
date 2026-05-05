@@ -505,11 +505,12 @@
   width: min(1120px, calc(100% - 96px));
   margin: 12px auto 20px;
   padding: 0;
-  overflow: hidden;
+  overflow: visible;
   background: var(--surface-container-high);
   border: 1px solid var(--border-strong);
   border-radius: 20px;
   box-shadow: 0 -10px 30px rgb(0 0 0 / 0.22), 0 1px 0 rgb(255 255 255 / 0.03) inset;
+  transition: box-shadow 0.22s ease, border-color 0.22s ease;
 }
 
 .composer:focus-within {
@@ -527,6 +528,36 @@
   display: grid;
   min-width: 0;
   padding: 18px 22px 6px;
+}
+
+.voiceListeningBar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  max-height: 0;
+  margin: 0;
+  padding: 0 14px;
+  overflow: hidden;
+  color: var(--voice);
+  background: linear-gradient(90deg, transparent 0%, var(--voice-bg) 50%, transparent 100%);
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transform: translateY(-6px);
+  transition:
+    max-height 220ms ease,
+    margin 220ms ease,
+    padding 220ms ease,
+    opacity 220ms ease,
+    transform 220ms ease;
+}
+
+.voiceListeningBar[data-listening="true"] {
+  max-height: 32px;
+  margin: -6px 0 8px;
+  padding: 6px 14px;
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .composer textarea {
@@ -558,6 +589,7 @@
   padding: 10px 18px 10px 22px;
   background: color-mix(in srgb, var(--surface) 62%, transparent);
   border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 0 0 20px 20px;
 }
 
 .composerToolbar {
@@ -787,6 +819,98 @@
   color: var(--text);
   background: transparent;
   border-color: transparent;
+}
+
+.composer .composerToolButton.voiceActive {
+  position: relative;
+  color: var(--voice);
+  background: transparent;
+  border-color: transparent;
+}
+
+.composer .composerToolButton.voiceActive::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--voice) 28%, transparent) 0%, transparent 70%);
+  animation: voicePulse 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.composer .composerToolButton.voiceActive::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--voice) 60%, transparent);
+  animation: voiceRing 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes voicePulse {
+  0%, 100% {
+    transform: scale(0.85);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 1;
+  }
+}
+
+@keyframes voiceRing {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scale(1.25);
+    opacity: 0.25;
+  }
+}
+
+
+
+.voiceListeningText {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.5px;
+}
+
+.voiceWaveform {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+}
+
+.voiceWaveform span {
+  display: block;
+  width: 3px;
+  background: currentColor;
+  border-radius: 999px;
+  animation: voiceWave 1.2s ease-in-out infinite;
+}
+
+.voiceWaveform span:nth-child(1) { height: 5px; animation-delay: 0ms; }
+.voiceWaveform span:nth-child(2) { height: 10px; animation-delay: 80ms; }
+.voiceWaveform span:nth-child(3) { height: 16px; animation-delay: 160ms; }
+.voiceWaveform span:nth-child(4) { height: 22px; animation-delay: 240ms; }
+.voiceWaveform span:nth-child(5) { height: 16px; animation-delay: 320ms; }
+.voiceWaveform span:nth-child(6) { height: 10px; animation-delay: 400ms; }
+.voiceWaveform span:nth-child(7) { height: 5px; animation-delay: 480ms; }
+
+@keyframes voiceWave {
+  0%, 100% {
+    transform: scaleY(0.3);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
 }
 
 .composer .composerPrimaryButton:hover:not(:disabled) {

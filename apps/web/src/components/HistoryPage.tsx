@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { TaskDeleteRequest, TaskDetail } from "@scc/shared";
 import { Menu, Search, Trash2 } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
+import { AccordionSelect } from "./AccordionSelect.js";
 
 export function HistoryPage({
   language,
@@ -48,14 +49,19 @@ export function HistoryPage({
             <Search size={15} />
             <input aria-label={text.search} placeholder={text.search} value={query} onChange={(event) => setQuery(event.target.value)} />
           </label>
-          <select value={status} onChange={(event) => setStatus(event.target.value as TaskDetail["status"] | "all")}>
-            <option value="all">{text.all}</option>
-            {["running", "waiting_approval", "paused", "completed", "failed", "cancelled"].map((value) => (
-              <option key={value} value={value}>
-                {value.replace("_", " ")}
-              </option>
-            ))}
-          </select>
+          <AccordionSelect
+            ariaLabel={text.statusFilter}
+            size="compact"
+            value={status}
+            options={[
+              { value: "all", label: text.all },
+              ...["running", "waiting_approval", "paused", "completed", "failed", "cancelled"].map((value) => ({
+                value,
+                label: value.replace("_", " ")
+              }))
+            ]}
+            onChange={(value) => setStatus(value as TaskDetail["status"] | "all")}
+          />
           <label>
             <input checked={deleteLearningData} type="checkbox" onChange={(event) => setDeleteLearningData(event.target.checked)} />
             {text.deleteLearning}
@@ -96,6 +102,7 @@ function getHistoryCopy(language?: string | null) {
     title: zh ? "历史记录" : "History",
     subtitle: zh ? "管理任务线程、删除历史，并决定是否同步清理学习数据。" : "Manage task threads, delete history, and choose whether learning data is cleaned up too.",
     search: zh ? "搜索任务历史" : "Search history",
+    statusFilter: zh ? "筛选任务状态" : "Filter task status",
     all: zh ? "全部状态" : "All statuses",
     deleteLearning: zh ? "删除关联经验/记忆" : "Delete linked learning data",
     deleteSkills: zh ? "删除仅由该任务派生的 Skill" : "Delete derived-only skills",

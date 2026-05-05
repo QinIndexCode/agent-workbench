@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReflectionSession, SkillConflict, SkillCreateRequest, SkillDuplicateGroup, SkillRecord, SkillUpdateRequest } from "@scc/shared";
-import { Copy, Download, Merge, Plus, RefreshCcw, Save, Search, Trash2 } from "lucide-react";
+import { Copy, Download, Edit3, Merge, Plus, RefreshCcw, Save, Search, Trash2, X } from "lucide-react";
+import { AccordionSelect } from "./AccordionSelect.js";
+import { ConfirmDialog } from "./ConfirmDialog.js";
+import { MarkdownText } from "./MarkdownText.js";
 
 const statuses: SkillRecord["status"][] = ["candidate", "active", "suspended", "retired"];
+const pageSize = 8;
 
 interface SkillDraft {
   title: string;
@@ -33,6 +37,7 @@ export function SkillPanel({
   duplicates,
   conflicts,
   language,
+  query = "",
   reflections,
   onCreate,
   onUpdate,
@@ -46,6 +51,7 @@ export function SkillPanel({
   duplicates: SkillDuplicateGroup[];
   conflicts: SkillConflict[];
   language?: string | null;
+  query?: string;
   reflections?: ReflectionSession[];
   onCreate: (input: SkillCreateRequest) => Promise<void> | void;
   onUpdate: (skillId: string, input: SkillUpdateRequest) => Promise<void> | void;
@@ -59,44 +65,53 @@ export function SkillPanel({
   const safeSkills = Array.isArray(skills) ? skills : [];
   const safeDuplicates = Array.isArray(duplicates) ? duplicates : [];
   const safeConflicts = Array.isArray(conflicts) ? conflicts : [];
-  const [query, setQuery] = useState("");
+  const [localQuery, setLocalQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<SkillRecord["status"] | "all">("all");
-  const [selectedId, setSelectedId] = useState<string | "new">(safeSkills[0]?.id ?? "new");
+  const [selectedId, setSelectedId] = useState<string | null>(safeSkills[0]?.id ?? null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
-  const selected = selectedId === "new" ? null : safeSkills.find((skill) => skill.id === selectedId) ?? null;
+  const [page, setPage] = useState(0);
+  const [modalMode, setModalMode] = useState<"create" | "edit" | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SkillRecord | null>(null);
+  const selected = selectedId ? safeSkills.find((skill) => skill.id === selectedId) ?? null : null;
   const [draft, setDraft] = useState<SkillDraft>(selected ? draftFromSkill(selected) : emptyDraft);
+  const searchText = `${query} ${localQuery}`.trim().toLowerCase();
 
   useEffect(() => {
-    if (selectedId !== "new" && !safeSkills.some((skill) => skill.id === selectedId)) {
-      setSelectedId(safeSkills[0]?.id ?? "new");
+    if (selectedId && !safeSkills.some((skill) => skill.id === selectedId)) {
+      setSelectedId(safeSkills[0]?.id ?? null);
     }
   }, [safeSkills, selectedId]);
 
   useEffect(() => {
-    setDraft(selected ? draftFromSkill(selected) : emptyDraft);
-  }, [selected]);
+    if (modalMode === "edit" && selected) setDraft(draftFromSkill(selected));
+  }, [modalMode, selected]);
 
   const filteredSkills = useMemo(() => {
-    const needle = query.trim().toLowerCase();
     return safeSkills.filter((skill) => {
       if (statusFilter !== "all" && skill.status !== statusFilter) return false;
-      if (!needle) return true;
+      if (!searchText) return true;
       return [skill.title, skill.body, skill.applicability.description, ...skill.applicability.keywords, ...skill.applicability.requiredTools]
         .join(" ")
         .toLowerCase()
-        .includes(needle);
+        .includes(searchText);
     });
-  }, [query, safeSkills, statusFilter]);
+  }, [safeSkills, searchText, statusFilter]);
 
-  const selectedDuplicate = safeDuplicates.find((group) => group.skills.some((skill) => skill.id === selectedId));
-  const selectedConflicts = safeConflicts.filter((conflict) => conflict.skillIds.includes(String(selectedId)));
+  useEffect(() => {
+    setPage(0);
+  }, [searchText, statusFilter]);
+
+  const pageCount = Math.max(1, Math.ceil(filteredSkills.length / pageSize));
+  const visibleSkills = filteredSkills.slice(page * pageSize, page * pageSize + pageSize);
+  const selectedDuplicate = safeDuplicates.find((group) => group.skills.some((skill) => skill.id === selected?.id));
+  const selectedConflicts = safeConflicts.filter((conflict) => selected && conflict.skillIds.includes(selected.id));
   const checkedIds = [...checked].filter((id) => safeSkills.some((skill) => skill.id === id));
 
   return (
     <section className="skillWorkbench" aria-label="Skills">
-      <header className="panelHero">
+      <header className="libraryPanelHero">
         <div>
-          <h2>{text.title}</h2>
+          <h3>{text.title}</h3>
           <p>{text.subtitle}</p>
         </div>
         <div className="inlineActions">
@@ -104,7 +119,14 @@ export function SkillPanel({
             <RefreshCcw size={15} />
             {text.reflect}
           </button>
-          <button className="subtleButton iconText" type="button" onClick={() => setSelectedId("new")}>
+          <button
+            className="subtleButton iconText"
+            type="button"
+            onClick={() => {
+              setDraft(emptyDraft);
+              setModalMode("create");
+            }}
+          >
             <Plus size={15} />
             {text.newSkill}
           </button>
@@ -124,28 +146,27 @@ export function SkillPanel({
             <strong>{safeDuplicates.length} {text.duplicateGroups}</strong>
             <span>{text.duplicateHelp}</span>
           </div>
-          <button className="subtleButton" type="button" onClick={() => safeDuplicates.forEach((group) => void onMergeDuplicate(group))}>
+          <button className="subtleButton iconText" type="button" onClick={() => safeDuplicates.forEach((group) => void onMergeDuplicate(group))}>
             <Merge size={15} />
             {text.mergeAll}
           </button>
         </section>
       ) : null}
 
-      <div className="skillGrid">
+      <div className="skillGrid libraryManagerGrid">
         <aside className="skillListPane">
           <div className="skillToolbar">
             <label className="skillSearch">
               <Search size={15} />
-              <input aria-label={text.search} placeholder={text.search} value={query} onChange={(event) => setQuery(event.target.value)} />
+              <input aria-label={text.search} placeholder={text.search} value={localQuery} onChange={(event) => setLocalQuery(event.target.value)} />
             </label>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as SkillRecord["status"] | "all")}>
-              <option value="all">all</option>
-              {statuses.map((status) => (
-                <option value={status} key={status}>
-                  {status}
-                </option>
-              ))}
-            </select>
+            <AccordionSelect
+              ariaLabel={text.statusFilter}
+              size="compact"
+              value={statusFilter}
+              options={[{ value: "all", label: text.allStatuses }, ...statuses.map((status) => ({ value: status, label: status }))]}
+              onChange={(value) => setStatusFilter(value as SkillRecord["status"] | "all")}
+            />
           </div>
 
           <div className="bulkActions">
@@ -156,18 +177,15 @@ export function SkillPanel({
           </div>
 
           <div className="skillRows">
-            {filteredSkills.length === 0 ? <p className="muted">{text.empty}</p> : null}
-            {filteredSkills.map((skill) => {
+            {filteredSkills.length === 0 ? <LibraryEmpty text={text.empty} /> : null}
+            {visibleSkills.map((skill) => {
               const duplicate = safeDuplicates.some((group) => group.skills.some((item) => item.id === skill.id));
               return (
-                <div
-                  className={selectedId === skill.id ? "skillListRow selected" : "skillListRow"}
-                  key={skill.id}
-                >
+                <article className={selectedId === skill.id ? "skillListRow selected" : "skillListRow"} key={skill.id}>
                   <input
                     aria-label={`Select ${skill.title}`}
                     checked={checked.has(skill.id)}
-                    onChange={(event) => {
+                    onChange={() => {
                       setChecked((current) => {
                         const next = new Set(current);
                         if (next.has(skill.id)) next.delete(skill.id);
@@ -183,80 +201,128 @@ export function SkillPanel({
                       {skill.status} · {formatSkillStats(skill, language)}
                       {duplicate ? ` · ${text.duplicate}` : ""}
                     </small>
+                    <small>{skill.applicability.description || text.noApplicability}</small>
                   </button>
-                </div>
+                  <div className="rowIconActions">
+                    <button aria-label={`${text.edit} ${skill.title}`} className="iconButton" type="button" onClick={() => openEdit(skill)}>
+                      <Edit3 size={14} />
+                    </button>
+                    <button aria-label={`${text.export} ${skill.title}`} className="iconButton" type="button" onClick={() => void onExport(skill.id)}>
+                      <Download size={14} />
+                    </button>
+                    <button aria-label={`${text.delete} ${skill.title}`} className="iconButton dangerIcon" type="button" onClick={() => setDeleteTarget(skill)}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </article>
               );
             })}
           </div>
+
+          <Pagination page={page} pageCount={pageCount} label={text.pageLabel(page + 1, pageCount)} onPage={setPage} />
         </aside>
 
-        <section className="skillDetailPane">
+        <section className="skillDetailPane libraryPreviewPane">
+          {selected ? (
+            <>
+              <div className="libraryPreviewHeader">
+                <div>
+                  <h3>{selected.title}</h3>
+                  <p>{selected.applicability.description || text.noApplicability}</p>
+                </div>
+                <div className="rowIconActions">
+                  <button aria-label={`${text.edit} ${selected.title}`} className="iconButton" type="button" onClick={() => openEdit(selected)}>
+                    <Edit3 size={15} />
+                  </button>
+                  <button aria-label={`${text.delete} ${selected.title}`} className="iconButton dangerIcon" type="button" onClick={() => setDeleteTarget(selected)}>
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              </div>
+              {selectedDuplicate ? (
+                <div className="inlineNotice">
+                  <span>{text.duplicateDetected}</span>
+                  <button className="textButton iconText" type="button" onClick={() => void onMergeDuplicate(selectedDuplicate)}>
+                    <Merge size={14} />
+                    {text.mergeGroup}
+                  </button>
+                </div>
+              ) : null}
+              {selectedConflicts.length > 0 ? (
+                <div className="inlineNotice warning">
+                  <span>{selectedConflicts.length} {text.conflicts}: {selectedConflicts[0]?.reason}</span>
+                </div>
+              ) : null}
+              <dl className="libraryMetaGrid">
+                <div><dt>{text.status}</dt><dd>{selected.status}</dd></div>
+                <div><dt>{text.stats}</dt><dd>{formatSkillStats(selected, language)}</dd></div>
+                <div><dt>{text.requiredTools}</dt><dd>{selected.applicability.requiredTools.join(", ") || text.none}</dd></div>
+                <div><dt>{text.triggers}</dt><dd>{selected.applicability.keywords.join(", ") || text.none}</dd></div>
+              </dl>
+              <section className="skillPreview">
+                <div className="panelHeader">
+                  <h3>{text.preview}</h3>
+                  <button className="textButton iconText" type="button" onClick={() => void navigator.clipboard?.writeText(selected.body)}>
+                    <Copy size={14} />
+                    {text.copy}
+                  </button>
+                </div>
+                <MarkdownText content={selected.body || text.noBody} />
+              </section>
+            </>
+          ) : (
+            <LibraryEmpty text={text.empty} />
+          )}
+        </section>
+      </div>
+
+      {modalMode ? (
+        <div className="modalOverlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setModalMode(null)}>
           <form
-            className="skillEditor"
+            aria-modal="true"
+            className="providerDialog skillDialog"
+            role="dialog"
             onSubmit={(event) => {
               event.preventDefault();
               void saveDraft();
             }}
           >
-            <div className="editorHeader">
+            <header className="dialogHeader">
               <div>
-                <h3>{selected ? text.edit : text.create}</h3>
-                <p>{selected ? selected.id : text.createHelp}</p>
+                <h3>{modalMode === "edit" ? text.edit : text.create}</h3>
+                <p>{modalMode === "edit" && selected ? selected.id : text.createHelp}</p>
               </div>
-              <div className="editorActions">
-                {selected ? (
-                  <>
-                    <button className="textButton iconText" type="button" onClick={() => void onExport(selected.id)}>
-                      <Download size={14} />
-                      {text.export}
-                    </button>
-                    <button className="textButton iconText dangerText" type="button" onClick={() => void onDelete(selected.id)}>
-                      <Trash2 size={14} />
-                      {text.delete}
-                    </button>
-                  </>
-                ) : null}
-                <button className="subtleButton iconText" type="submit">
-                  <Save size={14} />
-                  {text.save}
-                </button>
-              </div>
-            </div>
-
-            {selectedDuplicate ? (
-              <div className="inlineNotice">
-                <span>{text.duplicateDetected}</span>
-                <button className="textButton iconText" type="button" onClick={() => void onMergeDuplicate(selectedDuplicate)}>
-                  <Merge size={14} />
-                  {text.mergeGroup}
-                </button>
-              </div>
-            ) : null}
-            {selectedConflicts.length > 0 ? (
-              <div className="inlineNotice warning">
-                <span>{selectedConflicts.length} {text.conflicts}: {selectedConflicts[0]?.reason}</span>
-              </div>
-            ) : null}
-
+              <button aria-label={text.close} className="iconButton" type="button" onClick={() => setModalMode(null)}>
+                <X size={16} />
+              </button>
+            </header>
             <label className="fieldStack">
               <span>{text.fieldTitle}</span>
               <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
             </label>
+            <div className="editorSplit">
+              <label className="fieldStack">
+                <span>{text.status}</span>
+                <AccordionSelect
+                  ariaLabel={text.status}
+                  value={draft.status}
+                  options={statuses.map((status) => ({ value: status, label: status }))}
+                  onChange={(value) => setDraft({ ...draft, status: value as SkillRecord["status"] })}
+                />
+              </label>
+              <label className="fieldStack">
+                <span>{text.minConfidence}</span>
+                <input value={draft.minConfidence} onChange={(event) => setDraft({ ...draft, minConfidence: event.target.value })} />
+              </label>
+            </div>
             <label className="fieldStack">
-              <span>{text.status}</span>
-              <select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as SkillRecord["status"] })}>
-                {statuses.map((status) => (
-                  <option value={status} key={status}>
-                    {status}
-                  </option>
-                ))}
-              </select>
+              <span>{text.description}</span>
+              <textarea value={draft.description} rows={3} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
             </label>
             <label className="fieldStack">
               <span>{text.body}</span>
               <textarea value={draft.body} rows={12} onChange={(event) => setDraft({ ...draft, body: event.target.value })} />
             </label>
-
             <div className="editorSplit">
               <label className="fieldStack">
                 <span>{text.triggers}</span>
@@ -272,39 +338,48 @@ export function SkillPanel({
                 <input value={draft.requiredContext} onChange={(event) => setDraft({ ...draft, requiredContext: event.target.value })} />
               </label>
               <label className="fieldStack">
-                <span>{text.minConfidence}</span>
-                <input value={draft.minConfidence} onChange={(event) => setDraft({ ...draft, minConfidence: event.target.value })} />
+                <span>{text.exclusions}</span>
+                <input value={draft.exclusions} onChange={(event) => setDraft({ ...draft, exclusions: event.target.value })} />
               </label>
             </div>
-
-            <label className="fieldStack">
-              <span>{text.description}</span>
-              <textarea value={draft.description} rows={3} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
-            </label>
-            <label className="fieldStack">
-              <span>{text.exclusions}</span>
-              <input value={draft.exclusions} onChange={(event) => setDraft({ ...draft, exclusions: event.target.value })} />
-            </label>
-          </form>
-
-          <section className="skillPreview">
-            <div className="panelHeader">
-              <h3>{text.preview}</h3>
-              <button className="textButton iconText" type="button" onClick={() => void navigator.clipboard?.writeText(draft.body)}>
-                <Copy size={14} />
-                {text.copy}
+            <footer className="dialogActions">
+              <button className="subtleButton" type="button" onClick={() => setModalMode(null)}>
+                {text.cancel}
               </button>
-            </div>
-            <pre>{draft.body || text.noBody}</pre>
-          </section>
-        </section>
-      </div>
+              <button className="subtleButton iconText" type="submit">
+                <Save size={14} />
+                {text.save}
+              </button>
+            </footer>
+          </form>
+        </div>
+      ) : null}
+
+      <ConfirmDialog
+        cancelLabel={text.cancel}
+        confirmLabel={text.delete}
+        open={Boolean(deleteTarget)}
+        title={text.deleteTitle}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (deleteTarget) void onDelete(deleteTarget.id);
+          setDeleteTarget(null);
+        }}
+      >
+        <p>{deleteTarget ? text.deleteBody(deleteTarget.title) : ""}</p>
+      </ConfirmDialog>
     </section>
   );
 
+  function openEdit(skill: SkillRecord) {
+    setSelectedId(skill.id);
+    setDraft(draftFromSkill(skill));
+    setModalMode("edit");
+  }
+
   async function saveDraft() {
     const payload = draftToPayload(draft);
-    if (selected) await onUpdate(selected.id, payload);
+    if (modalMode === "edit" && selected) await onUpdate(selected.id, payload);
     else {
       await onCreate({
         title: payload.title ?? "",
@@ -315,7 +390,41 @@ export function SkillPanel({
         relatedPatterns: []
       });
     }
+    setModalMode(null);
   }
+}
+
+function LibraryEmpty({ text }: { text: string }) {
+  return (
+    <div className="libraryEmpty">
+      <Search size={20} aria-hidden="true" />
+      <p>{text}</p>
+    </div>
+  );
+}
+
+function Pagination({
+  label,
+  page,
+  pageCount,
+  onPage
+}: {
+  label: string;
+  page: number;
+  pageCount: number;
+  onPage: (page: number) => void;
+}) {
+  return (
+    <div className="paginationBar">
+      <button className="iconButton" type="button" disabled={page <= 0} onClick={() => onPage(Math.max(0, page - 1))}>
+        ‹
+      </button>
+      <span>{label}</span>
+      <button className="iconButton" type="button" disabled={page >= pageCount - 1} onClick={() => onPage(Math.min(pageCount - 1, page + 1))}>
+        ›
+      </button>
+    </div>
+  );
 }
 
 function draftFromSkill(skill: SkillRecord): SkillDraft {
@@ -364,7 +473,7 @@ function getSkillCopy(language?: string | null) {
   const zh = language === "zh-CN";
   return {
     title: "Skills",
-    subtitle: zh ? "可复用能力需要可审核、可编辑、可合并，也能被删除。" : "Reusable capabilities must stay reviewable, editable, mergeable, and removable.",
+    subtitle: zh ? "先浏览、再编辑。Skill 只保存可复用方法，不保存单次任务结果。" : "Browse first, edit deliberately. Skills store reusable methods, not one-off task results.",
     reflect: zh ? "Agent 反思" : "Agent reflection",
     newSkill: zh ? "新建 Skill" : "New skill",
     latestReflection: zh ? "最近反思" : "Latest reflection",
@@ -372,6 +481,8 @@ function getSkillCopy(language?: string | null) {
     duplicateHelp: zh ? "检测到重复固化。合并后可以保持 Agent 记忆干净。" : "Repeated promotions were detected. Merge them to keep agent memory clean.",
     mergeAll: zh ? "全部合并" : "Merge all",
     search: zh ? "搜索 Skills" : "Search skills",
+    statusFilter: zh ? "筛选 Skill 状态" : "Filter Skill status",
+    allStatuses: zh ? "全部状态" : "All statuses",
     selected: zh ? "已选择" : "selected",
     deleteSelected: zh ? "删除所选" : "Delete selected",
     empty: zh ? "没有匹配的 Skill。" : "No skills match this view.",
@@ -381,15 +492,20 @@ function getSkillCopy(language?: string | null) {
     createHelp: zh ? "新 Skill 默认进入候选状态，除非你明确启用。" : "New skills start as candidate unless explicitly activated.",
     export: zh ? "导出" : "Export",
     delete: zh ? "删除" : "Delete",
+    cancel: zh ? "取消" : "Cancel",
+    close: zh ? "关闭" : "Close",
+    deleteTitle: zh ? "删除 Skill？" : "Delete Skill?",
+    deleteBody: (title: string) => zh ? `“${title}” 会从资料库移除。任务历史不会被删除。` : `"${title}" will be removed from the library. Task history is kept.`,
     save: zh ? "保存" : "Save",
     duplicateDetected: zh ? "检测到重复组。" : "Duplicate group detected.",
     mergeGroup: zh ? "合并该组" : "Merge group",
     conflicts: zh ? "个冲突" : "conflicts",
     fieldTitle: zh ? "标题" : "Title",
     status: zh ? "状态" : "Status",
+    stats: zh ? "使用统计" : "Stats",
     body: zh ? "正文" : "Body",
-    triggers: zh ? "触发短语" : "Trigger phrases",
-    triggersHelp: zh ? "用逗号分隔完整短语，系统会过滤无意义的单字 token。" : "Use comma-separated phrases. Single-character noise is filtered.",
+    triggers: zh ? "触发条件" : "Trigger conditions",
+    triggersHelp: zh ? "写完整短语或场景标签，系统会过滤无意义的单字 token。" : "Use complete phrases or scenario tags. Single-character noise is filtered.",
     requiredTools: zh ? "需要的工具" : "Required tools",
     context: zh ? "适用上下文" : "Context",
     minConfidence: zh ? "最小置信度" : "Min confidence",
@@ -397,6 +513,9 @@ function getSkillCopy(language?: string | null) {
     exclusions: zh ? "排除条件" : "Exclusions",
     preview: zh ? "预览" : "Preview",
     copy: zh ? "复制正文" : "Copy body",
-    noBody: zh ? "还没有 Skill 正文。" : "No skill body yet."
+    noBody: zh ? "还没有 Skill 正文。" : "No skill body yet.",
+    noApplicability: zh ? "未填写适用场景" : "No applicability notes",
+    none: zh ? "无" : "None",
+    pageLabel: (page: number, total: number) => zh ? `第 ${page} / ${total} 页` : `Page ${page} / ${total}`
   };
 }

@@ -24,6 +24,7 @@ import {
   createExperience,
   createId,
   loadOpenAiConfig,
+  loadOpenAiProviderConfig,
   nowIso,
   promoteExperience
 } from "../src/index.js";
@@ -708,6 +709,12 @@ describe("OpenAI provider config", () => {
         apiKey: "tp-live-example",
         baseURL: "https://token-plan.example/v1",
         model: "mimo-v2.5"
+      });
+      expect(loadOpenAiProviderConfig(filePath)).toEqual({
+        apiKey: "tp-live-example",
+        baseURL: "https://token-plan.example/v1",
+        model: "mimo-v2.5",
+        providerName: "xiaomi (mimo)"
       });
 
       process.env["SCC_API_PROVIDER"] = "SCNet";

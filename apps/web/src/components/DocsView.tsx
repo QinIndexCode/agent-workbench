@@ -1,100 +1,133 @@
-import { useState } from "react";
-import { ExternalLink, Menu } from "lucide-react";
-import { getUiCopy } from "../i18n.js";
+import { useEffect, useState } from "react";
+import { ArrowLeft, Languages } from "lucide-react";
 import { MarkdownText } from "./MarkdownText.js";
+import { docMetas, getDocTitle, loadDocContent, type DocsSection } from "../docs/index.js";
 
-const docs = [
-  {
-    id: "overview",
-    title: "SCC Workbench",
-    externalUrl: "",
-    content: [
-      "# SCC Workbench",
-      "",
-      "SCC 是一个 Agent-first 工作台。系统负责上下文组装、工具权限、事件投影和经验学习；任务完成判断交给 Agent 的证据链与用户反馈。",
-      "",
-      "## 核心原则",
-      "- 不使用旧式脚本门禁或固定输出格式作为任务完成判官。",
-      "- 工具执行先经过风险分类，必要时由用户审批。",
-      "- 用户运行中输入会进入 pending guidance，并在 safe point 消费。",
-      "- Skills 和 Knowledge 是可审核的长期能力，不直接污染每轮上下文。"
-    ].join("\n")
-  },
-  {
-    id: "providers",
-    title: "Model Providers",
-    externalUrl: "",
-    content: [
-      "# Model Providers",
-      "",
-      "模型服务商在本机保存。API Key 会加密后写入本地数据目录，前端只显示掩码。",
-      "",
-      "## 支持协议",
-      "- OpenAI-compatible",
-      "- Anthropic Messages",
-      "- Gemini",
-      "",
-      "默认推荐 Mimo。自定义模型需要手动填写上下文窗口。"
-    ].join("\n")
-  },
-  {
-    id: "permissions",
-    title: "Permissions",
-    externalUrl: "",
-    content: [
-      "# Permissions",
-      "",
-      "权限只服务真实风险，不服务脚本式任务控制。",
-      "",
-      "## 输入框权限范围",
-      "- Ask: 每次按风险请求确认。",
-      "- Read only: 只读观察自动通过。",
-      "- All: 所有风险类别全局允许，可随时撤销。"
-    ].join("\n")
+/*
+ * 文档界面采用固定白色主题设计。
+ * 原因：
+ * 1. 文档阅读场景需要高对比度和长时间阅读的舒适性，白色背景是行业共识。
+ * 2. 与 OpenAI、Anthropic、Google 等主流模型厂商的文档站点风格保持一致，
+ *    降低用户认知成本，提供熟悉的阅读体验。
+ * 3. 白色主题能更好地呈现代码块、表格等富文本内容的视觉层次。
+ * 4. 文档作为独立的信息展示页面，与主应用的深色工作区形成明确的场景区分。
+ */
+
+const DOCS_LANG_KEY = "scc-docs-language";
+
+function getDocsLanguage(globalLanguage: string | null | undefined): string {
+  try {
+    const saved = localStorage.getItem(DOCS_LANG_KEY);
+    if (saved) return saved;
+  } catch {
+    // localStorage 不可用则忽略
   }
-];
+  return globalLanguage ?? "zh-CN";
+}
 
-export function DocsView({ language, onOpenTasks }: { language?: string | null; onOpenTasks: () => void }) {
-  const [activeId, setActiveId] = useState(docs[0]!.id);
-  const active = docs.find((doc) => doc.id === activeId) ?? docs[0]!;
-  const shell = getUiCopy(language).shell;
-  const zh = language === "zh-CN";
+function setDocsLanguage(lang: string): void {
+  try {
+    localStorage.setItem(DOCS_LANG_KEY, lang);
+  } catch {
+    // localStorage 不可用则忽略
+  }
+}
+
+export function DocsView({
+  language,
+  onBack
+}: {
+  language?: string | null;
+  onBack: () => void;
+}) {
+  const [docsLang, setDocsLang] = useState<string>(() => getDocsLanguage(language));
+  const [activeId, setActiveId] = useState<DocsSection>(docMetas[0]!.id);
+  const [content, setContent] = useState<string>("");
+  const [loading, setLoading] = useState(true);
+  const zh = docsLang === "zh" || docsLang === "zh-CN";
+
+  const activeMeta = docMetas.find((doc) => doc.id === activeId) ?? docMetas[0]!;
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    loadDocContent(activeId, docsLang)
+      .then((text) => {
+        if (!cancelled) {
+          setContent(text);
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setContent(`# ${getDocTitle(activeMeta, docsLang)}\n\nFailed to load content.`);
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, docsLang, activeMeta]);
+
+  function toggleLanguage() {
+    const next = zh ? "en" : "zh-CN";
+    setDocsLang(next);
+    setDocsLanguage(next);
+  }
+
   return (
-    <section className="settingsView docsView" aria-label={zh ? "文档" : "Docs"}>
-      <header className="settingsHeader">
-        <button className="mobileTaskToggle" type="button" onClick={onOpenTasks}>
-          <Menu size={16} />
-          {shell.tasks}
+    <section className="docsView" aria-label={zh ? "文档" : "Docs"}>
+      <header className="docsTopbar">
+        <button className="subtleButton iconText" type="button" onClick={onBack}>
+          <ArrowLeft size={16} />
+          {zh ? "返回" : "Back"}
         </button>
         <div>
           <h1>{zh ? "文档" : "Docs"}</h1>
-          <p>{zh ? "产品说明、模型配置和权限语义。" : "Product notes, model setup, and permission semantics."}</p>
+          <p>{zh ? "产品说明、模型配置和权限语义" : "Product notes, model setup, and permission semantics"}</p>
         </div>
+        <button
+          className="subtleButton iconText docsLangSwitch"
+          type="button"
+          onClick={toggleLanguage}
+          title={zh ? "Switch to English" : "切换到中文"}
+        >
+          <Languages size={15} />
+          {zh ? "English" : "中文"}
+        </button>
       </header>
-      <div className="settingsBody">
-        <nav className="settingsNav" aria-label="Docs">
-          {docs.map((doc) => (
-            <button className={doc.id === active.id ? "settingsNavItem selected" : "settingsNavItem"} type="button" key={doc.id} onClick={() => setActiveId(doc.id)}>
-              <span>{doc.title}</span>
-              <small>{doc.externalUrl || (zh ? "本地说明" : "Local guide")}</small>
-            </button>
-          ))}
+      <div className="docsLayout">
+        <nav className="docsToc" aria-label="Docs">
+          {docMetas.map((doc) => {
+            const Icon = doc.icon;
+            return (
+              <button
+                className={doc.id === activeId ? "docsTocItem selected" : "docsTocItem"}
+                type="button"
+                key={doc.id}
+                onClick={() => setActiveId(doc.id)}
+              >
+                <span className="docsTocItemLabel">
+                  <Icon size={15} aria-hidden="true" />
+                  {getDocTitle(doc, docsLang)}
+                </span>
+              </button>
+            );
+          })}
         </nav>
-        <article className="settingsPanel docsArticle">
-          <div className="panelHero">
+        <article className="docsArticle">
+          <div className="docsArticleHeader">
             <div>
-              <h2>{active.title}</h2>
-              <p>{zh ? "Markdown 文档会在这里直接渲染。" : "Markdown documents render directly here."}</p>
+              <h2>{getDocTitle(activeMeta, docsLang)}</h2>
+              <p>{zh ? "清晰、可搜索、可逐步扩展的本地说明。" : "Readable local documentation that can grow over time."}</p>
             </div>
-            {active.externalUrl ? (
-              <a className="subtleButton iconText" href={active.externalUrl} rel="noreferrer" target="_blank">
-                <ExternalLink size={15} />
-                {zh ? "打开链接" : "Open link"}
-              </a>
-            ) : null}
           </div>
           <div className="docBody">
-            <MarkdownText content={active.content} />
+            {loading ? (
+              <p style={{ color: "#9ca3af" }}>{zh ? "加载中…" : "Loading…"}</p>
+            ) : (
+              <MarkdownText content={content} />
+            )}
           </div>
         </article>
       </div>

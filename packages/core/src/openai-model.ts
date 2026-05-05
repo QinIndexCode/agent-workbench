@@ -281,13 +281,17 @@ export interface OpenAIProviderConfig {
   model?: string;
 }
 
+export interface OpenAIProviderConfigWithName extends OpenAIProviderConfig {
+  providerName?: string;
+}
+
 interface OpenAIProviderSection {
   name: string;
   config: OpenAIProviderConfig;
 }
 
 export function loadOpenAiConfig(filePath = process.env["SCC_API_KEY_FILE"] ?? "dont_touch_(APIKEY).md"): OpenAIProviderConfig {
-  const fileConfig = loadOpenAiConfigFile(filePath);
+  const fileConfig = loadOpenAiProviderConfig(filePath);
   const apiKey = process.env["OPENAI_API_KEY"] ?? fileConfig.apiKey;
   const baseURL = process.env["OPENAI_BASE_URL"] ?? process.env["OPENAI_BASEURL"] ?? process.env["SCC_OPENAI_BASE_URL"] ?? fileConfig.baseURL;
   const model = process.env["SCC_MODEL"] ?? process.env["OPENAI_MODEL"] ?? fileConfig.model;
@@ -298,9 +302,16 @@ export function loadOpenAiConfig(filePath = process.env["SCC_API_KEY_FILE"] ?? "
   };
 }
 
-function loadOpenAiConfigFile(filePath: string): OpenAIProviderConfig {
+export function loadOpenAiProviderConfig(
+  filePath = process.env["SCC_API_KEY_FILE"] ?? "dont_touch_(APIKEY).md"
+): OpenAIProviderConfigWithName {
+  const section = loadOpenAiConfigFileSection(filePath);
+  return section ? { ...section.config, providerName: section.name } : {};
+}
+
+function loadOpenAiConfigFileSection(filePath: string): OpenAIProviderSection | undefined {
   const resolvedPath = resolveApiKeyPath(filePath);
-  if (!existsSync(resolvedPath)) return {};
+  if (!existsSync(resolvedPath)) return undefined;
 
   const sections = parseProviderSections(readFileSync(resolvedPath, "utf8"));
   const preferredProvider = process.env["SCC_API_PROVIDER"] ?? process.env["OPENAI_PROVIDER"];
@@ -310,11 +321,10 @@ function loadOpenAiConfigFile(filePath: string): OpenAIProviderConfig {
 
   const complete = (section: OpenAIProviderSection): boolean => Boolean(section.config.apiKey && section.config.baseURL);
   return (
-    preferred?.config ??
-    sections.find((section) => complete(section) && section.config.model)?.config ??
-    sections.find(complete)?.config ??
-    sections[0]?.config ??
-    {}
+    preferred ??
+    sections.find((section) => complete(section) && section.config.model) ??
+    sections.find(complete) ??
+    sections[0]
   );
 }
 

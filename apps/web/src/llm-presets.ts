@@ -27,16 +27,6 @@ export interface ModelProviderPreset {
 
 export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
   {
-    vendor: "mimo",
-    label: "Mimo",
-    protocol: "openai_compatible",
-    baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
-    models: [
-      { id: "mimo-v2.5", label: "mimo-v2.5", contextWindow: 128000, supportsTools: true, supportsThinking: true },
-      { id: "mimo-v2.5-pro", label: "mimo-v2.5-pro", contextWindow: 200000, supportsTools: true, supportsThinking: true }
-    ]
-  },
-  {
     vendor: "openai",
     label: "OpenAI",
     protocol: "openai_compatible",
@@ -68,6 +58,37 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     ]
   },
   {
+    vendor: "deepseek",
+    label: "DeepSeek",
+    protocol: "openai_compatible",
+    baseUrl: "https://api.deepseek.com/v1",
+    models: [
+      { id: "deepseek-chat", label: "deepseek-chat", contextWindow: 64000, supportsTools: true, supportsThinking: false },
+      { id: "deepseek-reasoner", label: "deepseek-reasoner", contextWindow: 64000, supportsTools: true, supportsThinking: true }
+    ]
+  },
+  {
+    vendor: "qwen",
+    label: "Qwen / DashScope",
+    protocol: "openai_compatible",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    models: [
+      { id: "qwen-plus", label: "qwen-plus", contextWindow: 128000, supportsTools: true, supportsThinking: true },
+      { id: "qwen-turbo", label: "qwen-turbo", contextWindow: 128000, supportsTools: true, supportsThinking: false },
+      { id: "qwen-max", label: "qwen-max", contextWindow: 128000, supportsTools: true, supportsThinking: false }
+    ]
+  },
+  {
+    vendor: "kimi",
+    label: "Kimi / Moonshot",
+    protocol: "openai_compatible",
+    baseUrl: "https://api.moonshot.ai/v1",
+    models: [
+      { id: "kimi-k2-0711-preview", label: "kimi-k2-0711-preview", contextWindow: 128000, supportsTools: true, supportsThinking: false },
+      { id: "moonshot-v1-128k", label: "moonshot-v1-128k", contextWindow: 128000, supportsTools: true, supportsThinking: false }
+    ]
+  },
+  {
     vendor: "openrouter",
     label: "OpenRouter",
     protocol: "openai_compatible",
@@ -75,6 +96,16 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     models: [
       { id: "openai/gpt-4.1", label: "openai/gpt-4.1", contextWindow: 1047576, supportsTools: true, supportsThinking: false },
       { id: "anthropic/claude-3.5-sonnet", label: "anthropic/claude-3.5-sonnet", contextWindow: 200000, supportsTools: true, supportsThinking: false }
+    ]
+  },
+  {
+    vendor: "mimo",
+    label: "Mimo",
+    protocol: "openai_compatible",
+    baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+    models: [
+      { id: "mimo-v2.5", label: "mimo-v2.5", contextWindow: 128000, supportsTools: true, supportsThinking: true },
+      { id: "mimo-v2.5-pro", label: "mimo-v2.5-pro", contextWindow: 200000, supportsTools: true, supportsThinking: true }
     ]
   },
   {
@@ -88,16 +119,6 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
 
 export const LLM_PROVIDERS: LlmProviderPreset[] = [
   {
-    id: "mimo",
-    label: "Mimo",
-    description: "Preferred local API-key document provider.",
-    baseUrl: "",
-    models: [
-      { id: "mimo-v2.5", label: "Mimo v2.5", contextWindow: 128000 },
-      { id: "mimo-v2.5-pro", label: "Mimo v2.5 Pro", contextWindow: 200000 }
-    ]
-  },
-  {
     id: "openai",
     label: "OpenAI",
     description: "OpenAI-compatible default models.",
@@ -106,6 +127,16 @@ export const LLM_PROVIDERS: LlmProviderPreset[] = [
       { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", contextWindow: 128000 },
       { id: "gpt-5.4", label: "GPT-5.4", contextWindow: 128000 },
       { id: "gpt-5.5", label: "GPT-5.5", contextWindow: 256000 }
+    ]
+  },
+  {
+    id: "mimo",
+    label: "Mimo",
+    description: "Mimo OpenAI-compatible provider.",
+    baseUrl: "",
+    models: [
+      { id: "mimo-v2.5", label: "Mimo v2.5", contextWindow: 128000 },
+      { id: "mimo-v2.5-pro", label: "Mimo v2.5 Pro", contextWindow: 200000 }
     ]
   },
   {

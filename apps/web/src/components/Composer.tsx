@@ -1,9 +1,24 @@
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowUp, ChevronDown, Eye, LoaderCircle, Mic, MicOff, Paperclip, ShieldAlert, ShieldQuestion, Square } from "lucide-react";
+import { ArrowUp, ChevronDown, Eye, LoaderCircle, Mic, MicOff, Paperclip, ShieldAlert, ShieldQuestion, SlidersHorizontal, Square } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
+
+function VoiceWaveform() {
+  return (
+    <span className="voiceWaveform" aria-hidden="true">
+      <span />
+      <span />
+      <span />
+      <span />
+      <span />
+      <span />
+      <span />
+    </span>
+  );
+}
 
 export type ComposerMode = "new_task" | "guidance" | "continue";
 export type PermissionPreset = "ask" | "read_only" | "all";
+export type ComposerPermissionMode = PermissionPreset | "custom";
 
 interface SpeechRecognitionLike {
   lang: string;
@@ -30,6 +45,7 @@ export function Composer({
   mode,
   onDraftChange,
   onModelChange,
+  onOpenPermissionSettings,
   onPermissionPresetChange,
   onSubmit,
   onStop
@@ -40,12 +56,13 @@ export function Composer({
   modelLabel?: string;
   modelOptions?: Array<{ label: string; value: string }>;
   modelValue?: string;
-  permissionPreset?: PermissionPreset;
+  permissionPreset?: ComposerPermissionMode;
   permissionScopeLabel?: string;
   running: boolean;
   mode: ComposerMode;
   onDraftChange?: (text: string) => void;
   onModelChange?: (modelId: string) => void;
+  onOpenPermissionSettings?: () => void;
   onPermissionPresetChange?: (preset: PermissionPreset) => void;
   onSubmit: (text: string) => void;
   onStop: () => void;
@@ -83,6 +100,9 @@ export function Composer({
       }}
     >
       <div className="composerInputWrap">
+        <div className="voiceListeningBar" data-listening={listening}>
+          <VoiceWaveform />
+        </div>
         <textarea
           ref={textareaRef}
           aria-label="Task input"
@@ -112,7 +132,7 @@ export function Composer({
             <Paperclip size={17} />
           </button>
           <button
-            className={listening ? "composerToolButton active" : "composerToolButton"}
+            className={listening ? "composerToolButton voiceActive" : "composerToolButton"}
             aria-label={listening ? labels.voiceInputStop : labels.voiceInput}
             disabled={busy || !speechRecognitionSupported()}
             title={speechRecognitionSupported() ? labels.voiceInput : labels.voiceUnsupported}
@@ -190,6 +210,10 @@ export function Composer({
                   selected={permissionPreset === option.value}
                   tabIndex={permissionOpen ? 0 : -1}
                   value={option.value}
+                  onOpenCustom={() => {
+                    onOpenPermissionSettings?.();
+                    setPermissionOpen(false);
+                  }}
                   onSelect={(preset) => {
                     onPermissionPresetChange?.(preset);
                     setPermissionOpen(false);
@@ -281,6 +305,7 @@ function PermissionPresetButton({
   selected,
   tabIndex,
   value,
+  onOpenCustom,
   onSelect
 }: {
   description: string;
@@ -289,7 +314,8 @@ function PermissionPresetButton({
   label: string;
   selected: boolean;
   tabIndex: number;
-  value: PermissionPreset;
+  value: ComposerPermissionMode;
+  onOpenCustom: (() => void) | undefined;
   onSelect: ((preset: PermissionPreset) => void) | undefined;
 }) {
   return (
@@ -299,7 +325,13 @@ function PermissionPresetButton({
       disabled={disabled}
       tabIndex={tabIndex}
       title={description}
-      onClick={() => onSelect?.(value)}
+      onClick={() => {
+        if (value === "custom") {
+          onOpenCustom?.();
+          return;
+        }
+        onSelect?.(value);
+      }}
       type="button"
     >
       {icon}
@@ -315,7 +347,7 @@ function getPermissionOptions(labels: ReturnType<typeof getUiCopy>["composer"]):
   description: string;
   icon: ReactNode;
   label: string;
-  value: PermissionPreset;
+  value: ComposerPermissionMode;
 }> {
   return [
     {
@@ -329,6 +361,12 @@ function getPermissionOptions(labels: ReturnType<typeof getUiCopy>["composer"]):
       icon: <Eye size={14} />,
       label: labels.permissionPresets.read_only,
       value: "read_only"
+    },
+    {
+      description: labels.permissionPresetDescriptions.custom,
+      icon: <SlidersHorizontal size={14} />,
+      label: labels.permissionPresets.custom,
+      value: "custom"
     },
     {
       description: labels.permissionPresetDescriptions.all,

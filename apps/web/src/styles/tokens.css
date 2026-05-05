@@ -27,6 +27,9 @@
   --danger: #ffb7a8;
   --danger-bg: #241511;
   --danger-border: #7d3529;
+  --voice: #00d4aa;
+  --voice-soft: color-mix(in srgb, #00d4aa 12%, transparent);
+  --voice-bg: color-mix(in srgb, #00d4aa 10%, transparent);
   --shadow: 0 18px 50px rgb(0 0 0 / 0.34);
   --shadow-soft: 0 10px 30px rgb(0 0 0 / 0.22);
   --radius: 10px;

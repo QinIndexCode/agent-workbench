@@ -1,7 +1,8 @@
 import type { TaskDeleteRequest, TaskDetail } from "@scc/shared";
-import { BookOpen, Clock3, FileText, HelpCircle, Plus, Search, Settings, Terminal, Trash2, X } from "lucide-react";
+import { BookOpen, Clock3, FileText, HelpCircle, Plus, Search, Settings, Terminal, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { getUiCopy } from "../i18n.js";
+import { ConfirmDialog } from "./ConfirmDialog.js";
 
 export type EngineStatus = "running" | "streaming" | "attention";
 
@@ -44,7 +45,7 @@ export function TaskList({
   const [deleteLearningData, setDeleteLearningData] = useState(false);
   const [deleteDerivedSkills, setDeleteDerivedSkills] = useState(false);
   const text = getUiCopy(language).shell;
-  const isNewTaskSelected = activeView === "tasks" && selectedId === null;
+  const confirmingTask = confirmingId ? tasks.find((task) => task.id === confirmingId) ?? null : null;
   const visibleTasks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return tasks;
@@ -74,7 +75,7 @@ export function TaskList({
         </div>
         <div className="sidebarNav" aria-label={text.navigation}>
           <button
-            className={isNewTaskSelected ? "sidebarNavButton primary selected" : "sidebarNavButton primary"}
+            className={activeView === "tasks" ? "sidebarNavButton primary selected" : "sidebarNavButton primary"}
             onClick={() => {
               setHistoryOpen(false);
               onNewTask();
@@ -141,51 +142,6 @@ export function TaskList({
                 >
                   <Trash2 size={14} />
                 </button>
-                {confirmingId === task.id ? (
-                  <div className="taskDeleteConfirm">
-                    <div className="taskDeleteConfirmHeader">
-                      <strong>{text.deleteTaskTitle}</strong>
-                      <button aria-label={text.cancel} onClick={() => setConfirmingId(null)} type="button">
-                        <X size={14} />
-                      </button>
-                    </div>
-                    <p>{task.status === "running" || task.status === "waiting_approval" ? text.deleteRunning : text.deleteThread}</p>
-                    <label>
-                      <input
-                        checked={deleteLearningData}
-                        onChange={(event) => {
-                          setDeleteLearningData(event.target.checked);
-                          if (!event.target.checked) setDeleteDerivedSkills(false);
-                        }}
-                        type="checkbox"
-                      />
-                      {text.deleteLearning}
-                    </label>
-                    <label className={!deleteLearningData ? "disabledOption" : ""}>
-                      <input
-                        checked={deleteDerivedSkills}
-                        disabled={!deleteLearningData}
-                        onChange={(event) => setDeleteDerivedSkills(event.target.checked)}
-                        type="checkbox"
-                      />
-                      {text.deleteDerivedSkills}
-                    </label>
-                    <div className="taskDeleteActions">
-                      <button onClick={() => setConfirmingId(null)} type="button">
-                        {text.cancel}
-                      </button>
-                      <button
-                        className="dangerButton"
-                        onClick={() => {
-                          void onDelete(task.id, { deleteLearningData, deleteDerivedSkills }).then(() => setConfirmingId(null));
-                        }}
-                        type="button"
-                      >
-                        {text.delete}
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
               </div>
             ))}
           </nav>
@@ -201,6 +157,41 @@ export function TaskList({
           </button>
         </div>
       </aside>
+      <ConfirmDialog
+        cancelLabel={text.cancel}
+        confirmLabel={text.delete}
+        open={Boolean(confirmingTask)}
+        title={text.deleteTaskTitle}
+        onCancel={() => setConfirmingId(null)}
+        onConfirm={() => {
+          if (!confirmingTask) return;
+          void onDelete(confirmingTask.id, { deleteLearningData, deleteDerivedSkills }).then(() => setConfirmingId(null));
+        }}
+      >
+        <div className="deleteOptions">
+          <p>{confirmingTask?.status === "running" || confirmingTask?.status === "waiting_approval" ? text.deleteRunning : text.deleteThread}</p>
+          <label>
+            <input
+              checked={deleteLearningData}
+              onChange={(event) => {
+                setDeleteLearningData(event.target.checked);
+                if (!event.target.checked) setDeleteDerivedSkills(false);
+              }}
+              type="checkbox"
+            />
+            {text.deleteLearning}
+          </label>
+          <label className={!deleteLearningData ? "disabledOption" : ""}>
+            <input
+              checked={deleteDerivedSkills}
+              disabled={!deleteLearningData}
+              onChange={(event) => setDeleteDerivedSkills(event.target.checked)}
+              type="checkbox"
+            />
+            {text.deleteDerivedSkills}
+          </label>
+        </div>
+      </ConfirmDialog>
     </>
   );
 }

@@ -1,8 +1,27 @@
 import type { GlobalPermissionGrant, PreferencesPatch, RiskCategory, UserPreferences } from "@scc/shared";
-import { AlertTriangle, CheckCircle2, LockKeyhole, ShieldCheck, ShieldQuestion } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Eye,
+  FileSearch,
+  Globe2,
+  LockKeyhole,
+  PencilLine,
+  RotateCcw,
+  ShieldAlert,
+  ShieldQuestion,
+  SlidersHorizontal,
+  TerminalSquare,
+  X
+} from "lucide-react";
 import { getUiCopy } from "../i18n.js";
+import { AccordionSelect } from "./AccordionSelect.js";
+import type { PermissionPreset } from "./Composer.js";
 
 const riskCategories: RiskCategory[] = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
+const readOnlyRiskCategories: RiskCategory[] = ["host_observation", "workspace_read"];
+type PermissionSettingsMode = PermissionPreset | "custom";
 
 export function PermissionsPanel({
   language,
@@ -11,6 +30,7 @@ export function PermissionsPanel({
   preferencesOnly = false,
   onGrant,
   onRevoke,
+  onPermissionPresetChange,
   onPreference
 }: {
   language?: string | null;
@@ -19,11 +39,22 @@ export function PermissionsPanel({
   preferencesOnly?: boolean;
   onGrant: (riskCategory: RiskCategory) => void;
   onRevoke: (riskCategory: RiskCategory) => void;
+  onPermissionPresetChange?: (preset: PermissionPreset) => void;
   onPreference: (patch: PreferencesPatch) => void;
 }) {
   const text = getUiCopy(language).permissions;
   const safePermissions = Array.isArray(permissions) ? permissions : [];
   const grants = new Map(safePermissions.map((permission) => [permission.riskCategory, permission]));
+  const permissionMode = getPermissionMode(grants);
+  const [customEditing, setCustomEditing] = useState(false);
+  const [pendingMode, setPendingMode] = useState<PermissionSettingsMode | null>(null);
+  const displayedMode: PermissionSettingsMode = pendingMode ?? (customEditing ? "custom" : permissionMode);
+
+  useEffect(() => {
+    if (pendingMode && pendingMode === permissionMode) {
+      setPendingMode(null);
+    }
+  }, [permissionMode, pendingMode]);
 
   return (
     <section className="permissionsPanel">
@@ -35,51 +66,104 @@ export function PermissionsPanel({
       </div>
 
       {!preferencesOnly ? (
-        <div className="permissionGrid">
-          {riskCategories.map((risk) => {
-            const grant = grants.get(risk);
-            const isDestructive = risk === "destructive";
-            const Icon = grant ? ShieldCheck : isDestructive ? AlertTriangle : ShieldQuestion;
-            const riskCopy = text.risks[risk];
-            return (
-              <article className={grant ? "permissionCard granted" : isDestructive ? "permissionCard danger" : "permissionCard"} key={risk}>
-                <div className="permissionCardHeader">
-                  <span className={isDestructive ? "permissionIcon danger" : "permissionIcon"}>
-                    <Icon size={17} aria-hidden="true" />
-                  </span>
-                  <div>
-                    <h3>{riskCopy[0]}</h3>
-                    <small>{grant ? text.granted : text.notGranted}</small>
-                  </div>
-                </div>
-                <p>{riskCopy[1]}</p>
-                <div className="permissionMeta">
-                  {grant ? (
-                    <>
-                      <span>
-                        <CheckCircle2 size={13} aria-hidden="true" />
-                        {text.grantedAt}: {formatDate(grant.grantedAt)}
-                      </span>
-                      <span>{text.reason}: {grant.reason || text.noReason}</span>
-                    </>
-                  ) : (
-                    <span>
-                      <LockKeyhole size={13} aria-hidden="true" />
-                      {isDestructive ? text.destructiveNote : text.riskNote}
+        <>
+          <section className="permissionModePanel">
+            <div className="permissionModeCopy">
+              <span className={displayedMode === "all" ? "permissionModeIcon danger" : "permissionModeIcon"}>
+                {getModeIcon(displayedMode, 19)}
+              </span>
+              <div>
+                <h3>{text.modeTitle}</h3>
+                <p>{displayedMode === "custom" ? text.modeCustomDescription : text.modeSubtitle}</p>
+              </div>
+            </div>
+            <PermissionModeSwitch
+              mode={displayedMode}
+              labels={text.permissionModes}
+              onSelect={(mode) => {
+                setPendingMode(null);
+                if (mode === "custom") {
+                  setCustomEditing(true);
+                } else {
+                  applyPreset(mode);
+                }
+              }}
+            />
+            <button className="resetPermissionButton" type="button" onClick={() => applyPreset("ask")} disabled={safePermissions.length === 0}>
+              <RotateCcw size={14} aria-hidden="true" />
+              {text.resetAsk}
+            </button>
+          </section>
+
+          <section className="permissionCoveragePanel">
+            <div className="panelHeader">
+              <div>
+                <h3>{text.coverageTitle}</h3>
+                <p>{text.coverageSubtitle}</p>
+              </div>
+            </div>
+            <div className="permissionRows">
+              {riskCategories.map((risk) => {
+                const grant = grants.get(risk);
+                const isDestructive = risk === "destructive";
+                const riskCopy = text.risks[risk];
+                const Icon = getRiskIcon(risk);
+                return (
+                  <article className={grant ? "permissionRow granted" : displayedMode === "custom" ? "permissionRow editable" : "permissionRow"} key={risk}>
+                    <span className={isDestructive ? "permissionRowIcon danger" : "permissionRowIcon"}>
+                      <Icon size={17} aria-hidden="true" />
                     </span>
-                  )}
-                </div>
-                <button
-                  className={grant ? "subtleButton" : isDestructive ? "dangerButton" : "primarySoftButton"}
-                  onClick={() => (grant ? onRevoke(risk) : onGrant(risk))}
-                  type="button"
-                >
-                  {grant ? text.revoke : text.allow}
-                </button>
-              </article>
-            );
-          })}
-        </div>
+                    <div className="permissionRowMain">
+                      <div className="permissionRowTitle">
+                        <h4>{riskCopy[0]}</h4>
+                        <span className={grant ? "permissionStatus granted" : "permissionStatus"}>
+                          {grant ? text.autoAllowed : text.approvalRequired}
+                        </span>
+                      </div>
+                      <p>{riskCopy[1]}</p>
+                      <small>
+                        {grant ? (
+                          <>
+                            <CheckCircle2 size={12} aria-hidden="true" />
+                            {text.grantedAt}: {formatDate(grant.grantedAt)}
+                          </>
+                        ) : (
+                          <>
+                            <LockKeyhole size={12} aria-hidden="true" />
+                            {isDestructive ? text.destructiveNote : text.riskNote}
+                          </>
+                        )}
+                      </small>
+                    </div>
+                    {displayedMode === "custom" ? (
+                      <button
+                        aria-label={grant ? text.disableRisk(riskCopy[0]) : text.enableRisk(riskCopy[0])}
+                        aria-pressed={Boolean(grant)}
+                        className="switchControl permissionSwitch"
+                        onClick={() => (grant ? onRevoke(risk) : onGrant(risk))}
+                        title={grant ? text.disableRisk(riskCopy[0]) : text.enableRisk(riskCopy[0])}
+                        type="button"
+                      >
+                        <span aria-hidden="true" />
+                      </button>
+                    ) : (
+                      <button
+                        aria-label={text.revokeRisk(riskCopy[0])}
+                        className="iconButton permissionRevokeButton"
+                        disabled={!grant}
+                        onClick={() => onRevoke(risk)}
+                        title={grant ? text.revokeRisk(riskCopy[0]) : text.approvalRequired}
+                        type="button"
+                      >
+                        <X size={15} aria-hidden="true" />
+                      </button>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        </>
       ) : null}
 
       {preferencesOnly ? (
@@ -138,11 +222,11 @@ export function PermissionsPanel({
               <h3>{text.behaviorTitle}</h3>
             </div>
             <div className="toggleGrid">
-              <PreferenceToggle label={text.showThinking} value={preferences?.showThinking ?? true} onChange={(value) => emitPreference({ showThinking: value })} onText={text.on} offText={text.off} />
-              <PreferenceToggle label={text.reflectionEnabled} value={preferences?.reflectionEnabled ?? true} onChange={(value) => emitPreference({ reflectionEnabled: value })} onText={text.on} offText={text.off} />
-              <PreferenceToggle label={text.skillAutoInject} value={preferences?.skillAutoInject ?? true} onChange={(value) => emitPreference({ skillAutoInject: value })} onText={text.on} offText={text.off} />
-              <PreferenceToggle label={text.sanitizeSensitiveData} value={preferences?.sanitizeSensitiveData ?? true} onChange={(value) => emitPreference({ sanitizeSensitiveData: value })} onText={text.on} offText={text.off} />
-              <PreferenceToggle label={text.encryptStorage} value={preferences?.encryptStorage ?? false} onChange={(value) => emitPreference({ encryptStorage: value })} onText={text.on} offText={text.off} />
+              <PreferenceToggle label={text.showThinking} value={preferences?.showThinking ?? true} onChange={(value) => emitPreference({ showThinking: value })} />
+              <PreferenceToggle label={text.reflectionEnabled} value={preferences?.reflectionEnabled ?? true} onChange={(value) => emitPreference({ reflectionEnabled: value })} />
+              <PreferenceToggle label={text.skillAutoInject} value={preferences?.skillAutoInject ?? true} onChange={(value) => emitPreference({ skillAutoInject: value })} />
+              <PreferenceToggle label={text.sanitizeSensitiveData} value={preferences?.sanitizeSensitiveData ?? true} onChange={(value) => emitPreference({ sanitizeSensitiveData: value })} />
+              <PreferenceToggle label={text.encryptStorage} value={preferences?.encryptStorage ?? false} onChange={(value) => emitPreference({ encryptStorage: value })} />
             </div>
           </section>
         </>
@@ -152,6 +236,68 @@ export function PermissionsPanel({
 
   function emitPreference(patch: PreferencesPatch) {
     onPreference(patch);
+  }
+
+  function applyPreset(preset: PermissionPreset) {
+    setCustomEditing(false);
+    setPendingMode(preset);
+    if (onPermissionPresetChange) {
+      onPermissionPresetChange(preset);
+      return;
+    }
+    const target = new Set<RiskCategory>(preset === "all" ? riskCategories : preset === "read_only" ? readOnlyRiskCategories : []);
+    for (const risk of riskCategories) {
+      const granted = grants.has(risk);
+      if (target.has(risk) && !granted) onGrant(risk);
+      if (!target.has(risk) && granted) onRevoke(risk);
+    }
+  }
+}
+
+function PermissionModeSwitch({
+  mode,
+  labels,
+  onSelect
+}: {
+  mode: PermissionSettingsMode;
+  labels: Record<PermissionSettingsMode, { label: string; description: string }>;
+  onSelect: (preset: PermissionSettingsMode) => void;
+}) {
+  const options: PermissionSettingsMode[] = ["ask", "read_only", "custom", "all"];
+  const selectedIndex = options.indexOf(mode);
+  const switchRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const el = switchRef.current;
+    if (!el) return;
+    const index = selectedIndex >= 0 ? selectedIndex : 0;
+    el.style.setProperty("--permission-mode-index", String(index));
+  }, [selectedIndex]);
+
+  return (
+    <div ref={switchRef} className="permissionModeSwitch" role="radiogroup">
+      <span className="permissionModeThumb" aria-hidden="true" />
+      {options.map((option) => (
+        <button aria-checked={mode === option} key={option} onClick={() => onSelect(option)} role="radio" type="button">
+          <span className="modeOptionIcon" aria-hidden="true">{getModeIcon(option)}</span>
+          <span>{labels[option].label}</span>
+          <small>{labels[option].description}</small>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function getModeIcon(mode: PermissionSettingsMode, size = 14) {
+  switch (mode) {
+    case "ask":
+      return <ShieldQuestion size={size} aria-hidden="true" />;
+    case "read_only":
+      return <Eye size={size} aria-hidden="true" />;
+    case "custom":
+      return <SlidersHorizontal size={size} aria-hidden="true" />;
+    case "all":
+      return <ShieldAlert size={size} aria-hidden="true" />;
   }
 }
 
@@ -197,40 +343,60 @@ function PreferenceSelect({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="preferenceField">
+    <div className="preferenceField">
       <span>{label}</span>
-      <select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
-        {options.map(([optionValue, optionLabel]) => (
-          <option key={optionValue} value={optionValue}>
-            {optionLabel}
-          </option>
-        ))}
-      </select>
-    </label>
+      <AccordionSelect
+        ariaLabel={label}
+        disabled={disabled}
+        value={value}
+        options={options.map(([optionValue, optionLabel]) => ({ value: optionValue, label: optionLabel }))}
+        onChange={onChange}
+      />
+    </div>
   );
 }
 
 function PreferenceToggle({
   label,
   value,
-  onChange,
-  onText,
-  offText
+  onChange
 }: {
   label: string;
   value: boolean;
   onChange: (value: boolean) => void;
-  onText: string;
-  offText: string;
 }) {
   return (
     <label className={value ? "toggleField enabled" : "toggleField"}>
       <span>{label}</span>
-      <button type="button" onClick={() => onChange(!value)} aria-pressed={value}>
-        {value ? onText : offText}
+      <button className="switchControl" type="button" onClick={() => onChange(!value)} aria-label={label} aria-pressed={value}>
+        <span aria-hidden="true" />
       </button>
     </label>
   );
+}
+
+function getPermissionMode(grants: Map<RiskCategory, GlobalPermissionGrant>): PermissionPreset | "custom" {
+  if (riskCategories.every((risk) => grants.has(risk))) return "all";
+  if (riskCategories.every((risk) => readOnlyRiskCategories.includes(risk) === grants.has(risk))) return "read_only";
+  if (riskCategories.every((risk) => !grants.has(risk))) return "ask";
+  return "custom";
+}
+
+function getRiskIcon(risk: RiskCategory) {
+  switch (risk) {
+    case "host_observation":
+      return Eye;
+    case "workspace_read":
+      return FileSearch;
+    case "workspace_write":
+      return PencilLine;
+    case "shell":
+      return TerminalSquare;
+    case "network":
+      return Globe2;
+    case "destructive":
+      return AlertTriangle;
+  }
 }
 
 function formatDate(value: string): string {
