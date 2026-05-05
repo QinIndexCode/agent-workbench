@@ -4,6 +4,10 @@ import type {
   CreateTaskRequestSchema,
   ExperienceRecordSchema,
   GlobalPermissionGrantSchema,
+  KnowledgeCreateRequestSchema,
+  KnowledgeItemSchema,
+  KnowledgePatchRequestSchema,
+  KnowledgeUploadRequestSchema,
   MessageRequestSchema,
   McpServerConfigSchema,
   McpServerCreateRequestSchema,
@@ -12,8 +16,13 @@ import type {
   McpToolCallResultSchema,
   McpToolSummarySchema,
   McpTransportKindSchema,
+  ModelPresetSchema,
+  ModelProviderCreateRequestSchema,
+  ModelProviderPatchRequestSchema,
+  ModelProviderRecordSchema,
   PatternRecordSchema,
   PreferencesPatchSchema,
+  ProviderProtocolSchema,
   ProjectMemoryCreateRequestSchema,
   ProjectMemorySchema,
   ReflectionSessionSchema,
@@ -63,6 +72,15 @@ export type ExperienceRecord = z.infer<typeof ExperienceRecordSchema>;
 export type GlobalPermissionGrant = z.infer<typeof GlobalPermissionGrantSchema>;
 export type UserPreferences = z.infer<typeof UserPreferencesSchema>;
 export type PreferencesPatch = z.infer<typeof PreferencesPatchSchema>;
+export type ProviderProtocol = z.infer<typeof ProviderProtocolSchema>;
+export type ModelPreset = z.infer<typeof ModelPresetSchema>;
+export type ModelProviderRecord = z.infer<typeof ModelProviderRecordSchema>;
+export type ModelProviderCreateRequest = z.infer<typeof ModelProviderCreateRequestSchema>;
+export type ModelProviderPatchRequest = z.infer<typeof ModelProviderPatchRequestSchema>;
+export type KnowledgeItem = z.infer<typeof KnowledgeItemSchema>;
+export type KnowledgeCreateRequest = z.infer<typeof KnowledgeCreateRequestSchema>;
+export type KnowledgePatchRequest = z.infer<typeof KnowledgePatchRequestSchema>;
+export type KnowledgeUploadRequest = z.infer<typeof KnowledgeUploadRequestSchema>;
 export type TaskMemory = z.infer<typeof TaskMemorySchema>;
 export type PatternRecord = z.infer<typeof PatternRecordSchema>;
 export type SkillRecord = z.infer<typeof SkillRecordSchema>;

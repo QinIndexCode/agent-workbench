@@ -4,7 +4,9 @@ import Database from "better-sqlite3";
 import type {
   ExperienceRecord,
   GlobalPermissionGrant,
+  KnowledgeItem,
   McpServerConfig,
+  ModelProviderRecord,
   PatternRecord,
   ProjectMemory,
   ReflectionSession,
@@ -15,7 +17,7 @@ import type {
   TaskMemory,
   UserPreferences
 } from "@scc/shared";
-import { defaultPreferences, normalizeSkillRecord, type WorkbenchStore } from "@scc/core";
+import { defaultPreferences, normalizeSkillRecord, type EncryptedSecretValue, type WorkbenchStore } from "@scc/core";
 
 type Namespace =
   | "tasks"
@@ -26,9 +28,12 @@ type Namespace =
   | "skill_conflicts"
   | "mcp_servers"
   | "global_permissions"
+  | "model_providers"
+  | "model_provider_secrets"
   | "preferences"
   | "reflection_sessions"
-  | "project_memories";
+  | "project_memories"
+  | "knowledge_items";
 type Row = { key: string; value: string };
 
 export class SqliteWorkbenchStore implements WorkbenchStore {
@@ -149,7 +154,7 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
 
   async getPreferences(): Promise<UserPreferences> {
     const stored = this.get<UserPreferences>("preferences", "default");
-    if (stored) return stored;
+    if (stored) return { ...defaultPreferences(), ...stored };
     const created = defaultPreferences();
     await this.savePreferences(created);
     return created;
@@ -157,6 +162,34 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
 
   async savePreferences(preferences: UserPreferences): Promise<void> {
     this.upsert("preferences", "default", preferences);
+  }
+
+  async saveModelProvider(record: ModelProviderRecord): Promise<void> {
+    this.upsert("model_providers", record.id, record);
+  }
+
+  async getModelProvider(providerId: string): Promise<ModelProviderRecord | undefined> {
+    return this.get<ModelProviderRecord>("model_providers", providerId);
+  }
+
+  async listModelProviders(): Promise<ModelProviderRecord[]> {
+    return this.list<ModelProviderRecord>("model_providers").sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  async deleteModelProvider(providerId: string): Promise<void> {
+    this.delete("model_providers", providerId);
+  }
+
+  async saveModelProviderSecret(providerId: string, secret: EncryptedSecretValue): Promise<void> {
+    this.upsert("model_provider_secrets", providerId, secret);
+  }
+
+  async getModelProviderSecret(providerId: string): Promise<EncryptedSecretValue | undefined> {
+    return this.get<EncryptedSecretValue>("model_provider_secrets", providerId);
+  }
+
+  async deleteModelProviderSecret(providerId: string): Promise<void> {
+    this.delete("model_provider_secrets", providerId);
   }
 
   async saveReflectionSession(session: ReflectionSession): Promise<void> {
@@ -177,6 +210,24 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
 
   async deleteProjectMemory(id: string): Promise<void> {
     this.delete("project_memories", id);
+  }
+
+  async saveKnowledgeItem(record: KnowledgeItem): Promise<void> {
+    this.upsert("knowledge_items", record.id, record);
+  }
+
+  async getKnowledgeItem(id: string): Promise<KnowledgeItem | undefined> {
+    return this.get<KnowledgeItem>("knowledge_items", id);
+  }
+
+  async listKnowledgeItems(projectId?: string): Promise<KnowledgeItem[]> {
+    return this.list<KnowledgeItem>("knowledge_items")
+      .filter((record) => !projectId || record.projectId === projectId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async deleteKnowledgeItem(id: string): Promise<void> {
+    this.delete("knowledge_items", id);
   }
 
   close(): void {

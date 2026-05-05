@@ -3,9 +3,9 @@ import { Menu } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
 import { PanelBoundary } from "./PanelBoundary.js";
 
-export type SettingsSection = "skills" | "learning" | "permissions" | "mcp" | "memory";
+export type SettingsSection = "providers" | "permissions" | "mcp" | "preferences";
 
-const sectionIds: SettingsSection[] = ["skills", "learning", "permissions", "mcp", "memory"];
+const sectionIds: SettingsSection[] = ["providers", "permissions", "mcp", "preferences"];
 
 export function SettingsView({
   activeSection,

@@ -5,7 +5,7 @@
 }
 
 .newTaskThread {
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 
 .timeline {
@@ -40,6 +40,125 @@
   letter-spacing: 0;
 }
 
+.engineButton {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  min-height: 38px;
+  padding: 0 15px;
+  color: var(--muted-strong);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.engineButton:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.engineDot {
+  width: 7px;
+  height: 7px;
+  background: var(--success);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 18%, transparent);
+}
+
+.engineButton.attention .engineDot {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 18%, transparent);
+}
+
+.newTaskHero {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 14px;
+  width: min(880px, calc(100% - 48px));
+  min-height: 0;
+  margin: 0 auto;
+  padding: 28px 0 20px;
+  text-align: center;
+}
+
+.newTaskHeroIcon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  color: var(--accent);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 20px;
+  box-shadow: var(--shadow-soft);
+}
+
+.newTaskHero h2 {
+  margin: 6px 0 0;
+  color: var(--text);
+  font-size: clamp(30px, 3.4vw, 44px);
+  font-weight: 780;
+  line-height: 1.05;
+  letter-spacing: 0;
+}
+
+.newTaskHero p {
+  max-width: 580px;
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.suggestionGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  width: min(820px, 100%);
+  margin-top: 18px;
+}
+
+.suggestionCard {
+  display: grid;
+  justify-items: center;
+  gap: 11px;
+  min-height: 150px;
+  padding: 22px 20px;
+  color: var(--text);
+  text-align: center;
+  background: var(--surface-container);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.suggestionCard:hover {
+  background: var(--surface-2);
+  border-color: color-mix(in srgb, var(--accent-border) 70%, var(--border));
+  transform: translateY(-1px);
+}
+
+.suggestionCard svg {
+  color: var(--accent);
+}
+
+.suggestionCard strong {
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.suggestionCard span {
+  color: var(--muted-strong);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .errorLine {
   color: var(--danger);
 }
@@ -47,7 +166,7 @@
 .emptyError {
   height: 0;
   margin: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .event {
@@ -63,8 +182,8 @@
 .event.user_message,
 .event.guidance_pending {
   margin-left: auto;
-  color: #eef8f2;
-  background: #182820;
+  color: #eef3ff;
+  background: #172238;
   border-color: var(--accent-border);
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
 }
@@ -190,6 +309,13 @@
   padding-left: 10px;
   color: var(--muted-strong);
   border-left: 2px solid var(--border-strong);
+}
+
+.markdownText hr {
+  height: 1px;
+  margin: 14px 0;
+  background: var(--border);
+  border: 0;
 }
 
 .markdownCode {
@@ -374,61 +500,266 @@
   position: sticky;
   z-index: 3;
   bottom: 0;
-  grid-template-columns: 1fr 46px;
-  align-items: start;
-  gap: 12px;
-  width: min(940px, calc(100% - 56px));
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  width: min(1120px, calc(100% - 96px));
   margin: 12px auto 20px;
-  padding: 13px;
+  padding: 0;
+  overflow: hidden;
   background: var(--surface-container-high);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
+  border-radius: 20px;
   box-shadow: 0 -10px 30px rgb(0 0 0 / 0.22), 0 1px 0 rgb(255 255 255 / 0.03) inset;
 }
 
 .composer:focus-within {
   border-color: color-mix(in srgb, var(--accent) 42%, var(--border-strong));
-  box-shadow: 0 -12px 36px rgb(0 0 0 / 0.26), 0 0 0 1px rgb(200 217 207 / 0.08) inset;
+  box-shadow: 0 -12px 36px rgb(0 0 0 / 0.26), 0 0 0 1px rgb(214 227 255 / 0.08) inset;
 }
 
 .newTaskThread .composer {
-  position: relative;
-  bottom: auto;
-  align-self: start;
+  align-self: end;
   margin-top: 0;
-  margin-bottom: min(15vh, 128px);
+  margin-bottom: 28px;
 }
 
 .composerInputWrap {
   display: grid;
-  align-self: start;
   min-width: 0;
+  padding: 18px 22px 6px;
 }
 
 .composer textarea {
   width: 100%;
-  height: 132px;
-  min-height: 132px;
-  max-height: 260px;
-  padding: 9px 4px 0;
+  height: 128px;
+  min-height: 128px;
+  max-height: 230px;
+  padding: 0;
   overflow: auto;
   resize: none;
   color: var(--text);
+  font-size: 15px;
+  line-height: 1.55;
   background: transparent;
   border: 0;
   outline: 0;
 }
 
-.composerHint {
-  min-height: 16px;
-  color: color-mix(in srgb, var(--muted) 90%, var(--text) 10%);
-  font-size: 11px;
-  line-height: 1.2;
+.composer textarea::placeholder {
+  color: color-mix(in srgb, var(--muted) 80%, transparent);
 }
 
-.composer button {
+.composerFooter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  min-height: 66px;
+  padding: 10px 18px 10px 22px;
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.composerToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.composerDivider {
+  width: 1px;
+  height: 24px;
+  background: var(--border);
+}
+
+.composerChip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  max-width: 260px;
+  padding: 0 10px;
+  overflow: hidden;
+  color: var(--muted-strong);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.composerModelAccordion,
+.composerPermissionAccordion {
+  position: relative;
+  z-index: 8;
+  display: inline-flex;
+  color: var(--muted-strong);
+  font-size: 12px;
+}
+
+.modelAccordionTrigger,
+.permissionAccordionTrigger {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  height: 30px;
+  padding: 0 10px;
+  color: var(--muted-strong);
+  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+
+.modelAccordionTrigger {
+  min-width: 138px;
+  justify-content: start;
+}
+
+.permissionAccordionTrigger {
+  min-width: 92px;
+}
+
+.modelAccordionTrigger:hover:not(:disabled),
+.permissionAccordionTrigger:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.modelDot {
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+.modelTriggerText {
+  display: block;
+  min-width: 0;
+  text-align: left;
+}
+
+.modelTriggerText strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accordionChevron,
+.permissionChevron {
+  margin-left: auto;
+  transition: transform 160ms ease;
+}
+
+.composerModelAccordion.open .accordionChevron,
+.composerPermissionAccordion.open .permissionChevron {
+  transform: rotate(180deg);
+}
+
+.modelAccordionPanel,
+.permissionAccordionPanel {
+  display: grid;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  gap: 4px;
+  min-width: 100%;
+  max-height: 0;
+  padding: 0 6px;
+  overflow: hidden;
+  background: var(--surface-container-high);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 18px 42px rgb(0 0 0 / 0.36);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px) scale(0.98);
+  transform-origin: bottom left;
+  transition: opacity 160ms ease, transform 160ms ease, max-height 180ms ease, padding 180ms ease;
+}
+
+.composerModelAccordion.open .modelAccordionPanel,
+.composerPermissionAccordion.open .permissionAccordionPanel {
+  max-height: 260px;
+  padding: 6px;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.modelOption,
+.permissionPresetButton {
+  display: grid;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  color: var(--muted-strong);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  box-shadow: none;
+}
+
+.modelOption {
+  justify-items: start;
+  min-width: 150px;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.modelOption span {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.permissionPresetButton {
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 7px;
+  min-width: 164px;
+  padding: 8px 9px;
+  text-align: left;
+}
+
+.permissionPresetButton span {
+  display: grid;
+  gap: 1px;
+}
+
+.permissionPresetButton strong {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.1;
+}
+
+.permissionPresetButton small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.modelOption:hover:not(:disabled),
+.permissionPresetButton:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.modelOption.selected,
+.permissionPresetButton.selected {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+.composer .composerPrimaryButton {
   display: grid;
   place-items: center;
+  justify-self: end;
   width: 46px;
   height: 46px;
   color: var(--accent-text);
@@ -439,13 +770,43 @@
   box-shadow: 0 8px 16px rgb(0 0 0 / 0.22);
 }
 
-.composer button:hover:not(:disabled) {
+.composer .composerToolButton {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  color: var(--muted-strong);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+
+.composer .composerToolButton.active,
+.composer .composerToolButton:hover:not(:disabled) {
+  color: var(--text);
+  background: transparent;
+  border-color: transparent;
+}
+
+.composer .composerPrimaryButton:hover:not(:disabled) {
   background: var(--accent-hover);
 }
 
 .composer button:disabled {
   cursor: default;
   opacity: 0.38;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 @media (max-width: 760px) {
@@ -485,10 +846,52 @@
     margin: 8px 12px max(12px, env(safe-area-inset-bottom));
   }
 
-  .newTaskThread .empty {
+  .engineButton {
+    min-width: 40px;
+    padding: 0 10px;
+    font-size: 0;
+  }
+
+  .newTaskHero {
     width: calc(100% - 28px);
-    padding: 24px 0 18px;
-    font-size: 20px;
+    align-content: start;
+    gap: 10px;
+    padding: 12px 0 8px;
+    overflow: auto;
+  }
+
+  .newTaskHeroIcon {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius);
+  }
+
+  .newTaskHero h2 {
+    font-size: 26px;
+  }
+
+  .newTaskHero p {
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+
+  .suggestionGrid {
+    grid-template-columns: 1fr;
+    gap: 7px;
+    margin-top: 4px;
+  }
+
+  .suggestionCard {
+    grid-template-columns: 28px minmax(0, 1fr);
+    justify-items: start;
+    align-items: center;
+    min-height: 62px;
+    padding: 12px 14px;
+    text-align: left;
+  }
+
+  .suggestionCard span {
+    display: none;
   }
 
   .newTaskThread .composer {
@@ -496,12 +899,61 @@
   }
 
   .composerLarge textarea {
-    height: 124px;
-    min-height: 124px;
+    height: 138px;
+    min-height: 138px;
   }
 
   .composer textarea {
-    height: 124px;
-    min-height: 124px;
+    height: 120px;
+    min-height: 120px;
   }
+
+  .composerInputWrap {
+    padding: 14px 16px 4px;
+  }
+
+  .composerFooter {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    min-height: 62px;
+    padding: 9px 12px 9px 16px;
+  }
+
+  .composerToolbar {
+    gap: 7px;
+  }
+
+  .composerChip {
+    max-width: 130px;
+  }
+
+  .composerModelAccordion,
+  .composerPermissionAccordion {
+    max-width: 100%;
+  }
+
+  .modelAccordionTrigger {
+    min-width: 118px;
+    max-width: 144px;
+  }
+
+  .permissionAccordionTrigger {
+    min-width: 74px;
+  }
+
+  .modelAccordionPanel,
+  .permissionAccordionPanel {
+    right: 0;
+    left: auto;
+    transform-origin: bottom right;
+  }
+
+  .modelOption {
+    min-width: 144px;
+  }
+
+  .permissionPresetButton {
+    min-width: 148px;
+  }
+
 }

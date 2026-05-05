@@ -1,18 +1,28 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import OpenAI from "openai";
-import type { TaskDetail, ToolCall } from "@scc/shared";
+import type { TaskDetail, ToolCall, UserPreferences } from "@scc/shared";
 import type { ContextAssembler } from "./context-assembler.js";
 import { createId } from "./ids.js";
 import type { ModelClient, ModelStreamHandlers, ModelTurn } from "./fallback-model.js";
 import { ConfiguredToolModelClient, FallbackModelClient } from "./fallback-model.js";
 
 export interface OpenAIModelClientOptions {
-  apiKey: string;
+  apiKey?: string;
   baseURL?: string;
   model?: string;
   contextAssembler?: ContextAssembler | undefined;
   toolProvider?: ModelToolProvider | undefined;
+  preferenceProvider?: (() => Promise<UserPreferences>) | undefined;
+  providerResolver?: (() => Promise<ResolvedModelProviderConfig | null>) | undefined;
+}
+
+export interface ResolvedModelProviderConfig {
+  providerId?: string;
+  protocol: "openai_compatible" | "anthropic_messages" | "gemini";
+  apiKey: string;
+  baseURL?: string;
+  model: string;
 }
 
 export interface ModelToolDefinition {
@@ -29,19 +39,23 @@ export interface ModelToolProvider {
 }
 
 export class OpenAIModelClient implements ModelClient {
-  private readonly client: OpenAI;
-  private readonly model: string;
+  private readonly apiKey: string;
+  private readonly defaultBaseURL: string | undefined;
+  private readonly defaultModel: string;
+  private readonly clientCache = new Map<string, OpenAI>();
   private readonly contextAssembler: ContextAssembler | undefined;
   private readonly toolProvider: ModelToolProvider | undefined;
+  private readonly preferenceProvider: (() => Promise<UserPreferences>) | undefined;
+  private readonly providerResolver: (() => Promise<ResolvedModelProviderConfig | null>) | undefined;
 
   constructor(options: OpenAIModelClientOptions) {
-    this.client = new OpenAI({
-      apiKey: options.apiKey,
-      ...(options.baseURL ? { baseURL: options.baseURL } : {})
-    });
-    this.model = options.model ?? process.env["SCC_MODEL"] ?? "gpt-5.4-mini";
+    this.apiKey = options.apiKey ?? "";
+    this.defaultBaseURL = options.baseURL;
+    this.defaultModel = options.model ?? process.env["SCC_MODEL"] ?? "gpt-5.4-mini";
     this.contextAssembler = options.contextAssembler;
     this.toolProvider = options.toolProvider;
+    this.preferenceProvider = options.preferenceProvider;
+    this.providerResolver = options.providerResolver;
   }
 
   async next(task: TaskDetail, stream?: ModelStreamHandlers): Promise<ModelTurn> {
@@ -50,9 +64,21 @@ export class OpenAIModelClient implements ModelClient {
 
   private async nextWithSkillRetries(task: TaskDetail, skillRetryCount: number, stream?: ModelStreamHandlers): Promise<ModelTurn> {
     const context = this.contextAssembler ? await this.contextAssembler.assemble(task) : null;
+    const preferences = await this.preferenceProvider?.();
     const dynamicTools = (await this.toolProvider?.listModelTools()) ?? [];
-    const response = await this.client.chat.completions.create({
-      model: this.model,
+    const provider = await this.providerResolver?.();
+    if (provider?.protocol === "anthropic_messages") return this.nextAnthropic(task, context, provider, dynamicTools, stream);
+    if (provider?.protocol === "gemini") return this.nextGemini(task, context, provider, dynamicTools, stream);
+
+    const model = provider?.model || preferences?.defaultModel?.trim() || this.defaultModel;
+    const baseURL = normalizeBaseURL(provider?.baseURL || preferences?.providerBaseUrl?.trim() || this.defaultBaseURL);
+    const apiKey = provider?.apiKey || this.apiKey;
+    if (!apiKey) {
+      return { kind: "final", message: "No model provider is configured. Add a model provider with an API key in Settings." };
+    }
+    const client = this.clientFor(baseURL, apiKey);
+    const response = await client.chat.completions.create({
+      model,
       messages: [
         { role: "system", content: context?.systemPrompt ?? fallbackInstructions() },
         { role: "user", content: context?.input ?? buildInput(task) }
@@ -86,6 +112,75 @@ export class OpenAIModelClient implements ModelClient {
       message: content || "I could not produce a result from the model response.",
       ...(stream?.streamId ? { streamId: stream.streamId } : {})
     };
+  }
+
+  private async nextAnthropic(
+    task: TaskDetail,
+    context: Awaited<ReturnType<ContextAssembler["assemble"]>> | null,
+    provider: ResolvedModelProviderConfig,
+    dynamicTools: ModelToolDefinition[],
+    stream?: ModelStreamHandlers
+  ): Promise<ModelTurn> {
+    const response = await fetch(`${provider.baseURL || "https://api.anthropic.com"}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": provider.apiKey,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        max_tokens: 4096,
+        system: context?.systemPrompt ?? fallbackInstructions(),
+        messages: [{ role: "user", content: context?.input ?? buildInput(task) }],
+        tools: [...toolDefinitions(), ...dynamicTools].map(toAnthropicTool)
+      })
+    });
+    if (!response.ok) throw new Error(await response.text());
+    const payload = (await response.json()) as Record<string, unknown>;
+    const parts = Array.isArray(payload["content"]) ? payload["content"] : [];
+    const text = parts.map(extractText).filter(Boolean).join("\n").trim();
+    if (text) await stream?.onAssistantDelta(text);
+    const calls = parts.map(toAnthropicToolCall).filter((call): call is ToolCall => Boolean(call));
+    return calls.length > 0 ? { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}) } : { kind: "final", message: text || "No response returned.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+
+  private async nextGemini(
+    task: TaskDetail,
+    context: Awaited<ReturnType<ContextAssembler["assemble"]>> | null,
+    provider: ResolvedModelProviderConfig,
+    dynamicTools: ModelToolDefinition[],
+    stream?: ModelStreamHandlers
+  ): Promise<ModelTurn> {
+    const base = provider.baseURL || "https://generativelanguage.googleapis.com/v1beta";
+    const response = await fetch(`${base}/models/${encodeURIComponent(provider.model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: context?.systemPrompt ?? fallbackInstructions() }] },
+        contents: [{ role: "user", parts: [{ text: context?.input ?? buildInput(task) }] }],
+        tools: [{ functionDeclarations: [...toolDefinitions(), ...dynamicTools].map(toGeminiTool) }]
+      })
+    });
+    if (!response.ok) throw new Error(await response.text());
+    const payload = (await response.json()) as Record<string, unknown>;
+    const parts = geminiParts(payload);
+    const text = parts.map(extractText).filter(Boolean).join("\n").trim();
+    if (text) await stream?.onAssistantDelta(text);
+    const calls = parts.map(toGeminiToolCall).filter((call): call is ToolCall => Boolean(call));
+    return calls.length > 0 ? { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}) } : { kind: "final", message: text || "No response returned.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+
+  private clientFor(baseURL: string | undefined, apiKey: string): OpenAI {
+    const key = `${baseURL || "__default__"}:${apiKey.slice(-8)}`;
+    const cached = this.clientCache.get(key);
+    if (cached) return cached;
+    const client = new OpenAI({
+      apiKey,
+      ...(baseURL ? { baseURL } : {})
+    });
+    this.clientCache.set(key, client);
+    return client;
   }
 }
 
@@ -142,19 +237,26 @@ async function consumeChatCompletionStream(
 }
 
 export function createModelClientFromEnvironment(
-  options: { contextAssembler?: ContextAssembler; toolProvider?: ModelToolProvider } = {}
+  options: {
+    contextAssembler?: ContextAssembler;
+    toolProvider?: ModelToolProvider;
+    preferenceProvider?: (() => Promise<UserPreferences>) | undefined;
+    providerResolver?: (() => Promise<ResolvedModelProviderConfig | null>) | undefined;
+  } = {}
 ): ModelClient {
   if (process.env["SCC_TEST_TOOL_COMMAND"]) {
     return new ConfiguredToolModelClient(process.env["SCC_TEST_TOOL_COMMAND"]);
   }
   const config = loadOpenAiConfig();
-  return config.apiKey
+  return config.apiKey || options.providerResolver
     ? new OpenAIModelClient({
-        apiKey: config.apiKey,
+        ...(config.apiKey ? { apiKey: config.apiKey } : {}),
         ...(config.baseURL ? { baseURL: config.baseURL } : {}),
         ...(config.model ? { model: config.model } : {}),
         ...(options.contextAssembler ? { contextAssembler: options.contextAssembler } : {}),
-        ...(options.toolProvider ? { toolProvider: options.toolProvider } : {})
+        ...(options.toolProvider ? { toolProvider: options.toolProvider } : {}),
+        ...(options.preferenceProvider ? { preferenceProvider: options.preferenceProvider } : {}),
+        ...(options.providerResolver ? { providerResolver: options.providerResolver } : {})
       })
     : new FallbackModelClient();
 }
@@ -286,6 +388,12 @@ function cleanHeading(line: string): string {
   return line.replace(/^#+\s*/, "").trim();
 }
 
+function normalizeBaseURL(value?: string): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.replace(/\/chat\/completions\/?$/i, "");
+}
+
 function normalizeProviderName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
@@ -373,7 +481,7 @@ function toolDefinitions(): ModelToolDefinition[] {
         description: "Request a local shell command. The application classifies risk and may ask the user before running it.",
         parameters: strictObject({
           command: { type: "string", description: "The command to run. Prefer read-only observation unless the user asked for changes." },
-          cwd: { type: "string", description: "Workspace-relative working directory. Defaults to the workspace root." }
+          cwd: { type: "string", description: "Working directory. Defaults to the project root." }
         }, ["command"])
       }
     },
@@ -381,7 +489,7 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "read_file",
-        description: "Read workspace file content with optional 1-based line range. Use this instead of run_command for file reads. If the path is uncertain, call list_files or search_files first.",
+        description: "Read project file content with optional 1-based line range. Use this instead of run_command for file reads. If the path is uncertain, call list_files or search_files first.",
         parameters: strictObject({
           path: { type: "string" },
           offset: { type: "number", description: "Start line, default 1" },
@@ -393,7 +501,7 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "edit_file",
-        description: "Edit a workspace file by line ranges. Include expectedHash from read_file when available.",
+        description: "Edit a project file by line ranges. Include expectedHash from read_file when available.",
         parameters: {
           type: "object",
           additionalProperties: false,
@@ -422,10 +530,10 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "search_files",
-        description: "Search workspace file paths and text content.",
+        description: "Search project file paths and text content.",
         parameters: strictObject({
           query: { type: "string" },
-          path: { type: "string", description: "Directory to search, default workspace root" }
+          path: { type: "string", description: "Directory to search, default project root" }
         }, ["query"])
       }
     },
@@ -453,12 +561,55 @@ function toolDefinitions(): ModelToolDefinition[] {
   ];
 }
 
+function toAnthropicTool(tool: ModelToolDefinition): Record<string, unknown> {
+  return {
+    name: tool.function.name,
+    description: tool.function.description ?? "",
+    input_schema: tool.function.parameters
+  };
+}
+
+function toAnthropicToolCall(part: unknown): ToolCall | null {
+  if (!isRecord(part) || part["type"] !== "tool_use") return null;
+  return {
+    id: typeof part["id"] === "string" ? part["id"] : createId("tool_call"),
+    toolName: String(part["name"] ?? "unknown_tool"),
+    args: isRecord(part["input"]) ? part["input"] : {}
+  };
+}
+
+function toGeminiTool(tool: ModelToolDefinition): Record<string, unknown> {
+  return {
+    name: tool.function.name,
+    description: tool.function.description ?? "",
+    parameters: tool.function.parameters
+  };
+}
+
+function geminiParts(payload: Record<string, unknown>): unknown[] {
+  const candidates = Array.isArray(payload["candidates"]) ? payload["candidates"] : [];
+  const first = candidates.find(isRecord);
+  if (!first || !isRecord(first["content"]) || !Array.isArray(first["content"]["parts"])) return [];
+  return first["content"]["parts"];
+}
+
+function toGeminiToolCall(part: unknown): ToolCall | null {
+  if (!isRecord(part) || !isRecord(part["functionCall"])) return null;
+  const call = part["functionCall"];
+  return {
+    id: createId("tool_call"),
+    toolName: String(call["name"] ?? "unknown_tool"),
+    args: isRecord(call["args"]) ? call["args"] : {}
+  };
+}
+
 function strictObject(properties: Record<string, unknown>, required: string[]): Record<string, unknown> {
   return { type: "object", additionalProperties: false, properties, required };
 }
 
 function extractText(content: unknown): string {
   if (typeof content === "string") return content;
+  if (isRecord(content) && typeof content["text"] === "string") return content["text"];
   if (!Array.isArray(content)) return "";
   return content
     .map((part) => {

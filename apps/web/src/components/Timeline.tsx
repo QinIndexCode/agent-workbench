@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { ApprovalDecision, TaskDetail, TaskEvent, ToolApproval } from "@scc/shared";
 import { getUiCopy } from "../i18n.js";
 import { ApprovalCard } from "./ApprovalCard.js";
@@ -26,6 +26,7 @@ export function Timeline({
   task: TaskDetail | null;
   onApprovalDecision: (approvalId: string, decision: ApprovalDecision) => void;
 }) {
+  const timelineRef = useRef<HTMLDivElement>(null);
   const items = useMemo(
     () =>
       buildTimelineItems(
@@ -38,13 +39,24 @@ export function Timeline({
       ),
     [task]
   );
+  const lastEventId = task?.events[task.events.length - 1]?.id ?? "empty";
+
+  useEffect(() => {
+    const node = timelineRef.current;
+    if (!node) return;
+    if (typeof node.scrollTo === "function") {
+      node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
+    } else {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [task?.id, lastEventId, items.length]);
 
   if (!task) return <div className="empty">{getUiCopy(language).thread.startGoal}</div>;
 
   return (
-    <div className="timeline">
+    <div className="timeline" ref={timelineRef}>
       {items.map((item) => (
-        <TimelineEvent item={item} key={item.key} approvals={task.approvals} onApprovalDecision={onApprovalDecision} />
+        <TimelineEvent item={item} key={item.key} approvals={task.approvals} language={language ?? null} onApprovalDecision={onApprovalDecision} />
       ))}
     </div>
   );
@@ -57,18 +69,21 @@ type TimelineItem =
 function TimelineEvent({
   item,
   approvals,
+  language,
   onApprovalDecision
 }: {
   item: TimelineItem;
   approvals: ToolApproval[];
+  language?: string | null;
   onApprovalDecision: (approvalId: string, decision: ApprovalDecision) => void;
 }) {
+  const zh = language === "zh-CN";
   if (item.kind === "stream") {
     if (item.type === "thinking_delta") {
       return (
         <article className="event thinking_delta">
           <details>
-            <summary>Thinking</summary>
+            <summary>{zh ? "思考" : "Thinking"}</summary>
             <MarkdownText content={item.summary} />
           </details>
         </article>
@@ -76,7 +91,7 @@ function TimelineEvent({
     }
     return (
       <article className="event assistant_delta" aria-live="polite">
-        <small>assistant streaming</small>
+        <small>{zh ? "assistant 流式输出" : "assistant streaming"}</small>
         <MarkdownText content={item.summary} />
       </article>
     );
@@ -97,7 +112,7 @@ function TimelineEvent({
     if (!approval) return null;
     return (
       <article className="event approval_pending">
-        <ApprovalCard approval={approval} onDecision={(decision) => onApprovalDecision(approval.id, decision)} />
+        <ApprovalCard approval={approval} language={language ?? null} onDecision={(decision) => onApprovalDecision(approval.id, decision)} />
       </article>
     );
   }
@@ -109,13 +124,13 @@ function TimelineEvent({
     const ok = Boolean(event.payload["ok"] ?? false);
     return (
       <article className="event tool_result">
-        <small>{ok ? "tool result" : "tool error"} · {toolName}</small>
+        <small>{ok ? (zh ? "工具结果" : "tool result") : (zh ? "工具错误" : "tool error")} · {toolName}</small>
         <MarkdownText content={parsed.summary || event.summary} />
         {parsed.rawOutputRef ? <code className="rawRef">{parsed.rawOutputRef}</code> : null}
         <details className="toolOutput">
-          <summary>View raw output</summary>
+          <summary>{zh ? "查看原始输出" : "View raw output"}</summary>
           <button className="copyOutputButton" onClick={() => void navigator.clipboard?.writeText(output)} type="button">
-            Copy raw
+            {zh ? "复制原始输出" : "Copy raw"}
           </button>
           <pre>{parsed.display.slice(0, 8000)}</pre>
         </details>

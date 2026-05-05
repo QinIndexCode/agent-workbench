@@ -2,6 +2,13 @@ import type {
   ApprovalDecision,
   ExperienceRecord,
   GlobalPermissionGrant,
+  KnowledgeCreateRequest,
+  KnowledgeItem,
+  KnowledgePatchRequest,
+  KnowledgeUploadRequest,
+  ModelProviderCreateRequest,
+  ModelProviderPatchRequest,
+  ModelProviderRecord,
   PatternRecord,
   PreferencesPatch,
   ProjectMemory,
@@ -37,6 +44,7 @@ import {
 import { FallbackModelClient, type ModelClient } from "./fallback-model.js";
 import { createId, nowIso } from "./ids.js";
 import { PermissionEngine, type PermissionState, type RiskAssessment } from "./permission-engine.js";
+import { LocalSecretBox, maskSecret } from "./secrets.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
 import { ShellToolExecutor, type ToolExecutor } from "./tools.js";
 
@@ -62,6 +70,7 @@ export class AgentWorkbench {
   private readonly toolRiskProvider: ToolRiskProvider | undefined;
   private readonly onEvent: ((event: TaskEvent) => void) | undefined;
   private readonly permissions = new PermissionEngine();
+  private readonly secretBox = new LocalSecretBox();
   private readonly permissionState = new Map<string, PermissionState>();
   private readonly taskQueues = new Map<string, Promise<void>>();
   private readonly runningToolControllers = new Map<string, AbortController>();
@@ -76,12 +85,25 @@ export class AgentWorkbench {
   }
 
   async createTask(goal: string, title = goal.slice(0, 72)): Promise<TaskDetail> {
+    const task = await this.initializeTask(goal, title);
+    return this.runTaskExclusive(task.id, () => this.step(task.id));
+  }
+
+  async startTask(goal: string, title = goal.slice(0, 72)): Promise<TaskDetail> {
+    const task = await this.initializeTask(goal, title);
+    void this.runTaskExclusive(task.id, () => this.step(task.id)).catch((error) => {
+      void this.failBackgroundRun(task.id, error);
+    });
+    return task;
+  }
+
+  private async initializeTask(goal: string, title: string): Promise<TaskDetail> {
     const task = this.emptyTask(title);
     this.addEvent(task, "task_created", "Task created");
     this.addEvent(task, "user_message", goal);
     this.setStatus(task, "running");
     await this.store.saveTask(task);
-    return this.runTaskExclusive(task.id, () => this.step(task.id));
+    return task;
   }
 
   async listTasks(): Promise<TaskDetail[]> {
@@ -431,6 +453,76 @@ export class AgentWorkbench {
     return next;
   }
 
+  async listModelProviders(): Promise<ModelProviderRecord[]> {
+    return this.store.listModelProviders();
+  }
+
+  async createModelProvider(input: ModelProviderCreateRequest): Promise<ModelProviderRecord> {
+    const now = nowIso();
+    const id = createId("provider");
+    const secret = input.apiKey ? this.secretBox.encrypt(input.apiKey) : undefined;
+    if (secret) await this.store.saveModelProviderSecret(id, secret);
+    const provider: ModelProviderRecord = {
+      id,
+      vendor: input.vendor,
+      label: input.label,
+      protocol: input.protocol,
+      baseUrl: input.baseUrl,
+      ...(secret ? { apiKeyRef: { secretId: id, ...maskSecret(input.apiKey!), updatedAt: secret.updatedAt } } : {}),
+      models: input.models,
+      defaultModelId: input.defaultModelId,
+      enabled: input.enabled,
+      createdAt: now,
+      updatedAt: now
+    };
+    await this.store.saveModelProvider(provider);
+    if (input.makeActive) await this.setActiveProvider(provider);
+    return provider;
+  }
+
+  async updateModelProvider(providerId: string, input: ModelProviderPatchRequest): Promise<ModelProviderRecord> {
+    const current = await this.store.getModelProvider(providerId);
+    if (!current) throw new Error(`Model provider not found: ${providerId}`);
+    const models = input.models ?? current.models;
+    const defaultModelId = input.defaultModelId ?? current.defaultModelId;
+    if (!models.some((model) => model.id === defaultModelId)) throw new Error("defaultModelId must match a configured model.");
+    let apiKeyRef = current.apiKeyRef;
+    if (input.clearApiKey) {
+      await this.store.deleteModelProviderSecret(providerId);
+      apiKeyRef = undefined;
+    }
+    if (input.apiKey) {
+      const secret = this.secretBox.encrypt(input.apiKey);
+      await this.store.saveModelProviderSecret(providerId, secret);
+      apiKeyRef = { secretId: providerId, ...maskSecret(input.apiKey), updatedAt: secret.updatedAt };
+    }
+    const updated: ModelProviderRecord = {
+      ...current,
+      ...(input.vendor ? { vendor: input.vendor } : {}),
+      ...(input.label ? { label: input.label } : {}),
+      ...(input.protocol ? { protocol: input.protocol } : {}),
+      ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
+      ...(apiKeyRef ? { apiKeyRef } : {}),
+      models,
+      defaultModelId,
+      ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+      updatedAt: nowIso()
+    };
+    if (!apiKeyRef) delete updated.apiKeyRef;
+    await this.store.saveModelProvider(updated);
+    if (input.makeActive) await this.setActiveProvider(updated);
+    return updated;
+  }
+
+  async deleteModelProvider(providerId: string): Promise<void> {
+    await this.store.deleteModelProvider(providerId);
+    await this.store.deleteModelProviderSecret(providerId);
+    const preferences = await this.store.getPreferences();
+    if (preferences.activeModelProviderId === providerId) {
+      await this.updatePreferences({ activeModelProviderId: "" });
+    }
+  }
+
   async runReflection(): Promise<ReflectionSession> {
     const result = reflectMemories(await this.store.listTaskMemories(), await this.store.listPatterns());
     await this.store.saveReflectionSession(result.session);
@@ -465,6 +557,71 @@ export class AgentWorkbench {
 
   async deleteProjectMemory(id: string): Promise<void> {
     await this.store.deleteProjectMemory(id);
+  }
+
+  async listKnowledgeItems(projectId?: string): Promise<KnowledgeItem[]> {
+    return this.store.listKnowledgeItems(projectId);
+  }
+
+  async createKnowledgeItem(input: KnowledgeCreateRequest): Promise<KnowledgeItem> {
+    const now = nowIso();
+    const item: KnowledgeItem = {
+      id: createId("knowledge"),
+      projectId: input.projectId,
+      kind: input.kind,
+      title: input.title,
+      content: input.content,
+      tags: cleanTags(input.tags),
+      ...(input.fileName ? { fileName: input.fileName } : {}),
+      ...(input.mimeType ? { mimeType: input.mimeType } : {}),
+      ...(input.size !== undefined ? { size: input.size } : {}),
+      ...(input.sourceUri ? { sourceUri: input.sourceUri } : {}),
+      createdAt: now,
+      updatedAt: now
+    };
+    await this.store.saveKnowledgeItem(item);
+    return item;
+  }
+
+  async uploadKnowledgeFile(input: KnowledgeUploadRequest): Promise<KnowledgeItem> {
+    return this.createKnowledgeItem({
+      projectId: input.projectId,
+      kind: "file",
+      title: input.title ?? input.fileName,
+      content: input.content,
+      tags: input.tags,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      size: input.size
+    });
+  }
+
+  async updateKnowledgeItem(id: string, input: KnowledgePatchRequest): Promise<KnowledgeItem> {
+    const current = await this.store.getKnowledgeItem(id);
+    if (!current) throw new Error(`Knowledge item not found: ${id}`);
+    const updated: KnowledgeItem = {
+      ...current,
+      ...(input.title ? { title: input.title } : {}),
+      ...(input.content ? { content: input.content } : {}),
+      ...(input.tags ? { tags: cleanTags(input.tags) } : {}),
+      ...(input.sourceUri !== undefined ? { sourceUri: input.sourceUri } : {}),
+      updatedAt: nowIso()
+    };
+    await this.store.saveKnowledgeItem(updated);
+    return updated;
+  }
+
+  async deleteKnowledgeItem(id: string): Promise<void> {
+    await this.store.deleteKnowledgeItem(id);
+  }
+
+  private async setActiveProvider(provider: ModelProviderRecord): Promise<void> {
+    await this.updatePreferences({
+      activeModelProviderId: provider.id,
+      defaultModel: provider.defaultModelId,
+      providerBaseUrl: provider.baseUrl,
+      maxTokensPerRequest: provider.models.find((model) => model.id === provider.defaultModelId)?.contextWindow
+    });
   }
 
   async recoverInterruptedTasks(): Promise<void> {
@@ -598,6 +755,16 @@ export class AgentWorkbench {
     return saved;
   }
 
+  private async failBackgroundRun(taskId: string, error: unknown): Promise<void> {
+    const task = await this.store.getTask(taskId);
+    if (!task || task.status !== "running") return;
+    const message = sanitizeProviderError(error instanceof Error ? error.message : String(error));
+    this.addEvent(task, "assistant_message", `Runtime failed: ${message}`);
+    this.setStatus(task, "failed");
+    await this.updateLoadedSkillStats(task, false);
+    await this.store.saveTask(task);
+  }
+
   private emptyTask(title: string): TaskDetail {
     const id = createId("task");
     const now = nowIso();
@@ -670,6 +837,7 @@ export class AgentWorkbench {
   private addApprovalPendingEvent(task: TaskDetail, approval: ToolApproval): void {
     this.addEvent(task, "approval_pending", `${approval.riskCategory}: ${approval.toolCall.toolName}`, {
       approvalId: approval.id,
+      approval,
       toolName: approval.toolCall.toolName,
       args: approval.toolCall.args,
       riskCategory: approval.riskCategory,
@@ -812,4 +980,8 @@ function previewArgs(args: Record<string, unknown>): string {
   const raw = JSON.stringify(args, null, 2);
   if (raw.length <= 1600) return raw;
   return `${raw.slice(0, 1600)}\n... args truncated ...`;
+}
+
+function cleanTags(tags: string[]): string[] {
+  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 32);
 }

@@ -2,15 +2,18 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GlobalPermissionGrant, SkillRecord, TaskDetail, ToolApproval, UserPreferences } from "@scc/shared";
+import type { GlobalPermissionGrant, KnowledgeItem, ModelProviderRecord, SkillRecord, TaskDetail, ToolApproval, UserPreferences } from "@scc/shared";
 import { App } from "./App.js";
 import { ApprovalCard } from "./components/ApprovalCard.js";
 import { Composer } from "./components/Composer.js";
 import { CompactList, LearningPanel } from "./components/LearningPanel.js";
 import { McpPanel } from "./components/McpPanel.js";
+import { KnowledgePanel } from "./components/KnowledgePanel.js";
+import { ModelProvidersPanel } from "./components/ModelProvidersPanel.js";
 import { PermissionsPanel } from "./components/PermissionsPanel.js";
 import { SkillPanel } from "./components/SkillPanel.js";
 import { TaskList } from "./components/TaskList.js";
+import { TaskThread } from "./components/TaskThread.js";
 import { Timeline } from "./components/Timeline.js";
 
 afterEach(() => {
@@ -18,18 +21,51 @@ afterEach(() => {
 });
 
 describe("Composer", () => {
-  it("uses a single adaptive button for send and stop", () => {
+  it("uses one primary adaptive button for send and stop", () => {
     const onSubmit = vi.fn();
     const onStop = vi.fn();
     render(<Composer busy={false} running={true} mode="guidance" onSubmit={onSubmit} onStop={onStop} />);
 
-    expect(screen.getAllByRole("button")).toHaveLength(1);
     fireEvent.click(screen.getByLabelText("Stop"));
     expect(onStop).toHaveBeenCalledOnce();
 
     fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "new guidance" } });
     fireEvent.click(screen.getByLabelText("Send"));
     expect(onSubmit).toHaveBeenCalledWith("new guidance");
+  });
+
+  it("lets users switch models and quick global permissions from the composer", () => {
+    const onModelChange = vi.fn();
+    const onGrant = vi.fn();
+    render(
+      <Composer
+        busy={false}
+        running={false}
+        mode="new_task"
+        modelValue="mimo-v2.5"
+        modelOptions={[
+          { label: "Mimo v2.5", value: "mimo-v2.5" },
+          { label: "Mimo v2.5 Pro", value: "mimo-v2.5-pro" }
+        ]}
+        permissionPreset="ask"
+        permissionScopeLabel="Ask"
+        onModelChange={onModelChange}
+        onPermissionPresetChange={onGrant}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText("Choose model"));
+    expect(screen.queryByText("mimo-v2.5-pro")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Mimo v2.5 Pro"));
+    expect(onModelChange).toHaveBeenCalledWith("mimo-v2.5-pro");
+    fireEvent.click(screen.getByLabelText("Choose permission scope"));
+    fireEvent.click(screen.getByText("Read only"));
+    expect(onGrant).toHaveBeenCalledWith("read_only");
+    fireEvent.click(screen.getByLabelText("Choose permission scope"));
+    fireEvent.click(screen.getByText("All"));
+    expect(onGrant).toHaveBeenCalledWith("all");
   });
 
   it("uses Enter to submit and Shift+Enter for a newline", () => {
@@ -83,22 +119,59 @@ describe("Workbench components", () => {
 
   it("renders task list status as text", () => {
     const onSelect = vi.fn();
+    const onOpenLibrary = vi.fn();
     render(
       <TaskList
         activeView="tasks"
+        engineStatus="running"
         open={false}
         tasks={[task]}
         selectedId="task_1"
         onClose={vi.fn()}
         onDelete={vi.fn()}
+        onOpenDocs={vi.fn()}
+        onOpenLibrary={onOpenLibrary}
         onNewTask={vi.fn()}
         onOpenSettings={vi.fn()}
+        onOpenSupport={vi.fn()}
         onSelect={onSelect}
       />
     );
     expect(screen.getByText("waiting approval")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Check host"));
     expect(onSelect).toHaveBeenCalledWith("task_1");
+    fireEvent.click(screen.getByText("Library"));
+    expect(onOpenLibrary).toHaveBeenCalledOnce();
+  });
+
+  it("renders the new task hero and fills the composer from suggestions", () => {
+    const onSubmit = vi.fn();
+    render(
+      <TaskThread
+        task={null}
+        busy={false}
+        error={null}
+        language="en-US"
+        engineStatus="running"
+        preferences={null}
+        modelLabel="mimo-v2.5"
+        modelOptions={[{ label: "Mimo v2.5", value: "mimo-v2.5" }]}
+        permissionPreset="ask"
+        permissionScopeLabel="Approval"
+        onModelChange={vi.fn()}
+        onOpenConnect={vi.fn()}
+        onPermissionPresetChange={vi.fn()}
+        onOpenTasks={vi.fn()}
+        onSubmit={onSubmit}
+        onStop={vi.fn()}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Start a new task")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Inspect system load"));
+    expect(screen.getByLabelText("Task input")).toHaveValue("Show me which desktop software is running and which processes use the most CPU and memory");
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("confirms task deletion and exposes learning cleanup choices", async () => {
@@ -106,13 +179,17 @@ describe("Workbench components", () => {
     render(
       <TaskList
         activeView="tasks"
+        engineStatus="running"
         open={false}
         tasks={[task]}
         selectedId="task_1"
         onClose={vi.fn()}
         onDelete={onDelete}
+        onOpenDocs={vi.fn()}
+        onOpenLibrary={vi.fn()}
         onNewTask={vi.fn()}
         onOpenSettings={vi.fn()}
+        onOpenSupport={vi.fn()}
         onSelect={vi.fn()}
       />
     );
@@ -271,7 +348,11 @@ describe("Workbench components", () => {
       reason: "test grant"
     };
     const preferences: UserPreferences = {
+      llmProvider: "mimo",
       defaultModel: "mimo-v2.5",
+      providerBaseUrl: "",
+      contextMode: "auto",
+      customModelContextWindow: 128000,
       maxTokensPerRequest: 128000,
       autoApprove: "none",
       showThinking: true,
@@ -286,7 +367,7 @@ describe("Workbench components", () => {
       updatedAt: new Date().toISOString()
     };
 
-    render(
+    const { rerender } = render(
       <PermissionsPanel
         language="zh-CN"
         permissions={[grant]}
@@ -300,8 +381,118 @@ describe("Workbench components", () => {
     expect(screen.getByRole("heading", { name: "权限与偏好" })).toBeInTheDocument();
     fireEvent.click(screen.getByText("撤销"));
     expect(onRevoke).toHaveBeenCalledWith("host_observation");
+
+    rerender(
+      <PermissionsPanel
+        language="zh-CN"
+        permissions={[grant]}
+        preferences={preferences}
+        preferencesOnly={true}
+        onGrant={onGrant}
+        onRevoke={onRevoke}
+        onPreference={onPreference}
+      />
+    );
     fireEvent.change(screen.getByLabelText("界面与回复语言"), { target: { value: "en-US" } });
-    expect(onPreference).toHaveBeenCalledWith({ language: "en-US" });
+    expect(onPreference).toHaveBeenCalledWith(expect.objectContaining({ language: "en-US" }));
+  });
+
+  it("manages model providers through a compact modal", async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const onDelete = vi.fn().mockResolvedValue(undefined);
+    const provider: ModelProviderRecord = {
+      id: "provider_1",
+      vendor: "mimo",
+      label: "Mimo",
+      protocol: "openai_compatible",
+      baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+      models: [
+        {
+          id: "mimo-v2.5",
+          label: "mimo-v2.5",
+          contextWindow: 128000,
+          supportsTools: true,
+          supportsThinking: true
+        }
+      ],
+      defaultModelId: "mimo-v2.5",
+      enabled: true,
+      apiKeyRef: { secretId: "model_provider_provider_1", last4: "1234", updatedAt: new Date().toISOString() },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    render(
+      <ModelProvidersPanel
+        activeProviderId="provider_1"
+        language="en-US"
+        providers={[provider]}
+        onCreate={onCreate}
+        onDelete={onDelete}
+        onUpdate={onUpdate}
+      />
+    );
+
+    expect(screen.getByText("Mimo")).toBeInTheDocument();
+    expect(screen.getByText("mimo-v2.5")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Edit provider"));
+    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "test-key-123456" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() =>
+      expect(onUpdate).toHaveBeenCalledWith(
+        "provider_1",
+        expect.objectContaining({
+          apiKey: "test-key-123456",
+          defaultModelId: "mimo-v2.5"
+        })
+      )
+    );
+
+    fireEvent.click(screen.getByLabelText("Delete provider"));
+    expect(onDelete).toHaveBeenCalledWith("provider_1");
+  });
+
+  it("manages knowledge notes with markdown preview", async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const onDelete = vi.fn().mockResolvedValue(undefined);
+    const item: KnowledgeItem = {
+      id: "knowledge_1",
+      projectId: "default",
+      kind: "memory",
+      title: "Runtime notes",
+      content: "## Runtime\n\n- Use approvals",
+      tags: ["runtime", "approval"],
+      fileName: undefined,
+      mimeType: "text/markdown",
+      size: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    render(
+      <KnowledgePanel
+        items={[item]}
+        language="en-US"
+        onCreate={onCreate}
+        onDelete={onDelete}
+        onUpdate={onUpdate}
+        onUpload={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Runtime notes")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Runtime" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Updated notes" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith("knowledge_1", expect.objectContaining({ title: "Updated notes" })));
+
+    fireEvent.click(screen.getByText("New item"));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Fresh note" } });
+    fireEvent.change(screen.getByLabelText("Content"), { target: { value: "New body" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ title: "Fresh note", kind: "memory" })));
   });
 
   it("renders compact governance rows", () => {
@@ -389,7 +580,7 @@ describe("Workbench components", () => {
     expect(onConnect).toHaveBeenCalledWith("mock");
   });
 
-  it("creates a task, resolves an approval, and starts a new task from a completed thread", async () => {
+  it("creates a task, resolves an approval, and continues a completed thread", async () => {
     const approval: ToolApproval = {
       id: "approval_1",
       taskId: "task_1",
@@ -432,28 +623,8 @@ describe("Workbench components", () => {
         }
       ]
     };
-    const secondTask: TaskDetail = {
-      ...task,
-      id: "task_2",
-      title: "Second task",
-      status: "running",
-      events: [
-        {
-          id: "event_second",
-          taskId: "task_2",
-          type: "user_message",
-          createdAt: new Date().toISOString(),
-          summary: "second goal",
-          payload: {}
-        }
-      ]
-    };
     let currentTasks: TaskDetail[] = [];
     const createTask = vi.fn((goal: string) => {
-      if (goal === "second goal") {
-        currentTasks = [secondTask, completed];
-        return secondTask;
-      }
       currentTasks = [created];
       return created;
     });
@@ -469,7 +640,6 @@ describe("Workbench components", () => {
         }
         if (url === "/api/tasks") return jsonResponse(currentTasks);
         if (url === "/api/tasks/task_1") return jsonResponse(currentTasks.find((item) => item.id === "task_1") ?? created);
-        if (url === "/api/tasks/task_2") return jsonResponse(currentTasks.find((item) => item.id === "task_2") ?? secondTask);
         if (
           url === "/api/experiences" ||
           url === "/api/task-memories" ||
@@ -481,13 +651,19 @@ describe("Workbench components", () => {
           url === "/api/reflections" ||
           url === "/api/project-memories" ||
           url === "/api/mcp/servers" ||
-          url === "/api/mcp/tools"
+          url === "/api/mcp/tools" ||
+          url === "/api/knowledge" ||
+          url === "/api/model-providers"
         ) {
           return jsonResponse([]);
         }
         if (url === "/api/preferences") {
           return jsonResponse({
+            llmProvider: "mimo",
             defaultModel: "gpt-5.4-mini",
+            providerBaseUrl: "",
+            contextMode: "auto",
+            customModelContextWindow: 128000,
             maxTokensPerRequest: 128000,
             autoApprove: "none",
             showThinking: true,
@@ -515,7 +691,7 @@ describe("Workbench components", () => {
     );
 
     render(<App />);
-    expect(await screen.findByText("Start with a goal.")).toBeInTheDocument();
+    expect(await screen.findByText("Start a new task")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "check host" } });
     fireEvent.click(screen.getByLabelText("Send"));
 
@@ -525,8 +701,8 @@ describe("Workbench components", () => {
 
     fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "second goal" } });
     fireEvent.click(screen.getByLabelText("Send"));
-    await waitFor(() => expect(createTask).toHaveBeenCalledWith("second goal"));
-    expect(sendMessage).not.toHaveBeenCalled();
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith("/api/tasks/task_1/messages"));
+    expect(createTask).toHaveBeenCalledTimes(1);
   });
 
   it("moves governance surfaces into settings", async () => {
@@ -546,13 +722,19 @@ describe("Workbench components", () => {
           url === "/api/reflections" ||
           url === "/api/project-memories" ||
           url === "/api/mcp/servers" ||
-          url === "/api/mcp/tools"
+          url === "/api/mcp/tools" ||
+          url === "/api/knowledge" ||
+          url === "/api/model-providers"
         ) {
           return jsonResponse([]);
         }
         if (url === "/api/preferences") {
           return jsonResponse({
+            llmProvider: "mimo",
             defaultModel: "gpt-5.4-mini",
+            providerBaseUrl: "",
+            contextMode: "auto",
+            customModelContextWindow: 128000,
             maxTokensPerRequest: 128000,
             autoApprove: "none",
             showThinking: true,

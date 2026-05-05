@@ -3,11 +3,14 @@ import type { ApprovalDecision, ToolApproval } from "@scc/shared";
 
 export function ApprovalCard({
   approval,
+  language,
   onDecision
 }: {
   approval: ToolApproval;
+  language?: string | null;
   onDecision: (decision: ApprovalDecision) => void;
 }) {
+  const text = getApprovalCopy(language);
   const metadata = approval.metadata ?? {};
   const command = readMeta(metadata, "command") ?? String(approval.toolCall.args["command"] ?? "");
   const cwd = readMeta(metadata, "cwd") ?? String(approval.toolCall.args["cwd"] ?? "");
@@ -25,7 +28,7 @@ export function ApprovalCard({
           <Icon aria-hidden="true" size={18} strokeWidth={2.2} />
         </span>
         <div className="approvalTitle">
-          <small>{approval.riskCategory.replace("_", " ")}</small>
+          <small>{text.risks[approval.riskCategory] ?? approval.riskCategory.replace("_", " ")}</small>
           <h2>{displayName}</h2>
         </div>
       </div>
@@ -33,17 +36,17 @@ export function ApprovalCard({
       <dl className="approvalMeta">
         {serverId ? (
           <div>
-            <dt>Server</dt>
+            <dt>{text.server}</dt>
             <dd>{serverId}</dd>
           </div>
         ) : null}
         <div>
-          <dt>Tool</dt>
+          <dt>{text.tool}</dt>
           <dd>{toolName}</dd>
         </div>
         {cwd ? (
           <div>
-            <dt>CWD</dt>
+            <dt>{text.cwd}</dt>
             <dd>{cwd}</dd>
           </div>
         ) : null}
@@ -58,15 +61,15 @@ export function ApprovalCard({
         </pre>
       )}
       {isDestructive ? (
-        <p className="dangerText">Global approval will allow this destructive risk category without future prompts.</p>
+        <p className="dangerText">{text.destructiveGlobal}</p>
       ) : null}
       <div className="approvalActions">
-        <button onClick={() => onDecision("allow_once")}>Allow once</button>
-        <button onClick={() => onDecision("allow_for_task")}>Allow for this task</button>
+        <button onClick={() => onDecision("allow_once")}>{text.allowOnce}</button>
+        <button onClick={() => onDecision("allow_for_task")}>{text.allowTask}</button>
         <button className={isDestructive ? "dangerButton" : undefined} onClick={() => onDecision("allow_globally")}>
-          Allow globally
+          {text.allowGlobal}
         </button>
-        <button onClick={() => onDecision("deny")}>Deny</button>
+        <button onClick={() => onDecision("deny")}>{text.deny}</button>
       </div>
     </section>
   );
@@ -75,4 +78,26 @@ export function ApprovalCard({
 function readMeta(metadata: Record<string, unknown>, key: string): string | undefined {
   const value = metadata[key];
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function getApprovalCopy(language?: string | null) {
+  const zh = language === "zh-CN";
+  return {
+    server: zh ? "服务" : "Server",
+    tool: zh ? "工具" : "Tool",
+    cwd: zh ? "目录" : "CWD",
+    destructiveGlobal: zh ? "全局允许后，该高风险类别后续不会再弹出审批。" : "Global approval will allow this destructive risk category without future prompts.",
+    allowOnce: zh ? "允许一次" : "Allow once",
+    allowTask: zh ? "本任务允许" : "Allow for this task",
+    allowGlobal: zh ? "全局允许" : "Allow globally",
+    deny: zh ? "拒绝" : "Deny",
+    risks: {
+      host_observation: zh ? "主机观察" : "Host observation",
+      workspace_read: zh ? "读取文件" : "Read files",
+      workspace_write: zh ? "修改文件" : "Change files",
+      shell: zh ? "运行命令" : "Shell command",
+      network: zh ? "网络访问" : "Network access",
+      destructive: zh ? "高风险操作" : "Destructive action"
+    } as Record<string, string>
+  };
 }

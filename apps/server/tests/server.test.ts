@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore, McpRegistry } from "@scc/core";
-import type { ToolCall, ToolResult } from "@scc/shared";
+import type { TaskDetail, ToolCall, ToolResult } from "@scc/shared";
 import { createApp } from "../src/server.js";
 import { SqliteWorkbenchStore } from "../src/sqlite-store.js";
 
@@ -38,8 +38,9 @@ describe("server API", () => {
 
     expect(response.statusCode).toBe(201);
     const body = response.json();
-    expect(body.status).toBe("waiting_approval");
-    expect(body.approvals[0].riskCategory).toBe("host_observation");
+    expect(body.status).toBe("running");
+    const pending = await waitForTask(app, body.id, (task) => task.status === "waiting_approval");
+    expect(pending.approvals[0].riskCategory).toBe("host_observation");
     await app.close();
   });
 
@@ -72,7 +73,8 @@ describe("server API", () => {
       url: "/api/tasks",
       payload: { goal: "check running processes" }
     });
-    const created = createResponse.json();
+    const initial = createResponse.json();
+    const created = await waitForTask(app, initial.id, (task) => task.approvals.length > 0);
 
     expect((await app.inject("/api/tasks")).json()).toHaveLength(1);
     expect((await app.inject(`/api/tasks/${created.id}`)).json().id).toBe(created.id);
@@ -136,6 +138,34 @@ describe("server API", () => {
     expect((await app.inject("/api/skill-conflicts")).statusCode).toBe(200);
     expect((await app.inject("/api/preferences")).json().language).toBe("zh-CN");
 
+    const providerResponse = await app.inject({
+      method: "POST",
+      url: "/api/model-providers",
+      payload: {
+        vendor: "mimo",
+        label: "Mimo",
+        protocol: "openai_compatible",
+        baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+        apiKey: "test-key-local-1234",
+        models: [{ id: "mimo-v2.5", label: "mimo-v2.5", contextWindow: 128000, supportsTools: true, supportsThinking: true }],
+        defaultModelId: "mimo-v2.5",
+        enabled: true,
+        makeActive: true
+      }
+    });
+    expect(providerResponse.statusCode).toBe(201);
+    const provider = providerResponse.json();
+    expect(provider.apiKeyRef.last4).toBe("1234");
+    expect(JSON.stringify(provider)).not.toContain("test-key-local");
+    expect((await app.inject("/api/model-providers")).json()[0].defaultModelId).toBe("mimo-v2.5");
+
+    const providerPatch = await app.inject({
+      method: "PATCH",
+      url: `/api/model-providers/${provider.id}`,
+      payload: { enabled: false }
+    });
+    expect(providerPatch.json().enabled).toBe(false);
+
     const grantResponse = await app.inject({
       method: "POST",
       url: "/api/permissions/global",
@@ -154,6 +184,33 @@ describe("server API", () => {
     });
     expect(memoryResponse.statusCode).toBe(201);
     expect((await app.inject("/api/project-memories")).json()[0].title).toBe("Convention");
+
+    const knowledgeResponse = await app.inject({
+      method: "POST",
+      url: "/api/knowledge",
+      payload: { projectId: "default", kind: "memory", title: "Runtime note", content: "Use approvals.", tags: ["runtime"] }
+    });
+    expect(knowledgeResponse.statusCode).toBe(201);
+    const knowledge = knowledgeResponse.json();
+    expect((await app.inject("/api/knowledge")).json()[0].title).toBe("Runtime note");
+    expect(
+      (
+        await app.inject({
+          method: "PATCH",
+          url: `/api/knowledge/${knowledge.id}`,
+          payload: { tags: ["runtime", "permissions"] }
+        })
+      ).json().tags
+    ).toContain("permissions");
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/knowledge/upload",
+          payload: { projectId: "default", title: "notes.md", fileName: "notes.md", mimeType: "text/markdown", size: 8, content: "# Notes", tags: [] }
+        })
+      ).statusCode
+    ).toBe(201);
     await app.close();
   });
 
@@ -172,7 +229,8 @@ describe("server API", () => {
         payload: { goal: "check running processes" }
       })
     ).json();
-    const approval = created.approvals[0];
+    const pending = await waitForTask(app, created.id, (task) => task.approvals.length > 0);
+    const approval = pending.approvals[0];
     await app.inject({
       method: "POST",
       url: `/api/tasks/${created.id}/approvals/${approval.id}`,
@@ -246,6 +304,15 @@ describe("server API", () => {
     }
   });
 });
+
+async function waitForTask(app: Awaited<ReturnType<typeof createApp>>, taskId: string, predicate: (task: TaskDetail) => boolean): Promise<TaskDetail> {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const task = (await app.inject(`/api/tasks/${taskId}`)).json() as TaskDetail;
+    if (predicate(task)) return task;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for task ${taskId}`);
+}
 
 describe("SqliteWorkbenchStore", () => {
   it("persists task records", async () => {

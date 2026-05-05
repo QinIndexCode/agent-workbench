@@ -1,7 +1,9 @@
 import type {
   ExperienceRecord,
   GlobalPermissionGrant,
+  KnowledgeItem,
   McpServerConfig,
+  ModelProviderRecord,
   PatternRecord,
   ProjectMemory,
   ReflectionSession,
@@ -47,11 +49,30 @@ export interface WorkbenchStore {
   deleteGlobalPermission(riskCategory: RiskCategory): Promise<void>;
   getPreferences(): Promise<UserPreferences>;
   savePreferences(preferences: UserPreferences): Promise<void>;
+  saveModelProvider(record: ModelProviderRecord): Promise<void>;
+  getModelProvider(providerId: string): Promise<ModelProviderRecord | undefined>;
+  listModelProviders(): Promise<ModelProviderRecord[]>;
+  deleteModelProvider(providerId: string): Promise<void>;
+  saveModelProviderSecret(providerId: string, secret: EncryptedSecretValue): Promise<void>;
+  getModelProviderSecret(providerId: string): Promise<EncryptedSecretValue | undefined>;
+  deleteModelProviderSecret(providerId: string): Promise<void>;
   saveReflectionSession(session: ReflectionSession): Promise<void>;
   listReflectionSessions(): Promise<ReflectionSession[]>;
   saveProjectMemory(record: ProjectMemory): Promise<void>;
   listProjectMemories(projectId?: string): Promise<ProjectMemory[]>;
   deleteProjectMemory(id: string): Promise<void>;
+  saveKnowledgeItem(record: KnowledgeItem): Promise<void>;
+  getKnowledgeItem(id: string): Promise<KnowledgeItem | undefined>;
+  listKnowledgeItems(projectId?: string): Promise<KnowledgeItem[]>;
+  deleteKnowledgeItem(id: string): Promise<void>;
+}
+
+export interface EncryptedSecretValue {
+  algorithm: "aes-256-gcm";
+  iv: string;
+  authTag: string;
+  value: string;
+  updatedAt: string;
 }
 
 export class InMemoryWorkbenchStore implements WorkbenchStore {
@@ -63,8 +84,11 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
   private readonly skillConflicts = new Map<string, SkillConflict>();
   private readonly mcpServers = new Map<string, McpServerConfig>();
   private readonly globalPermissions = new Map<RiskCategory, GlobalPermissionGrant>();
+  private readonly modelProviders = new Map<string, ModelProviderRecord>();
+  private readonly modelProviderSecrets = new Map<string, EncryptedSecretValue>();
   private readonly reflectionSessions = new Map<string, ReflectionSession>();
   private readonly projectMemories = new Map<string, ProjectMemory>();
+  private readonly knowledgeItems = new Map<string, KnowledgeItem>();
   private preferences: UserPreferences | null = null;
 
   async saveTask(task: TaskDetail): Promise<void> {
@@ -182,6 +206,36 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
     this.preferences = clone(preferences);
   }
 
+  async saveModelProvider(record: ModelProviderRecord): Promise<void> {
+    this.modelProviders.set(record.id, clone(record));
+  }
+
+  async getModelProvider(providerId: string): Promise<ModelProviderRecord | undefined> {
+    const provider = this.modelProviders.get(providerId);
+    return provider ? clone(provider) : undefined;
+  }
+
+  async listModelProviders(): Promise<ModelProviderRecord[]> {
+    return [...this.modelProviders.values()].map((record) => clone(record)).sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  async deleteModelProvider(providerId: string): Promise<void> {
+    this.modelProviders.delete(providerId);
+  }
+
+  async saveModelProviderSecret(providerId: string, secret: EncryptedSecretValue): Promise<void> {
+    this.modelProviderSecrets.set(providerId, clone(secret));
+  }
+
+  async getModelProviderSecret(providerId: string): Promise<EncryptedSecretValue | undefined> {
+    const secret = this.modelProviderSecrets.get(providerId);
+    return secret ? clone(secret) : undefined;
+  }
+
+  async deleteModelProviderSecret(providerId: string): Promise<void> {
+    this.modelProviderSecrets.delete(providerId);
+  }
+
   async saveReflectionSession(session: ReflectionSession): Promise<void> {
     this.reflectionSessions.set(session.id, clone(session));
   }
@@ -203,6 +257,26 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
   async deleteProjectMemory(id: string): Promise<void> {
     this.projectMemories.delete(id);
   }
+
+  async saveKnowledgeItem(record: KnowledgeItem): Promise<void> {
+    this.knowledgeItems.set(record.id, clone(record));
+  }
+
+  async getKnowledgeItem(id: string): Promise<KnowledgeItem | undefined> {
+    const item = this.knowledgeItems.get(id);
+    return item ? clone(item) : undefined;
+  }
+
+  async listKnowledgeItems(projectId?: string): Promise<KnowledgeItem[]> {
+    return [...this.knowledgeItems.values()]
+      .filter((record) => !projectId || record.projectId === projectId)
+      .map((record) => clone(record))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async deleteKnowledgeItem(id: string): Promise<void> {
+    this.knowledgeItems.delete(id);
+  }
 }
 
 export function pendingApprovals(task: TaskDetail): ToolApproval[] {
@@ -211,7 +285,12 @@ export function pendingApprovals(task: TaskDetail): ToolApproval[] {
 
 export function defaultPreferences(): UserPreferences {
   return {
+    llmProvider: "mimo",
+    activeModelProviderId: undefined,
     defaultModel: "gpt-5.4-mini",
+    providerBaseUrl: "",
+    contextMode: "auto",
+    customModelContextWindow: 128000,
     maxTokensPerRequest: 128000,
     autoApprove: "none",
     showThinking: true,

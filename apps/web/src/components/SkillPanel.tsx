@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import type { SkillConflict, SkillCreateRequest, SkillDuplicateGroup, SkillRecord, SkillUpdateRequest } from "@scc/shared";
-import { Copy, Download, Merge, Plus, Save, Search, Trash2 } from "lucide-react";
+import type { ReflectionSession, SkillConflict, SkillCreateRequest, SkillDuplicateGroup, SkillRecord, SkillUpdateRequest } from "@scc/shared";
+import { Copy, Download, Merge, Plus, RefreshCcw, Save, Search, Trash2 } from "lucide-react";
 
 const statuses: SkillRecord["status"][] = ["candidate", "active", "suspended", "retired"];
 
@@ -32,23 +32,30 @@ export function SkillPanel({
   skills,
   duplicates,
   conflicts,
+  language,
+  reflections,
   onCreate,
   onUpdate,
   onDelete,
   onBulkDelete,
   onMergeDuplicate,
-  onExport
+  onExport,
+  onRunReflection
 }: {
   skills: SkillRecord[];
   duplicates: SkillDuplicateGroup[];
   conflicts: SkillConflict[];
+  language?: string | null;
+  reflections?: ReflectionSession[];
   onCreate: (input: SkillCreateRequest) => Promise<void> | void;
   onUpdate: (skillId: string, input: SkillUpdateRequest) => Promise<void> | void;
   onDelete: (skillId: string) => Promise<void> | void;
   onBulkDelete: (skillIds: string[]) => Promise<void> | void;
   onMergeDuplicate: (group: SkillDuplicateGroup) => Promise<void> | void;
   onExport: (skillId: string) => Promise<void> | void;
+  onRunReflection?: () => Promise<void> | void;
 }) {
+  const text = getSkillCopy(language);
   const safeSkills = Array.isArray(skills) ? skills : [];
   const safeDuplicates = Array.isArray(duplicates) ? duplicates : [];
   const safeConflicts = Array.isArray(conflicts) ? conflicts : [];
@@ -89,24 +96,37 @@ export function SkillPanel({
     <section className="skillWorkbench" aria-label="Skills">
       <header className="panelHero">
         <div>
-          <h2>Skills</h2>
-          <p>Reusable agent behavior stays useful only when it can be reviewed, edited, merged, and removed.</p>
+          <h2>{text.title}</h2>
+          <p>{text.subtitle}</p>
         </div>
-        <button className="subtleButton" type="button" onClick={() => setSelectedId("new")}>
-          <Plus size={15} />
-          New skill
-        </button>
+        <div className="inlineActions">
+          <button className="textButton iconText" type="button" onClick={() => void onRunReflection?.()}>
+            <RefreshCcw size={15} />
+            {text.reflect}
+          </button>
+          <button className="subtleButton iconText" type="button" onClick={() => setSelectedId("new")}>
+            <Plus size={15} />
+            {text.newSkill}
+          </button>
+        </div>
       </header>
+
+      {reflections?.[0] ? (
+        <section className="reflectionStrip">
+          <strong>{text.latestReflection}</strong>
+          <span>{reflections[0].progress.phase} · {reflections[0].status} · {new Date(reflections[0].createdAt).toLocaleString()}</span>
+        </section>
+      ) : null}
 
       {safeDuplicates.length > 0 ? (
         <section className="duplicateBanner">
           <div>
-            <strong>{safeDuplicates.length} duplicate group{safeDuplicates.length > 1 ? "s" : ""}</strong>
-            <span>Repeated promotions were detected. Merge them to keep the agent memory clean.</span>
+            <strong>{safeDuplicates.length} {text.duplicateGroups}</strong>
+            <span>{text.duplicateHelp}</span>
           </div>
           <button className="subtleButton" type="button" onClick={() => safeDuplicates.forEach((group) => void onMergeDuplicate(group))}>
             <Merge size={15} />
-            Merge all
+            {text.mergeAll}
           </button>
         </section>
       ) : null}
@@ -116,7 +136,7 @@ export function SkillPanel({
           <div className="skillToolbar">
             <label className="skillSearch">
               <Search size={15} />
-              <input aria-label="Search skills" placeholder="Search skills" value={query} onChange={(event) => setQuery(event.target.value)} />
+              <input aria-label={text.search} placeholder={text.search} value={query} onChange={(event) => setQuery(event.target.value)} />
             </label>
             <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as SkillRecord["status"] | "all")}>
               <option value="all">all</option>
@@ -129,14 +149,14 @@ export function SkillPanel({
           </div>
 
           <div className="bulkActions">
-            <span>{checkedIds.length} selected</span>
+            <span>{checkedIds.length} {text.selected}</span>
             <button className="textButton" type="button" disabled={checkedIds.length === 0} onClick={() => void onBulkDelete(checkedIds)}>
-              Delete selected
+              {text.deleteSelected}
             </button>
           </div>
 
           <div className="skillRows">
-            {filteredSkills.length === 0 ? <p className="muted">No skills match this view.</p> : null}
+            {filteredSkills.length === 0 ? <p className="muted">{text.empty}</p> : null}
             {filteredSkills.map((skill) => {
               const duplicate = safeDuplicates.some((group) => group.skills.some((item) => item.id === skill.id));
               return (
@@ -160,8 +180,8 @@ export function SkillPanel({
                   <button className="skillListButton" type="button" onClick={() => setSelectedId(skill.id)}>
                     <span>{skill.title}</span>
                     <small>
-                      {skill.status} · {formatSkillStats(skill)}
-                      {duplicate ? " · duplicate" : ""}
+                      {skill.status} · {formatSkillStats(skill, language)}
+                      {duplicate ? ` · ${text.duplicate}` : ""}
                     </small>
                   </button>
                 </div>
@@ -180,50 +200,50 @@ export function SkillPanel({
           >
             <div className="editorHeader">
               <div>
-                <h3>{selected ? "Edit skill" : "Create skill"}</h3>
-                <p>{selected ? selected.id : "New skills start as candidate unless explicitly activated."}</p>
+                <h3>{selected ? text.edit : text.create}</h3>
+                <p>{selected ? selected.id : text.createHelp}</p>
               </div>
               <div className="editorActions">
                 {selected ? (
                   <>
                     <button className="textButton iconText" type="button" onClick={() => void onExport(selected.id)}>
                       <Download size={14} />
-                      Export
+                      {text.export}
                     </button>
                     <button className="textButton iconText dangerText" type="button" onClick={() => void onDelete(selected.id)}>
                       <Trash2 size={14} />
-                      Delete
+                      {text.delete}
                     </button>
                   </>
                 ) : null}
                 <button className="subtleButton iconText" type="submit">
                   <Save size={14} />
-                  Save
+                  {text.save}
                 </button>
               </div>
             </div>
 
             {selectedDuplicate ? (
               <div className="inlineNotice">
-                <span>Duplicate group detected.</span>
+                <span>{text.duplicateDetected}</span>
                 <button className="textButton iconText" type="button" onClick={() => void onMergeDuplicate(selectedDuplicate)}>
                   <Merge size={14} />
-                  Merge group
+                  {text.mergeGroup}
                 </button>
               </div>
             ) : null}
             {selectedConflicts.length > 0 ? (
               <div className="inlineNotice warning">
-                <span>{selectedConflicts.length} conflict{selectedConflicts.length > 1 ? "s" : ""}: {selectedConflicts[0]?.reason}</span>
+                <span>{selectedConflicts.length} {text.conflicts}: {selectedConflicts[0]?.reason}</span>
               </div>
             ) : null}
 
             <label className="fieldStack">
-              <span>Title</span>
+              <span>{text.fieldTitle}</span>
               <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
             </label>
             <label className="fieldStack">
-              <span>Status</span>
+              <span>{text.status}</span>
               <select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as SkillRecord["status"] })}>
                 {statuses.map((status) => (
                   <option value={status} key={status}>
@@ -233,48 +253,49 @@ export function SkillPanel({
               </select>
             </label>
             <label className="fieldStack">
-              <span>Body</span>
+              <span>{text.body}</span>
               <textarea value={draft.body} rows={12} onChange={(event) => setDraft({ ...draft, body: event.target.value })} />
             </label>
 
             <div className="editorSplit">
               <label className="fieldStack">
-                <span>Keywords</span>
+                <span>{text.triggers}</span>
                 <input value={draft.keywords} onChange={(event) => setDraft({ ...draft, keywords: event.target.value })} />
+                <small>{text.triggersHelp}</small>
               </label>
               <label className="fieldStack">
-                <span>Required tools</span>
+                <span>{text.requiredTools}</span>
                 <input value={draft.requiredTools} onChange={(event) => setDraft({ ...draft, requiredTools: event.target.value })} />
               </label>
               <label className="fieldStack">
-                <span>Context</span>
+                <span>{text.context}</span>
                 <input value={draft.requiredContext} onChange={(event) => setDraft({ ...draft, requiredContext: event.target.value })} />
               </label>
               <label className="fieldStack">
-                <span>Min confidence</span>
+                <span>{text.minConfidence}</span>
                 <input value={draft.minConfidence} onChange={(event) => setDraft({ ...draft, minConfidence: event.target.value })} />
               </label>
             </div>
 
             <label className="fieldStack">
-              <span>Description</span>
+              <span>{text.description}</span>
               <textarea value={draft.description} rows={3} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
             </label>
             <label className="fieldStack">
-              <span>Exclusions</span>
+              <span>{text.exclusions}</span>
               <input value={draft.exclusions} onChange={(event) => setDraft({ ...draft, exclusions: event.target.value })} />
             </label>
           </form>
 
           <section className="skillPreview">
             <div className="panelHeader">
-              <h3>Preview</h3>
+              <h3>{text.preview}</h3>
               <button className="textButton iconText" type="button" onClick={() => void navigator.clipboard?.writeText(draft.body)}>
                 <Copy size={14} />
-                Copy body
+                {text.copy}
               </button>
             </div>
-            <pre>{draft.body || "No skill body yet."}</pre>
+            <pre>{draft.body || text.noBody}</pre>
           </section>
         </section>
       </div>
@@ -331,10 +352,51 @@ function splitList(value: string): string[] {
   return value
     .split(/[,，\n]/)
     .map((item) => item.trim())
-    .filter(Boolean);
+    .filter((item) => item.length > 1 || /^[a-z0-9_-]+$/i.test(item));
 }
 
-function formatSkillStats(skill: SkillRecord): string {
-  if (skill.stats.totalUses <= 0) return "not used yet";
-  return `${Math.round(skill.stats.successRate * 100)}% · ${skill.stats.totalUses} uses`;
+function formatSkillStats(skill: SkillRecord, language?: string | null): string {
+  if (skill.stats.totalUses <= 0) return language === "zh-CN" ? "尚未使用" : "not used yet";
+  return `${Math.round(skill.stats.successRate * 100)}% · ${skill.stats.totalUses} ${language === "zh-CN" ? "次使用" : "uses"}`;
+}
+
+function getSkillCopy(language?: string | null) {
+  const zh = language === "zh-CN";
+  return {
+    title: "Skills",
+    subtitle: zh ? "可复用能力需要可审核、可编辑、可合并，也能被删除。" : "Reusable capabilities must stay reviewable, editable, mergeable, and removable.",
+    reflect: zh ? "Agent 反思" : "Agent reflection",
+    newSkill: zh ? "新建 Skill" : "New skill",
+    latestReflection: zh ? "最近反思" : "Latest reflection",
+    duplicateGroups: zh ? "组重复 Skill" : "duplicate groups",
+    duplicateHelp: zh ? "检测到重复固化。合并后可以保持 Agent 记忆干净。" : "Repeated promotions were detected. Merge them to keep agent memory clean.",
+    mergeAll: zh ? "全部合并" : "Merge all",
+    search: zh ? "搜索 Skills" : "Search skills",
+    selected: zh ? "已选择" : "selected",
+    deleteSelected: zh ? "删除所选" : "Delete selected",
+    empty: zh ? "没有匹配的 Skill。" : "No skills match this view.",
+    duplicate: zh ? "重复" : "duplicate",
+    edit: zh ? "编辑 Skill" : "Edit skill",
+    create: zh ? "创建 Skill" : "Create skill",
+    createHelp: zh ? "新 Skill 默认进入候选状态，除非你明确启用。" : "New skills start as candidate unless explicitly activated.",
+    export: zh ? "导出" : "Export",
+    delete: zh ? "删除" : "Delete",
+    save: zh ? "保存" : "Save",
+    duplicateDetected: zh ? "检测到重复组。" : "Duplicate group detected.",
+    mergeGroup: zh ? "合并该组" : "Merge group",
+    conflicts: zh ? "个冲突" : "conflicts",
+    fieldTitle: zh ? "标题" : "Title",
+    status: zh ? "状态" : "Status",
+    body: zh ? "正文" : "Body",
+    triggers: zh ? "触发短语" : "Trigger phrases",
+    triggersHelp: zh ? "用逗号分隔完整短语，系统会过滤无意义的单字 token。" : "Use comma-separated phrases. Single-character noise is filtered.",
+    requiredTools: zh ? "需要的工具" : "Required tools",
+    context: zh ? "适用上下文" : "Context",
+    minConfidence: zh ? "最小置信度" : "Min confidence",
+    description: zh ? "适用场景" : "Applicability",
+    exclusions: zh ? "排除条件" : "Exclusions",
+    preview: zh ? "预览" : "Preview",
+    copy: zh ? "复制正文" : "Copy body",
+    noBody: zh ? "还没有 Skill 正文。" : "No skill body yet."
+  };
 }

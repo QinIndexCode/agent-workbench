@@ -59,6 +59,40 @@ describe("api client", () => {
     await api.connectMcpServer("mock");
     expect(fetchMock).toHaveBeenLastCalledWith("/api/mcp/servers/mock/connect", expect.objectContaining({ method: "POST" }));
 
+    await api.createModelProvider({
+      vendor: "mimo",
+      label: "Mimo",
+      protocol: "openai_compatible",
+      baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+      apiKey: "secret",
+      models: [{ id: "mimo-v2.5", label: "mimo-v2.5", contextWindow: 128000, supportsTools: true, supportsThinking: true }],
+      defaultModelId: "mimo-v2.5",
+      enabled: true,
+      makeActive: true
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/model-providers",
+      expect.objectContaining({ method: "POST", body: expect.stringContaining("mimo-v2.5") })
+    );
+
+    await api.patchModelProvider("provider_1", { enabled: false });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/model-providers/provider_1",
+      expect.objectContaining({ method: "PATCH", body: JSON.stringify({ enabled: false }) })
+    );
+
+    await api.createKnowledgeItem({ projectId: "default", kind: "memory", title: "Note", content: "Body", tags: ["runtime"] });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/knowledge",
+      expect.objectContaining({ method: "POST", body: expect.stringContaining("runtime") })
+    );
+
+    await api.uploadKnowledgeFile({ projectId: "default", title: "notes.md", fileName: "notes.md", mimeType: "text/markdown", size: 4, content: "Body", tags: [] });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/knowledge/upload",
+      expect.objectContaining({ method: "POST", body: expect.stringContaining("notes.md") })
+    );
+
     await api.revokeGlobalPermission("host_observation");
     const revokeInit = fetchMock.mock.lastCall?.[1] as RequestInit;
     expect(fetchMock).toHaveBeenLastCalledWith("/api/permissions/global/host_observation", expect.objectContaining({ method: "DELETE" }));

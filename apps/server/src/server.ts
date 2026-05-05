@@ -5,18 +5,25 @@ import {
   AgentWorkbench,
   CompositeToolExecutor,
   ContextAssembler,
+  LocalSecretBox,
   McpRegistry,
   ShellToolExecutor,
-  createModelClientFromEnvironment
+  createModelClientFromEnvironment,
+  type ResolvedModelProviderConfig
 } from "@scc/core";
 import {
   ApprovalRequestSchema,
   ControlRequestSchema,
   CreateTaskRequestSchema,
   GlobalPermissionRequestSchema,
+  KnowledgeCreateRequestSchema,
+  KnowledgePatchRequestSchema,
+  KnowledgeUploadRequestSchema,
   MessageRequestSchema,
   McpServerCreateRequestSchema,
   McpServerPatchRequestSchema,
+  ModelProviderCreateRequestSchema,
+  ModelProviderPatchRequestSchema,
   PreferencesPatchSchema,
   ProjectMemoryCreateRequestSchema,
   SkillBulkDeleteRequestSchema,
@@ -72,7 +79,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.post("/api/tasks", async (request, reply) => {
     const input = CreateTaskRequestSchema.parse(request.body);
-    const task = await workbench.createTask(input.goal, input.title);
+    const task = await workbench.startTask(input.goal, input.title);
     return reply.code(201).send(task);
   });
 
@@ -285,6 +292,29 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     return workbench.updatePreferences(input);
   });
 
+  app.get("/api/model-providers", async () => workbench.listModelProviders());
+
+  app.post("/api/model-providers", async (request, reply) => {
+    const input = ModelProviderCreateRequestSchema.parse(request.body);
+    return reply.code(201).send(await workbench.createModelProvider(input));
+  });
+
+  app.patch("/api/model-providers/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = ModelProviderPatchRequestSchema.parse(request.body);
+    try {
+      return await workbench.updateModelProvider(id, input);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete("/api/model-providers/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    await workbench.deleteModelProvider(id);
+    return reply.code(204).send();
+  });
+
   app.get("/api/reflections", async () => workbench.listReflectionSessions());
 
   app.post("/api/reflections", async (request, reply) => reply.code(201).send(await workbench.runReflection()));
@@ -305,6 +335,37 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     return reply.code(204).send();
   });
 
+  app.get("/api/knowledge", async (request) => {
+    const query = z.object({ projectId: z.string().optional() }).parse(request.query);
+    return workbench.listKnowledgeItems(query.projectId);
+  });
+
+  app.post("/api/knowledge", async (request, reply) => {
+    const input = KnowledgeCreateRequestSchema.parse(request.body);
+    return reply.code(201).send(await workbench.createKnowledgeItem(input));
+  });
+
+  app.post("/api/knowledge/upload", async (request, reply) => {
+    const input = KnowledgeUploadRequestSchema.parse(request.body);
+    return reply.code(201).send(await workbench.uploadKnowledgeFile(input));
+  });
+
+  app.patch("/api/knowledge/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = KnowledgePatchRequestSchema.parse(request.body);
+    try {
+      return await workbench.updateKnowledgeItem(id, input);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete("/api/knowledge/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    await workbench.deleteKnowledgeItem(id);
+    return reply.code(204).send();
+  });
+
   return app;
 }
 
@@ -312,11 +373,34 @@ function createDefaultRuntime(onEvent: (event: TaskEvent) => void): { workbench:
   const store = new SqliteWorkbenchStore(process.env["SCC_DB_PATH"] ?? "data/workbench.sqlite");
   const contextAssembler = new ContextAssembler(store);
   const mcpRegistry = new McpRegistry(store);
+  const secretBox = new LocalSecretBox();
   const tools = new CompositeToolExecutor(new ShellToolExecutor(), [mcpRegistry]);
   const workbench = new AgentWorkbench({
     store,
     contextAssembler,
-    model: createModelClientFromEnvironment({ contextAssembler, toolProvider: mcpRegistry }),
+    model: createModelClientFromEnvironment({
+      contextAssembler,
+      toolProvider: mcpRegistry,
+      preferenceProvider: () => store.getPreferences(),
+      providerResolver: async (): Promise<ResolvedModelProviderConfig | null> => {
+        const preferences = await store.getPreferences();
+        const providers = (await store.listModelProviders()).filter((provider) => provider.enabled);
+        const provider =
+          providers.find((item) => item.id === preferences.activeModelProviderId) ??
+          providers.find((item) => item.apiKeyRef) ??
+          null;
+        if (!provider?.apiKeyRef) return null;
+        const encrypted = await store.getModelProviderSecret(provider.id);
+        if (!encrypted) return null;
+        return {
+          providerId: provider.id,
+          protocol: provider.protocol,
+          apiKey: secretBox.decrypt(encrypted),
+          ...(provider.baseUrl ? { baseURL: provider.baseUrl } : {}),
+          model: provider.defaultModelId
+        };
+      }
+    }),
     tools,
     toolRiskProvider: mcpRegistry,
     onEvent

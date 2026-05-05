@@ -10,6 +10,7 @@ type Block =
   | { kind: "list"; ordered: boolean; items: string[] }
   | { kind: "blockquote"; text: string }
   | { kind: "code"; language: string; code: string }
+  | { kind: "hr" }
   | { kind: "table"; headers: string[]; rows: string[][] };
 
 export function MarkdownText({ content }: MarkdownTextProps) {
@@ -49,6 +50,7 @@ function MarkdownBlock({ block }: { block: Block }) {
       </pre>
     );
   }
+  if (block.kind === "hr") return <hr />;
   if (block.kind === "table") {
     return (
       <div className="markdownTableWrap">
@@ -108,6 +110,12 @@ function parseMarkdown(input: string): Block[] {
       continue;
     }
 
+    if (/^\s*---+\s*$/.test(line)) {
+      blocks.push({ kind: "hr" });
+      index += 1;
+      continue;
+    }
+
     if (looksLikeTable(lines, index)) {
       const tableLines: string[] = [];
       while (index < lines.length && isTableLine(lines[index] ?? "")) {
@@ -146,7 +154,7 @@ function parseMarkdown(input: string): Block[] {
     const paragraph: string[] = [];
     while (index < lines.length && lines[index]?.trim()) {
       const current = lines[index] ?? "";
-      if (/^```/.test(current) || /^#{1,3}\s+/.test(current) || /^\s*[-*]\s+/.test(current) || /^\s*\d+[.)]\s+/.test(current)) break;
+      if (/^```/.test(current) || /^#{1,3}\s+/.test(current) || /^\s*---+\s*$/.test(current) || /^\s*[-*]\s+/.test(current) || /^\s*\d+[.)]\s+/.test(current)) break;
       if (looksLikeTable(lines, index)) break;
       paragraph.push(current.trim());
       index += 1;

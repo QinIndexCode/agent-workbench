@@ -221,7 +221,7 @@ export function normalizeSkillRecord(input: unknown): SkillRecord {
   const body = stringValue(raw["body"], [`# ${title}`, "", "Legacy skill record normalized for the SCC workbench."].join("\n"));
   const applicability = asRecord(raw["applicability"]);
   const stats = asRecord(raw["stats"]);
-  const keywords = stringArray(applicability["keywords"], stringArray(raw["keywords"], tokenize(title)));
+  const keywords = normalizeKeywordList(stringArray(applicability["keywords"], stringArray(raw["keywords"], tokenize(title))), title);
   const requiredTools = stringArray(applicability["requiredTools"], stringArray(raw["requiredTools"], []));
   const requiredContext = stringArray(applicability["requiredContext"], stringArray(raw["requiredContext"], []));
   const status = normalizeSkillStatus(raw["status"]);
@@ -328,7 +328,7 @@ export function mergeSkillRecords(target: SkillRecord, source: SkillRecord): Ski
       requiredContext: uniqueStrings([...left.applicability.requiredContext, ...right.applicability.requiredContext]),
       exclusions: uniqueStrings([...left.applicability.exclusions, ...right.applicability.exclusions]),
       minConfidence: Math.max(left.applicability.minConfidence, right.applicability.minConfidence),
-      keywords: uniqueStrings([...left.applicability.keywords, ...right.applicability.keywords])
+      keywords: normalizeKeywordList([...left.applicability.keywords, ...right.applicability.keywords], left.title)
     },
     stats: {
       ...left.stats,
@@ -428,13 +428,21 @@ export function calculateRelevance(taskTitle: string, skill: SkillRecord): numbe
 
 export function tokenize(text: string): string[] {
   const words = new Set<string>();
-  for (const word of text.toLowerCase().match(/[a-z0-9]+/g) ?? []) words.add(word);
+  for (const word of text.toLowerCase().match(/[a-z0-9]+/g) ?? []) {
+    if (word.length > 1) words.add(word);
+  }
   const chars = text.match(/[\u4e00-\u9fa5]/g) ?? [];
-  for (const char of chars) words.add(char);
+  if (chars.length > 1 && chars.length <= 8) words.add(chars.join(""));
   for (let index = 0; index < chars.length - 1; index++) {
     const first = chars[index];
     const second = chars[index + 1];
     if (first && second) words.add(first + second);
+  }
+  for (let index = 0; index < chars.length - 2; index++) {
+    const first = chars[index];
+    const second = chars[index + 1];
+    const third = chars[index + 2];
+    if (first && second && third) words.add(first + second + third);
   }
   return [...words];
 }
@@ -548,6 +556,13 @@ function chooseLongerMeaningful(left: string, right: string): string {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function normalizeKeywordList(values: string[], fallbackText: string): string[] {
+  const expanded = values.flatMap((value) => tokenize(value));
+  const cleaned = expanded.filter((value) => value.length > 1 || /^[a-z0-9_-]{2,}$/i.test(value));
+  const fallback = tokenize(fallbackText).filter((value) => value.length > 1);
+  return uniqueStrings(cleaned.length > 0 ? cleaned : fallback).slice(0, 32);
 }
 
 function stableTokens(values: string[]): string[] {

@@ -1,11 +1,18 @@
 import type {
   ApprovalDecision,
   GlobalPermissionGrant,
+  KnowledgeCreateRequest,
+  KnowledgeItem,
+  KnowledgePatchRequest,
+  KnowledgeUploadRequest,
   McpServerConfig,
   McpServerCreateRequest,
   McpServerPatchRequest,
   McpServerStatus,
   McpToolSummary,
+  ModelProviderCreateRequest,
+  ModelProviderPatchRequest,
+  ModelProviderRecord,
   PatternRecord,
   PreferencesPatch,
   ProjectMemory,
@@ -164,5 +171,32 @@ export const api = {
   },
   listMcpTools(): Promise<McpToolSummary[]> {
     return request("/api/mcp/tools");
+  },
+  listModelProviders(): Promise<ModelProviderRecord[]> {
+    return request("/api/model-providers");
+  },
+  createModelProvider(input: ModelProviderCreateRequest): Promise<ModelProviderRecord> {
+    return request("/api/model-providers", { method: "POST", body: JSON.stringify(input) });
+  },
+  patchModelProvider(providerId: string, input: ModelProviderPatchRequest): Promise<ModelProviderRecord> {
+    return request(`/api/model-providers/${providerId}`, { method: "PATCH", body: JSON.stringify(input) });
+  },
+  deleteModelProvider(providerId: string): Promise<void> {
+    return request(`/api/model-providers/${providerId}`, { method: "DELETE" });
+  },
+  listKnowledgeItems(): Promise<KnowledgeItem[]> {
+    return request("/api/knowledge");
+  },
+  createKnowledgeItem(input: KnowledgeCreateRequest): Promise<KnowledgeItem> {
+    return request("/api/knowledge", { method: "POST", body: JSON.stringify(input) });
+  },
+  uploadKnowledgeFile(input: KnowledgeUploadRequest): Promise<KnowledgeItem> {
+    return request("/api/knowledge/upload", { method: "POST", body: JSON.stringify(input) });
+  },
+  patchKnowledgeItem(id: string, input: KnowledgePatchRequest): Promise<KnowledgeItem> {
+    return request(`/api/knowledge/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+  },
+  deleteKnowledgeItem(id: string): Promise<void> {
+    return request(`/api/knowledge/${id}`, { method: "DELETE" });
   }
 };

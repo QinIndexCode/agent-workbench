@@ -14,9 +14,19 @@ const copy = {
   "zh-CN": {
     shell: {
       close: "关闭",
+      navigation: "主导航",
       tasks: "任务",
       newTask: "新任务",
+      history: "历史记录",
+      library: "资料库",
       settings: "设置",
+      support: "支持",
+      docs: "文档",
+      engineStatus: {
+        running: "LOCAL ENGINE: RUNNING",
+        streaming: "LOCAL ENGINE: STREAMING",
+        attention: "LOCAL ENGINE: NEEDS ATTENTION"
+      },
       searchTasks: "搜索任务",
       noTasks: "还没有任务。",
       noMatchingTasks: "没有匹配的任务。",
@@ -32,17 +42,36 @@ const copy = {
     settings: {
       title: "设置",
       sections: {
-        skills: ["Skills", "审核、编辑、合并和导出可复用的 Agent 能力"],
-        learning: ["学习", "任务记忆、模式、反思和冲突记录"],
+        providers: ["模型服务商", "管理本地加密密钥、协议、模型预设和当前模型"],
         permissions: ["权限", "全局风险授权、审批策略和 Agent 偏好"],
         mcp: ["MCP", "连接的工具服务器和已发现工具"],
-        memory: ["记忆", "项目事实和长期约定"]
+        preferences: ["偏好", "语言、思考展示、反思和敏感数据处理"]
       }
     },
     thread: {
       newTask: "新任务",
       ready: "准备开始新任务",
       startGoal: "从一个目标开始。",
+      connect: "Connect",
+      heroTitle: "开启新任务",
+      heroSubtitle: "描述你想解决的问题。SCC 会组装上下文、请求必要权限，并把执行证据清晰展示给你。",
+      suggestions: [
+        {
+          title: "查看系统状态",
+          description: "列出当前运行的软件，并按 CPU 或内存占用排序。",
+          prompt: "帮我看一下当前桌面运行的软件有哪些，性能占用最高的是哪些"
+        },
+        {
+          title: "分析项目代码",
+          description: "阅读当前项目结构，指出最需要优化的模块。",
+          prompt: "阅读当前项目结构，帮我找出最需要优化的前后端问题"
+        },
+        {
+          title: "沉淀为 Skill",
+          description: "把一次可复用经验整理为可审核的 Skill 草稿。",
+          prompt: "根据最近的任务经验，帮我整理一个可复用的 Skill 草稿"
+        }
+      ],
       runningGuidance: "运行中 · 输入会作为待处理引导",
       continueTask: (status: string) => `${status} · 输入会继续当前任务`,
       startsNewTask: (status: string) => `${status} · 输入会创建新任务`
@@ -58,7 +87,29 @@ const copy = {
       stop: "停止",
       idle: "空闲",
       workingHint: "正在处理...",
-      stopHint: "停止当前运行"
+      stopHint: "停止当前运行",
+      attachFile: "添加文件",
+      voiceInput: "语音输入",
+      voiceInputStop: "停止听写",
+      voiceUnsupported: "当前浏览器不支持语音输入",
+      attachedFile: "已附加文件",
+      model: "Model",
+      modelToggle: "选择模型",
+      permission: "权限",
+      permissionToggle: "选择权限范围",
+      modelUnknown: "未配置",
+      permissionDefault: "按需审批",
+      permissionPresets: {
+        ask: "Ask",
+        read_only: "Read only",
+        all: "All"
+      },
+      permissionPresetDescriptions: {
+        ask: "每次按风险请求确认",
+        read_only: "只读观察自动通过",
+        all: "允许所有风险类别"
+      },
+      keyboardHint: "Shift + Enter 换行 / Enter 发送"
     },
     permissions: {
       title: "权限与偏好",
@@ -74,8 +125,16 @@ const copy = {
       destructiveNote: "高风险授权。开启后 destructive 工具不会再弹出审批，请只在完全信任当前环境时使用。",
       behaviorTitle: "审批策略",
       preferencesTitle: "Agent 偏好",
+      preferencesSubtitle: "这些设置影响界面语言、运行展示和学习策略。",
+      providerTitle: "模型 Provider",
       language: "界面与回复语言",
+      llmProvider: "LLM Provider",
       defaultModel: "默认模型",
+      customModel: "自定义模型 ID",
+      providerBaseUrl: "Base URL",
+      contextMode: "上下文模式",
+      contextLimit: "上下文上限",
+      contextHelp: "自动模式会跟随模型上限；手动值不能超过当前模型窗口。",
       maxTokens: "最大上下文 token",
       autoApprove: "自动审批级别",
       showThinking: "展示思考内容",
@@ -99,10 +158,14 @@ const copy = {
         confirm_dangerous: "仅高风险确认",
         auto: "自动"
       },
+      contextModeOptions: {
+        auto: "自动",
+        manual: "手动"
+      },
       risks: {
         host_observation: ["主机观察", "查看进程、系统信息、资源占用等只读主机状态。"],
-        workspace_read: ["工作区读取", "读取项目文件、列目录、搜索代码，不修改磁盘。"],
-        workspace_write: ["工作区写入", "编辑或创建工作区文件。"],
+        workspace_read: ["读取文件", "读取项目文件、列目录、搜索代码，不修改磁盘。"],
+        workspace_write: ["修改文件", "编辑或创建本地文件。"],
         shell: ["Shell 命令", "运行命令或脚本，可能读取环境状态或启动进程。"],
         network: ["网络访问", "访问远程服务、下载内容或调用外部 API。"],
         destructive: ["破坏性操作", "删除、覆盖、终止或不可逆地改变本地/远程状态。"]
@@ -112,9 +175,19 @@ const copy = {
   "en-US": {
     shell: {
       close: "Close",
+      navigation: "Primary navigation",
       tasks: "Tasks",
       newTask: "New Task",
+      history: "History",
+      library: "Library",
       settings: "Settings",
+      support: "Support",
+      docs: "Docs",
+      engineStatus: {
+        running: "LOCAL ENGINE: RUNNING",
+        streaming: "LOCAL ENGINE: STREAMING",
+        attention: "LOCAL ENGINE: NEEDS ATTENTION"
+      },
       searchTasks: "Search tasks",
       noTasks: "No tasks yet.",
       noMatchingTasks: "No matching tasks.",
@@ -130,17 +203,36 @@ const copy = {
     settings: {
       title: "Settings",
       sections: {
-        skills: ["Skills", "Review, edit, merge, and export reusable agent behaviors"],
-        learning: ["Learning", "Task memory, patterns, reflection, and conflicts"],
+        providers: ["Model providers", "Manage encrypted local keys, protocols, presets, and active model"],
         permissions: ["Permissions", "Global risk grants, approval policy, and agent preferences"],
         mcp: ["MCP", "Connected tool servers and discovered tools"],
-        memory: ["Memory", "Project facts and durable conventions"]
+        preferences: ["Preferences", "Language, thinking display, reflection, and sensitive data handling"]
       }
     },
     thread: {
       newTask: "New task",
       ready: "Ready for a new task",
       startGoal: "Start with a goal.",
+      connect: "Connect",
+      heroTitle: "Start a new task",
+      heroSubtitle: "Describe the problem you want solved. SCC assembles context, asks for the right permissions, and keeps evidence visible.",
+      suggestions: [
+        {
+          title: "Inspect system load",
+          description: "List running desktop software and rank CPU or memory usage.",
+          prompt: "Show me which desktop software is running and which processes use the most CPU and memory"
+        },
+        {
+          title: "Analyze this project",
+          description: "Read the project structure and identify the highest-impact fixes.",
+          prompt: "Read the current project structure and identify the highest-impact frontend and backend issues"
+        },
+        {
+          title: "Draft a Skill",
+          description: "Turn a reusable experience into a reviewable Skill draft.",
+          prompt: "Use recent task experience to draft a reusable Skill"
+        }
+      ],
       runningGuidance: "Running · input becomes pending guidance",
       continueTask: (status: string) => `${status} · input continues this task`,
       startsNewTask: (status: string) => `${status} · input starts a new task`
@@ -156,7 +248,29 @@ const copy = {
       stop: "Stop",
       idle: "Idle",
       workingHint: "Working...",
-      stopHint: "Stops the current run"
+      stopHint: "Stops the current run",
+      attachFile: "Attach file",
+      voiceInput: "Voice input",
+      voiceInputStop: "Stop dictation",
+      voiceUnsupported: "Voice input is not supported in this browser",
+      attachedFile: "Attached file",
+      model: "Model",
+      modelToggle: "Choose model",
+      permission: "Scope",
+      permissionToggle: "Choose permission scope",
+      modelUnknown: "not configured",
+      permissionDefault: "approval",
+      permissionPresets: {
+        ask: "Ask",
+        read_only: "Read only",
+        all: "All"
+      },
+      permissionPresetDescriptions: {
+        ask: "Ask before each risk class",
+        read_only: "Auto-allow read-only observation",
+        all: "Allow every risk class"
+      },
+      keyboardHint: "Shift + Enter for newline / Enter to send"
     },
     permissions: {
       title: "Permissions and preferences",
@@ -172,8 +286,16 @@ const copy = {
       destructiveNote: "High-risk grant. Destructive tools will stop prompting while it is active.",
       behaviorTitle: "Approval policy",
       preferencesTitle: "Agent preferences",
+      preferencesSubtitle: "These settings control language, runtime display, and learning behavior.",
+      providerTitle: "Model provider",
       language: "UI and response language",
+      llmProvider: "LLM provider",
       defaultModel: "Default model",
+      customModel: "Custom model id",
+      providerBaseUrl: "Base URL",
+      contextMode: "Context mode",
+      contextLimit: "Context limit",
+      contextHelp: "Auto follows the selected model limit. Manual values cannot exceed the model window.",
       maxTokens: "Max context tokens",
       autoApprove: "Auto approval level",
       showThinking: "Show thinking",
@@ -197,10 +319,14 @@ const copy = {
         confirm_dangerous: "Confirm dangerous",
         auto: "Auto"
       },
+      contextModeOptions: {
+        auto: "Auto",
+        manual: "Manual"
+      },
       risks: {
         host_observation: ["Host observation", "Read-only host state such as processes, system info, and resource usage."],
-        workspace_read: ["Workspace read", "Read files, list folders, and search code without writing to disk."],
-        workspace_write: ["Workspace write", "Edit or create files in the workspace."],
+        workspace_read: ["Read files", "Read project files, list folders, and search code without writing to disk."],
+        workspace_write: ["Change files", "Edit or create local files."],
         shell: ["Shell command", "Run commands or scripts that may inspect state or start processes."],
         network: ["Network access", "Reach remote services, download content, or call external APIs."],
         destructive: ["Destructive action", "Delete, overwrite, terminate, or irreversibly change local or remote state."]

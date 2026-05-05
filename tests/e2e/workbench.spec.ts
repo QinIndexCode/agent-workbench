@@ -21,7 +21,7 @@ test("creates a host observation task and shows approval", async ({ page, reques
   await page.getByLabel("Task input").press("Enter");
   await expect(page.locator(".approvalCard")).toHaveCount(0);
   await expect(page.getByText("host_observation: global permission")).toBeVisible();
-  await expect(page.locator(".event.tool_result").filter({ hasText: "Tool evidence returned." })).toBeVisible();
+  await expect(page.locator(".event.tool_result").filter({ hasText: "Tool evidence returned." }).first()).toBeVisible();
 
   if ((page.viewportSize()?.width ?? 1440) <= 760) {
     await page.getByRole("button", { name: /Tasks/ }).click();

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   GlobalPermissionGrant,
+  KnowledgeItem,
   McpServerConfig,
   McpServerStatus,
   McpToolSummary,
+  ModelProviderRecord,
   PatternRecord,
   ProjectMemory,
   ReflectionSession,
@@ -14,6 +16,7 @@ import type {
   TaskDetail,
   TaskEvent,
   TaskMemory,
+  ToolApproval,
   UserPreferences
 } from "@scc/shared";
 import { api } from "./api.js";
@@ -31,6 +34,8 @@ export interface WorkbenchData {
   preferences: UserPreferences | null;
   reflections: ReflectionSession[];
   projectMemories: ProjectMemory[];
+  knowledgeItems: KnowledgeItem[];
+  modelProviders: ModelProviderRecord[];
   mcpServers: Array<McpServerConfig & { status: McpServerStatus }>;
   mcpTools: McpToolSummary[];
   realtimeConnected: boolean;
@@ -57,6 +62,8 @@ export function useWorkbenchData(): WorkbenchData {
   const [preferences, setPreferences] = useState<UserPreferences | null>(null);
   const [reflections, setReflections] = useState<ReflectionSession[]>([]);
   const [projectMemories, setProjectMemories] = useState<ProjectMemory[]>([]);
+  const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeItem[]>([]);
+  const [modelProviders, setModelProviders] = useState<ModelProviderRecord[]>([]);
   const [mcpServers, setMcpServers] = useState<Array<McpServerConfig & { status: McpServerStatus }>>([]);
   const [mcpTools, setMcpTools] = useState<McpToolSummary[]>([]);
   const [realtimeConnected, setRealtimeConnected] = useState(false);
@@ -77,6 +84,8 @@ export function useWorkbenchData(): WorkbenchData {
       nextPreferences,
       nextReflections,
       nextProjectMemories,
+      nextKnowledgeItems,
+      nextModelProviders,
       nextMcpServers,
       nextMcpTools
     ] = await Promise.all([
@@ -90,6 +99,8 @@ export function useWorkbenchData(): WorkbenchData {
       api.getPreferences(),
       api.listReflections(),
       api.listProjectMemories(),
+      api.listKnowledgeItems(),
+      api.listModelProviders(),
       api.listMcpServers(),
       api.listMcpTools()
     ]);
@@ -110,6 +121,8 @@ export function useWorkbenchData(): WorkbenchData {
     setPreferences(nextPreferences);
     setReflections(nextReflections);
     setProjectMemories(nextProjectMemories);
+    setKnowledgeItems(nextKnowledgeItems);
+    setModelProviders(nextModelProviders);
     setMcpServers(nextMcpServers);
     setMcpTools(nextMcpTools);
   }
@@ -147,14 +160,15 @@ export function useWorkbenchData(): WorkbenchData {
           if (!current || current.id !== selectedId) return current;
           if (parsed.type === "snapshot") return { ...current, events: parsed.events };
           if (current.events.some((event) => event.id === parsed.event.id)) return current;
-          return { ...current, events: [...current.events, parsed.event], updatedAt: parsed.event.createdAt };
+          const nextApprovals = approvalFromEvent(parsed.event, current.approvals);
+          return { ...current, events: [...current.events, parsed.event], approvals: nextApprovals, updatedAt: parsed.event.createdAt };
         });
       };
     }, 50);
     return () => {
       cancelled = true;
       window.clearTimeout(connectTimer);
-      if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+      if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
     };
   }, [selectedId]);
 
@@ -228,6 +242,8 @@ export function useWorkbenchData(): WorkbenchData {
     preferences,
     reflections,
     projectMemories,
+    knowledgeItems,
+    modelProviders,
     mcpServers,
     mcpTools,
     realtimeConnected,
@@ -240,6 +256,13 @@ export function useWorkbenchData(): WorkbenchData {
     runTaskAction,
     runSideAction
   };
+}
+
+function approvalFromEvent(event: TaskEvent, approvals: ToolApproval[]): ToolApproval[] {
+  if (event.type !== "approval_pending") return approvals;
+  const approval = event.payload["approval"] as ToolApproval | undefined;
+  if (!approval || approvals.some((item) => item.id === approval.id)) return approvals;
+  return [...approvals, approval];
 }
 
 function parseRealtimeMessage(value: unknown):

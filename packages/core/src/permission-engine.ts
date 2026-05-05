@@ -22,10 +22,10 @@ const workspaceReadPattern = /\b(get-content|select-string|rg|dir|ls|get-childit
 export class PermissionEngine {
   assess(toolName: string, args: Record<string, unknown>): RiskAssessment {
     if (toolName === "read_file" || toolName === "search_files" || toolName === "list_files") {
-      return { category: "workspace_read", reason: `${toolName} reads workspace state.` };
+      return { category: "workspace_read", reason: `${toolName} reads local project state.` };
     }
     if (toolName === "edit_file") {
-      return { category: "workspace_write", reason: "edit_file mutates workspace files." };
+      return { category: "workspace_write", reason: "edit_file changes local project files." };
     }
 
     if (toolName !== "run_command") {
@@ -40,13 +40,13 @@ export class PermissionEngine {
       return { category: "network", reason: "Command can reach external services or change dependencies." };
     }
     if (writePattern.test(command)) {
-      return { category: "workspace_write", reason: "Command can write files or mutate the workspace." };
+      return { category: "workspace_write", reason: "Command can write or mutate local files." };
     }
     if (hostObservationPattern.test(command)) {
       return { category: "host_observation", reason: "Command reads local system state without changing it." };
     }
     if (workspaceReadPattern.test(command)) {
-      return { category: "workspace_read", reason: "Command reads workspace or version-control state." };
+      return { category: "workspace_read", reason: "Command reads project or version-control state." };
     }
     return { category: "shell", reason: "Shell command risk cannot be reduced to a read-only category." };
   }

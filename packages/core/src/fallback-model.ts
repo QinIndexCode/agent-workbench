@@ -29,7 +29,7 @@ export class FallbackModelClient implements ModelClient {
 
     return {
       kind: "final",
-      message: "I have the task recorded, but no model provider is configured. Add an OpenAI API key or provide a concrete approved tool step."
+      message: "I have the task recorded, but no model provider is configured. Add a model provider with an API key in Settings or provide a concrete approved tool step."
     };
   }
 }

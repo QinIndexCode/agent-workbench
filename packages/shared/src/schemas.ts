@@ -184,7 +184,12 @@ export const GlobalPermissionGrantSchema = z.object({
 });
 
 export const UserPreferencesSchema = z.object({
+  llmProvider: z.enum(["mimo", "openai", "openai_compatible", "custom"]).default("mimo"),
+  activeModelProviderId: z.string().optional(),
   defaultModel: z.string().default("gpt-5.4-mini"),
+  providerBaseUrl: z.string().default(""),
+  contextMode: z.enum(["auto", "manual"]).default("auto"),
+  customModelContextWindow: z.number().int().positive().optional(),
   maxTokensPerRequest: z.number().int().positive().default(128000),
   autoApprove: z.enum(["none", "low", "medium", "all"]).default("none"),
   showThinking: z.boolean().default(true),
@@ -198,6 +203,123 @@ export const UserPreferencesSchema = z.object({
   encryptStorage: z.boolean().default(false),
   updatedAt: z.string()
 });
+
+export const ProviderProtocolSchema = z.enum(["openai_compatible", "anthropic_messages", "gemini"]);
+
+export const ModelPresetSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  contextWindow: z.number().int().positive(),
+  maxOutputTokens: z.number().int().positive().optional(),
+  supportsTools: z.boolean().default(true),
+  supportsThinking: z.boolean().default(false)
+});
+
+export const EncryptedSecretRefSchema = z.object({
+  secretId: z.string(),
+  last4: z.string().optional(),
+  updatedAt: z.string()
+});
+
+export const ModelProviderRecordSchema = z.object({
+  id: z.string(),
+  vendor: z.string().min(1),
+  label: z.string().min(1),
+  protocol: ProviderProtocolSchema,
+  baseUrl: z.string().default(""),
+  apiKeyRef: EncryptedSecretRefSchema.optional(),
+  models: z.array(ModelPresetSchema).default([]),
+  defaultModelId: z.string().min(1),
+  enabled: z.boolean().default(true),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const ModelProviderCreateRequestSchema = z
+  .object({
+    vendor: z.string().min(1),
+    label: z.string().min(1),
+    protocol: ProviderProtocolSchema,
+    baseUrl: z.string().default(""),
+    apiKey: z.string().min(1).optional(),
+    models: z.array(ModelPresetSchema).min(1),
+    defaultModelId: z.string().min(1),
+    enabled: z.boolean().default(true),
+    makeActive: z.boolean().default(true)
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (!value.models.some((model) => model.id === value.defaultModelId)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "defaultModelId must match a configured model.", path: ["defaultModelId"] });
+    }
+  });
+
+export const ModelProviderPatchRequestSchema = z
+  .object({
+    vendor: z.string().min(1).optional(),
+    label: z.string().min(1).optional(),
+    protocol: ProviderProtocolSchema.optional(),
+    baseUrl: z.string().optional(),
+    apiKey: z.string().min(1).optional(),
+    clearApiKey: z.boolean().optional(),
+    models: z.array(ModelPresetSchema).min(1).optional(),
+    defaultModelId: z.string().min(1).optional(),
+    enabled: z.boolean().optional(),
+    makeActive: z.boolean().optional()
+  })
+  .strict();
+
+export const KnowledgeKindSchema = z.enum(["memory", "file"]);
+
+export const KnowledgeItemSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  kind: KnowledgeKindSchema,
+  title: z.string(),
+  content: z.string(),
+  tags: z.array(z.string()),
+  fileName: z.string().optional(),
+  mimeType: z.string().optional(),
+  size: z.number().int().nonnegative().optional(),
+  sourceUri: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const KnowledgeCreateRequestSchema = z
+  .object({
+    projectId: z.string().default("default"),
+    kind: KnowledgeKindSchema.default("memory"),
+    title: z.string().min(1),
+    content: z.string().min(1),
+    tags: z.array(z.string()).default([]),
+    fileName: z.string().optional(),
+    mimeType: z.string().optional(),
+    size: z.number().int().nonnegative().optional(),
+    sourceUri: z.string().optional()
+  })
+  .strict();
+
+export const KnowledgePatchRequestSchema = z
+  .object({
+    title: z.string().min(1).optional(),
+    content: z.string().min(1).optional(),
+    tags: z.array(z.string()).optional(),
+    sourceUri: z.string().optional()
+  })
+  .strict();
+
+export const KnowledgeUploadRequestSchema = z
+  .object({
+    projectId: z.string().default("default"),
+    title: z.string().min(1).optional(),
+    fileName: z.string().min(1),
+    mimeType: z.string().default("text/plain"),
+    size: z.number().int().nonnegative(),
+    content: z.string(),
+    tags: z.array(z.string()).default([])
+  })
+  .strict();
 
 export const ToolTraceSchema = z.object({
   toolName: z.string(),

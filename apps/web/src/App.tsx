@@ -1,28 +1,48 @@
 import { useState } from "react";
 import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup } from "@scc/shared";
 import { api } from "./api.js";
-import { LearningPanel } from "./components/LearningPanel.js";
+import { DocsView } from "./components/DocsView.js";
+import { HistoryPage } from "./components/HistoryPage.js";
+import { KnowledgePanel } from "./components/KnowledgePanel.js";
+import { LibraryView, type LibrarySection } from "./components/LibraryView.js";
 import { McpPanel } from "./components/McpPanel.js";
+import { ModelProvidersPanel } from "./components/ModelProvidersPanel.js";
 import { PermissionsPanel } from "./components/PermissionsPanel.js";
-import { ProjectMemoryPanel } from "./components/ProjectMemoryPanel.js";
 import { SettingsView, type SettingsSection } from "./components/SettingsView.js";
 import { SkillPanel } from "./components/SkillPanel.js";
 import { TaskList } from "./components/TaskList.js";
 import { TaskThread } from "./components/TaskThread.js";
-import type { ComposerMode } from "./components/Composer.js";
+import type { ComposerMode, PermissionPreset } from "./components/Composer.js";
+import { normalizeContextPatch, providerById } from "./llm-presets.js";
 import { useWorkbenchData } from "./useWorkbenchData.js";
+
+type ActiveView = "tasks" | "history" | "library" | "docs" | "settings";
+
+const allRiskCategories: RiskCategory[] = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
+const readOnlyRiskCategories: RiskCategory[] = ["host_observation", "workspace_read"];
 
 export function App() {
   const data = useWorkbenchData();
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
-  const [activeView, setActiveView] = useState<"tasks" | "settings">("tasks");
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>("skills");
+  const [activeView, setActiveView] = useState<ActiveView>("tasks");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("providers");
+  const [librarySection, setLibrarySection] = useState<LibrarySection>("skills");
   const language = data.preferences?.language ?? "zh-CN";
+  const engineStatus = data.error ? "attention" : data.realtimeConnected ? "streaming" : "running";
+  const activeProvider = data.modelProviders.find((provider) => provider.id === data.preferences?.activeModelProviderId) ?? data.modelProviders.find((provider) => provider.enabled);
+  const modelLabel = activeProvider?.defaultModelId || data.preferences?.defaultModel || "not configured";
+  const permissionPreset = getPermissionPreset(data.permissions);
+  const permissionScopeLabel = formatPermissionPreset(permissionPreset, language);
+  const modelProvider = providerById(data.preferences?.llmProvider);
+  const modelOptions =
+    activeProvider?.models.map((model) => ({ label: model.label || model.id, value: model.id })) ??
+    modelProvider.models.map((model) => ({ label: model.id, value: model.id }));
 
   return (
     <main className="shell">
       <TaskList
         activeView={activeView}
+        engineStatus={engineStatus}
         language={language}
         open={taskDrawerOpen}
         tasks={data.tasks}
@@ -33,7 +53,25 @@ export function App() {
           setTaskDrawerOpen(false);
           data.clearSelection();
         }}
+        onOpenDocs={() => {
+          setActiveView("docs");
+          setTaskDrawerOpen(false);
+        }}
+        onOpenHistory={() => {
+          setActiveView("history");
+          setTaskDrawerOpen(false);
+        }}
+        onOpenLibrary={() => {
+          setLibrarySection("skills");
+          setActiveView("library");
+          setTaskDrawerOpen(false);
+        }}
         onOpenSettings={() => {
+          setActiveView("settings");
+          setTaskDrawerOpen(false);
+        }}
+        onOpenSupport={() => {
+          setSettingsSection("permissions");
           setActiveView("settings");
           setTaskDrawerOpen(false);
         }}
@@ -51,11 +89,72 @@ export function App() {
           busy={data.busy}
           error={data.error}
           language={language}
+          engineStatus={engineStatus}
+          preferences={data.preferences}
+          modelLabel={modelLabel}
+          modelOptions={modelOptions}
+          permissionPreset={permissionPreset}
+          permissionScopeLabel={permissionScopeLabel}
+          onModelChange={(modelId) => updateModelSelection(modelId)}
+          onOpenConnect={() => {
+            setSettingsSection("permissions");
+            setActiveView("settings");
+          }}
+          onPermissionPresetChange={(preset) => applyPermissionPreset(preset)}
           onOpenTasks={() => setTaskDrawerOpen(true)}
           onSubmit={(mode, text) => submitComposer(mode, text)}
           onStop={() => data.selected && void data.runTaskAction(() => api.control(data.selected!.id, "pause"))}
           onApprovalDecision={(approvalId, decision) => approve(approvalId, decision)}
         />
+      ) : activeView === "history" ? (
+        <HistoryPage
+          language={language}
+          tasks={data.tasks}
+          onOpenTasks={() => setTaskDrawerOpen(true)}
+          onDelete={(taskId, options) => data.deleteTask(taskId, options)}
+          onOpenTask={(taskId) => {
+            setActiveView("tasks");
+            void data.selectTask(taskId);
+          }}
+        />
+      ) : activeView === "library" ? (
+        <LibraryView
+          activeSection={librarySection}
+          language={language}
+          onOpenTasks={() => setTaskDrawerOpen(true)}
+          onSection={(section) => setLibrarySection(section)}
+        >
+          {{
+            skills: (
+              <SkillPanel
+                language={language}
+                skills={data.skills}
+                duplicates={data.skillDuplicates}
+                conflicts={data.skillConflicts}
+                reflections={data.reflections}
+                onRunReflection={() => void data.runSideAction(() => api.runReflection())}
+                onCreate={(input) => data.runSideAction(() => api.createSkill(input))}
+                onUpdate={(skillId, input) => data.runSideAction(() => api.patchSkill(skillId, input))}
+                onDelete={(skillId) => data.runSideAction(() => api.deleteSkill(skillId))}
+                onBulkDelete={(skillIds) => data.runSideAction(() => api.bulkDeleteSkills({ skillIds }))}
+                onMergeDuplicate={(group) => mergeDuplicate(group)}
+                onExport={(skillId) => exportSkill(skillId)}
+              />
+            ),
+            knowledge: (
+              <KnowledgePanel
+                language={language}
+                items={data.knowledgeItems}
+                onCreate={(input) => data.runSideAction(() => api.createKnowledgeItem(input))}
+                onDelete={(id) => data.runSideAction(() => api.deleteKnowledgeItem(id))}
+                onUpdate={(id, input) => data.runSideAction(() => api.patchKnowledgeItem(id, input))}
+                onUpload={(input) => data.runSideAction(() => api.uploadKnowledgeFile(input))}
+              />
+            )
+          }}
+        </LibraryView>
+      ) : activeView === "docs" ? (
+        <DocsView language={language} onOpenTasks={() => setTaskDrawerOpen(true)} />
       ) : (
         <SettingsView
           activeSection={settingsSection}
@@ -64,26 +163,14 @@ export function App() {
           onSection={(section) => setSettingsSection(section)}
         >
           {{
-            learning: (
-              <LearningPanel
-                memories={data.memories}
-                patterns={data.patterns}
-                conflicts={data.skillConflicts}
-                reflections={data.reflections}
-                onRunReflection={() => void data.runSideAction(() => api.runReflection())}
-              />
-            ),
-            skills: (
-              <SkillPanel
-                skills={data.skills}
-                duplicates={data.skillDuplicates}
-                conflicts={data.skillConflicts}
-                onCreate={(input) => data.runSideAction(() => api.createSkill(input))}
-                onUpdate={(skillId, input) => data.runSideAction(() => api.patchSkill(skillId, input))}
-                onDelete={(skillId) => data.runSideAction(() => api.deleteSkill(skillId))}
-                onBulkDelete={(skillIds) => data.runSideAction(() => api.bulkDeleteSkills({ skillIds }))}
-                onMergeDuplicate={(group) => mergeDuplicate(group)}
-                onExport={(skillId) => exportSkill(skillId)}
+            providers: (
+              <ModelProvidersPanel
+                activeProviderId={data.preferences?.activeModelProviderId ?? null}
+                language={language}
+                providers={data.modelProviders}
+                onCreate={(input) => data.runSideAction(() => api.createModelProvider(input))}
+                onDelete={(providerId) => data.runSideAction(() => api.deleteModelProvider(providerId))}
+                onUpdate={(providerId, input) => data.runSideAction(() => api.patchModelProvider(providerId, input))}
               />
             ),
             permissions: (
@@ -96,17 +183,6 @@ export function App() {
                 onPreference={(patch) => void updatePreference(patch)}
               />
             ),
-            memory: (
-              <ProjectMemoryPanel
-                memories={data.projectMemories}
-                onCreate={(title, content) =>
-                  void data.runSideAction(() =>
-                    api.createProjectMemory({ title, content, category: "convention", tags: [], projectId: "default" })
-                  )
-                }
-                onDelete={(id) => void data.runSideAction(() => api.deleteProjectMemory(id))}
-              />
-            ),
             mcp: (
               <McpPanel
                 servers={data.mcpServers}
@@ -115,6 +191,17 @@ export function App() {
                 onConnect={(serverId) => void data.runSideAction(() => api.connectMcpServer(serverId))}
                 onDisconnect={(serverId) => void data.runSideAction(() => api.disconnectMcpServer(serverId))}
                 onDelete={(serverId) => void data.runSideAction(() => api.deleteMcpServer(serverId))}
+              />
+            ),
+            preferences: (
+              <PermissionsPanel
+                language={language}
+                permissions={data.permissions}
+                preferences={data.preferences}
+                preferencesOnly
+                onGrant={(risk) => void grantGlobal(risk)}
+                onRevoke={(risk) => void data.runSideAction(() => api.revokeGlobalPermission(risk))}
+                onPreference={(patch) => void updatePreference(patch)}
               />
             )
           }}
@@ -153,6 +240,40 @@ export function App() {
     void data.runSideAction(() => api.updatePreferences(patch));
   }
 
+  function applyPermissionPreset(preset: PermissionPreset) {
+    void data.runSideAction(async () => {
+      const granted = new Set(data.permissions.map((permission) => permission.riskCategory));
+      const target = new Set<RiskCategory>(
+        preset === "all" ? allRiskCategories : preset === "read_only" ? readOnlyRiskCategories : []
+      );
+      for (const risk of allRiskCategories) {
+        if (target.has(risk) && !granted.has(risk)) {
+          await api.grantGlobalPermission(risk, `User selected ${preset} permission preset from the composer.`);
+        }
+        if (!target.has(risk) && granted.has(risk)) {
+          await api.revokeGlobalPermission(risk);
+        }
+      }
+    });
+  }
+
+  function updateModelSelection(modelId: string) {
+    void data.runSideAction(async () => {
+      if (activeProvider) {
+        const model = activeProvider.models.find((item) => item.id === modelId);
+        await api.patchModelProvider(activeProvider.id, { defaultModelId: modelId, makeActive: true });
+        await api.updatePreferences(normalizeContextPatch(data.preferences, {
+          activeModelProviderId: activeProvider.id,
+          defaultModel: modelId,
+          providerBaseUrl: activeProvider.baseUrl,
+          ...(model ? { maxTokensPerRequest: model.contextWindow } : {})
+        }));
+        return;
+      }
+      await api.updatePreferences(normalizeContextPatch(data.preferences, { defaultModel: modelId }));
+    });
+  }
+
   async function exportSkill(skillId: string) {
     await data.runSideAction(async () => {
       const payload = await api.exportSkill(skillId);
@@ -172,4 +293,19 @@ export function App() {
       api.mergeSkills(group.canonicalSkillId, { targetSkillId: group.canonicalSkillId, sourceSkillIds, deleteSources: true })
     );
   }
+}
+
+function getPermissionPreset(permissions: Array<{ riskCategory: RiskCategory }>): PermissionPreset {
+  const granted = new Set(permissions.map((permission) => permission.riskCategory));
+  if (allRiskCategories.every((risk) => granted.has(risk))) return "all";
+  if (readOnlyRiskCategories.every((risk) => granted.has(risk)) && allRiskCategories.every((risk) => readOnlyRiskCategories.includes(risk) || !granted.has(risk))) {
+    return "read_only";
+  }
+  return "ask";
+}
+
+function formatPermissionPreset(preset: PermissionPreset, language: string): string {
+  if (preset === "all") return "All";
+  if (preset === "read_only") return "Read only";
+  return language === "zh-CN" ? "Ask" : "Ask";
 }
