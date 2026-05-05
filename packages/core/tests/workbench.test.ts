@@ -26,7 +26,8 @@ import {
   loadOpenAiConfig,
   loadOpenAiProviderConfig,
   nowIso,
-  promoteExperience
+  promoteExperience,
+  shouldPromoteExperienceToSkill
 } from "../src/index.js";
 
 const hostObservationModel = new ConfiguredToolModelClient("Get-Process | Sort-Object CPU");
@@ -237,7 +238,17 @@ describe("AgentWorkbench", () => {
     const completed = await workbench.decideApproval(created.id, approval.id, "allow_for_task");
     const experience = (await workbench.listExperiences())[0];
     if (!experience) throw new Error("expected experience");
-    await workbench.promoteExperience(experience.id);
+    await workbench.createSkill({
+      title: "Derived host process review",
+      body: "# Derived host process review\nUse fresh host-observation evidence and summarize current CPU and memory usage.",
+      status: "candidate",
+      sourceMemoryIds: [experience.id],
+      applicability: {
+        keywords: ["process", "software"],
+        requiredTools: ["run_command"],
+        requiredContext: ["host_observation"]
+      }
+    });
 
     const result = await workbench.deleteTask(completed.id, { deleteLearningData: true, deleteDerivedSkills: true });
 
@@ -255,7 +266,7 @@ describe("AgentWorkbench", () => {
     expect(await workbench.listSkills()).toHaveLength(0);
   });
 
-  it("manual experience promotion merges duplicate skills instead of creating repeated rows", async () => {
+  it("rejects one-off experience promotion and keeps generated skill bodies reusable", async () => {
     const store = new InMemoryWorkbenchStore();
     const workbench = new AgentWorkbench({ store });
     const task = {
@@ -302,17 +313,24 @@ describe("AgentWorkbench", () => {
       ]
     };
     const first = createExperience(task);
-    const second = { ...createExperience({ ...task, id: "task_2" }), id: "experience_2", taskId: "task_2" };
     await store.saveExperience(first);
-    await store.saveExperience(second);
 
-    await workbench.promoteExperience(first.id);
-    await workbench.promoteExperience(second.id);
+    await expect(workbench.promoteExperience(first.id)).rejects.toThrow(/not eligible/);
+    expect(await workbench.listSkills()).toHaveLength(0);
 
-    const skills = await workbench.listSkills();
-    expect(skills).toHaveLength(1);
-    expect(skills[0]?.sourceMemoryIds).toEqual(expect.arrayContaining([first.id, second.id]));
-    expect(await workbench.listSkillDuplicates()).toHaveLength(0);
+    const generated = promoteExperience({
+      ...first,
+      assessment: { ...first.assessment, confidence: 0.95, suggestedPatterns: ["host_observation"] },
+      toolsUsed: [
+        ...first.toolsUsed,
+        { toolName: "list_files", args: {}, result: "files", riskCategory: "workspace_read" }
+      ],
+      meta: { ...first.meta, complexity: "medium", tools: ["run_command", "list_files"] }
+    });
+    expect(generated.body).toContain("Reusable approach");
+    expect(generated.body).toContain("Run the tools against the current task state");
+    expect(generated.body).not.toContain("Top process: node");
+    expect(generated.body).not.toContain("Result:");
   });
 
   it("uses global risk grants before showing approval UI", async () => {
@@ -418,7 +436,7 @@ describe("AgentWorkbench", () => {
     expect(final.events.some((event) => String(event.payload["output"] ?? "").includes("cancelled"))).toBe(true);
   });
 
-  it("marks side-effect experience promotions as drafts", () => {
+  it("keeps side-effect experience promotions ineligible and candidate-only", () => {
     const base = {
       id: "task_1",
       title: "write file",
@@ -455,7 +473,9 @@ describe("AgentWorkbench", () => {
       ]
     };
     const experience = createExperience(base);
+    expect(shouldPromoteExperienceToSkill(experience)).toBe(false);
     expect(promoteExperience(experience).status).toBe("candidate");
+    expect(promoteExperience(experience).body).not.toContain("done");
   });
 
   it("records skill load events and updates skill stats after successful use", async () => {

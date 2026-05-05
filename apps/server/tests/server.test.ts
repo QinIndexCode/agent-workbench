@@ -132,7 +132,8 @@ describe("server API", () => {
       method: "POST",
       url: `/api/experiences/${experiences[0].id}/promote`
     });
-    expect(promoteResponse.statusCode).toBe(201);
+    expect(promoteResponse.statusCode).toBe(400);
+    expect(promoteResponse.json().error).toContain("not eligible");
 
     expect((await app.inject("/api/task-memories")).json().length).toBeGreaterThan(0);
     expect((await app.inject("/api/patterns")).statusCode).toBe(200);

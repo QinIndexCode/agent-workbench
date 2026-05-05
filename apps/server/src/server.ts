@@ -162,7 +162,8 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     try {
       return reply.code(201).send(await workbench.promoteExperience(id));
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not eligible") ? 400 : 404).send({ error: message });
     }
   });
 

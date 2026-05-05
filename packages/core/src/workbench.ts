@@ -38,7 +38,6 @@ import {
   listSkillDuplicateGroups,
   mergeSkillRecords,
   normalizeSkillRecord,
-  promoteExperience,
   reflectMemories
 } from "./experience.js";
 import { FallbackModelClient, type ModelClient } from "./fallback-model.js";
@@ -346,8 +345,7 @@ export class AgentWorkbench {
   async promoteExperience(experienceId: string): Promise<SkillRecord> {
     const experience = (await this.store.listExperiences()).find((item) => item.id === experienceId);
     if (!experience) throw new Error(`Experience not found: ${experienceId}`);
-    const skill = promoteExperience(experience);
-    return this.saveSkillWithConflicts(skill);
+    throw new Error("Experience is not eligible for direct Skill promotion. Run reflection to promote stable reusable patterns.");
   }
 
   async deleteSkill(skillId: string): Promise<void> {

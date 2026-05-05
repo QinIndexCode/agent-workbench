@@ -75,7 +75,7 @@ export function TaskList({
         </div>
         <div className="sidebarNav" aria-label={text.navigation}>
           <button
-            className={activeView === "tasks" ? "sidebarNavButton primary selected" : "sidebarNavButton primary"}
+            className="sidebarNavButton primary"
             onClick={() => {
               setHistoryOpen(false);
               onNewTask();

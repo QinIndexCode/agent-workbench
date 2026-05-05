@@ -176,15 +176,24 @@ export function promoteExperience(experience: ExperienceRecord): SkillRecord {
       `# ${experience.title}`,
       "",
       "## When to use",
-      "Use this only when a future task clearly matches this recorded workflow.",
+      "Use this only when a future task clearly matches the goal, evidence type, and tool constraints below.",
       "",
-      "## Experience",
-      experience.body,
+      "## Reusable approach",
+      "- Restate the current user goal before choosing tools.",
+      experience.meta.tools.length > 0
+        ? `- Prefer fresh evidence from: ${experience.meta.tools.join(", ")}.`
+        : "- Choose the minimum tools needed for fresh evidence.",
+      "- Run the tools against the current task state; never reuse historical outputs.",
+      "- Summarize only the new evidence observed in the current run.",
       "",
-      "## Safety",
+      "## Tool constraints",
       experience.readOnly
-        ? "This skill can be active because the source task only used read-only evidence."
-        : "This skill remains candidate because the source task involved side effects."
+        ? "- The source pattern was read-only; keep it read-only unless the user explicitly asks for changes."
+        : "- The source pattern involved side effects; keep this skill as candidate until a user reviews it.",
+      "",
+      "## Exclusions",
+      "- Do not apply this skill to a task that only shares superficial keywords.",
+      "- Do not include one-off command output, machine state, or prior task results in the answer."
     ].join("\n"),
     applicability: {
       description: `Tasks similar to: ${experience.title}`,
@@ -265,8 +274,10 @@ export function normalizeSkillRecord(input: unknown): SkillRecord {
 
 export function shouldPromoteExperienceToSkill(experience: ExperienceRecord): boolean {
   if (!experience.readOnly) return false;
-  if (!experience.assessment.goalAchieved || experience.assessment.confidence < 0.7) return false;
-  if (experience.toolsUsed.length === 0) return false;
+  if (!experience.assessment.goalAchieved || experience.assessment.confidence < 0.85) return false;
+  if (experience.toolsUsed.length < 2) return false;
+  if (experience.meta.complexity === "simple") return false;
+  if (experience.assessment.suggestedPatterns.length === 0) return false;
   if (experience.meta.outcome !== "success") return false;
   if (isLowValueSkillResult(experience.result) || isLowValueSkillResult(experience.body)) return false;
   return true;

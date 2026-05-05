@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build -w @scc/shared && npm run build -w @scc/core && npm run build -w @scc/server && npm run build -w @scc/web",
     "dev": "npm run dev -w @scc/server",
     "test": "vitest run",
     "test:e2e": "npm.cmd run build && playwright test",
