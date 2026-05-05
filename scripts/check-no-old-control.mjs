@@ -2,7 +2,17 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const root = process.cwd();
-const ignored = new Set([".git", "node_modules", "dist", "docs(knowlage)", "coverage"]);
+const ignored = new Set([
+  ".git",
+  "node_modules",
+  "dist",
+  "dist-types",
+  "docs(knowlage)",
+  "coverage",
+  "playwright-report",
+  "test-results",
+  "data"
+]);
 const forbidden = [
   ["quality", "Profile", "Id"],
   ["quality", "Gate", "Id"],
@@ -26,15 +36,29 @@ async function* walk(dir) {
 }
 
 const hits = [];
+const generatedHits = [];
 for await (const file of walk(root)) {
+  if (/\\(apps|packages|tests)\\.*\.(js|d\.ts|d\.ts\.map)$/.test(file)) {
+    generatedHits.push(file);
+    continue;
+  }
   const text = await readFile(file, "utf8").catch(() => "");
   for (const term of forbidden) {
     if (text.includes(term)) hits.push(`${file}: ${term}`);
   }
 }
 
-if (hits.length > 0) {
-  console.error(hits.join("\n"));
+const fallbackText = await readFile(join(root, "packages/core/src/fallback-model.ts"), "utf8").catch(() => "");
+for (const term of ["Get-Process", "tasklist", "running software", "进程", "性能占用"]) {
+  if (fallbackText.includes(term)) hits.push(`fallback-model.ts contains task-specific fallback term: ${term}`);
+}
+
+if (hits.length > 0 || generatedHits.length > 0) {
+  if (hits.length > 0) console.error(hits.join("\n"));
+  if (generatedHits.length > 0) {
+    console.error("Generated artifacts found in source/test tree:");
+    console.error(generatedHits.join("\n"));
+  }
   process.exit(1);
 }
 

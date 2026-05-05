@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { AgentWorkbench, InMemoryWorkbenchStore } from "@scc/core";
+import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore } from "@scc/core";
 import type { ToolCall, ToolResult } from "@scc/shared";
 import { createApp } from "../src/server.js";
 import { SqliteWorkbenchStore } from "../src/sqlite-store.js";
@@ -22,7 +22,10 @@ class StubToolExecutor {
 describe("server API", () => {
   it("creates a task and exposes an approval", async () => {
     const app = await createApp({
-      workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore() })
+      workbench: new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        model: new ConfiguredToolModelClient("Get-Process")
+      })
     });
 
     const response = await app.inject({
@@ -55,7 +58,11 @@ describe("server API", () => {
 
   it("serves task, approval, guidance, and learning endpoints", async () => {
     const app = await createApp({
-      workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), tools: new StubToolExecutor() })
+      workbench: new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        tools: new StubToolExecutor(),
+        model: new ConfiguredToolModelClient("Get-Process")
+      })
     });
 
     const createResponse = await app.inject({
@@ -93,15 +100,38 @@ describe("server API", () => {
     const patchResponse = await app.inject({
       method: "PATCH",
       url: `/api/skills/${skills[0].id}`,
-      payload: { status: "draft" }
+      payload: { status: "candidate" }
     });
-    expect(patchResponse.json().status).toBe("draft");
+    expect(patchResponse.json().status).toBe("candidate");
 
     const promoteResponse = await app.inject({
       method: "POST",
       url: `/api/experiences/${experiences[0].id}/promote`
     });
     expect(promoteResponse.statusCode).toBe(201);
+
+    expect((await app.inject("/api/task-memories")).json().length).toBeGreaterThan(0);
+    expect((await app.inject("/api/patterns")).statusCode).toBe(200);
+    expect((await app.inject("/api/preferences")).json().language).toBe("zh-CN");
+
+    const grantResponse = await app.inject({
+      method: "POST",
+      url: "/api/permissions/global",
+      payload: { riskCategory: "host_observation", reason: "test" }
+    });
+    expect(grantResponse.statusCode).toBe(201);
+    expect((await app.inject("/api/permissions/global")).json()[0].riskCategory).toBe("host_observation");
+
+    const reflectionResponse = await app.inject({ method: "POST", url: "/api/reflections" });
+    expect(reflectionResponse.statusCode).toBe(201);
+
+    const memoryResponse = await app.inject({
+      method: "POST",
+      url: "/api/project-memories",
+      payload: { title: "Convention", content: "Use TypeScript.", category: "convention", tags: [] }
+    });
+    expect(memoryResponse.statusCode).toBe(201);
+    expect((await app.inject("/api/project-memories")).json()[0].title).toBe("Convention");
     await app.close();
   });
 });

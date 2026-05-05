@@ -26,6 +26,12 @@ describe("api client", () => {
       "/api/tasks/task_1/approvals/approval_1",
       expect.objectContaining({ method: "POST", body: JSON.stringify({ decision: "allow_once" }) })
     );
+
+    await api.grantGlobalPermission("host_observation", "ok");
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/permissions/global",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ riskCategory: "host_observation", reason: "ok" }) })
+    );
   });
 
   it("raises failed responses", async () => {

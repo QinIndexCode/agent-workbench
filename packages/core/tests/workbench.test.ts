@@ -1,7 +1,22 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ToolCall, ToolResult } from "@scc/shared";
 import { ShellToolExecutor } from "../src/tools.js";
-import { AgentWorkbench, InMemoryWorkbenchStore, PermissionEngine, createExperience, createId, nowIso, promoteExperience } from "../src/index.js";
+import {
+  AgentWorkbench,
+  ConfiguredToolModelClient,
+  InMemoryWorkbenchStore,
+  PermissionEngine,
+  createExperience,
+  createId,
+  loadOpenAiConfig,
+  nowIso,
+  promoteExperience
+} from "../src/index.js";
+
+const hostObservationModel = new ConfiguredToolModelClient("Get-Process | Sort-Object CPU");
 
 class StubToolExecutor {
   calls: ToolCall[] = [];
@@ -31,6 +46,15 @@ describe("PermissionEngine", () => {
     expect(risk.category).toBe("destructive");
   });
 
+  it("does not treat PowerShell Format-Table as destructive formatting", () => {
+    const engine = new PermissionEngine();
+    const risk = engine.assess("run_command", {
+      command:
+        "Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 20 Name, Id, CPU, @{N='MemoryMB';E={[math]::Round($_.WorkingSet64/1MB,1)}} | Format-Table -AutoSize"
+    });
+    expect(risk.category).toBe("host_observation");
+  });
+
   it("classifies workspace writes and network requests", () => {
     const engine = new PermissionEngine();
     expect(engine.assess("run_command", { command: "Set-Content note.txt hi" }).category).toBe("workspace_write");
@@ -41,7 +65,7 @@ describe("PermissionEngine", () => {
 describe("AgentWorkbench", () => {
   it("pauses host observation for approval, then resumes and records evidence", async () => {
     const tools = new StubToolExecutor();
-    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), tools });
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), tools, model: hostObservationModel });
 
     const created = await workbench.createTask("帮我看一下当前桌面运行的软件有哪些，性能占用最高的是哪些");
     expect(created.status).toBe("waiting_approval");
@@ -58,7 +82,11 @@ describe("AgentWorkbench", () => {
   });
 
   it("keeps running user input pending until the next safe point", async () => {
-    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), tools: new StubToolExecutor() });
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new StubToolExecutor(),
+      model: new ConfiguredToolModelClient("Get-Process")
+    });
     const created = await workbench.createTask("check running processes");
     const guided = await workbench.appendMessage(created.id, "Focus on memory too");
 
@@ -68,7 +96,11 @@ describe("AgentWorkbench", () => {
 
   it("records read-only experience as an enabled skill", async () => {
     const tools = new StubToolExecutor();
-    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), tools });
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools,
+      model: new ConfiguredToolModelClient("Get-Process")
+    });
     const created = await workbench.createTask("check running processes");
     const approval = created.approvals[0];
     if (!approval) throw new Error("expected approval");
@@ -78,7 +110,40 @@ describe("AgentWorkbench", () => {
     const experiences = await workbench.listExperiences();
     const skills = await workbench.listSkills();
     expect(experiences[0]?.readOnly).toBe(true);
-    expect(skills[0]?.status).toBe("enabled");
+    expect(skills[0]?.status).toBe("active");
+  });
+
+  it("uses global risk grants before showing approval UI", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const tools = new StubToolExecutor();
+    const workbench = new AgentWorkbench({
+      store,
+      tools,
+      model: new ConfiguredToolModelClient("Get-Process")
+    });
+
+    await workbench.grantGlobalPermission("host_observation", "test grant");
+    const created = await workbench.createTask("check running processes");
+
+    expect(created.status).toBe("completed");
+    expect(created.approvals).toHaveLength(0);
+    expect(created.events.some((event) => event.type === "approval_auto_granted")).toBe(true);
+    expect(tools.calls).toHaveLength(1);
+  });
+
+  it("revokes global grants so approvals appear again", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new StubToolExecutor(),
+      model: new ConfiguredToolModelClient("Get-Process")
+    });
+
+    await workbench.grantGlobalPermission("host_observation", "test grant");
+    await workbench.revokeGlobalPermission("host_observation");
+    const created = await workbench.createTask("check running processes");
+
+    expect(created.status).toBe("waiting_approval");
+    expect(created.approvals[0]?.riskCategory).toBe("host_observation");
   });
 
   it("marks side-effect experience promotions as drafts", () => {
@@ -118,7 +183,7 @@ describe("AgentWorkbench", () => {
       ]
     };
     const experience = createExperience(base);
-    expect(promoteExperience(experience).status).toBe("draft");
+    expect(promoteExperience(experience).status).toBe("candidate");
   });
 });
 
@@ -135,3 +200,77 @@ describe("ShellToolExecutor", () => {
     expect(result.output).toContain("ok");
   });
 });
+
+describe("OpenAI provider config", () => {
+  it("loads apiKey and baseURL from the same API key document section", () => {
+    const temp = mkdtempSync(join(tmpdir(), "scc-apikey-"));
+    const filePath = join(temp, "dont_touch_(APIKEY).md");
+    const previous = {
+      apiKey: process.env["OPENAI_API_KEY"],
+      baseUrl: process.env["OPENAI_BASE_URL"],
+      baseurl: process.env["OPENAI_BASEURL"],
+      sccBaseUrl: process.env["SCC_OPENAI_BASE_URL"],
+      model: process.env["SCC_MODEL"],
+      openAiModel: process.env["OPENAI_MODEL"],
+      provider: process.env["SCC_API_PROVIDER"],
+      openAiProvider: process.env["OPENAI_PROVIDER"]
+    };
+
+    try {
+      delete process.env["OPENAI_API_KEY"];
+      delete process.env["OPENAI_BASE_URL"];
+      delete process.env["OPENAI_BASEURL"];
+      delete process.env["SCC_OPENAI_BASE_URL"];
+      delete process.env["SCC_MODEL"];
+      delete process.env["OPENAI_MODEL"];
+      delete process.env["SCC_API_PROVIDER"];
+      delete process.env["OPENAI_PROVIDER"];
+
+      writeFileSync(
+        filePath,
+        [
+          "SCNet",
+          "baseUrl: https://scnet.example/v1",
+          "apiKey: sk-live-example=",
+          "---",
+          "xiaomi (mimo)",
+          "apiKey: deleted-key （deleted）",
+          "baseUrl: https://mimo.example/v1",
+          "canonicalLiveModel: mimo-v2.5",
+          "tokenPlanApiKey: tp-live-example",
+          "baseUrl: https://token-plan.example/v1"
+        ].join("\n")
+      );
+
+      expect(loadOpenAiConfig(filePath)).toEqual({
+        apiKey: "tp-live-example",
+        baseURL: "https://token-plan.example/v1",
+        model: "mimo-v2.5"
+      });
+
+      process.env["SCC_API_PROVIDER"] = "SCNet";
+      expect(loadOpenAiConfig(filePath)).toEqual({
+        apiKey: "sk-live-example=",
+        baseURL: "https://scnet.example/v1"
+      });
+    } finally {
+      restoreEnv("OPENAI_API_KEY", previous.apiKey);
+      restoreEnv("OPENAI_BASE_URL", previous.baseUrl);
+      restoreEnv("OPENAI_BASEURL", previous.baseurl);
+      restoreEnv("SCC_OPENAI_BASE_URL", previous.sccBaseUrl);
+      restoreEnv("SCC_MODEL", previous.model);
+      restoreEnv("OPENAI_MODEL", previous.openAiModel);
+      restoreEnv("SCC_API_PROVIDER", previous.provider);
+      restoreEnv("OPENAI_PROVIDER", previous.openAiProvider);
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+});
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+    return;
+  }
+  process.env[name] = value;
+}

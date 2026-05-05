@@ -3,7 +3,12 @@ import { jsx as _jsx } from "react/jsx-runtime";
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App, ApprovalCard, CompactList, Composer, TaskList, Timeline } from "./App.js";
+import { App } from "./App.js";
+import { ApprovalCard } from "./components/ApprovalCard.js";
+import { Composer } from "./components/Composer.js";
+import { CompactList } from "./components/LearningPanel.js";
+import { TaskList } from "./components/TaskList.js";
+import { Timeline } from "./components/Timeline.js";
 afterEach(() => {
     vi.unstubAllGlobals();
 });
@@ -18,6 +23,21 @@ describe("Composer", () => {
         fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "new guidance" } });
         fireEvent.click(screen.getByLabelText("Send"));
         expect(onSubmit).toHaveBeenCalledWith("new guidance");
+    });
+    it("uses Enter to submit and Shift+Enter for a newline", () => {
+        const onSubmit = vi.fn();
+        const onStop = vi.fn();
+        render(_jsx(Composer, { busy: false, running: false, onSubmit: onSubmit, onStop: onStop }));
+        const input = screen.getByLabelText("Task input");
+        fireEvent.change(input, { target: { value: "line one" } });
+        fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+        expect(onSubmit).not.toHaveBeenCalled();
+        fireEvent.keyDown(input, { key: "Enter" });
+        expect(onSubmit).toHaveBeenCalledWith("line one");
+    });
+    it("does not expose stop semantics when the task is not running", () => {
+        render(_jsx(Composer, { busy: false, running: false, onSubmit: vi.fn(), onStop: vi.fn() }));
+        expect(screen.getByLabelText("Idle")).toBeDisabled();
     });
 });
 describe("Workbench components", () => {
@@ -50,7 +70,7 @@ describe("Workbench components", () => {
     };
     it("renders task list status as text", () => {
         const onSelect = vi.fn();
-        render(_jsx(TaskList, { tasks: [task], selectedId: "task_1", onSelect: onSelect }));
+        render(_jsx(TaskList, { open: false, tasks: [task], selectedId: "task_1", onClose: vi.fn(), onSelect: onSelect }));
         expect(screen.getByText("waiting approval")).toBeInTheDocument();
         fireEvent.click(screen.getByText("Check host"));
         expect(onSelect).toHaveBeenCalledWith("task_1");
@@ -58,7 +78,7 @@ describe("Workbench components", () => {
     it("renders user-facing timeline evidence", () => {
         render(_jsx(Timeline, { task: task }));
         expect(screen.getByText("check processes")).toBeInTheDocument();
-        expect(screen.getByText("node 100")).toBeInTheDocument();
+        expect(screen.getByText("View raw output")).toBeInTheDocument();
     });
     it("renders approval decisions", () => {
         const approval = {
@@ -76,13 +96,14 @@ describe("Workbench components", () => {
         };
         const onDecision = vi.fn();
         render(_jsx(ApprovalCard, { approval: approval, onDecision: onDecision }));
+        expect(screen.getByText("Allow globally")).toBeInTheDocument();
         fireEvent.click(screen.getByText("Allow for this task"));
         expect(onDecision).toHaveBeenCalledWith("allow_for_task");
     });
     it("renders compact governance rows", () => {
-        render(_jsx(CompactList, { title: "Skills", rows: [{ id: "skill_1", label: "Host observation", meta: "enabled" }] }));
+        render(_jsx(CompactList, { title: "Skills", rows: [{ id: "skill_1", label: "Host observation", meta: "active" }] }));
         expect(screen.getByText("Host observation")).toBeInTheDocument();
-        expect(screen.getByText("enabled")).toBeInTheDocument();
+        expect(screen.getByText("active")).toBeInTheDocument();
     });
     it("creates a task and resolves an approval from the app shell", async () => {
         const approval = {
@@ -128,8 +149,32 @@ describe("Workbench components", () => {
                 return jsonResponse(currentTasks);
             if (url === "/api/tasks/task_1")
                 return jsonResponse(currentTasks[0] ?? created);
-            if (url === "/api/experiences" || url === "/api/skills")
+            if (url === "/api/experiences" ||
+                url === "/api/task-memories" ||
+                url === "/api/patterns" ||
+                url === "/api/skills" ||
+                url === "/api/permissions/global" ||
+                url === "/api/reflections" ||
+                url === "/api/project-memories") {
                 return jsonResponse([]);
+            }
+            if (url === "/api/preferences") {
+                return jsonResponse({
+                    defaultModel: "gpt-5.4-mini",
+                    maxTokensPerRequest: 128000,
+                    autoApprove: "none",
+                    showThinking: true,
+                    language: "zh-CN",
+                    reflectionEnabled: true,
+                    reflectionSchedule: "02:00",
+                    skillAutoInject: true,
+                    maxInjectedSkills: 3,
+                    mcpApprovalMode: "confirm_dangerous",
+                    sanitizeSensitiveData: true,
+                    encryptStorage: false,
+                    updatedAt: new Date().toISOString()
+                });
+            }
             if (url.includes("/approvals/")) {
                 currentTasks = [completed];
                 return jsonResponse(completed);

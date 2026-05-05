@@ -1,3 +1,4 @@
+export * from "./context-assembler.js";
 export * from "./experience.js";
 export * from "./fallback-model.js";
 export * from "./ids.js";

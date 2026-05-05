@@ -1,10 +1,30 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import type { ExperienceRecord, SkillRecord, TaskDetail } from "@scc/shared";
-import type { WorkbenchStore } from "@scc/core";
+import type {
+  ExperienceRecord,
+  GlobalPermissionGrant,
+  PatternRecord,
+  ProjectMemory,
+  ReflectionSession,
+  RiskCategory,
+  SkillRecord,
+  TaskDetail,
+  TaskMemory,
+  UserPreferences
+} from "@scc/shared";
+import { defaultPreferences, type WorkbenchStore } from "@scc/core";
 
-type Namespace = "tasks" | "experiences" | "skills";
+type Namespace =
+  | "tasks"
+  | "experiences"
+  | "task_memories"
+  | "patterns"
+  | "skills"
+  | "global_permissions"
+  | "preferences"
+  | "reflection_sessions"
+  | "project_memories";
 type Row = { key: string; value: string };
 
 export class SqliteWorkbenchStore implements WorkbenchStore {
@@ -13,6 +33,7 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
     this.db = new Database(filePath);
+    this.db.pragma("journal_mode = WAL");
     this.db
       .prepare(
         "CREATE TABLE IF NOT EXISTS records (namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(namespace, key))"
@@ -40,6 +61,22 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
     return this.list<ExperienceRecord>("experiences");
   }
 
+  async saveTaskMemory(record: TaskMemory): Promise<void> {
+    this.upsert("task_memories", record.id, record);
+  }
+
+  async listTaskMemories(): Promise<TaskMemory[]> {
+    return this.list<TaskMemory>("task_memories");
+  }
+
+  async savePattern(record: PatternRecord): Promise<void> {
+    this.upsert("patterns", record.id, record);
+  }
+
+  async listPatterns(): Promise<PatternRecord[]> {
+    return this.list<PatternRecord>("patterns");
+  }
+
   async saveSkill(record: SkillRecord): Promise<void> {
     this.upsert("skills", record.id, record);
   }
@@ -50,6 +87,50 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
 
   async getSkill(skillId: string): Promise<SkillRecord | undefined> {
     return this.get<SkillRecord>("skills", skillId);
+  }
+
+  async saveGlobalPermission(record: GlobalPermissionGrant): Promise<void> {
+    this.upsert("global_permissions", record.riskCategory, record);
+  }
+
+  async listGlobalPermissions(): Promise<GlobalPermissionGrant[]> {
+    return this.list<GlobalPermissionGrant>("global_permissions");
+  }
+
+  async deleteGlobalPermission(riskCategory: RiskCategory): Promise<void> {
+    this.db.prepare("DELETE FROM records WHERE namespace = ? AND key = ?").run("global_permissions", riskCategory);
+  }
+
+  async getPreferences(): Promise<UserPreferences> {
+    const stored = this.get<UserPreferences>("preferences", "default");
+    if (stored) return stored;
+    const created = defaultPreferences();
+    await this.savePreferences(created);
+    return created;
+  }
+
+  async savePreferences(preferences: UserPreferences): Promise<void> {
+    this.upsert("preferences", "default", preferences);
+  }
+
+  async saveReflectionSession(session: ReflectionSession): Promise<void> {
+    this.upsert("reflection_sessions", session.id, session);
+  }
+
+  async listReflectionSessions(): Promise<ReflectionSession[]> {
+    return this.list<ReflectionSession>("reflection_sessions").sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async saveProjectMemory(record: ProjectMemory): Promise<void> {
+    this.upsert("project_memories", record.id, record);
+  }
+
+  async listProjectMemories(projectId?: string): Promise<ProjectMemory[]> {
+    return this.list<ProjectMemory>("project_memories").filter((record) => !projectId || record.projectId === projectId);
+  }
+
+  async deleteProjectMemory(id: string): Promise<void> {
+    this.db.prepare("DELETE FROM records WHERE namespace = ? AND key = ?").run("project_memories", id);
   }
 
   close(): void {
