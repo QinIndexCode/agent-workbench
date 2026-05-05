@@ -1,5 +1,6 @@
 import type { ApprovalDecision, TaskDetail } from "@scc/shared";
 import { Menu } from "lucide-react";
+import { getUiCopy } from "../i18n.js";
 import { Composer, type ComposerMode } from "./Composer.js";
 import { Timeline } from "./Timeline.js";
 
@@ -10,6 +11,7 @@ export function TaskThread({
   task,
   busy,
   error,
+  language,
   onOpenTasks,
   onSubmit,
   onStop,
@@ -18,6 +20,7 @@ export function TaskThread({
   task: TaskDetail | null;
   busy: boolean;
   error: string | null;
+  language?: string | null;
   onOpenTasks: () => void;
   onSubmit: (mode: ComposerMode, text: string) => void;
   onStop: () => void;
@@ -25,23 +28,24 @@ export function TaskThread({
 }) {
   const running = task?.status === "running" || task?.status === "waiting_approval";
   const mode = getComposerMode(task);
+  const text = getUiCopy(language);
 
   return (
     <section className={task ? "thread" : "thread newTaskThread"} aria-label="Task thread">
       <header className="threadHeader">
         <button className="mobileTaskToggle" type="button" onClick={onOpenTasks}>
           <Menu size={16} />
-          Tasks
+          {text.shell.tasks}
         </button>
         <div className="threadTitleBlock">
-          <h1>{task?.title ?? "New task"}</h1>
-          <span>{getThreadMeta(task, mode)}</span>
+          <h1>{task?.title ?? text.thread.newTask}</h1>
+          <span>{getThreadMeta(task, mode, language)}</span>
         </div>
       </header>
 
       <div className={error ? "errorLine" : "errorLine emptyError"}>{error}</div>
-      <Timeline task={task} onApprovalDecision={onApprovalDecision} />
-      <Composer busy={busy} running={running} mode={mode} onSubmit={(text) => onSubmit(mode, text)} onStop={onStop} />
+      <Timeline language={language ?? null} task={task} onApprovalDecision={onApprovalDecision} />
+      <Composer busy={busy} language={language ?? null} running={running} mode={mode} onSubmit={(content) => onSubmit(mode, content)} onStop={onStop} />
     </section>
   );
 }
@@ -54,9 +58,11 @@ function getComposerMode(task: TaskDetail | null): ComposerMode {
   return "new_task";
 }
 
-function getThreadMeta(task: TaskDetail | null, mode: ComposerMode): string {
-  if (!task) return "Ready for a new task";
-  if (mode === "guidance") return "Running · input becomes pending guidance";
-  if (mode === "continue") return `${task.status.replace("_", " ")} · input continues this task`;
-  return `${task.status.replace("_", " ")} · input starts a new task`;
+function getThreadMeta(task: TaskDetail | null, mode: ComposerMode, language?: string | null): string {
+  const text = getUiCopy(language).thread;
+  if (!task) return text.ready;
+  const status = task.status.replace("_", " ");
+  if (mode === "guidance") return text.runningGuidance;
+  if (mode === "continue") return text.continueTask(status);
+  return text.startsNewTask(status);
 }

@@ -477,28 +477,176 @@
 }
 
 .permissionsPanel {
+  display: grid;
+  gap: 18px;
   margin-top: 0;
 }
 
-.permissionRows {
+.permissionGrid {
   display: grid;
-  gap: 7px;
-  margin-top: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
 
-.permissionRow,
-.fieldRow {
+.permissionCard {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  background: var(--surface-container);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.025) inset;
+}
+
+.permissionCard.granted {
+  background: color-mix(in srgb, var(--surface-container) 86%, var(--primary) 14%);
+  border-color: var(--accent-border);
+}
+
+.permissionCard.danger {
+  background: color-mix(in srgb, var(--surface-container) 84%, var(--danger) 16%);
+  border-color: var(--danger-border);
+}
+
+.permissionCardHeader {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   align-items: center;
-  padding: 10px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
 }
 
-.permissionRow span,
-.fieldRow span {
+.permissionIcon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+}
+
+.permissionIcon.danger {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+.permissionCard h3 {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.permissionCard small {
+  color: var(--muted);
+}
+
+.permissionCard p {
+  min-height: 40px;
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.permissionMeta {
+  display: grid;
+  gap: 5px;
+  min-height: 42px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.permissionMeta span {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.primarySoftButton {
+  justify-self: start;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
+.preferencesMatrix {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: var(--surface-container);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.preferencesMatrix h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.preferenceGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.preferenceField {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.preferenceField span,
+.toggleField span {
+  color: var(--muted-strong);
   font-size: 13px;
+  font-weight: 600;
+}
+
+.preferenceField input,
+.preferenceField select {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 9px;
+  color: var(--text);
+  background: #0b0f12;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: 0;
+}
+
+.toggleGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.toggleField {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+  background: #0b0f12;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.toggleField.enabled {
+  border-color: var(--accent-border);
+}
+
+.toggleField button {
+  min-width: 64px;
+  min-height: 30px;
+  color: var(--text);
+  background: var(--surface-selected);
+  border-color: var(--border);
 }
 
 @media (max-width: 900px) {
@@ -545,7 +693,10 @@
   }
 
   .skillToolbar,
-  .editorSplit {
+  .editorSplit,
+  .permissionGrid,
+  .preferenceGrid,
+  .toggleGrid {
     grid-template-columns: 1fr;
   }
 }

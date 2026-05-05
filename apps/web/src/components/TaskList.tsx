@@ -1,8 +1,10 @@
 import type { TaskDeleteRequest, TaskDetail } from "@scc/shared";
 import { Plus, Search, Settings, Terminal, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import { getUiCopy } from "../i18n.js";
 
 export function TaskList({
+  language,
   open,
   tasks,
   selectedId,
@@ -13,6 +15,7 @@ export function TaskList({
   onNewTask,
   onOpenSettings
 }: {
+  language?: string | null;
   open: boolean;
   tasks: TaskDetail[];
   selectedId: string | null;
@@ -27,6 +30,7 @@ export function TaskList({
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [deleteLearningData, setDeleteLearningData] = useState(false);
   const [deleteDerivedSkills, setDeleteDerivedSkills] = useState(false);
+  const text = getUiCopy(language).shell;
   const visibleTasks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return tasks;
@@ -46,30 +50,30 @@ export function TaskList({
           <Terminal size={18} />
           <span>SCC</span>
           <button className="closeDrawerButton" onClick={onClose} type="button">
-            Close
+            {text.close}
           </button>
         </div>
         <div className="sidebarActions">
           <button className="newTaskButton" onClick={onNewTask} type="button">
             <Plus size={16} />
-            New Task
+            {text.newTask}
           </button>
           <button className={activeView === "settings" ? "iconNavButton selected" : "iconNavButton"} onClick={onOpenSettings} type="button">
             <Settings size={16} />
-            Settings
+            {text.settings}
           </button>
         </div>
         <label className="taskSearch">
           <Search aria-hidden="true" size={14} />
           <input
-            aria-label="Search tasks"
-            placeholder="Search tasks"
+            aria-label={text.searchTasks}
+            placeholder={text.searchTasks}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
         <nav className="taskList" aria-label="Task list">
-          {visibleTasks.length === 0 ? <p className="sidebarEmpty">{tasks.length === 0 ? "No tasks yet." : "No matching tasks."}</p> : null}
+          {visibleTasks.length === 0 ? <p className="sidebarEmpty">{tasks.length === 0 ? text.noTasks : text.noMatchingTasks}</p> : null}
           {visibleTasks.map((task) => (
             <div className={activeView === "tasks" && task.id === selectedId ? "taskItem selected" : "taskItem"} key={task.id}>
               <button className="taskItemMain" onClick={() => onSelect(task.id)} type="button">
@@ -77,7 +81,7 @@ export function TaskList({
                 <small>{task.status.replace("_", " ")}</small>
               </button>
               <button
-                aria-label={`Delete task ${task.title}`}
+                aria-label={`${text.deleteTask} ${task.title}`}
                 className="taskDeleteButton"
                 onClick={() => {
                   setConfirmingId(task.id);
@@ -91,12 +95,12 @@ export function TaskList({
               {confirmingId === task.id ? (
                 <div className="taskDeleteConfirm">
                   <div className="taskDeleteConfirmHeader">
-                    <strong>Delete task?</strong>
-                    <button aria-label="Cancel delete" onClick={() => setConfirmingId(null)} type="button">
+                    <strong>{text.deleteTaskTitle}</strong>
+                    <button aria-label={text.cancel} onClick={() => setConfirmingId(null)} type="button">
                       <X size={14} />
                     </button>
                   </div>
-                  <p>{task.status === "running" || task.status === "waiting_approval" ? "The current run will be stopped before deletion." : "The task thread and approvals will be removed."}</p>
+                  <p>{task.status === "running" || task.status === "waiting_approval" ? text.deleteRunning : text.deleteThread}</p>
                   <label>
                     <input
                       checked={deleteLearningData}
@@ -106,7 +110,7 @@ export function TaskList({
                       }}
                       type="checkbox"
                     />
-                    Remove memories and experiences from this task
+                    {text.deleteLearning}
                   </label>
                   <label className={!deleteLearningData ? "disabledOption" : ""}>
                     <input
@@ -115,11 +119,11 @@ export function TaskList({
                       onChange={(event) => setDeleteDerivedSkills(event.target.checked)}
                       type="checkbox"
                     />
-                    Delete skills derived only from this task
+                    {text.deleteDerivedSkills}
                   </label>
                   <div className="taskDeleteActions">
                     <button onClick={() => setConfirmingId(null)} type="button">
-                      Cancel
+                      {text.cancel}
                     </button>
                     <button
                       className="dangerButton"
@@ -128,7 +132,7 @@ export function TaskList({
                       }}
                       type="button"
                     >
-                      Delete
+                      {text.delete}
                     </button>
                   </div>
                 </div>

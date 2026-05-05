@@ -31,12 +31,11 @@ import type {
 const apiBase = import.meta.env["VITE_API_BASE"] ?? "";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
   const response = await fetch(`${apiBase}${path}`, {
     ...init,
-    headers: {
-      "content-type": "application/json",
-      ...init?.headers
-    }
+    headers
   });
   if (!response.ok) throw new Error(await response.text());
   if (response.status === 204) return undefined as T;

@@ -58,6 +58,12 @@ describe("api client", () => {
 
     await api.connectMcpServer("mock");
     expect(fetchMock).toHaveBeenLastCalledWith("/api/mcp/servers/mock/connect", expect.objectContaining({ method: "POST" }));
+
+    await api.revokeGlobalPermission("host_observation");
+    const revokeInit = fetchMock.mock.lastCall?.[1] as RequestInit;
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/permissions/global/host_observation", expect.objectContaining({ method: "DELETE" }));
+    expect(revokeInit.headers).toBeInstanceOf(Headers);
+    expect((revokeInit.headers as Headers).has("content-type")).toBe(false);
   });
 
   it("raises failed responses", async () => {

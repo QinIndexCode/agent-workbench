@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import type { ApprovalDecision, TaskDetail, TaskEvent, ToolApproval } from "@scc/shared";
+import { getUiCopy } from "../i18n.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import { MarkdownText } from "./MarkdownText.js";
 
@@ -17,9 +18,11 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
 ]);
 
 export function Timeline({
+  language,
   task,
   onApprovalDecision
 }: {
+  language?: string | null;
   task: TaskDetail | null;
   onApprovalDecision: (approvalId: string, decision: ApprovalDecision) => void;
 }) {
@@ -36,7 +39,7 @@ export function Timeline({
     [task]
   );
 
-  if (!task) return <div className="empty">Start with a goal.</div>;
+  if (!task) return <div className="empty">{getUiCopy(language).thread.startGoal}</div>;
 
   return (
     <div className="timeline">

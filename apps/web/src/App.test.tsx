@@ -2,12 +2,13 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SkillRecord, TaskDetail, ToolApproval } from "@scc/shared";
+import type { GlobalPermissionGrant, SkillRecord, TaskDetail, ToolApproval, UserPreferences } from "@scc/shared";
 import { App } from "./App.js";
 import { ApprovalCard } from "./components/ApprovalCard.js";
 import { Composer } from "./components/Composer.js";
 import { CompactList, LearningPanel } from "./components/LearningPanel.js";
 import { McpPanel } from "./components/McpPanel.js";
+import { PermissionsPanel } from "./components/PermissionsPanel.js";
 import { SkillPanel } from "./components/SkillPanel.js";
 import { TaskList } from "./components/TaskList.js";
 import { Timeline } from "./components/Timeline.js";
@@ -258,6 +259,51 @@ describe("Workbench components", () => {
     expect(onDecision).toHaveBeenCalledWith("allow_for_task");
   });
 
+  it("renders permission grants, revoke actions, and localized preferences", () => {
+    const onGrant = vi.fn();
+    const onRevoke = vi.fn();
+    const onPreference = vi.fn();
+    const grant: GlobalPermissionGrant = {
+      id: "global_permission_host_observation",
+      riskCategory: "host_observation",
+      grantedAt: new Date("2026-05-05T12:00:00.000Z").toISOString(),
+      grantedBy: "user",
+      reason: "test grant"
+    };
+    const preferences: UserPreferences = {
+      defaultModel: "mimo-v2.5",
+      maxTokensPerRequest: 128000,
+      autoApprove: "none",
+      showThinking: true,
+      language: "zh-CN",
+      reflectionEnabled: true,
+      reflectionSchedule: "02:00",
+      skillAutoInject: true,
+      maxInjectedSkills: 3,
+      mcpApprovalMode: "confirm_dangerous",
+      sanitizeSensitiveData: true,
+      encryptStorage: false,
+      updatedAt: new Date().toISOString()
+    };
+
+    render(
+      <PermissionsPanel
+        language="zh-CN"
+        permissions={[grant]}
+        preferences={preferences}
+        onGrant={onGrant}
+        onRevoke={onRevoke}
+        onPreference={onPreference}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "权限与偏好" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("撤销"));
+    expect(onRevoke).toHaveBeenCalledWith("host_observation");
+    fireEvent.change(screen.getByLabelText("界面与回复语言"), { target: { value: "en-US" } });
+    expect(onPreference).toHaveBeenCalledWith({ language: "en-US" });
+  });
+
   it("renders compact governance rows", () => {
     render(<CompactList title="Skills" rows={[{ id: "skill_1", label: "Host observation", meta: "active" }]} />);
     expect(screen.getByText("Host observation")).toBeInTheDocument();
@@ -445,7 +491,7 @@ describe("Workbench components", () => {
             maxTokensPerRequest: 128000,
             autoApprove: "none",
             showThinking: true,
-            language: "zh-CN",
+            language: "en-US",
             reflectionEnabled: true,
             reflectionSchedule: "02:00",
             skillAutoInject: true,
@@ -510,7 +556,7 @@ describe("Workbench components", () => {
             maxTokensPerRequest: 128000,
             autoApprove: "none",
             showThinking: true,
-            language: "zh-CN",
+            language: "en-US",
             reflectionEnabled: true,
             reflectionSchedule: "02:00",
             skillAutoInject: true,
@@ -529,7 +575,7 @@ describe("Workbench components", () => {
     fireEvent.click(await screen.findByText("Settings"));
     expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
     fireEvent.click(screen.getByText("Permissions"));
-    expect(screen.getByText("Global grants skip approval UI for matching risk categories.")).toBeInTheDocument();
+    expect(screen.getByText("Permissions and preferences")).toBeInTheDocument();
   });
 });
 

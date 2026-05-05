@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ApprovalDecision, RiskCategory, SkillDuplicateGroup, UserPreferences } from "@scc/shared";
+import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup } from "@scc/shared";
 import { api } from "./api.js";
 import { LearningPanel } from "./components/LearningPanel.js";
 import { McpPanel } from "./components/McpPanel.js";
@@ -17,11 +17,13 @@ export function App() {
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
   const [activeView, setActiveView] = useState<"tasks" | "settings">("tasks");
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("skills");
+  const language = data.preferences?.language ?? "zh-CN";
 
   return (
     <main className="shell">
       <TaskList
         activeView={activeView}
+        language={language}
         open={taskDrawerOpen}
         tasks={data.tasks}
         selectedId={data.selectedId}
@@ -48,6 +50,7 @@ export function App() {
           task={data.selected}
           busy={data.busy}
           error={data.error}
+          language={language}
           onOpenTasks={() => setTaskDrawerOpen(true)}
           onSubmit={(mode, text) => submitComposer(mode, text)}
           onStop={() => data.selected && void data.runTaskAction(() => api.control(data.selected!.id, "pause"))}
@@ -56,6 +59,7 @@ export function App() {
       ) : (
         <SettingsView
           activeSection={settingsSection}
+          language={language}
           onOpenTasks={() => setTaskDrawerOpen(true)}
           onSection={(section) => setSettingsSection(section)}
         >
@@ -84,6 +88,7 @@ export function App() {
             ),
             permissions: (
               <PermissionsPanel
+                language={language}
                 permissions={data.permissions}
                 preferences={data.preferences}
                 onGrant={(risk) => void grantGlobal(risk)}
@@ -144,7 +149,7 @@ export function App() {
     );
   }
 
-  function updatePreference(patch: Partial<UserPreferences>) {
+  function updatePreference(patch: PreferencesPatch) {
     void data.runSideAction(() => api.updatePreferences(patch));
   }
 

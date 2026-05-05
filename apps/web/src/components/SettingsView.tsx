@@ -1,28 +1,31 @@
 import type { ReactNode } from "react";
 import { Menu } from "lucide-react";
+import { getUiCopy } from "../i18n.js";
 import { PanelBoundary } from "./PanelBoundary.js";
 
 export type SettingsSection = "skills" | "learning" | "permissions" | "mcp" | "memory";
 
-const sections: Array<{ id: SettingsSection; label: string; description: string }> = [
-  { id: "skills", label: "Skills", description: "Review, edit, merge, and export reusable agent behaviors" },
-  { id: "learning", label: "Learning", description: "Task memory, patterns, reflection, and conflicts" },
-  { id: "permissions", label: "Permissions", description: "Global risk grants and agent preferences" },
-  { id: "mcp", label: "MCP", description: "Connected tool servers and discovered tools" },
-  { id: "memory", label: "Memory", description: "Project facts and durable conventions" }
-];
+const sectionIds: SettingsSection[] = ["skills", "learning", "permissions", "mcp", "memory"];
 
 export function SettingsView({
   activeSection,
   children,
+  language,
   onOpenTasks,
   onSection
 }: {
   activeSection: SettingsSection;
   children: Record<SettingsSection, ReactNode>;
+  language?: string | null;
   onOpenTasks: () => void;
   onSection: (section: SettingsSection) => void;
 }) {
+  const text = getUiCopy(language);
+  const sections = sectionIds.map((id) => ({
+    id,
+    label: text.settings.sections[id][0],
+    description: text.settings.sections[id][1]
+  }));
   const active = sections.find((section) => section.id === activeSection) ?? sections[0]!;
 
   return (
@@ -30,10 +33,10 @@ export function SettingsView({
       <header className="settingsHeader">
         <button className="mobileTaskToggle" type="button" onClick={onOpenTasks}>
           <Menu size={16} />
-          Tasks
+          {text.shell.tasks}
         </button>
         <div>
-          <h1>Settings</h1>
+          <h1>{text.settings.title}</h1>
           <p>{active.description}</p>
         </div>
       </header>
