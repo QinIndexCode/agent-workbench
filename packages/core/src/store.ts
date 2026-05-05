@@ -13,6 +13,7 @@ import type {
   ToolApproval,
   UserPreferences
 } from "@scc/shared";
+import { normalizeSkillRecord } from "./experience.js";
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -22,15 +23,19 @@ export interface WorkbenchStore {
   saveTask(task: TaskDetail): Promise<void>;
   getTask(taskId: string): Promise<TaskDetail | undefined>;
   listTasks(): Promise<TaskDetail[]>;
+  deleteTask(taskId: string): Promise<void>;
   saveExperience(record: ExperienceRecord): Promise<void>;
   listExperiences(): Promise<ExperienceRecord[]>;
+  deleteExperience(experienceId: string): Promise<void>;
   saveTaskMemory(record: TaskMemory): Promise<void>;
   listTaskMemories(): Promise<TaskMemory[]>;
+  deleteTaskMemory(memoryId: string): Promise<void>;
   savePattern(record: PatternRecord): Promise<void>;
   listPatterns(): Promise<PatternRecord[]>;
   saveSkill(record: SkillRecord): Promise<void>;
   listSkills(): Promise<SkillRecord[]>;
   getSkill(skillId: string): Promise<SkillRecord | undefined>;
+  deleteSkill(skillId: string): Promise<void>;
   saveSkillConflict(record: SkillConflict): Promise<void>;
   listSkillConflicts(): Promise<SkillConflict[]>;
   saveMcpServer(record: McpServerConfig): Promise<void>;
@@ -77,6 +82,10 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
+  async deleteTask(taskId: string): Promise<void> {
+    this.tasks.delete(taskId);
+  }
+
   async saveExperience(record: ExperienceRecord): Promise<void> {
     this.experiences.set(record.id, clone(record));
   }
@@ -85,12 +94,20 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
     return [...this.experiences.values()].map((record) => clone(record));
   }
 
+  async deleteExperience(experienceId: string): Promise<void> {
+    this.experiences.delete(experienceId);
+  }
+
   async saveTaskMemory(record: TaskMemory): Promise<void> {
     this.taskMemories.set(record.id, clone(record));
   }
 
   async listTaskMemories(): Promise<TaskMemory[]> {
     return [...this.taskMemories.values()].map((record) => clone(record));
+  }
+
+  async deleteTaskMemory(memoryId: string): Promise<void> {
+    this.taskMemories.delete(memoryId);
   }
 
   async savePattern(record: PatternRecord): Promise<void> {
@@ -102,16 +119,21 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
   }
 
   async saveSkill(record: SkillRecord): Promise<void> {
-    this.skills.set(record.id, clone(record));
+    const normalized = normalizeSkillRecord(record);
+    this.skills.set(normalized.id, clone(normalized));
   }
 
   async listSkills(): Promise<SkillRecord[]> {
-    return [...this.skills.values()].map((record) => clone(record));
+    return [...this.skills.values()].map((record) => normalizeSkillRecord(clone(record)));
   }
 
   async getSkill(skillId: string): Promise<SkillRecord | undefined> {
     const skill = this.skills.get(skillId);
-    return skill ? clone(skill) : undefined;
+    return skill ? normalizeSkillRecord(clone(skill)) : undefined;
+  }
+
+  async deleteSkill(skillId: string): Promise<void> {
+    this.skills.delete(skillId);
   }
 
   async saveSkillConflict(record: SkillConflict): Promise<void> {

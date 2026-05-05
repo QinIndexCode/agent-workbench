@@ -1,16 +1,23 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import * as z from "zod/v4";
 import { describe, expect, it } from "vitest";
-import type { ToolCall, ToolResult } from "@scc/shared";
+import type { TaskDetail, ToolCall, ToolResult } from "@scc/shared";
 import { ShellToolExecutor } from "../src/tools.js";
 import {
   AgentWorkbench,
   CompositeToolExecutor,
   ConfiguredToolModelClient,
+  ContextAssembler,
   InMemoryWorkbenchStore,
   McpRegistry,
   type ModelClient,
+  type ModelStreamHandlers,
   type ModelTurn,
   PermissionEngine,
   detectSkillConflicts,
@@ -23,6 +30,38 @@ import {
 
 const hostObservationModel = new ConfiguredToolModelClient("Get-Process | Sort-Object CPU");
 
+describe("ContextAssembler", () => {
+  it("keeps capability questions direct and evidence-grounded", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const task: TaskDetail = {
+      id: "task_capabilities",
+      title: "你可以帮我做些什么",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_user",
+          taskId: "task_capabilities",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "你可以帮我做些什么",
+          payload: {}
+        }
+      ]
+    };
+
+    const context = await assembler.assemble(task);
+
+    expect(context.systemPrompt).toContain("answer directly from your general capabilities");
+    expect(context.systemPrompt).toContain("do not inspect files first");
+    expect(context.systemPrompt).toContain("Do not claim the project name");
+    expect(context.systemPrompt).toContain("Use Markdown for readable structure");
+  });
+});
+
 class StubToolExecutor {
   calls: ToolCall[] = [];
 
@@ -34,6 +73,32 @@ class StubToolExecutor {
       ok: true,
       createdAt: nowIso(),
       output: JSON.stringify([{ ProcessName: "node", Id: 42, CPU: 100, WorkingSet64: 1024 * 1024 * 200 }])
+    };
+  }
+}
+
+class AbortableToolExecutor {
+  calls: ToolCall[] = [];
+
+  async execute(call: ToolCall, options?: { signal?: AbortSignal }): Promise<ToolResult> {
+    this.calls.push(call);
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 5000);
+      options?.signal?.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true }
+      );
+    });
+    return {
+      id: createId("tool_result"),
+      toolCallId: call.id,
+      ok: !options?.signal?.aborted,
+      createdAt: nowIso(),
+      output: options?.signal?.aborted ? "Command cancelled by user." : "done"
     };
   }
 }
@@ -52,6 +117,15 @@ class SingleToolModel implements ModelClient {
       kind: "tool_calls",
       calls: [{ id: createId("tool_call"), toolName: this.toolName, args: this.args }]
     };
+  }
+}
+
+class StreamingFinalModel implements ModelClient {
+  async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    await stream?.onThinkingDelta("Checking the request and available evidence.");
+    await stream?.onAssistantDelta("Hello");
+    await stream?.onAssistantDelta(" stream.");
+    return { kind: "final", message: "Hello stream.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
   }
 }
 
@@ -103,6 +177,21 @@ describe("AgentWorkbench", () => {
     expect(completed.events.some((event) => event.type === "assistant_message")).toBe(true);
   });
 
+  it("records streaming thinking and assistant deltas before final response", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+
+    const completed = await workbench.createTask("stream a response");
+    const thinking = completed.events.filter((event) => event.type === "thinking_delta");
+    const deltas = completed.events.filter((event) => event.type === "assistant_delta");
+    const final = completed.events.find((event) => event.type === "assistant_message");
+
+    expect(completed.status).toBe("completed");
+    expect(thinking.length).toBeGreaterThan(0);
+    expect(deltas.map((event) => event.summary).join("")).toBe("Hello stream.");
+    expect(final?.summary).toBe("Hello stream.");
+    expect(final?.payload["streamId"]).toBe(deltas[0]?.payload["streamId"]);
+  });
+
   it("keeps running user input pending until the next safe point", async () => {
     const workbench = new AgentWorkbench({
       store: new InMemoryWorkbenchStore(),
@@ -116,7 +205,7 @@ describe("AgentWorkbench", () => {
     expect(guided.pendingGuidance[0]?.summary).toBe("Focus on memory too");
   });
 
-  it("records read-only experience as an enabled skill", async () => {
+  it("records read-only experience without immediately solidifying a skill", async () => {
     const tools = new StubToolExecutor();
     const workbench = new AgentWorkbench({
       store: new InMemoryWorkbenchStore(),
@@ -132,7 +221,97 @@ describe("AgentWorkbench", () => {
     const experiences = await workbench.listExperiences();
     const skills = await workbench.listSkills();
     expect(experiences[0]?.readOnly).toBe(true);
-    expect(skills[0]?.status).toBe("active");
+    expect(skills).toHaveLength(0);
+  });
+
+  it("deletes a task and can clean linked learning records and derived skills", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new StubToolExecutor(),
+      model: new ConfiguredToolModelClient("Get-Process")
+    });
+    const created = await workbench.createTask("check running processes");
+    const approval = created.approvals[0];
+    if (!approval) throw new Error("expected approval");
+    const completed = await workbench.decideApproval(created.id, approval.id, "allow_for_task");
+    const experience = (await workbench.listExperiences())[0];
+    if (!experience) throw new Error("expected experience");
+    await workbench.promoteExperience(experience.id);
+
+    const result = await workbench.deleteTask(completed.id, { deleteLearningData: true, deleteDerivedSkills: true });
+
+    expect(result).toMatchObject({
+      taskId: completed.id,
+      deletedTask: true,
+      deletedExperiences: 1,
+      deletedTaskMemories: 1,
+      deletedSkills: 1,
+      updatedSkills: 0
+    });
+    expect(await workbench.getTask(completed.id)).toBeUndefined();
+    expect(await workbench.listExperiences()).toHaveLength(0);
+    expect(await workbench.listTaskMemories()).toHaveLength(0);
+    expect(await workbench.listSkills()).toHaveLength(0);
+  });
+
+  it("manual experience promotion merges duplicate skills instead of creating repeated rows", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    const task = {
+      id: "task_1",
+      title: "帮我看一下当前桌面运行的软件有哪些，性能占用最高的是哪些",
+      status: "completed" as const,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_1",
+          taskId: "task_1",
+          type: "user_message" as const,
+          createdAt: nowIso(),
+          summary: "帮我看一下当前桌面运行的软件有哪些，性能占用最高的是哪些",
+          payload: {}
+        },
+        {
+          id: "event_2",
+          taskId: "task_1",
+          type: "tool_requested" as const,
+          createdAt: nowIso(),
+          summary: "run_command",
+          payload: { toolName: "run_command", riskCategory: "host_observation" }
+        },
+        {
+          id: "event_3",
+          taskId: "task_1",
+          type: "tool_result" as const,
+          createdAt: nowIso(),
+          summary: "Tool completed",
+          payload: { output: "node 42" }
+        },
+        {
+          id: "event_4",
+          taskId: "task_1",
+          type: "assistant_message" as const,
+          createdAt: nowIso(),
+          summary: "Top process: node",
+          payload: {}
+        }
+      ]
+    };
+    const first = createExperience(task);
+    const second = { ...createExperience({ ...task, id: "task_2" }), id: "experience_2", taskId: "task_2" };
+    await store.saveExperience(first);
+    await store.saveExperience(second);
+
+    await workbench.promoteExperience(first.id);
+    await workbench.promoteExperience(second.id);
+
+    const skills = await workbench.listSkills();
+    expect(skills).toHaveLength(1);
+    expect(skills[0]?.sourceMemoryIds).toEqual(expect.arrayContaining([first.id, second.id]));
+    expect(await workbench.listSkillDuplicates()).toHaveLength(0);
   });
 
   it("uses global risk grants before showing approval UI", async () => {
@@ -194,6 +373,48 @@ describe("AgentWorkbench", () => {
 
     expect(created.status).toBe("waiting_approval");
     expect(created.approvals[0]?.riskCategory).toBe("host_observation");
+  });
+
+  it("serializes duplicate approval decisions so one tool call executes once", async () => {
+    const tools = new StubToolExecutor();
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools,
+      model: new ConfiguredToolModelClient("Get-Process")
+    });
+    const created = await workbench.createTask("check running processes");
+    const approval = created.approvals[0];
+    if (!approval) throw new Error("expected approval");
+
+    const [first, second] = await Promise.all([
+      workbench.decideApproval(created.id, approval.id, "allow_once"),
+      workbench.decideApproval(created.id, approval.id, "allow_once")
+    ]);
+
+    expect(first.status).toBe("completed");
+    expect(second.status).toBe("completed");
+    expect(tools.calls).toHaveLength(1);
+  });
+
+  it("cancels a running tool when the task is paused", async () => {
+    const tools = new AbortableToolExecutor();
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools,
+      model: new ConfiguredToolModelClient("Get-Process")
+    });
+    const created = await workbench.createTask("check running processes");
+    const approval = created.approvals[0];
+    if (!approval) throw new Error("expected approval");
+
+    const resumed = workbench.decideApproval(created.id, approval.id, "allow_once");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const paused = await workbench.control(created.id, "pause");
+    const final = await resumed;
+
+    expect(paused.status).toBe("paused");
+    expect(final.status).toBe("paused");
+    expect(final.events.some((event) => String(event.payload["output"] ?? "").includes("cancelled"))).toBe(true);
   });
 
   it("marks side-effect experience promotions as drafts", () => {
@@ -317,6 +538,8 @@ describe("McpRegistry", () => {
       const pending = await workbench.createTask("call mock MCP");
       expect(pending.status).toBe("waiting_approval");
       expect(pending.approvals[0]?.riskCategory).toBe("host_observation");
+      expect(pending.approvals[0]?.metadata?.["serverId"]).toBe("mock");
+      expect(pending.approvals[0]?.metadata?.["toolName"]).toBe("echo");
 
       const approval = pending.approvals[0];
       if (!approval) throw new Error("expected approval");
@@ -330,6 +553,47 @@ describe("McpRegistry", () => {
       await registry.disconnectServer("mock");
     } finally {
       rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("discovers and calls streamable HTTP MCP tools", async () => {
+    const mock = await startMockHttpMcpServer();
+    try {
+      const store = new InMemoryWorkbenchStore();
+      const registry = new McpRegistry(store);
+      await registry.createServer({
+        id: "http_mock",
+        label: "HTTP MCP",
+        transport: "streamable_http",
+        url: mock.url,
+        args: [],
+        env: {},
+        enabled: true,
+        toolRiskOverrides: { echo: "network" }
+      });
+
+      const status = await registry.connectServer("http_mock");
+      expect(status.state).toBe("connected");
+      expect((await registry.listTools())[0]?.id).toBe("mcp__http_mock__echo");
+
+      const workbench = new AgentWorkbench({
+        store,
+        model: new SingleToolModel("mcp__http_mock__echo", { text: "from-http" }),
+        tools: new CompositeToolExecutor(new ShellToolExecutor(), [registry]),
+        toolRiskProvider: registry
+      });
+      const pending = await workbench.createTask("call http MCP");
+      expect(pending.approvals[0]?.riskCategory).toBe("network");
+
+      const approval = pending.approvals[0];
+      if (!approval) throw new Error("expected approval");
+      const completed = await workbench.decideApproval(pending.id, approval.id, "allow_once");
+
+      expect(completed.status).toBe("completed");
+      expect(completed.events.some((event) => String(event.payload["output"] ?? "").includes("http:from-http"))).toBe(true);
+      await registry.disconnectServer("http_mock");
+    } finally {
+      await mock.close();
     }
   });
 
@@ -352,7 +616,8 @@ describe("McpRegistry", () => {
     const second = {
       ...first,
       id: "skill_b",
-      applicability: { ...first.applicability, keywords: ["host", "process", "audit"], requiredTools: ["mcp__mock__echo"] }
+      title: "host process audit via MCP",
+      applicability: { ...first.applicability, keywords: ["host", "process", "audit", "mcp"], requiredTools: ["mcp__mock__echo"] }
     };
     const conflicts = detectSkillConflicts(
       { ...first, id: "skill_a", applicability: { ...first.applicability, keywords: ["host", "process", "audit"], requiredTools: ["run_command"] } },
@@ -470,6 +735,47 @@ function restoreEnv(name: string, value: string | undefined): void {
     return;
   }
   process.env[name] = value;
+}
+
+async function startMockHttpMcpServer(): Promise<{ url: string; close: () => Promise<void> }> {
+  const httpServer = createServer(async (request, response) => {
+    const mcpServer = createMockHttpMcpServer();
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined } as never);
+    await mcpServer.connect(transport as never);
+    response.on("close", () => {
+      void transport.close();
+      void mcpServer.close();
+    });
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const bodyText = Buffer.concat(chunks).toString("utf8");
+    const body = bodyText ? JSON.parse(bodyText) : undefined;
+    await transport.handleRequest(request, response, body);
+  });
+  await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+  const address = httpServer.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: async () => {
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    }
+  };
+}
+
+function createMockHttpMcpServer(): McpServer {
+  const mcpServer = new McpServer({ name: "mock-http-mcp", version: "1.0.0" });
+  mcpServer.registerTool(
+    "echo",
+    {
+      description: "Echo text over streamable HTTP.",
+      inputSchema: { text: z.string().optional() },
+      annotations: { openWorldHint: true }
+    },
+    async ({ text }) => ({
+      content: [{ type: "text", text: `http:${text ?? ""}` }]
+    })
+  );
+  return mcpServer;
 }
 
 function mockMcpServerSource(): string {

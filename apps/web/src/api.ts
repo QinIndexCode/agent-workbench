@@ -12,10 +12,17 @@ import type {
   ProjectMemoryCreateRequest,
   ReflectionSession,
   RiskCategory,
+  SkillBulkDeleteRequest,
   SkillCorrectionRequest,
   SkillConflict,
+  SkillCreateRequest,
+  SkillDuplicateGroup,
+  SkillMergeRequest,
   SkillRecord,
   SkillStatusPatch,
+  SkillUpdateRequest,
+  TaskDeleteRequest,
+  TaskDeleteResult,
   TaskDetail,
   TaskMemory,
   UserPreferences
@@ -51,6 +58,9 @@ export const api = {
   getTask(taskId: string): Promise<TaskDetail> {
     return request(`/api/tasks/${taskId}`);
   },
+  deleteTask(taskId: string, input: TaskDeleteRequest = { deleteLearningData: false, deleteDerivedSkills: false }): Promise<TaskDeleteResult> {
+    return request(`/api/tasks/${taskId}`, { method: "DELETE", body: JSON.stringify(input) });
+  },
   sendMessage(taskId: string, content: string): Promise<TaskDetail> {
     return request(`/api/tasks/${taskId}/messages`, { method: "POST", body: JSON.stringify({ content }) });
   },
@@ -69,13 +79,34 @@ export const api = {
   listSkills(): Promise<SkillRecord[]> {
     return request("/api/skills");
   },
+  createSkill(input: SkillCreateRequest): Promise<SkillRecord> {
+    return request("/api/skills", { method: "POST", body: JSON.stringify(input) });
+  },
+  getSkill(skillId: string): Promise<SkillRecord> {
+    return request(`/api/skills/${skillId}`);
+  },
+  deleteSkill(skillId: string): Promise<void> {
+    return request(`/api/skills/${skillId}`, { method: "DELETE" });
+  },
+  bulkDeleteSkills(input: SkillBulkDeleteRequest): Promise<{ deleted: number }> {
+    return request("/api/skills/bulk-delete", { method: "POST", body: JSON.stringify(input) });
+  },
+  listSkillDuplicates(): Promise<SkillDuplicateGroup[]> {
+    return request("/api/skills/duplicates");
+  },
+  mergeSkills(skillId: string, input: SkillMergeRequest): Promise<SkillRecord> {
+    return request(`/api/skills/${skillId}/merge`, { method: "POST", body: JSON.stringify(input) });
+  },
+  cleanupSkillDuplicates(): Promise<{ merged: number; deleted: number; groups: SkillDuplicateGroup[] }> {
+    return request("/api/skills/cleanup-duplicates", { method: "POST" });
+  },
   listSkillConflicts(): Promise<SkillConflict[]> {
     return request("/api/skill-conflicts");
   },
   exportSkill(skillId: string): Promise<{ markdown: string; manifest: Record<string, unknown> }> {
     return request(`/api/skills/${skillId}/export`);
   },
-  patchSkill(skillId: string, patch: SkillStatusPatch): Promise<SkillRecord> {
+  patchSkill(skillId: string, patch: SkillStatusPatch | SkillUpdateRequest): Promise<SkillRecord> {
     return request(`/api/skills/${skillId}`, { method: "PATCH", body: JSON.stringify(patch) });
   },
   correctSkill(skillId: string, input: SkillCorrectionRequest): Promise<SkillRecord> {

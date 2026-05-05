@@ -85,6 +85,7 @@ export const ToolApprovalSchema = z.object({
   toolCall: ToolCallSchema,
   riskCategory: RiskCategorySchema,
   reason: z.string(),
+  metadata: z.record(z.unknown()).optional(),
   status: z.enum(["pending", "approved", "denied"]),
   decision: ApprovalDecisionSchema.optional(),
   createdAt: z.string(),
@@ -97,7 +98,9 @@ export const TaskEventSchema = z.object({
   type: z.enum([
     "task_created",
     "user_message",
+    "assistant_delta",
     "assistant_message",
+    "thinking_delta",
     "guidance_pending",
     "guidance_consumed",
     "tool_requested",
@@ -135,6 +138,23 @@ export const CreateTaskRequestSchema = z
     title: z.string().min(1).optional()
   })
   .strict();
+
+export const TaskDeleteRequestSchema = z
+  .object({
+    deleteLearningData: z.boolean().default(false),
+    deleteDerivedSkills: z.boolean().default(false)
+  })
+  .strict();
+
+export const TaskDeleteResultSchema = z.object({
+  taskId: z.string(),
+  deletedTask: z.boolean(),
+  deletedExperiences: z.number().int().nonnegative(),
+  deletedTaskMemories: z.number().int().nonnegative(),
+  deletedSkills: z.number().int().nonnegative(),
+  updatedSkills: z.number().int().nonnegative(),
+  cancelledRun: z.boolean()
+});
 
 export const MessageRequestSchema = z
   .object({
@@ -376,6 +396,62 @@ export const SkillStatusPatchSchema = z
     status: z.enum(["candidate", "active", "suspended", "retired"])
   })
   .strict();
+
+export const SkillApplicabilityPatchSchema = z
+  .object({
+    description: z.string().min(1).optional(),
+    requiredTools: z.array(z.string()).optional(),
+    requiredContext: z.array(z.string()).optional(),
+    exclusions: z.array(z.string()).optional(),
+    minConfidence: z.number().min(0).max(1).optional(),
+    keywords: z.array(z.string()).optional()
+  })
+  .strict();
+
+export const SkillCreateRequestSchema = z
+  .object({
+    title: z.string().min(1),
+    body: z.string().min(1),
+    status: z.enum(["candidate", "active", "suspended", "retired"]).default("candidate"),
+    applicability: SkillApplicabilityPatchSchema.default({}),
+    sourceMemoryIds: z.array(z.string()).default([]),
+    relatedPatterns: z.array(z.string()).default([])
+  })
+  .strict();
+
+export const SkillUpdateRequestSchema = z
+  .object({
+    title: z.string().min(1).optional(),
+    body: z.string().min(1).optional(),
+    status: z.enum(["candidate", "active", "suspended", "retired"]).optional(),
+    applicability: SkillApplicabilityPatchSchema.optional(),
+    sourceMemoryIds: z.array(z.string()).optional(),
+    relatedPatterns: z.array(z.string()).optional()
+  })
+  .strict();
+
+export const SkillBulkDeleteRequestSchema = z
+  .object({
+    skillIds: z.array(z.string()).min(1)
+  })
+  .strict();
+
+export const SkillDeleteRequestSchema = SkillBulkDeleteRequestSchema;
+
+export const SkillMergeRequestSchema = z
+  .object({
+    sourceSkillIds: z.array(z.string()).min(1),
+    targetSkillId: z.string().optional(),
+    deleteSources: z.boolean().default(true)
+  })
+  .strict();
+
+export const SkillDuplicateGroupSchema = z.object({
+  fingerprint: z.string(),
+  canonicalSkillId: z.string(),
+  reason: z.string(),
+  skills: z.array(SkillRecordSchema).min(2)
+});
 
 export const SkillCorrectionRequestSchema = z
   .object({

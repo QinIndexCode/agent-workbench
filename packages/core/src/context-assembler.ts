@@ -154,7 +154,12 @@ export class ContextAssembler {
       "Choose the next action yourself based on the user's goal, available tools, permissions, and evidence.",
       "Use tools when the environment must be observed. Do not invent host, file, network, or command results.",
       "Scripts, builds, tests, and command output are tool evidence for you to interpret; they are never task-completion judges.",
-      "Do not emit fixed machine-readable wrappers, diagnostic files, or scripted review reports unless the user explicitly asks."
+      "Do not emit fixed machine-readable wrappers, diagnostic files, or scripted review reports unless the user explicitly asks.",
+      "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
+      "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
+      "If you need a file but are unsure it exists, list or search first instead of guessing paths such as README.md.",
+      "Keep normal answers concise, calm, and product-like. Avoid decorative emoji, hype, and marketing-style introductions unless the user asks for that tone.",
+      "Use Markdown for readable structure when helpful: short headings, bullets, tables, and code blocks are supported."
     ];
     if (preferences.language === "zh-CN") lines.push("Respond in Chinese unless the user asks otherwise.");
     lines.push(`User language preference: ${preferences.language}`);
@@ -277,6 +282,7 @@ export function buildHistoryLayer(task: TaskDetail, maxTokens: number, tracker?:
     const event = events[index];
     if (!event) continue;
     const text = formatEvent(event, tracker);
+    if (!text) continue;
     const tokens = estimateTokens(text);
     if (usedTokens + tokens > maxTokens) {
       formatted.unshift("... (earlier events omitted)");
@@ -292,6 +298,9 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
   switch (event.type) {
     case "user_message":
       return `**User**: ${event.summary}`;
+    case "assistant_delta":
+    case "thinking_delta":
+      return "";
     case "assistant_message":
       return `**Agent**: ${event.summary}`;
     case "tool_requested":

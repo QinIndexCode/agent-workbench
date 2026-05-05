@@ -27,6 +27,15 @@ describe("api client", () => {
       expect.objectContaining({ method: "POST", body: JSON.stringify({ decision: "allow_once" }) })
     );
 
+    await api.deleteTask("task_1", { deleteLearningData: true, deleteDerivedSkills: false });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/tasks/task_1",
+      expect.objectContaining({
+        method: "DELETE",
+        body: JSON.stringify({ deleteLearningData: true, deleteDerivedSkills: false })
+      })
+    );
+
     await api.grantGlobalPermission("host_observation", "ok");
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/permissions/global",

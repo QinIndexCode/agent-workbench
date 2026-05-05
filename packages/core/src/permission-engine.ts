@@ -68,6 +68,7 @@ export class PermissionEngine {
     taskId: string;
     toolCall: ToolApproval["toolCall"];
     assessment: RiskAssessment;
+    metadata?: Record<string, unknown>;
   }): ToolApproval {
     return {
       id: createId("approval"),
@@ -75,6 +76,7 @@ export class PermissionEngine {
       toolCall: input.toolCall,
       riskCategory: input.assessment.category,
       reason: input.assessment.reason,
+      ...(input.metadata ? { metadata: input.metadata } : {}),
       status: "pending",
       createdAt: nowIso()
     };

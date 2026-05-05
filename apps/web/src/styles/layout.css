@@ -1,0 +1,162 @@
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  width: 100vw;
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+  background: var(--app-bg);
+}
+
+.thread,
+.settingsView {
+  min-width: 0;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.threadHeader,
+.settingsHeader {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 68px;
+  padding: 14px 22px 12px;
+  background: color-mix(in srgb, var(--app-bg) 92%, var(--surface) 8%);
+  border-bottom: 1px solid var(--border);
+}
+
+.threadHeader h1,
+.settingsHeader h1 {
+  margin: 0;
+  overflow: hidden;
+  font-size: 19px;
+  font-weight: 680;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.threadTitleBlock,
+.settingsHeader > div {
+  min-width: 0;
+}
+
+.threadTitleBlock span,
+.settingsHeader p {
+  display: block;
+  margin: 3px 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskDrawerBackdrop,
+.closeDrawerButton,
+.mobileTaskToggle {
+  display: none;
+}
+
+.mobileTaskToggle,
+.closeDrawerButton,
+.subtleButton,
+.textButton,
+.settingsNavItem,
+.newTaskButton,
+.iconNavButton,
+.approvalActions button,
+.copyOutputButton {
+  min-height: 34px;
+  padding: 0 11px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.mobileTaskToggle:hover,
+.closeDrawerButton:hover,
+.subtleButton:hover,
+.textButton:hover,
+.settingsNavItem:hover,
+.newTaskButton:hover,
+.iconNavButton:hover,
+.approvalActions button:hover,
+.copyOutputButton:hover {
+  background: var(--surface-hover);
+  border-color: color-mix(in srgb, var(--border-strong) 72%, var(--accent) 28%);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.subtleButton:disabled,
+.newTaskButton:disabled,
+.iconNavButton:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.textButton {
+  justify-self: start;
+  min-height: 26px;
+  padding: 0;
+  color: #9fa8a3;
+  background: transparent;
+  border: 0;
+}
+
+@media (max-width: 760px) {
+  body {
+    overflow: hidden;
+  }
+
+  .shell {
+    display: block;
+    height: 100dvh;
+    min-height: 100dvh;
+  }
+
+  .thread,
+  .settingsView {
+    width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+  }
+
+  .threadHeader,
+  .settingsHeader {
+    padding: 11px 12px;
+  }
+
+  .threadHeader h1,
+  .settingsHeader h1 {
+    display: -webkit-box;
+    font-size: 16px;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .threadTitleBlock span,
+  .settingsHeader p {
+    white-space: normal;
+  }
+
+  .mobileTaskToggle {
+    display: inline-grid;
+    grid-auto-flow: column;
+    gap: 6px;
+    place-items: center;
+    min-width: 78px;
+    white-space: nowrap;
+  }
+}

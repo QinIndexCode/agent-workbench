@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore, McpRegistry } from "@scc/core";
 import type { ToolCall, ToolResult } from "@scc/shared";
 import { createApp } from "../src/server.js";
@@ -43,7 +45,7 @@ describe("server API", () => {
 
   it("rejects unknown request fields through strict schemas", async () => {
     const app = await createApp({
-      workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore() })
+      workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ConfiguredToolModelClient("Get-Process") })
     });
 
     const response = await app.inject({
@@ -94,15 +96,34 @@ describe("server API", () => {
     const experiences = (await app.inject("/api/experiences")).json();
     const skills = (await app.inject("/api/skills")).json();
     expect(experiences.length).toBeGreaterThan(0);
-    expect(skills.length).toBeGreaterThan(0);
-    expect((await app.inject(`/api/skills/${skills[0].id}`)).json().id).toBe(skills[0].id);
+    expect(skills.length).toBe(0);
+
+    const manualSkill = await app.inject({
+      method: "POST",
+      url: "/api/skills",
+      payload: {
+        title: "Host process review",
+        body: "# Host process review\nUse host observation evidence and summarize CPU and memory usage.",
+        status: "candidate",
+        applicability: {
+          keywords: ["process", "运行软件"],
+          requiredTools: ["run_command"],
+          requiredContext: ["host_observation"]
+        }
+      }
+    });
+    expect(manualSkill.statusCode).toBe(201);
+    const skill = manualSkill.json();
+    expect((await app.inject(`/api/skills/${skill.id}`)).json().id).toBe(skill.id);
 
     const patchResponse = await app.inject({
       method: "PATCH",
-      url: `/api/skills/${skills[0].id}`,
-      payload: { status: "candidate" }
+      url: `/api/skills/${skill.id}`,
+      payload: { status: "active", applicability: { keywords: ["process", "software"] } }
     });
-    expect(patchResponse.json().status).toBe("candidate");
+    expect(patchResponse.json().status).toBe("active");
+    expect((await app.inject("/api/skills/duplicates")).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: "/api/skills/bulk-delete", payload: { skillIds: [skill.id] } })).json().deleted).toBe(1);
 
     const promoteResponse = await app.inject({
       method: "POST",
@@ -136,6 +157,42 @@ describe("server API", () => {
     await app.close();
   });
 
+  it("deletes tasks with optional learning cleanup", async () => {
+    const app = await createApp({
+      workbench: new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        tools: new StubToolExecutor(),
+        model: new ConfiguredToolModelClient("Get-Process")
+      })
+    });
+    const created = (
+      await app.inject({
+        method: "POST",
+        url: "/api/tasks",
+        payload: { goal: "check running processes" }
+      })
+    ).json();
+    const approval = created.approvals[0];
+    await app.inject({
+      method: "POST",
+      url: `/api/tasks/${created.id}/approvals/${approval.id}`,
+      payload: { decision: "allow_for_task" }
+    });
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/api/tasks/${created.id}`,
+      payload: { deleteLearningData: true, deleteDerivedSkills: false }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ deletedTask: true, deletedExperiences: 1, deletedTaskMemories: 1 });
+    expect((await app.inject(`/api/tasks/${created.id}`)).statusCode).toBe(404);
+    expect((await app.inject("/api/experiences")).json()).toHaveLength(0);
+    expect((await app.inject("/api/task-memories")).json()).toHaveLength(0);
+    await app.close();
+  });
+
   it("serves MCP management endpoints", async () => {
     const store = new InMemoryWorkbenchStore();
     const mcpRegistry = new McpRegistry(store);
@@ -161,8 +218,32 @@ describe("server API", () => {
     expect(createResponse.statusCode).toBe(201);
     expect((await app.inject("/api/mcp/servers")).json()[0].id).toBe("mock");
     expect((await app.inject("/api/mcp/tools")).statusCode).toBe(200);
-    expect((await app.inject({ method: "POST", url: "/api/mcp/server", payload: { jsonrpc: "2.0", id: 1, method: "tools/list" } })).statusCode).toBeLessThan(500);
     await app.close();
+  });
+
+  it("serves SCC tools through a real MCP streamable HTTP client", async () => {
+    const app = await createApp({
+      workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ConfiguredToolModelClient("Get-Process") })
+    });
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const client = new Client({ name: "scc-server-test", version: "1.0.0" }, { capabilities: {} });
+    const transport = new StreamableHTTPClientTransport(new URL(`${address}/api/mcp/server`));
+
+    try {
+      await client.connect(transport as never);
+      const tools = await client.listTools();
+      expect(tools.tools.map((tool) => tool.name)).toContain("scc.list_tasks");
+
+      const listResult = await client.callTool({ name: "scc.list_tasks", arguments: {} });
+      expect(JSON.stringify(listResult.content)).toContain("[]");
+
+      const createResult = await client.callTool({ name: "scc.create_task", arguments: { goal: "check running processes" } });
+      expect(JSON.stringify(createResult.content)).toContain("waiting_approval");
+    } finally {
+      await transport.close().catch(() => undefined);
+      await client.close().catch(() => undefined);
+      await app.close();
+    }
   });
 });
 

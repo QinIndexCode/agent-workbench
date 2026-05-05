@@ -1,4 +1,4 @@
-import type { ExperienceRecord, PatternRecord, ReflectionSession, SkillConflict, SkillRecord, TaskDetail, TaskMemory } from "@scc/shared";
+import { SkillRecordSchema, type ExperienceRecord, type PatternRecord, type ReflectionSession, type SkillConflict, type SkillDuplicateGroup, type SkillRecord, type TaskDetail, type TaskMemory } from "@scc/shared";
 import { createId, nowIso } from "./ids.js";
 
 export function createTaskMemory(task: TaskDetail): TaskMemory {
@@ -211,8 +211,149 @@ export function promoteExperience(experience: ExperienceRecord): SkillRecord {
   };
 }
 
+export function normalizeSkillRecord(input: unknown): SkillRecord {
+  const parsed = SkillRecordSchema.safeParse(input);
+  if (parsed.success) return parsed.data;
+
+  const raw = asRecord(input);
+  const now = nowIso();
+  const title = stringValue(raw["title"], "Recorded workflow").replace(/\s+/g, " ").trim().slice(0, 120) || "Recorded workflow";
+  const body = stringValue(raw["body"], [`# ${title}`, "", "Legacy skill record normalized for the SCC workbench."].join("\n"));
+  const applicability = asRecord(raw["applicability"]);
+  const stats = asRecord(raw["stats"]);
+  const keywords = stringArray(applicability["keywords"], stringArray(raw["keywords"], tokenize(title)));
+  const requiredTools = stringArray(applicability["requiredTools"], stringArray(raw["requiredTools"], []));
+  const requiredContext = stringArray(applicability["requiredContext"], stringArray(raw["requiredContext"], []));
+  const status = normalizeSkillStatus(raw["status"]);
+  const createdAt = stringValue(raw["createdAt"], now);
+  const updatedAt = stringValue(raw["updatedAt"], createdAt);
+  const totalUses = numberValue(stats["totalUses"], 0);
+  const successUses = numberValue(stats["successUses"], 0);
+  const failureUses = numberValue(stats["failureUses"], 0);
+
+  return {
+    id: stringValue(raw["id"], createId("skill")),
+    ...(typeof raw["sourcePatternId"] === "string" ? { sourcePatternId: raw["sourcePatternId"] } : {}),
+    sourceMemoryIds: stringArray(raw["sourceMemoryIds"], []),
+    title,
+    body,
+    applicability: {
+      description: stringValue(applicability["description"], `Tasks similar to: ${title}`),
+      requiredTools,
+      requiredContext,
+      exclusions: stringArray(applicability["exclusions"], ["Do not apply if the current task goal materially differs."]),
+      minConfidence: clamp(numberValue(applicability["minConfidence"], 0.5), 0, 1),
+      keywords
+    },
+    stats: {
+      totalUses,
+      successUses,
+      failureUses,
+      successRate: clamp(numberValue(stats["successRate"], totalUses > 0 ? successUses / Math.max(1, totalUses) : 0), 0, 1),
+      ...(typeof stats["lastFailureAt"] === "string" ? { lastFailureAt: stats["lastFailureAt"] } : {}),
+      consecutiveFailures: Math.max(0, Math.round(numberValue(stats["consecutiveFailures"], 0)))
+    },
+    version: Math.max(1, Math.round(numberValue(raw["version"], 1))),
+    corrections: Array.isArray(raw["corrections"]) ? raw["corrections"].filter((item) => typeof item === "object") as SkillRecord["corrections"] : [],
+    status,
+    relatedPatterns: stringArray(raw["relatedPatterns"], []),
+    createdAt,
+    lastUsedAt: stringValue(raw["lastUsedAt"], updatedAt),
+    updatedAt
+  };
+}
+
+export function shouldPromoteExperienceToSkill(experience: ExperienceRecord): boolean {
+  if (!experience.readOnly) return false;
+  if (!experience.assessment.goalAchieved || experience.assessment.confidence < 0.7) return false;
+  if (experience.toolsUsed.length === 0) return false;
+  if (experience.meta.outcome !== "success") return false;
+  if (isLowValueSkillResult(experience.result) || isLowValueSkillResult(experience.body)) return false;
+  return true;
+}
+
+export function skillFingerprint(skill: SkillRecord): string {
+  const normalized = normalizeSkillRecord(skill);
+  const titleTokens = tokenize(normalized.title).filter((token) => token.length > 1 || /[\u4e00-\u9fa5]/.test(token));
+  const keywords = normalized.applicability.keywords
+    .flatMap(tokenize)
+    .filter((token) => token.length > 1 || /[\u4e00-\u9fa5]/.test(token));
+  return JSON.stringify({
+    title: stableTokens(titleTokens).slice(0, 18),
+    keywords: stableTokens(keywords).slice(0, 24)
+  });
+}
+
+export function listSkillDuplicateGroups(skills: SkillRecord[]): SkillDuplicateGroup[] {
+  const groups = new Map<string, SkillRecord[]>();
+  for (const skill of skills.map(normalizeSkillRecord)) {
+    const fingerprint = skillFingerprint(skill);
+    const group = groups.get(fingerprint) ?? [];
+    group.push(skill);
+    groups.set(fingerprint, group);
+  }
+  return [...groups.entries()]
+    .filter(([, group]) => group.length > 1)
+    .map(([fingerprint, group]) => {
+      const sorted = [...group].sort(compareCanonicalSkill);
+      return {
+        fingerprint,
+        canonicalSkillId: sorted[0]!.id,
+        reason: "Same normalized title, keywords, required tools, and context.",
+        skills: sorted
+      };
+    });
+}
+
+export function findDuplicateSkill(skill: SkillRecord, existingSkills: SkillRecord[]): SkillRecord | undefined {
+  const fingerprint = skillFingerprint(skill);
+  return existingSkills.map(normalizeSkillRecord).find((existing) => existing.id !== skill.id && skillFingerprint(existing) === fingerprint);
+}
+
+export function mergeSkillRecords(target: SkillRecord, source: SkillRecord): SkillRecord {
+  const left = normalizeSkillRecord(target);
+  const right = normalizeSkillRecord(source);
+  const totalUses = left.stats.totalUses + right.stats.totalUses;
+  const successUses = left.stats.successUses + right.stats.successUses;
+  const failureUses = left.stats.failureUses + right.stats.failureUses;
+  const successRate = totalUses > 0 ? successUses / Math.max(1, totalUses) : Math.max(left.stats.successRate, right.stats.successRate);
+  const now = nowIso();
+  return {
+    ...left,
+    title: chooseLonger(left.title, right.title).slice(0, 120),
+    body: chooseLongerMeaningful(left.body, right.body),
+    applicability: {
+      description: chooseLonger(left.applicability.description, right.applicability.description),
+      requiredTools: uniqueStrings([...left.applicability.requiredTools, ...right.applicability.requiredTools]),
+      requiredContext: uniqueStrings([...left.applicability.requiredContext, ...right.applicability.requiredContext]),
+      exclusions: uniqueStrings([...left.applicability.exclusions, ...right.applicability.exclusions]),
+      minConfidence: Math.max(left.applicability.minConfidence, right.applicability.minConfidence),
+      keywords: uniqueStrings([...left.applicability.keywords, ...right.applicability.keywords])
+    },
+    stats: {
+      ...left.stats,
+      totalUses,
+      successUses,
+      failureUses,
+      successRate,
+      consecutiveFailures: Math.max(left.stats.consecutiveFailures, right.stats.consecutiveFailures),
+      ...(left.stats.lastFailureAt || right.stats.lastFailureAt
+        ? { lastFailureAt: [left.stats.lastFailureAt, right.stats.lastFailureAt].filter(Boolean).sort().at(-1)! }
+        : {})
+    },
+    sourceMemoryIds: uniqueStrings([...left.sourceMemoryIds, ...right.sourceMemoryIds]),
+    relatedPatterns: uniqueStrings([...left.relatedPatterns, ...right.relatedPatterns]),
+    corrections: [...left.corrections, ...right.corrections].slice(-20),
+    status: chooseSkillStatus(left.status, right.status),
+    version: Math.max(left.version, right.version) + 1,
+    lastUsedAt: [left.lastUsedAt, right.lastUsedAt].sort().at(-1) ?? now,
+    updatedAt: now
+  };
+}
+
 export function findRelevantSkills(taskTitle: string, skills: SkillRecord[], limit = 3): SkillRecord[] {
   return skills
+    .map(normalizeSkillRecord)
     .filter(
       (skill) =>
         skill.status === "active" &&
@@ -229,18 +370,21 @@ export function findRelevantSkills(taskTitle: string, skills: SkillRecord[], lim
 
 export function detectSkillConflicts(skill: SkillRecord, existingSkills: SkillRecord[]): SkillConflict[] {
   const conflicts: SkillConflict[] = [];
-  for (const existing of existingSkills) {
-    if (existing.id === skill.id || existing.status === "retired") continue;
-    const sharedKeywords = intersection(new Set(skill.applicability.keywords), new Set(existing.applicability.keywords));
+  const normalizedSkill = normalizeSkillRecord(skill);
+  for (const candidate of existingSkills) {
+    const existing = normalizeSkillRecord(candidate);
+    if (existing.id === normalizedSkill.id || existing.status === "retired") continue;
+    if (skillFingerprint(existing) === skillFingerprint(normalizedSkill)) continue;
+    const sharedKeywords = intersection(new Set(normalizedSkill.applicability.keywords), new Set(existing.applicability.keywords));
     const toolMismatch =
-      skill.applicability.requiredTools.length > 0 &&
+      normalizedSkill.applicability.requiredTools.length > 0 &&
       existing.applicability.requiredTools.length > 0 &&
-      intersection(new Set(skill.applicability.requiredTools), new Set(existing.applicability.requiredTools)).length === 0;
+      intersection(new Set(normalizedSkill.applicability.requiredTools), new Set(existing.applicability.requiredTools)).length === 0;
     if (sharedKeywords.length < 2 || !toolMismatch) continue;
     const now = nowIso();
     conflicts.push({
       id: createId("skill_conflict"),
-      skillIds: [existing.id, skill.id],
+      skillIds: [existing.id, normalizedSkill.id],
       reason: `Similar triggers (${sharedKeywords.slice(0, 5).join(", ")}) use different tool sequences.`,
       severity: sharedKeywords.length >= 4 ? "high" : "medium",
       status: "open",
@@ -269,6 +413,7 @@ export function exportSkill(skill: SkillRecord): { markdown: string; manifest: R
 }
 
 export function calculateRelevance(taskTitle: string, skill: SkillRecord): number {
+  skill = normalizeSkillRecord(skill);
   const titleWords = new Set(tokenize(taskTitle));
   const keywordWords = new Set(skill.applicability.keywords.flatMap(tokenize));
   const intersection = [...titleWords].filter((word) => keywordWords.has(word)).length;
@@ -359,9 +504,72 @@ function mostCommon(values: string[]): string[] {
 }
 
 function compositeScore(skill: SkillRecord, relevance: number): number {
+  skill = normalizeSkillRecord(skill);
   const daysSinceUse = (Date.now() - new Date(skill.lastUsedAt).getTime()) / (1000 * 60 * 60 * 24);
   const recency = Math.max(0.5, 1 - daysSinceUse / 60);
   return relevance * (0.4 + 0.4 * skill.stats.successRate + 0.2 * recency);
+}
+
+function normalizeSkillStatus(value: unknown): SkillRecord["status"] {
+  if (value === "active" || value === "candidate" || value === "suspended" || value === "retired") return value;
+  if (value === "enabled") return "active";
+  if (value === "disabled") return "suspended";
+  return "candidate";
+}
+
+function isLowValueSkillResult(value: string): boolean {
+  return /could not be loaded|model provider failed|no provider is configured|tool failed|command failed|unable to check|missing capability/i.test(value);
+}
+
+function compareCanonicalSkill(left: SkillRecord, right: SkillRecord): number {
+  const statusRank: Record<SkillRecord["status"], number> = { active: 0, candidate: 1, suspended: 2, retired: 3 };
+  const status = statusRank[left.status] - statusRank[right.status];
+  if (status !== 0) return status;
+  const leftCompleteness = left.body.length + left.applicability.keywords.length * 10 + left.applicability.requiredTools.length * 20;
+  const rightCompleteness = right.body.length + right.applicability.keywords.length * 10 + right.applicability.requiredTools.length * 20;
+  if (leftCompleteness !== rightCompleteness) return rightCompleteness - leftCompleteness;
+  return left.createdAt.localeCompare(right.createdAt);
+}
+
+function chooseSkillStatus(left: SkillRecord["status"], right: SkillRecord["status"]): SkillRecord["status"] {
+  const rank: Record<SkillRecord["status"], number> = { active: 4, candidate: 3, suspended: 2, retired: 1 };
+  return rank[left] >= rank[right] ? left : right;
+}
+
+function chooseLonger(left: string, right: string): string {
+  return right.length > left.length ? right : left;
+}
+
+function chooseLongerMeaningful(left: string, right: string): string {
+  if (isLowValueSkillResult(left) && !isLowValueSkillResult(right)) return right;
+  if (isLowValueSkillResult(right) && !isLowValueSkillResult(left)) return left;
+  return chooseLonger(left, right);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function stableTokens(values: string[]): string[] {
+  return uniqueStrings(values.map((value) => value.toLowerCase())).sort();
+}
+
+function stringValue(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim().length > 0 ? value : fallback;
+}
+
+function stringArray(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  const next = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  return next.length > 0 ? uniqueStrings(next) : fallback;
+}
+
+function numberValue(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function intersection<T>(left: Set<T>, right: Set<T>): T[] {

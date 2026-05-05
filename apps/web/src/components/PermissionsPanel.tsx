@@ -15,7 +15,8 @@ export function PermissionsPanel({
   onRevoke: (riskCategory: RiskCategory) => void;
   onPreference: (patch: Partial<UserPreferences>) => void;
 }) {
-  const granted = new Set(permissions.map((permission) => permission.riskCategory));
+  const safePermissions = Array.isArray(permissions) ? permissions : [];
+  const granted = new Set(safePermissions.map((permission) => permission.riskCategory));
 
   return (
     <section className="permissionsPanel">

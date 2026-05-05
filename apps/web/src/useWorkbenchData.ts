@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   GlobalPermissionGrant,
   McpServerConfig,
@@ -8,7 +8,9 @@ import type {
   ProjectMemory,
   ReflectionSession,
   SkillConflict,
+  SkillDuplicateGroup,
   SkillRecord,
+  TaskDeleteRequest,
   TaskDetail,
   TaskEvent,
   TaskMemory,
@@ -24,6 +26,7 @@ export interface WorkbenchData {
   patterns: PatternRecord[];
   skills: SkillRecord[];
   skillConflicts: SkillConflict[];
+  skillDuplicates: SkillDuplicateGroup[];
   permissions: GlobalPermissionGrant[];
   preferences: UserPreferences | null;
   reflections: ReflectionSession[];
@@ -35,6 +38,8 @@ export interface WorkbenchData {
   error: string | null;
   refresh: (nextId?: string | null) => Promise<void>;
   selectTask: (taskId: string) => Promise<void>;
+  clearSelection: () => void;
+  deleteTask: (taskId: string, options: TaskDeleteRequest) => Promise<void>;
   runTaskAction: (action: () => Promise<TaskDetail>) => Promise<void>;
   runSideAction: (action: () => Promise<unknown>) => Promise<void>;
 }
@@ -47,6 +52,7 @@ export function useWorkbenchData(): WorkbenchData {
   const [patterns, setPatterns] = useState<PatternRecord[]>([]);
   const [skills, setSkills] = useState<SkillRecord[]>([]);
   const [skillConflicts, setSkillConflicts] = useState<SkillConflict[]>([]);
+  const [skillDuplicates, setSkillDuplicates] = useState<SkillDuplicateGroup[]>([]);
   const [permissions, setPermissions] = useState<GlobalPermissionGrant[]>([]);
   const [preferences, setPreferences] = useState<UserPreferences | null>(null);
   const [reflections, setReflections] = useState<ReflectionSession[]>([]);
@@ -56,14 +62,17 @@ export function useWorkbenchData(): WorkbenchData {
   const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const newTaskModeRef = useRef(false);
+  const selectedIdRef = useRef<string | null>(null);
 
-  async function refresh(nextId = selectedId) {
+  async function refresh(nextId?: string | null) {
     const [
       list,
       nextMemories,
       nextPatterns,
       nextSkills,
       nextSkillConflicts,
+      nextSkillDuplicates,
       nextPermissions,
       nextPreferences,
       nextReflections,
@@ -76,6 +85,7 @@ export function useWorkbenchData(): WorkbenchData {
       api.listPatterns(),
       api.listSkills(),
       api.listSkillConflicts(),
+      api.listSkillDuplicates(),
       api.listGlobalPermissions(),
       api.getPreferences(),
       api.listReflections(),
@@ -84,13 +94,18 @@ export function useWorkbenchData(): WorkbenchData {
       api.listMcpTools()
     ]);
     setTasks(list);
-    const id = nextId ?? list[0]?.id ?? null;
+    const hasExplicitNext = nextId !== undefined;
+    const preferredId = hasExplicitNext ? nextId : selectedIdRef.current;
+    const preferredExists = preferredId ? list.some((task) => task.id === preferredId) : false;
+    const id = preferredExists ? preferredId : newTaskModeRef.current && !hasExplicitNext ? null : list[0]?.id ?? null;
+    selectedIdRef.current = id;
     setSelectedId(id);
     setSelected(id ? await api.getTask(id) : null);
     setMemories(nextMemories);
     setPatterns(nextPatterns);
     setSkills(nextSkills);
     setSkillConflicts(nextSkillConflicts);
+    setSkillDuplicates(nextSkillDuplicates);
     setPermissions(nextPermissions);
     setPreferences(nextPreferences);
     setReflections(nextReflections);
@@ -107,31 +122,74 @@ export function useWorkbenchData(): WorkbenchData {
 
   useEffect(() => {
     if (!selectedId) return;
-    const ws = new WebSocket(api.taskEventsWebSocketUrl(selectedId));
-    ws.onopen = () => setRealtimeConnected(true);
-    ws.onclose = () => setRealtimeConnected(false);
-    ws.onerror = () => setRealtimeConnected(false);
-    ws.onmessage = (message) => {
-      const parsed = parseRealtimeMessage(message.data);
-      if (!parsed) return;
-      setSelected((current) => {
-        if (!current || current.id !== selectedId) return current;
-        if (parsed.type === "snapshot") return { ...current, events: parsed.events };
-        if (current.events.some((event) => event.id === parsed.event.id)) return current;
-        return { ...current, events: [...current.events, parsed.event], updatedAt: parsed.event.createdAt };
-      });
+    let ws: WebSocket | null = null;
+    let cancelled = false;
+    const connectTimer = window.setTimeout(() => {
+      ws = new WebSocket(api.taskEventsWebSocketUrl(selectedId));
+      ws.onopen = () => {
+        if (cancelled) {
+          ws?.close();
+          return;
+        }
+        setRealtimeConnected(true);
+      };
+      ws.onclose = () => {
+        if (!cancelled) setRealtimeConnected(false);
+      };
+      ws.onerror = () => {
+        if (!cancelled) setRealtimeConnected(false);
+      };
+      ws.onmessage = (message) => {
+        if (cancelled) return;
+        const parsed = parseRealtimeMessage(message.data);
+        if (!parsed) return;
+        setSelected((current) => {
+          if (!current || current.id !== selectedId) return current;
+          if (parsed.type === "snapshot") return { ...current, events: parsed.events };
+          if (current.events.some((event) => event.id === parsed.event.id)) return current;
+          return { ...current, events: [...current.events, parsed.event], updatedAt: parsed.event.createdAt };
+        });
+      };
+    }, 50);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(connectTimer);
+      if (ws && ws.readyState === WebSocket.OPEN) ws.close();
     };
-    return () => ws.close();
   }, [selectedId]);
 
   async function selectTask(taskId: string) {
+    newTaskModeRef.current = false;
+    selectedIdRef.current = taskId;
     setSelectedId(taskId);
     setSelected(await api.getTask(taskId));
+  }
+
+  function clearSelection() {
+    newTaskModeRef.current = true;
+    selectedIdRef.current = null;
+    setSelectedId(null);
+    setSelected(null);
+  }
+
+  async function deleteTask(taskId: string, options: TaskDeleteRequest) {
+    await run(async () => {
+      const wasSelected = selectedIdRef.current === taskId;
+      await api.deleteTask(taskId, options);
+      if (wasSelected) {
+        selectedIdRef.current = null;
+        setSelectedId(null);
+        setSelected(null);
+      }
+      await refresh(wasSelected ? undefined : selectedIdRef.current);
+    });
   }
 
   async function runTaskAction(action: () => Promise<TaskDetail>) {
     await run(async () => {
       const task = await action();
+      newTaskModeRef.current = false;
+      selectedIdRef.current = task.id;
       setSelectedId(task.id);
       setSelected(task);
       await refresh(task.id);
@@ -165,6 +223,7 @@ export function useWorkbenchData(): WorkbenchData {
     patterns,
     skills,
     skillConflicts,
+    skillDuplicates,
     permissions,
     preferences,
     reflections,
@@ -176,6 +235,8 @@ export function useWorkbenchData(): WorkbenchData {
     error,
     refresh,
     selectTask,
+    clearSelection,
+    deleteTask,
     runTaskAction,
     runSideAction
   };

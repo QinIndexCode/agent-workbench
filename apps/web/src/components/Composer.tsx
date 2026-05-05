@@ -1,14 +1,33 @@
 import { useRef, useState, type KeyboardEvent } from "react";
 import { ArrowUp, LoaderCircle, Square } from "lucide-react";
 
+export type ComposerMode = "new_task" | "guidance" | "continue";
+
+const modeCopy: Record<ComposerMode, { placeholder: string; hint: string }> = {
+  new_task: {
+    placeholder: "Ask the agent to do something...",
+    hint: "Starts a new task"
+  },
+  guidance: {
+    placeholder: "Add guidance for the running task...",
+    hint: "Sends pending guidance"
+  },
+  continue: {
+    placeholder: "Continue this task...",
+    hint: "Continues the selected task"
+  }
+};
+
 export function Composer({
   busy,
   running,
+  mode,
   onSubmit,
   onStop
 }: {
   busy: boolean;
   running: boolean;
+  mode: ComposerMode;
   onSubmit: (text: string) => void;
   onStop: () => void;
 }) {
@@ -16,29 +35,39 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const canSubmit = text.trim().length > 0;
   const canStop = running && !canSubmit;
-  const icon = busy ? <LoaderCircle className="spin" size={18} /> : canSubmit ? <ArrowUp size={18} /> : <Square size={14} />;
+  const icon = busy ? (
+    <LoaderCircle className="spin" size={18} />
+  ) : canStop ? (
+    <Square size={14} />
+  ) : (
+    <ArrowUp size={18} />
+  );
   const label = busy ? "Working" : canSubmit ? "Send" : canStop ? "Stop" : "Idle";
+  const copy = modeCopy[mode];
 
   return (
     <form
-      className="composer"
+      className={mode === "new_task" ? "composer composerLarge" : "composer"}
       onSubmit={(event) => {
         event.preventDefault();
         submit();
       }}
     >
-      <textarea
-        ref={textareaRef}
-        aria-label="Task input"
-        placeholder="Ask the agent to do something..."
-        rows={1}
-        value={text}
-        onChange={(event) => {
-          setText(event.target.value);
-          resize(event.currentTarget);
-        }}
-        onKeyDown={handleKeyDown}
-      />
+      <div className="composerInputWrap">
+        <textarea
+          ref={textareaRef}
+          aria-label="Task input"
+          placeholder={copy.placeholder}
+          rows={4}
+          value={text}
+          onChange={(event) => {
+            setText(event.target.value);
+            resize(event.currentTarget);
+          }}
+          onKeyDown={handleKeyDown}
+        />
+        <span className="composerHint">{busy ? "Working..." : canSubmit ? copy.hint : running ? "Stops the current run" : copy.hint}</span>
+      </div>
       <button aria-label={label} disabled={busy || (!canSubmit && !running)} type="submit">
         {icon}
       </button>

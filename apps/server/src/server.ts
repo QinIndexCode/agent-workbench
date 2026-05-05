@@ -19,8 +19,13 @@ import {
   McpServerPatchRequestSchema,
   PreferencesPatchSchema,
   ProjectMemoryCreateRequestSchema,
+  SkillBulkDeleteRequestSchema,
   SkillCorrectionRequestSchema,
+  SkillCreateRequestSchema,
+  SkillMergeRequestSchema,
   SkillStatusPatchSchema,
+  SkillUpdateRequestSchema,
+  TaskDeleteRequestSchema,
   type TaskEvent
 } from "@scc/shared";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -75,6 +80,16 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const task = await workbench.getTask(id);
     return task ? task : reply.code(404).send({ error: "Task not found" });
+  });
+
+  app.delete("/api/tasks/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = TaskDeleteRequestSchema.parse(request.body ?? {});
+    try {
+      return await workbench.deleteTask(id, input);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.get("/api/tasks/:id/events", async (request, reply) => {
@@ -135,6 +150,16 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   });
 
   app.get("/api/skills", async () => workbench.listSkills());
+  app.post("/api/skills", async (request, reply) => {
+    const input = SkillCreateRequestSchema.parse(request.body);
+    return reply.code(201).send(await workbench.createSkill(input));
+  });
+  app.get("/api/skills/duplicates", async () => workbench.listSkillDuplicates());
+  app.post("/api/skills/bulk-delete", async (request) => {
+    const input = SkillBulkDeleteRequestSchema.parse(request.body);
+    return workbench.bulkDeleteSkills(input.skillIds);
+  });
+  app.post("/api/skills/cleanup-duplicates", async () => workbench.cleanupDuplicateSkills());
   app.get("/api/skill-conflicts", async () => workbench.listSkillConflicts());
 
   app.get("/api/skills/:id", async (request, reply) => {
@@ -145,9 +170,25 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.patch("/api/skills/:id", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
-    const input = SkillStatusPatchSchema.parse(request.body);
+    const input = SkillUpdateRequestSchema.or(SkillStatusPatchSchema).parse(request.body);
     try {
-      return await workbench.updateSkillStatus(id, input.status);
+      return await workbench.updateSkill(id, input);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete("/api/skills/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    await workbench.deleteSkill(id);
+    return reply.code(204).send();
+  });
+
+  app.post("/api/skills/:id/merge", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = SkillMergeRequestSchema.parse(request.body);
+    try {
+      return await workbench.mergeSkills({ ...input, targetSkillId: input.targetSkillId ?? id });
     } catch (error) {
       return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -207,25 +248,21 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.get("/api/mcp/tools", async () => requireMcp(mcpRegistry).listTools());
 
-  app.post("/api/mcp/server", async (request, reply) => {
-    const server = createSccMcpServer(workbench);
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined } as never);
-    await server.connect(transport as never);
-    reply.raw.on("close", () => {
-      void transport.close();
-      void server.close();
-    });
-    await transport.handleRequest(request.raw, reply.raw, request.body);
-    return reply.hijack();
+  app.route({
+    method: ["GET", "POST", "DELETE"],
+    url: "/api/mcp/server",
+    handler: async (request, reply) => {
+      const server = createSccMcpServer(workbench);
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined } as never);
+      await server.connect(transport as never);
+      reply.raw.on("close", () => {
+        void transport.close();
+        void server.close();
+      });
+      await transport.handleRequest(request.raw, reply.raw, request.body);
+      return reply.hijack();
+    }
   });
-
-  app.get("/api/mcp/server", async (request, reply) =>
-    reply.code(405).send({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null })
-  );
-
-  app.delete("/api/mcp/server", async (request, reply) =>
-    reply.code(405).send({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null })
-  );
 
   app.get("/api/permissions/global", async () => workbench.listGlobalPermissions());
 

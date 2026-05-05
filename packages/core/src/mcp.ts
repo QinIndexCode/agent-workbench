@@ -18,7 +18,7 @@ import type { ModelToolDefinition, ModelToolProvider } from "./openai-model.js";
 import { createId, nowIso } from "./ids.js";
 import type { RiskAssessment } from "./permission-engine.js";
 import type { WorkbenchStore } from "./store.js";
-import type { ToolExecutorDelegate } from "./tools.js";
+import type { ToolExecutionOptions, ToolExecutorDelegate } from "./tools.js";
 
 type McpClient = Client;
 type McpTransport = StdioClientTransport | StreamableHTTPClientTransport;
@@ -180,13 +180,31 @@ export class McpRegistry implements ModelToolProvider, ToolExecutorDelegate {
     return { category: tool.riskCategory, reason: `MCP tool ${tool.serverId}/${tool.name} is classified as ${tool.riskCategory}.` };
   }
 
-  async execute(call: ToolCall): Promise<ToolResult> {
+  async describeToolCall(call: ToolCall): Promise<Record<string, unknown> | undefined> {
+    const tool = await this.resolveTool(call.toolName);
+    if (!tool) return undefined;
+    return {
+      serverId: tool.serverId,
+      toolName: tool.name,
+      displayName: tool.displayName,
+      riskCategory: tool.riskCategory,
+      argsPreview: previewArgs(call.args)
+    };
+  }
+
+  async execute(call: ToolCall, options: ToolExecutionOptions = {}): Promise<ToolResult> {
     const resolved = await this.resolveToolWithConnection(call.toolName);
     if (!resolved) {
       return this.result(call, false, `Unknown MCP tool: ${call.toolName}`);
     }
+    if (options.signal?.aborted) {
+      return this.result(call, false, "MCP tool call cancelled before it started.");
+    }
     try {
-      const response = await resolved.connection.client.callTool({ name: resolved.tool.name, arguments: call.args });
+      const response = await abortable(
+        resolved.connection.client.callTool({ name: resolved.tool.name, arguments: call.args }),
+        options.signal
+      );
       const output = serializeMcpToolResponse(response);
       return this.result(call, !isMcpError(response), output);
     } catch (error) {
@@ -331,6 +349,23 @@ function isMcpError(response: unknown): boolean {
 function sanitizeError(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   return text.replace(/\b(sk|ak)-[a-zA-Z0-9_\-]{10,}\b/g, "[redacted-key]");
+}
+
+function previewArgs(args: Record<string, unknown>): string {
+  const raw = JSON.stringify(args, null, 2);
+  if (raw.length <= 1600) return raw;
+  return `${raw.slice(0, 1600)}\n... args truncated ...`;
+}
+
+async function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) throw new Error("MCP tool call cancelled.");
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("MCP tool call cancelled.")), { once: true });
+    })
+  ]);
 }
 
 function hash(value: string): string {

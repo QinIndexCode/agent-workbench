@@ -2,11 +2,17 @@ import type { TaskDetail, ToolCall } from "@scc/shared";
 import { createId } from "./ids.js";
 
 export type ModelTurn =
-  | { kind: "final"; message: string }
-  | { kind: "tool_calls"; calls: ToolCall[] };
+  | { kind: "final"; message: string; streamId?: string }
+  | { kind: "tool_calls"; calls: ToolCall[]; streamId?: string };
+
+export interface ModelStreamHandlers {
+  streamId: string;
+  onAssistantDelta: (delta: string) => Promise<void>;
+  onThinkingDelta: (delta: string) => Promise<void>;
+}
 
 export interface ModelClient {
-  next(task: TaskDetail): Promise<ModelTurn>;
+  next(task: TaskDetail, stream?: ModelStreamHandlers): Promise<ModelTurn>;
 }
 
 export class FallbackModelClient implements ModelClient {
@@ -37,7 +43,7 @@ export class ConfiguredToolModelClient implements ModelClient {
     const lastToolResult = lastToolResultIndex >= 0 ? task.events[lastToolResultIndex] : undefined;
     if (lastToolResult && lastToolResultIndex > lastAssistantIndex) {
       const output = String(lastToolResult.payload["output"] ?? "");
-      return { kind: "final", message: output ? `Tool evidence returned:\n\n${output.slice(0, 4000)}` : "Tool completed with no output." };
+      return { kind: "final", message: output ? summarizeToolEvidence(output) : "Tool completed with no output." };
     }
 
     return {
@@ -45,6 +51,44 @@ export class ConfiguredToolModelClient implements ModelClient {
       calls: [{ id: createId("tool_call"), toolName: "run_command", args: { command: this.command } }]
     };
   }
+}
+
+function summarizeToolEvidence(output: string): string {
+  const parsed = parseJson(output);
+  if (Array.isArray(parsed)) {
+    const rows = parsed.slice(0, 5).map((item) => {
+      if (!isRecord(item)) return `- ${String(item).slice(0, 160)}`;
+      const name = String(item["ProcessName"] ?? item["Name"] ?? item["process"] ?? "process");
+      const cpu = item["CPU"] === undefined ? "" : ` CPU ${formatNumber(item["CPU"])}`;
+      const memoryRaw = Number(item["WorkingSet64"] ?? item["MemoryBytes"] ?? 0);
+      const memory = memoryRaw > 0 ? ` memory ${Math.round(memoryRaw / 1024 / 1024)} MB` : "";
+      const id = item["Id"] === undefined ? "" : ` pid ${String(item["Id"])}`;
+      return `- ${name}${id}${cpu}${memory}`;
+    });
+    return `Tool evidence returned.\n\nTop entries:\n${rows.join("\n")}`;
+  }
+  if (isRecord(parsed) && typeof parsed["summary"] === "string") {
+    return `Tool evidence returned.\n\n${parsed["summary"]}`;
+  }
+  const compact = output.length > 1400 ? `${output.slice(0, 1400)}\n... output truncated ...` : output;
+  return `Tool evidence returned.\n\n${compact}`;
+}
+
+function parseJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function formatNumber(value: unknown): string {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(1).replace(/\\.0$/, "") : String(value);
 }
 
 function findLastEventIndex(task: TaskDetail, type: TaskDetail["events"][number]["type"]): number {

@@ -1,16 +1,17 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
-import { promisify } from "node:util";
 import type { ToolCall, ToolResult } from "@scc/shared";
 import { createId, nowIso } from "./ids.js";
 
-const execFileAsync = promisify(execFile);
-
 export interface ToolExecutor {
-  execute(call: ToolCall): Promise<ToolResult>;
+  execute(call: ToolCall, options?: ToolExecutionOptions): Promise<ToolResult>;
+}
+
+export interface ToolExecutionOptions {
+  signal?: AbortSignal;
 }
 
 export interface ToolExecutorDelegate extends ToolExecutor {
@@ -23,16 +24,22 @@ export class CompositeToolExecutor implements ToolExecutor {
     private readonly delegates: ToolExecutorDelegate[] = []
   ) {}
 
-  async execute(call: ToolCall): Promise<ToolResult> {
+  async execute(call: ToolCall, options: ToolExecutionOptions = {}): Promise<ToolResult> {
     const delegate = this.delegates.find((item) => item.canExecute(call.toolName));
-    return delegate ? delegate.execute(call) : this.fallback.execute(call);
+    return delegate ? delegate.execute(call, options) : this.fallback.execute(call, options);
   }
 }
 
 export class ShellToolExecutor implements ToolExecutor {
-  async execute(call: ToolCall): Promise<ToolResult> {
+  private readonly workspaceRoot: string;
+
+  constructor(workspaceRoot = findWorkspaceRoot()) {
+    this.workspaceRoot = workspaceRoot;
+  }
+
+  async execute(call: ToolCall, options: ToolExecutionOptions = {}): Promise<ToolResult> {
     if (call.toolName === "run_command") {
-      return this.runCommand(call);
+      return this.runCommand(call, options);
     }
     if (call.toolName === "read_file") {
       return this.readFile(call);
@@ -50,10 +57,13 @@ export class ShellToolExecutor implements ToolExecutor {
     return this.result(call, false, `Unknown tool: ${call.toolName}`);
   }
 
-  private async runCommand(call: ToolCall): Promise<ToolResult> {
+  private async runCommand(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     const command = String(call.args["command"] ?? "");
     if (!command.trim()) {
       return this.result(call, false, "Missing command.");
+    }
+    if (options.signal?.aborted) {
+      return this.result(call, false, "Command cancelled before it started.");
     }
 
     const shell = process.platform === "win32" ? "powershell.exe" : "bash";
@@ -61,24 +71,62 @@ export class ShellToolExecutor implements ToolExecutor {
       process.platform === "win32"
         ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]
         : ["-lc", command];
-    const cwd = resolveWorkspacePath(String(call.args["cwd"] ?? "."));
+    const cwd = this.resolveWorkspacePath(String(call.args["cwd"] ?? "."));
 
-    try {
-      const { stdout, stderr } = await execFileAsync(shell, args, {
-        cwd,
-        timeout: 30_000,
-        maxBuffer: 1024 * 1024
+    return new Promise<ToolResult>((resolveResult) => {
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      let timedOut = false;
+      let cancelled = false;
+      const maxBuffer = 1024 * 1024;
+      const child = execFile(shell, args, { cwd, maxBuffer, windowsHide: true }, async (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (cancelled) {
+          resolveResult(await this.result(call, false, "Command cancelled by user."));
+          return;
+        }
+        if (timedOut) {
+          resolveResult(await this.result(call, false, "Command timed out after 30000ms and was terminated."));
+          return;
+        }
+        if (error) {
+          resolveResult(await this.result(call, false, [error.message, stderr].filter(Boolean).join("\n").trim()));
+          return;
+        }
+        resolveResult(await this.result(call, true, [stdout, stderr].filter(Boolean).join("\n").trim()));
       });
-      return this.result(call, true, [stdout, stderr].filter(Boolean).join("\n").trim());
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return this.result(call, false, message);
-    }
+
+      child.stdout?.on("data", (chunk: Buffer | string) => {
+        stdout = appendLimited(stdout, String(chunk), maxBuffer);
+      });
+      child.stderr?.on("data", (chunk: Buffer | string) => {
+        stderr = appendLimited(stderr, String(chunk), maxBuffer);
+      });
+
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        child.kill();
+      }, 30_000);
+
+      const onAbort = () => {
+        cancelled = true;
+        child.kill();
+      };
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+
+      function cleanup() {
+        clearTimeout(timeout);
+        options.signal?.removeEventListener("abort", onAbort);
+      }
+    });
   }
 
   private async readFile(call: ToolCall): Promise<ToolResult> {
     try {
-      const path = resolveWorkspacePath(String(call.args["path"] ?? ""));
+      const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""));
       const content = await readFile(path, "utf8");
       const offset = Math.max(1, Number(call.args["offset"] ?? 1));
       const limit = Math.max(1, Number(call.args["limit"] ?? 200));
@@ -108,7 +156,7 @@ export class ShellToolExecutor implements ToolExecutor {
 
   private async editFile(call: ToolCall): Promise<ToolResult> {
     try {
-      const path = resolveWorkspacePath(String(call.args["path"] ?? ""));
+      const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""));
       const edits = Array.isArray(call.args["edits"]) ? call.args["edits"] : [];
       if (edits.length === 0) return this.result(call, false, "No edits provided.");
 
@@ -157,7 +205,7 @@ export class ShellToolExecutor implements ToolExecutor {
     try {
       const query = String(call.args["query"] ?? "");
       if (!query.trim()) return this.result(call, false, "Missing query.");
-      const root = resolveWorkspacePath(String(call.args["path"] ?? "."));
+      const root = this.resolveWorkspacePath(String(call.args["path"] ?? "."));
       const files = await walk(root, 300);
       const matches: Array<{ path: string; line?: number; text?: string }> = [];
       for (const file of files) {
@@ -183,7 +231,7 @@ export class ShellToolExecutor implements ToolExecutor {
 
   private async listFiles(call: ToolCall): Promise<ToolResult> {
     try {
-      const root = resolveWorkspacePath(String(call.args["path"] ?? "."));
+      const root = this.resolveWorkspacePath(String(call.args["path"] ?? "."));
       const recursive = Boolean(call.args["recursive"] ?? false);
       const files = recursive ? await walk(root, 500) : await list(root);
       return this.result(call, true, JSON.stringify({ path: root, files }, null, 2));
@@ -198,15 +246,18 @@ export class ShellToolExecutor implements ToolExecutor {
       id,
       toolCallId: call.id,
       ok,
-      output: await materializeOutput(id, output),
+      output: await materializeOutput(this.workspaceRoot, id, output),
       createdAt: nowIso()
     };
   }
+
+  private resolveWorkspacePath(input: string): string {
+    return resolveWorkspacePath(this.workspaceRoot, input);
+  }
 }
 
-function resolveWorkspacePath(input: string): string {
+function resolveWorkspacePath(root: string, input: string): string {
   if (!input.trim()) throw new Error("Missing path.");
-  const root = process.cwd();
   const full = resolve(root, input);
   if (full !== root && !full.startsWith(root + sep)) {
     throw new Error(`Path is outside the workspace: ${input}`);
@@ -254,9 +305,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-async function materializeOutput(resultId: string, output: string): Promise<string> {
+function appendLimited(current: string, chunk: string, maxChars: number): string {
+  const next = current + chunk;
+  return next.length <= maxChars ? next : next.slice(-maxChars);
+}
+
+async function materializeOutput(workspaceRoot: string, resultId: string, output: string): Promise<string> {
   if (output.length <= 12000) return output;
-  const rawOutputRef = resolve(process.cwd(), "data", "tool-output", `${resultId}.txt`);
+  const rawOutputRef = resolve(workspaceRoot, "data", "tool-output", `${resultId}.txt`);
   await mkdir(dirname(rawOutputRef), { recursive: true });
   await writeFile(rawOutputRef, output, "utf8");
   return JSON.stringify(
@@ -269,4 +325,25 @@ async function materializeOutput(resultId: string, output: string): Promise<stri
     null,
     2
   );
+}
+
+function findWorkspaceRoot(): string {
+  const configured = process.env["SCC_WORKSPACE_ROOT"];
+  if (configured?.trim()) return resolve(configured);
+
+  let current = process.cwd();
+  while (true) {
+    const packagePath = resolve(current, "package.json");
+    if (existsSync(packagePath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(packagePath, "utf8")) as Record<string, unknown>;
+        if (Array.isArray(parsed["workspaces"])) return current;
+      } catch {
+        // Keep walking; a malformed package file should not hide a valid parent workspace.
+      }
+    }
+    const parent = resolve(current, "..");
+    if (parent === current) return process.cwd();
+    current = parent;
+  }
 }

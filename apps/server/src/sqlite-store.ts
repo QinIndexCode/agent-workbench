@@ -15,7 +15,7 @@ import type {
   TaskMemory,
   UserPreferences
 } from "@scc/shared";
-import { defaultPreferences, type WorkbenchStore } from "@scc/core";
+import { defaultPreferences, normalizeSkillRecord, type WorkbenchStore } from "@scc/core";
 
 type Namespace =
   | "tasks"
@@ -57,6 +57,10 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
     return this.list<TaskDetail>("tasks").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
+  async deleteTask(taskId: string): Promise<void> {
+    this.delete("tasks", taskId);
+  }
+
   async saveExperience(record: ExperienceRecord): Promise<void> {
     this.upsert("experiences", record.id, record);
   }
@@ -65,12 +69,20 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
     return this.list<ExperienceRecord>("experiences");
   }
 
+  async deleteExperience(experienceId: string): Promise<void> {
+    this.delete("experiences", experienceId);
+  }
+
   async saveTaskMemory(record: TaskMemory): Promise<void> {
     this.upsert("task_memories", record.id, record);
   }
 
   async listTaskMemories(): Promise<TaskMemory[]> {
     return this.list<TaskMemory>("task_memories");
+  }
+
+  async deleteTaskMemory(memoryId: string): Promise<void> {
+    this.delete("task_memories", memoryId);
   }
 
   async savePattern(record: PatternRecord): Promise<void> {
@@ -82,15 +94,21 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   }
 
   async saveSkill(record: SkillRecord): Promise<void> {
-    this.upsert("skills", record.id, record);
+    const normalized = normalizeSkillRecord(record);
+    this.upsert("skills", normalized.id, normalized);
   }
 
   async listSkills(): Promise<SkillRecord[]> {
-    return this.list<SkillRecord>("skills");
+    return this.list<SkillRecord>("skills").map((record) => normalizeSkillRecord(record));
   }
 
   async getSkill(skillId: string): Promise<SkillRecord | undefined> {
-    return this.get<SkillRecord>("skills", skillId);
+    const skill = this.get<SkillRecord>("skills", skillId);
+    return skill ? normalizeSkillRecord(skill) : undefined;
+  }
+
+  async deleteSkill(skillId: string): Promise<void> {
+    this.delete("skills", skillId);
   }
 
   async saveSkillConflict(record: SkillConflict): Promise<void> {
@@ -114,7 +132,7 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   }
 
   async deleteMcpServer(serverId: string): Promise<void> {
-    this.db.prepare("DELETE FROM records WHERE namespace = ? AND key = ?").run("mcp_servers", serverId);
+    this.delete("mcp_servers", serverId);
   }
 
   async saveGlobalPermission(record: GlobalPermissionGrant): Promise<void> {
@@ -126,7 +144,7 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   }
 
   async deleteGlobalPermission(riskCategory: RiskCategory): Promise<void> {
-    this.db.prepare("DELETE FROM records WHERE namespace = ? AND key = ?").run("global_permissions", riskCategory);
+    this.delete("global_permissions", riskCategory);
   }
 
   async getPreferences(): Promise<UserPreferences> {
@@ -158,7 +176,7 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   }
 
   async deleteProjectMemory(id: string): Promise<void> {
-    this.db.prepare("DELETE FROM records WHERE namespace = ? AND key = ?").run("project_memories", id);
+    this.delete("project_memories", id);
   }
 
   close(): void {
@@ -181,5 +199,9 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   private list<T>(namespace: Namespace): T[] {
     const rows = this.db.prepare("SELECT value FROM records WHERE namespace = ?").all(namespace) as Row[];
     return rows.map((row) => JSON.parse(row.value) as T);
+  }
+
+  private delete(namespace: Namespace, key: string): void {
+    this.db.prepare("DELETE FROM records WHERE namespace = ? AND key = ?").run(namespace, key);
   }
 }

@@ -19,10 +19,18 @@ import type {
   ReflectionSessionSchema,
   RiskCategorySchema,
   SkillCorrectionRequestSchema,
+  SkillBulkDeleteRequestSchema,
+  SkillCreateRequestSchema,
   SkillConflictSchema,
+  SkillDeleteRequestSchema,
+  SkillDuplicateGroupSchema,
+  SkillMergeRequestSchema,
   SkillRecordSchema,
   SkillStatusPatchSchema,
+  SkillUpdateRequestSchema,
   TaskMemorySchema,
+  TaskDeleteRequestSchema,
+  TaskDeleteResultSchema,
   TaskDetailSchema,
   TaskEventSchema,
   TaskStatusSchema,
@@ -48,6 +56,8 @@ export type ToolApproval = z.infer<typeof ToolApprovalSchema>;
 export type TaskEvent = z.infer<typeof TaskEventSchema>;
 export type TaskDetail = z.infer<typeof TaskDetailSchema>;
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;
+export type TaskDeleteRequest = z.infer<typeof TaskDeleteRequestSchema>;
+export type TaskDeleteResult = z.infer<typeof TaskDeleteResultSchema>;
 export type MessageRequest = z.infer<typeof MessageRequestSchema>;
 export type ExperienceRecord = z.infer<typeof ExperienceRecordSchema>;
 export type GlobalPermissionGrant = z.infer<typeof GlobalPermissionGrantSchema>;
@@ -58,6 +68,12 @@ export type PatternRecord = z.infer<typeof PatternRecordSchema>;
 export type SkillRecord = z.infer<typeof SkillRecordSchema>;
 export type SkillConflict = z.infer<typeof SkillConflictSchema>;
 export type SkillStatusPatch = z.infer<typeof SkillStatusPatchSchema>;
+export type SkillCreateRequest = z.infer<typeof SkillCreateRequestSchema>;
+export type SkillUpdateRequest = z.infer<typeof SkillUpdateRequestSchema>;
+export type SkillBulkDeleteRequest = z.infer<typeof SkillBulkDeleteRequestSchema>;
+export type SkillDeleteRequest = z.infer<typeof SkillDeleteRequestSchema>;
+export type SkillMergeRequest = z.infer<typeof SkillMergeRequestSchema>;
+export type SkillDuplicateGroup = z.infer<typeof SkillDuplicateGroupSchema>;
 export type SkillCorrectionRequest = z.infer<typeof SkillCorrectionRequestSchema>;
 export type ReflectionSession = z.infer<typeof ReflectionSessionSchema>;
 export type ProjectMemory = z.infer<typeof ProjectMemorySchema>;

@@ -1,111 +1,136 @@
 import { useState } from "react";
-import type { ApprovalDecision, RiskCategory, SkillRecord, UserPreferences } from "@scc/shared";
+import type { ApprovalDecision, RiskCategory, SkillDuplicateGroup, UserPreferences } from "@scc/shared";
 import { api } from "./api.js";
-import { ApprovalCard } from "./components/ApprovalCard.js";
-import { Composer } from "./components/Composer.js";
-import { InspectorPanel } from "./components/InspectorPanel.js";
 import { LearningPanel } from "./components/LearningPanel.js";
 import { McpPanel } from "./components/McpPanel.js";
 import { PermissionsPanel } from "./components/PermissionsPanel.js";
 import { ProjectMemoryPanel } from "./components/ProjectMemoryPanel.js";
+import { SettingsView, type SettingsSection } from "./components/SettingsView.js";
+import { SkillPanel } from "./components/SkillPanel.js";
 import { TaskList } from "./components/TaskList.js";
-import { Timeline } from "./components/Timeline.js";
+import { TaskThread } from "./components/TaskThread.js";
+import type { ComposerMode } from "./components/Composer.js";
 import { useWorkbenchData } from "./useWorkbenchData.js";
 
 export function App() {
   const data = useWorkbenchData();
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
-  const pendingApproval = data.selected?.approvals.find((approval) => approval.status === "pending") ?? null;
-  const running = data.selected?.status === "running" || data.selected?.status === "waiting_approval";
+  const [activeView, setActiveView] = useState<"tasks" | "settings">("tasks");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("skills");
 
   return (
     <main className="shell">
       <TaskList
+        activeView={activeView}
         open={taskDrawerOpen}
         tasks={data.tasks}
         selectedId={data.selectedId}
         onClose={() => setTaskDrawerOpen(false)}
+        onNewTask={() => {
+          setActiveView("tasks");
+          setTaskDrawerOpen(false);
+          data.clearSelection();
+        }}
+        onOpenSettings={() => {
+          setActiveView("settings");
+          setTaskDrawerOpen(false);
+        }}
+        onDelete={(taskId, options) => data.deleteTask(taskId, options)}
         onSelect={(taskId) => {
+          setActiveView("tasks");
           setTaskDrawerOpen(false);
           void data.selectTask(taskId);
         }}
       />
 
-      <section className="thread">
-        <header className="threadHeader">
-          <button className="mobileTaskToggle" type="button" onClick={() => setTaskDrawerOpen(true)}>
-            Tasks
-          </button>
-          <div>
-            <h1>{data.selected?.title ?? "New task"}</h1>
-          </div>
-        </header>
-
-        {data.error ? <div className="errorLine">{data.error}</div> : null}
-        {pendingApproval ? <ApprovalCard approval={pendingApproval} onDecision={(decision) => approve(decision)} /> : null}
-        <Timeline task={data.selected} />
-        <Composer
+      {activeView === "tasks" ? (
+        <TaskThread
+          task={data.selected}
           busy={data.busy}
-          running={running}
-          onSubmit={(text) =>
-            void data.runTaskAction(() => (data.selected ? api.sendMessage(data.selected.id, text) : api.createTask(text)))
-          }
+          error={data.error}
+          onOpenTasks={() => setTaskDrawerOpen(true)}
+          onSubmit={(mode, text) => submitComposer(mode, text)}
           onStop={() => data.selected && void data.runTaskAction(() => api.control(data.selected!.id, "pause"))}
+          onApprovalDecision={(approvalId, decision) => approve(approvalId, decision)}
         />
-      </section>
-
-      <InspectorPanel selected={data.selected}>
-        {{
-          learning: (
-            <LearningPanel
-              memories={data.memories}
-              patterns={data.patterns}
-              skills={data.skills}
-              conflicts={data.skillConflicts}
-              reflections={data.reflections}
-              onRunReflection={() => void data.runSideAction(() => api.runReflection())}
-              onSkillStatus={(skillId, status) => void updateSkillStatus(skillId, status)}
-              onExportSkill={(skillId) => void exportSkill(skillId)}
-            />
-          ),
-          permissions: (
-            <PermissionsPanel
-              permissions={data.permissions}
-              preferences={data.preferences}
-              onGrant={(risk) => void grantGlobal(risk)}
-              onRevoke={(risk) => void data.runSideAction(() => api.revokeGlobalPermission(risk))}
-              onPreference={(patch) => void updatePreference(patch)}
-            />
-          ),
-          memory: (
-            <ProjectMemoryPanel
-              memories={data.projectMemories}
-              onCreate={(title, content) =>
-                void data.runSideAction(() =>
-                  api.createProjectMemory({ title, content, category: "convention", tags: [], projectId: "default" })
-                )
-              }
-              onDelete={(id) => void data.runSideAction(() => api.deleteProjectMemory(id))}
-            />
-          ),
-          mcp: (
-            <McpPanel
-              servers={data.mcpServers}
-              tools={data.mcpTools}
-              onCreate={(input) => void data.runSideAction(() => api.createMcpServer(input))}
-              onConnect={(serverId) => void data.runSideAction(() => api.connectMcpServer(serverId))}
-              onDisconnect={(serverId) => void data.runSideAction(() => api.disconnectMcpServer(serverId))}
-              onDelete={(serverId) => void data.runSideAction(() => api.deleteMcpServer(serverId))}
-            />
-          )
-        }}
-      </InspectorPanel>
+      ) : (
+        <SettingsView
+          activeSection={settingsSection}
+          onOpenTasks={() => setTaskDrawerOpen(true)}
+          onSection={(section) => setSettingsSection(section)}
+        >
+          {{
+            learning: (
+              <LearningPanel
+                memories={data.memories}
+                patterns={data.patterns}
+                conflicts={data.skillConflicts}
+                reflections={data.reflections}
+                onRunReflection={() => void data.runSideAction(() => api.runReflection())}
+              />
+            ),
+            skills: (
+              <SkillPanel
+                skills={data.skills}
+                duplicates={data.skillDuplicates}
+                conflicts={data.skillConflicts}
+                onCreate={(input) => data.runSideAction(() => api.createSkill(input))}
+                onUpdate={(skillId, input) => data.runSideAction(() => api.patchSkill(skillId, input))}
+                onDelete={(skillId) => data.runSideAction(() => api.deleteSkill(skillId))}
+                onBulkDelete={(skillIds) => data.runSideAction(() => api.bulkDeleteSkills({ skillIds }))}
+                onMergeDuplicate={(group) => mergeDuplicate(group)}
+                onExport={(skillId) => exportSkill(skillId)}
+              />
+            ),
+            permissions: (
+              <PermissionsPanel
+                permissions={data.permissions}
+                preferences={data.preferences}
+                onGrant={(risk) => void grantGlobal(risk)}
+                onRevoke={(risk) => void data.runSideAction(() => api.revokeGlobalPermission(risk))}
+                onPreference={(patch) => void updatePreference(patch)}
+              />
+            ),
+            memory: (
+              <ProjectMemoryPanel
+                memories={data.projectMemories}
+                onCreate={(title, content) =>
+                  void data.runSideAction(() =>
+                    api.createProjectMemory({ title, content, category: "convention", tags: [], projectId: "default" })
+                  )
+                }
+                onDelete={(id) => void data.runSideAction(() => api.deleteProjectMemory(id))}
+              />
+            ),
+            mcp: (
+              <McpPanel
+                servers={data.mcpServers}
+                tools={data.mcpTools}
+                onCreate={(input) => void data.runSideAction(() => api.createMcpServer(input))}
+                onConnect={(serverId) => void data.runSideAction(() => api.connectMcpServer(serverId))}
+                onDisconnect={(serverId) => void data.runSideAction(() => api.disconnectMcpServer(serverId))}
+                onDelete={(serverId) => void data.runSideAction(() => api.deleteMcpServer(serverId))}
+              />
+            )
+          }}
+        </SettingsView>
+      )}
     </main>
   );
 
-  function approve(decision: ApprovalDecision) {
-    if (!data.selected || !pendingApproval) return;
-    void data.runTaskAction(() => api.decideApproval(data.selected!.id, pendingApproval.id, decision));
+  function submitComposer(mode: ComposerMode, text: string) {
+    void data.runTaskAction(() => {
+      if (mode === "guidance" || mode === "continue") {
+        if (!data.selected) return api.createTask(text);
+        return api.sendMessage(data.selected.id, text);
+      }
+      return api.createTask(text);
+    });
+  }
+
+  function approve(approvalId: string, decision: ApprovalDecision) {
+    if (!data.selected) return;
+    void data.runTaskAction(() => api.decideApproval(data.selected!.id, approvalId, decision));
   }
 
   function grantGlobal(risk: RiskCategory) {
@@ -123,10 +148,6 @@ export function App() {
     void data.runSideAction(() => api.updatePreferences(patch));
   }
 
-  function updateSkillStatus(skillId: string, status: SkillRecord["status"]) {
-    void data.runSideAction(() => api.patchSkill(skillId, { status }));
-  }
-
   async function exportSkill(skillId: string) {
     await data.runSideAction(async () => {
       const payload = await api.exportSkill(skillId);
@@ -138,5 +159,12 @@ export function App() {
       anchor.click();
       URL.revokeObjectURL(url);
     });
+  }
+
+  function mergeDuplicate(group: SkillDuplicateGroup) {
+    const sourceSkillIds = group.skills.filter((skill) => skill.id !== group.canonicalSkillId).map((skill) => skill.id);
+    return data.runSideAction(() =>
+      api.mergeSkills(group.canonicalSkillId, { targetSkillId: group.canonicalSkillId, sourceSkillIds, deleteSources: true })
+    );
   }
 }

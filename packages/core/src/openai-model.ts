@@ -4,7 +4,7 @@ import OpenAI from "openai";
 import type { TaskDetail, ToolCall } from "@scc/shared";
 import type { ContextAssembler } from "./context-assembler.js";
 import { createId } from "./ids.js";
-import type { ModelClient, ModelTurn } from "./fallback-model.js";
+import type { ModelClient, ModelStreamHandlers, ModelTurn } from "./fallback-model.js";
 import { ConfiguredToolModelClient, FallbackModelClient } from "./fallback-model.js";
 
 export interface OpenAIModelClientOptions {
@@ -44,11 +44,11 @@ export class OpenAIModelClient implements ModelClient {
     this.toolProvider = options.toolProvider;
   }
 
-  async next(task: TaskDetail): Promise<ModelTurn> {
-    return this.nextWithSkillRetries(task, 0);
+  async next(task: TaskDetail, stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    return this.nextWithSkillRetries(task, 0, stream);
   }
 
-  private async nextWithSkillRetries(task: TaskDetail, skillRetryCount: number): Promise<ModelTurn> {
+  private async nextWithSkillRetries(task: TaskDetail, skillRetryCount: number, stream?: ModelStreamHandlers): Promise<ModelTurn> {
     const context = this.contextAssembler ? await this.contextAssembler.assemble(task) : null;
     const dynamicTools = (await this.toolProvider?.listModelTools()) ?? [];
     const response = await this.client.chat.completions.create({
@@ -57,25 +57,88 @@ export class OpenAIModelClient implements ModelClient {
         { role: "system", content: context?.systemPrompt ?? fallbackInstructions() },
         { role: "user", content: context?.input ?? buildInput(task) }
       ],
+      stream: true,
       tool_choice: "auto" as const,
       tools: [...toolDefinitions(), ...dynamicTools] as OpenAI.Chat.Completions.ChatCompletionTool[]
     });
 
-    const message = response.choices[0]?.message;
-    const calls = extractToolCalls(message?.tool_calls);
+    const streamed = await consumeChatCompletionStream(response, stream);
+    const calls = streamed.calls;
     const skillCall = calls.find((call) => call.toolName === "use_skill");
     if (skillCall && this.contextAssembler) {
       const skillId = String(skillCall.args["skillId"] ?? "");
       const skill = await this.contextAssembler.loadSkill(task.id, skillId);
-      if ((skill || skillRetryCount < 2) && skillRetryCount < 3) return this.nextWithSkillRetries(task, skillRetryCount + 1);
+      if ((skill || skillRetryCount < 2) && skillRetryCount < 3) return this.nextWithSkillRetries(task, skillRetryCount + 1, stream);
     }
 
     const executableCalls = calls.filter((call) => call.toolName !== "use_skill");
-    if (executableCalls.length > 0) return { kind: "tool_calls", calls: executableCalls };
+    if (executableCalls.length > 0) {
+      return {
+        kind: "tool_calls",
+        calls: executableCalls,
+        ...(stream?.streamId ? { streamId: stream.streamId } : {})
+      };
+    }
 
-    const content = extractText(message?.content).trim();
-    return { kind: "final", message: content || "I could not produce a result from the model response." };
+    const content = streamed.content.trim();
+    return {
+      kind: "final",
+      message: content || "I could not produce a result from the model response.",
+      ...(stream?.streamId ? { streamId: stream.streamId } : {})
+    };
   }
+}
+
+interface StreamToolCallPart {
+  id?: string;
+  name?: string;
+  arguments: string;
+}
+
+async function consumeChatCompletionStream(
+  stream: AsyncIterable<unknown>,
+  handlers?: ModelStreamHandlers
+): Promise<{ content: string; calls: ToolCall[] }> {
+  let content = "";
+  const toolParts = new Map<number, StreamToolCallPart>();
+
+  for await (const chunk of stream) {
+    const delta = readStreamDelta(chunk);
+    if (!delta) continue;
+
+    const thinking = extractReasoningDelta(delta);
+    if (thinking) await handlers?.onThinkingDelta(thinking);
+
+    const text = typeof delta["content"] === "string" ? delta["content"] : "";
+    if (text) {
+      content += text;
+      await handlers?.onAssistantDelta(text);
+    }
+
+    const toolCalls = Array.isArray(delta["tool_calls"]) ? delta["tool_calls"] : [];
+    for (const rawToolCall of toolCalls) {
+      if (!isRecord(rawToolCall)) continue;
+      const index = Number(rawToolCall["index"] ?? toolParts.size);
+      const current = toolParts.get(index) ?? { arguments: "" };
+      if (typeof rawToolCall["id"] === "string") current.id = rawToolCall["id"];
+      if (isRecord(rawToolCall["function"])) {
+        const fn = rawToolCall["function"];
+        if (typeof fn["name"] === "string") current.name = fn["name"];
+        if (typeof fn["arguments"] === "string") current.arguments += fn["arguments"];
+      }
+      toolParts.set(index, current);
+    }
+  }
+
+  const calls: ToolCall[] = [...toolParts.entries()]
+    .sort(([left], [right]) => left - right)
+    .filter(([, part]) => Boolean(part.name))
+    .map(([, part]) => ({
+      id: part.id ?? createId("tool_call"),
+      toolName: part.name ?? "unknown_tool",
+      args: parseArgs(part.arguments || "{}")
+    }));
+  return { content, calls };
 }
 
 export function createModelClientFromEnvironment(
@@ -101,7 +164,12 @@ function fallbackInstructions(): string {
     "You are the SCC workbench agent.",
     "Choose the next action yourself based on the user's goal, available tools, permissions, and evidence.",
     "Use tools when the environment must be observed. Do not invent host, file, network, or command results.",
-    "Do not emit fixed machine-readable wrappers, diagnostic files, or scripted review reports unless explicitly requested."
+    "Do not emit fixed machine-readable wrappers, diagnostic files, or scripted review reports unless explicitly requested.",
+    "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
+    "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
+    "If you need a file but are unsure it exists, list or search first instead of guessing paths such as README.md.",
+    "Keep normal answers concise, calm, and product-like. Avoid decorative emoji, hype, and marketing-style introductions unless the user asks for that tone.",
+    "Use Markdown for readable structure when helpful: short headings, bullets, tables, and code blocks are supported."
   ].join("\n");
 }
 
@@ -249,6 +317,37 @@ function buildInput(task: TaskDetail): string {
   return lines.join("\n");
 }
 
+function readStreamDelta(chunk: unknown): Record<string, unknown> | null {
+  if (!isRecord(chunk) || !Array.isArray(chunk["choices"])) return null;
+  const choice = chunk["choices"][0];
+  if (!isRecord(choice) || !isRecord(choice["delta"])) return null;
+  return choice["delta"];
+}
+
+function extractReasoningDelta(delta: Record<string, unknown>): string {
+  const candidates = [
+    delta["reasoning_content"],
+    delta["reasoning"],
+    delta["thinking"],
+    delta["thought"],
+    delta["reasoning_summary"]
+  ];
+  for (const value of candidates) {
+    if (typeof value === "string" && value) return value;
+    if (Array.isArray(value)) {
+      const text = value
+        .map((part) => {
+          if (typeof part === "string") return part;
+          if (isRecord(part) && typeof part["text"] === "string") return part["text"];
+          return "";
+        })
+        .join("");
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
 function extractToolCalls(toolCalls: unknown): ToolCall[] {
   if (!Array.isArray(toolCalls)) return [];
   const calls: ToolCall[] = [];
@@ -282,7 +381,7 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "read_file",
-        description: "Read workspace file content with optional 1-based line range. Use this instead of run_command for file reads.",
+        description: "Read workspace file content with optional 1-based line range. Use this instead of run_command for file reads. If the path is uncertain, call list_files or search_files first.",
         parameters: strictObject({
           path: { type: "string" },
           offset: { type: "number", description: "Start line, default 1" },
@@ -334,7 +433,7 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "list_files",
-        description: "List workspace files in a directory.",
+        description: "List workspace files in a directory. Use this before reading guessed project files.",
         parameters: strictObject({
           path: { type: "string", description: "Directory path, default ." },
           recursive: { type: "boolean", description: "Whether to recurse" }

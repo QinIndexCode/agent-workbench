@@ -12,6 +12,7 @@ export function ProjectMemoryPanel({
 }) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const safeMemories = Array.isArray(memories) ? memories : [];
 
   return (
     <section className="compactList">
@@ -38,10 +39,11 @@ export function ProjectMemoryPanel({
           Add memory
         </button>
       </form>
-      {memories.slice(0, 4).map((memory) => (
+      {safeMemories.length === 0 ? <p className="muted">None yet</p> : null}
+      {safeMemories.slice(0, 4).map((memory) => (
         <div className="compactRow" key={memory.id}>
-          <span>{memory.title}</span>
-          <small>{memory.category}</small>
+          <span>{memory.title || memory.id}</span>
+          <small>{memory.category || "memory"}</small>
           <button className="textButton" onClick={() => onDelete(memory.id)}>
             Delete
           </button>
