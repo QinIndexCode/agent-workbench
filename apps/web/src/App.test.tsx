@@ -36,12 +36,18 @@ describe("Composer", () => {
 
   it("lets users switch models and quick global permissions from the composer", () => {
     const onModelChange = vi.fn();
+    const onFolderChange = vi.fn();
     const onGrant = vi.fn();
     render(
       <Composer
         busy={false}
         running={false}
         mode="new_task"
+        folderValue="default"
+        folderOptions={[
+          { label: "Default", value: "default", description: process.cwd() },
+          { label: "Project A", value: "folder_a", description: "D:\\ProjectA" }
+        ]}
         modelValue="mimo-v2.5"
         modelOptions={[
           { label: "Mimo v2.5", value: "mimo-v2.5" },
@@ -49,6 +55,7 @@ describe("Composer", () => {
         ]}
         permissionPreset="ask"
         permissionScopeLabel="Ask"
+        onFolderChange={onFolderChange}
         onModelChange={onModelChange}
         onPermissionPresetChange={onGrant}
         onSubmit={vi.fn()}
@@ -56,6 +63,9 @@ describe("Composer", () => {
       />
     );
 
+    fireEvent.click(screen.getByLabelText("Choose work folder"));
+    fireEvent.click(screen.getByText("Project A"));
+    expect(onFolderChange).toHaveBeenCalledWith("folder_a");
     fireEvent.click(screen.getByLabelText("Choose model"));
     expect(screen.queryByText("mimo-v2.5-pro")).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("Mimo v2.5 Pro"));
@@ -93,6 +103,7 @@ describe("Workbench components", () => {
     id: "task_1",
     title: "Check host",
     folderId: "default",
+    workRoot: process.cwd(),
     status: "waiting_approval",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -129,7 +140,7 @@ describe("Workbench components", () => {
         tasks={[task]}
         folders={[]}
         selectedId="task_1"
-        activeFolderId="all"
+        activeFolderId="default"
         onClose={vi.fn()}
         onClearFolder={vi.fn()}
         onCreateFolder={vi.fn()}
@@ -194,7 +205,7 @@ describe("Workbench components", () => {
         tasks={[task]}
         folders={[]}
         selectedId="task_1"
-        activeFolderId="all"
+        activeFolderId="default"
         onClose={vi.fn()}
         onClearFolder={vi.fn()}
         onCreateFolder={vi.fn()}
@@ -223,6 +234,9 @@ describe("Workbench components", () => {
     const folder: TaskFolderRecord = {
       id: "folder_ops",
       name: "Operations",
+      rootPath: process.cwd(),
+      isDefault: false,
+      exists: true,
       sortOrder: 1,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -261,18 +275,20 @@ describe("Workbench components", () => {
     expect(screen.getByText("Task folders")).toBeInTheDocument();
     expect(screen.getByText("Ops check")).toBeInTheDocument();
     expect(screen.queryByText("Default check")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("All tasks"));
-    expect(onFolderSelect).toHaveBeenCalledWith("all");
+    fireEvent.click(screen.getByText("Default"));
+    expect(onFolderSelect).toHaveBeenCalledWith("default");
 
     fireEvent.click(screen.getByLabelText("New folder"));
     fireEvent.change(screen.getByLabelText("Folder name"), { target: { value: "Research" } });
+    fireEvent.change(screen.getByLabelText("Local path"), { target: { value: process.cwd() } });
     fireEvent.click(within(screen.getByRole("dialog", { name: "New folder" })).getByRole("button", { name: "New folder" }));
-    await waitFor(() => expect(onCreateFolder).toHaveBeenCalledWith("Research"));
+    await waitFor(() => expect(onCreateFolder).toHaveBeenCalledWith("Research", process.cwd()));
 
     fireEvent.click(screen.getByLabelText("Edit folder Operations"));
     fireEvent.change(screen.getByLabelText("Folder name"), { target: { value: "Ops" } });
+    fireEvent.change(screen.getByLabelText("Local path"), { target: { value: process.cwd() } });
     fireEvent.click(within(screen.getByRole("dialog", { name: "Edit folder" })).getByRole("button", { name: "Edit folder" }));
-    await waitFor(() => expect(onUpdateFolder).toHaveBeenCalledWith("folder_ops", "Ops"));
+    await waitFor(() => expect(onUpdateFolder).toHaveBeenCalledWith("folder_ops", "Ops", process.cwd()));
 
     fireEvent.click(screen.getByLabelText("Clear tasks Operations"));
     expect(screen.getByText("Clear this folder's tasks?")).toBeInTheDocument();

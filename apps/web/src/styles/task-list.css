@@ -142,7 +142,7 @@
   overflow: hidden;
   opacity: 1;
   transition: opacity 160ms ease, width 160ms ease;
-  white-space: nowrap;
+  white-space: pre-wrap;
 }
 
 .folderPanelTitle.hidden {
@@ -620,6 +620,22 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   outline: 0;
+}
+
+.folderPickerField > input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  color: var(--text);
+  font-size: 13px;
+  background: #090d0f;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: 0;
+}
+
+.folderPickerField > input:focus {
+  border-color: var(--accent-border);
 }
 
 .folderPickerInputWrap input:focus {

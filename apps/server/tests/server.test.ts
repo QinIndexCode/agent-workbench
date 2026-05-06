@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -74,14 +74,17 @@ describe("server API", () => {
     expect(titleResponse.json().title.length).toBeLessThanOrEqual(18);
 
     expect((await app.inject("/api/task-folders")).json().map((folder: { id: string }) => folder.id)).toContain("default");
-    const folder = (
-      await app.inject({
-        method: "POST",
-        url: "/api/task-folders",
-        payload: { name: "System checks" }
-      })
-    ).json();
+    const localRoot = mkdtempSync(join(tmpdir(), "scc-server-folder-"));
+    const folderResponse = await app.inject({
+      method: "POST",
+      url: "/api/task-folders",
+      payload: { name: "System checks", rootPath: localRoot }
+    });
+    expect(folderResponse.statusCode).toBe(201);
+    const folder = folderResponse.json();
     expect(folder.name).toBe("System checks");
+    expect(folder.rootPath).toBe(resolve(localRoot));
+    expect(folder.exists).toBe(true);
 
     const created = (
       await app.inject({
@@ -91,15 +94,23 @@ describe("server API", () => {
       })
     ).json();
     expect(created.folderId).toBe(folder.id);
+    expect(created.workRoot).toBe(resolve(localRoot));
 
     const patched = (
       await app.inject({
         method: "PATCH",
         url: `/api/task-folders/${folder.id}`,
-        payload: { name: "Host checks" }
+        payload: { name: "Host checks", rootPath: localRoot }
       })
     ).json();
     expect(patched.name).toBe("Host checks");
+
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/api/task-folders",
+      payload: { name: "Missing path", rootPath: join(localRoot, "missing") }
+    });
+    expect(invalid.statusCode).toBe(400);
 
     const cleared = (
       await app.inject({
@@ -111,6 +122,7 @@ describe("server API", () => {
     expect(cleared.deletedTasks).toBe(1);
     expect((await app.inject(`/api/tasks/${created.id}`)).statusCode).toBe(404);
     expect((await app.inject({ method: "DELETE", url: `/api/task-folders/${folder.id}` })).statusCode).toBe(204);
+    rmSync(localRoot, { recursive: true, force: true });
     await app.close();
   });
 

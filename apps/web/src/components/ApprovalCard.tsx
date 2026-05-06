@@ -14,6 +14,8 @@ export function ApprovalCard({
   const metadata = approval.metadata ?? {};
   const command = readMeta(metadata, "command") ?? String(approval.toolCall.args["command"] ?? "");
   const cwd = readMeta(metadata, "cwd") ?? String(approval.toolCall.args["cwd"] ?? "");
+  const workRoot = readMeta(metadata, "workRoot");
+  const resolvedCwd = readMeta(metadata, "resolvedCwd") ?? cwd;
   const serverId = readMeta(metadata, "serverId");
   const toolName = readMeta(metadata, "toolName") ?? approval.toolCall.toolName;
   const displayName = readMeta(metadata, "displayName") ?? toolName;
@@ -44,10 +46,16 @@ export function ApprovalCard({
           <dt>{text.tool}</dt>
           <dd>{toolName}</dd>
         </div>
-        {cwd ? (
+        {workRoot ? (
+          <div>
+            <dt>{text.folder}</dt>
+            <dd title={workRoot}>{workRoot}</dd>
+          </div>
+        ) : null}
+        {resolvedCwd ? (
           <div>
             <dt>{text.cwd}</dt>
-            <dd>{cwd}</dd>
+            <dd title={resolvedCwd}>{resolvedCwd}</dd>
           </div>
         ) : null}
       </dl>
@@ -85,6 +93,7 @@ function getApprovalCopy(language?: string | null) {
   return {
     server: zh ? "服务" : "Server",
     tool: zh ? "工具" : "Tool",
+    folder: zh ? "工作文件夹" : "Work folder",
     cwd: zh ? "目录" : "CWD",
     destructiveGlobal: zh ? "全局允许后，该高风险类别后续不会再弹出审批。" : "Global approval will allow this destructive risk category without future prompts.",
     allowOnce: zh ? "允许一次" : "Allow once",

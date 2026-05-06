@@ -49,7 +49,7 @@ test("manages task folders from the sidebar on desktop and mobile", async ({ pag
   await page.goto("/");
   await openTaskDrawer(page);
   await expect(page.getByText("Task folders")).toBeVisible();
-  await page.getByText(`Ops ${suffix}`).click();
+  await page.locator(".folderTreeMain").filter({ hasText: `Ops ${suffix}` }).click();
   await page.getByLabel("Search tasks").fill(`Folder ${suffix}`);
   const taskRow = page.locator(".taskItem").filter({ hasText: `Folder ${suffix}` });
   await expect(taskRow).toBeVisible();
@@ -63,7 +63,7 @@ test("manages task folders from the sidebar on desktop and mobile", async ({ pag
   })).json();
   await page.reload();
   await openTaskDrawer(page);
-  await page.getByText(`Ops ${suffix}`).click();
+  await page.locator(".folderTreeMain").filter({ hasText: `Ops ${suffix}` }).click();
   await page.getByLabel(`Clear tasks Ops ${suffix}`).click();
   await page.locator(".confirmDialog").getByRole("button", { name: "Clear tasks" }).click();
   await expect.poll(async () => (await request.get(`${apiBase}/api/tasks/${second.id}`)).status()).toBe(404);

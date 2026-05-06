@@ -41,13 +41,13 @@ export function TaskList({
   onClose: () => void;
   onDelete: (taskId: string, options: TaskDeleteRequest) => Promise<void>;
   onClearFolder: (folderId: string, options: TaskFolderClearRequest) => Promise<void>;
-  onCreateFolder: (name: string) => Promise<void>;
+  onCreateFolder: (name: string, rootPath: string) => Promise<void>;
   onOpenDocs: () => void;
   onOpenHistory?: () => void;
   onOpenLibrary: () => void;
   onSelect: (taskId: string) => void;
   onFolderSelect: (folderId: string) => void;
-  onUpdateFolder: (folderId: string, name: string) => Promise<void>;
+  onUpdateFolder: (folderId: string, name: string, rootPath: string) => Promise<void>;
   onNewTask: () => void;
   onOpenSettings: () => void;
   onOpenSupport: () => void;
@@ -57,7 +57,7 @@ export function TaskList({
   const [expandedFolderId, setExpandedFolderId] = useState<string>(activeFolderId);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [clearingFolderId, setClearingFolderId] = useState<string | null>(null);
-  const [folderEditor, setFolderEditor] = useState<{ id: string | null; name: string } | null>(null);
+  const [folderEditor, setFolderEditor] = useState<{ id: string | null; name: string; rootPath: string } | null>(null);
   const [deleteLearningData, setDeleteLearningData] = useState(false);
   const [deleteDerivedSkills, setDeleteDerivedSkills] = useState(false);
   const [utilityOpen, setUtilityOpen] = useState(false);
@@ -75,17 +75,23 @@ export function TaskList({
           {
             id: "default",
             name: text.defaultFolder,
+            rootPath: "",
+            isDefault: true,
+            exists: true,
             sortOrder: 0,
             createdAt: "",
             updatedAt: ""
           },
           ...folders
         ];
-    return [
-      { id: "all", name: text.allTasks, system: true, browseOnly: true },
-      ...normalized.map((folder) => ({ id: folder.id, name: folder.name, system: folder.id === "default", browseOnly: false }))
-    ];
-  }, [folders, text.allTasks, text.defaultFolder]);
+    return normalized.map((folder) => ({
+        id: folder.id,
+        name: folder.name,
+        rootPath: folder.rootPath,
+        system: folder.id === "default" || folder.isDefault,
+        browseOnly: false
+      }));
+  }, [folders, text.defaultFolder]);
   const activeFolder = folderItems.find((folder) => folder.id === activeFolderId) ?? folderItems[0]!;
   const clearingFolder = clearingFolderId ? folderItems.find((folder) => folder.id === clearingFolderId) ?? null : null;
   const folderCounts = useMemo(() => {
@@ -105,7 +111,6 @@ export function TaskList({
   }, [query, tasks]);
 
   const getFolderTasks = (folderId: string) => {
-    if (folderId === "all") return filteredTasks;
     return filteredTasks.filter((task) => (task.folderId || "default") === folderId);
   };
 
@@ -189,7 +194,7 @@ export function TaskList({
               >
                 <Search size={14} />
               </button>
-              <button aria-label={text.addFolder} className="folderIconButton" type="button" onClick={() => setFolderEditor({ id: null, name: "" })}>
+              <button aria-label={text.addFolder} className="folderIconButton" type="button" onClick={() => setFolderEditor({ id: null, name: "", rootPath: "" })}>
                 <FolderPlus size={14} />
               </button>
             </div>
@@ -240,7 +245,7 @@ export function TaskList({
                       onMouseEnter={(event) => {
                         const rect = event.currentTarget.getBoundingClientRect();
                         setTooltip({
-                          text: folder.name,
+                          text: folder.rootPath ? `${folder.name}\n${folder.rootPath}` : folder.name,
                           x: rect.left,
                           y: rect.top - 8,
                           visible: true
@@ -271,7 +276,7 @@ export function TaskList({
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          setFolderEditor({ id: folder.id, name: folder.name });
+                          setFolderEditor({ id: folder.id, name: folder.name, rootPath: folder.rootPath ?? "" });
                         }}
                       >
                         <Edit3 size={13} />
@@ -413,15 +418,18 @@ export function TaskList({
       <FolderPickerDialog
         cancelLabel={text.cancel}
         confirmLabel={folderEditor?.id ? text.editFolder : text.addFolder}
-        fieldLabel={text.folderName}
+        initialName={folderEditor?.name ?? ""}
+        initialPath={folderEditor?.rootPath ?? ""}
+        nameLabel={text.folderName}
         open={Boolean(folderEditor)}
-        placeholder={text.folderName}
+        pathLabel={text.folderPath}
+        pathPlaceholder={text.folderPathPlaceholder}
         title={folderEditor?.id ? text.editFolder : text.addFolder}
         onCancel={() => setFolderEditor(null)}
-        onConfirm={(path) => {
-          const name = path.trim();
-          if (!name) return;
-          const action = folderEditor?.id ? onUpdateFolder(folderEditor.id, name) : onCreateFolder(name);
+        onConfirm={(input) => {
+          const action = folderEditor?.id
+            ? onUpdateFolder(folderEditor.id, input.name, input.rootPath)
+            : onCreateFolder(input.name, input.rootPath);
           void action.then(() => setFolderEditor(null));
         }}
       />

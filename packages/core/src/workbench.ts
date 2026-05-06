@@ -35,6 +35,8 @@ import type {
   ToolCall,
   ToolResult
 } from "@scc/shared";
+import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import { ContextAssembler } from "./context-assembler.js";
 import {
   createExperience,
@@ -54,6 +56,7 @@ import { PermissionEngine, type PermissionState, type RiskAssessment } from "./p
 import { LocalSecretBox, maskSecret } from "./secrets.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
 import { ShellToolExecutor, type ToolExecutor } from "./tools.js";
+import { findWorkspaceRoot } from "./workspace-root.js";
 
 export interface ToolRiskProvider {
   assessTool(call: ToolCall): Promise<RiskAssessment | undefined>;
@@ -105,8 +108,10 @@ export class AgentWorkbench {
   }
 
   private async initializeTask(goal: string, title: string, folderId: string): Promise<TaskDetail> {
+    const folder = await this.resolveTaskFolder(folderId);
     const task = this.emptyTask(title);
-    task.folderId = folderId || "default";
+    task.folderId = folder.id;
+    task.workRoot = folder.rootPath;
     this.addEvent(task, "task_created", "Task created");
     this.addEvent(task, "user_message", goal);
     this.setStatus(task, "running");
@@ -127,15 +132,21 @@ export class AgentWorkbench {
   }
 
   async listTaskFolders(): Promise<TaskFolderRecord[]> {
-    return [defaultTaskFolder(), ...(await this.store.listTaskFolders()).filter((folder) => folder.id !== "default")];
+    const folders = [defaultTaskFolder(), ...(await this.store.listTaskFolders()).filter((folder) => folder.id !== "default")];
+    return Promise.all(folders.map((folder) => this.refreshFolderStatus(folder)));
   }
 
   async createTaskFolder(input: TaskFolderCreateRequest): Promise<TaskFolderRecord> {
     const existing = await this.store.listTaskFolders();
     const now = nowIso();
+    const rootPath = await this.validateFolderRoot(input.rootPath);
     const folder: TaskFolderRecord = {
       id: createId("folder"),
       name: input.name.trim(),
+      rootPath,
+      isDefault: false,
+      exists: true,
+      lastValidatedAt: now,
       sortOrder: existing.length + 1,
       createdAt: now,
       updatedAt: now
@@ -151,6 +162,7 @@ export class AgentWorkbench {
     const updated: TaskFolderRecord = {
       ...folder,
       ...(input.name ? { name: input.name.trim() } : {}),
+      ...(input.rootPath ? { rootPath: await this.validateFolderRoot(input.rootPath), exists: true, lastValidatedAt: nowIso() } : {}),
       ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
       updatedAt: nowIso()
     };
@@ -169,9 +181,13 @@ export class AgentWorkbench {
   }
 
   async clearTaskFolder(folderId: string, input: TaskFolderClearRequest): Promise<TaskFolderClearResult> {
-    const tasks = (await this.store.listTasks()).filter((task) => folderId === "all" || task.folderId === folderId);
+    const id = folderId || "default";
+    if (id !== "default" && !(await this.store.getTaskFolder(id))) {
+      throw new Error(`Task folder not found: ${id}`);
+    }
+    const tasks = (await this.store.listTasks()).filter((task) => (task.folderId || "default") === id);
     const result: TaskFolderClearResult = {
-      folderId,
+      folderId: id,
       deletedTasks: 0,
       deletedExperiences: 0,
       deletedTaskMemories: 0,
@@ -187,6 +203,34 @@ export class AgentWorkbench {
       result.updatedSkills += deleted.updatedSkills;
     }
     return result;
+  }
+
+  private async resolveTaskFolder(folderId: string | undefined): Promise<TaskFolderRecord> {
+    const id = !folderId || folderId === "all" ? "default" : folderId;
+    const folder = id === "default" ? defaultTaskFolder() : await this.store.getTaskFolder(id);
+    if (!folder) throw new Error(`Task folder not found: ${id}`);
+    const refreshed = await this.refreshFolderStatus(folder);
+    if (!refreshed.exists) throw new Error(`Task folder path does not exist: ${refreshed.rootPath}`);
+    return refreshed;
+  }
+
+  private async validateFolderRoot(rootPath?: string): Promise<string> {
+    const full = resolve(rootPath?.trim() || findWorkspaceRoot());
+    const info = await stat(full).catch(() => null);
+    if (!info?.isDirectory()) throw new Error(`Folder path must exist and be a directory: ${full}`);
+    return full;
+  }
+
+  private async refreshFolderStatus(folder: TaskFolderRecord): Promise<TaskFolderRecord> {
+    const rootPath = resolve(folder.rootPath?.trim() || findWorkspaceRoot());
+    const exists = Boolean((await stat(rootPath).catch(() => null))?.isDirectory());
+    return {
+      ...folder,
+      rootPath,
+      exists,
+      isDefault: folder.id === "default" || Boolean(folder.isDefault),
+      lastValidatedAt: nowIso()
+    };
   }
 
   async getTask(taskId: string): Promise<TaskDetail | undefined> {
@@ -735,7 +779,7 @@ export class AgentWorkbench {
       if (stoppedBeforeTool) return stoppedBeforeTool;
 
       const assessment = (await this.toolRiskProvider?.assessTool(call)) ?? this.permissions.assess(call.toolName, call.args);
-      const metadata = await this.describeToolCall(call, assessment);
+      const metadata = await this.describeToolCall(task, call, assessment);
       this.addEvent(task, "tool_requested", call.toolName, {
         toolCallId: call.id,
         toolName: call.toolName,
@@ -850,6 +894,7 @@ export class AgentWorkbench {
       id,
       title,
       folderId: "default",
+      workRoot: findWorkspaceRoot(),
       status: "idle",
       createdAt: now,
       updatedAt: now,
@@ -877,10 +922,11 @@ export class AgentWorkbench {
   }
 
   private async executeTool(taskId: string, call: ToolCall): Promise<ToolResult> {
+    const task = await this.requiredTask(taskId);
     const controller = new AbortController();
     this.runningToolControllers.set(taskId, controller);
     try {
-      return await this.tools.execute(call, { signal: controller.signal });
+      return await this.tools.execute(call, { signal: controller.signal, workRoot: task.workRoot });
     } finally {
       if (this.runningToolControllers.get(taskId) === controller) {
         this.runningToolControllers.delete(taskId);
@@ -892,11 +938,13 @@ export class AgentWorkbench {
     this.runningToolControllers.get(taskId)?.abort();
   }
 
-  private async describeToolCall(call: ToolCall, assessment: RiskAssessment): Promise<Record<string, unknown>> {
+  private async describeToolCall(task: TaskDetail, call: ToolCall, assessment: RiskAssessment): Promise<Record<string, unknown>> {
     const providerMetadata = (await this.toolRiskProvider?.describeToolCall?.(call)) ?? {};
     return {
       riskCategory: assessment.category,
       argsPreview: previewArgs(call.args),
+      workRoot: task.workRoot,
+      resolvedCwd: resolve(task.workRoot || findWorkspaceRoot(), String(call.args["cwd"] ?? ".")),
       ...inferBuiltInToolMetadata(call),
       ...providerMetadata
     };
@@ -1168,9 +1216,14 @@ function prefersChinese(language: string | undefined, text: string): boolean {
 
 function defaultTaskFolder(): TaskFolderRecord {
   const now = nowIso();
+  const rootPath = findWorkspaceRoot();
   return {
     id: "default",
     name: "Default",
+    rootPath,
+    isDefault: true,
+    exists: true,
+    lastValidatedAt: now,
     sortOrder: 0,
     createdAt: now,
     updatedAt: now

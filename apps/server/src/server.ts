@@ -102,15 +102,23 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.post("/api/tasks", async (request, reply) => {
     const input = CreateTaskRequestSchema.parse(request.body);
-    const task = await workbench.startTask(input.goal, input.title, input.folderId);
-    return reply.code(201).send(task);
+    try {
+      const task = await workbench.startTask(input.goal, input.title, input.folderId);
+      return reply.code(201).send(task);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.get("/api/task-folders", async () => workbench.listTaskFolders());
 
   app.post("/api/task-folders", async (request, reply) => {
     const input = TaskFolderCreateRequestSchema.parse(request.body);
-    return reply.code(201).send(await workbench.createTaskFolder(input));
+    try {
+      return reply.code(201).send(await workbench.createTaskFolder(input));
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.patch("/api/task-folders/:id", async (request, reply) => {
@@ -119,7 +127,8 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     try {
       return await workbench.updateTaskFolder(id, input);
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") ? 404 : 400).send({ error: message });
     }
   });
 
@@ -136,7 +145,11 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   app.post("/api/task-folders/:id/clear", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = TaskFolderClearRequestSchema.parse(request.body);
-    return reply.code(200).send(await workbench.clearTaskFolder(id, input));
+    try {
+      return reply.code(200).send(await workbench.clearTaskFolder(id, input));
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.get("/api/tasks/:id", async (request, reply) => {

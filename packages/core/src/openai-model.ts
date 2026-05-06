@@ -491,7 +491,7 @@ function toolDefinitions(): ModelToolDefinition[] {
         description: "Request a local shell command. The application classifies risk and may ask the user before running it.",
         parameters: strictObject({
           command: { type: "string", description: "The command to run. Prefer read-only observation unless the user asked for changes." },
-          cwd: { type: "string", description: "Working directory. Defaults to the project root." }
+          cwd: { type: "string", description: "Working directory inside the task folder. Defaults to the task folder root." }
         }, ["command"])
       }
     },
@@ -499,7 +499,7 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "read_file",
-        description: "Read project file content with optional 1-based line range. Use this instead of run_command for file reads. If the path is uncertain, call list_files or search_files first.",
+        description: "Read file content inside the task folder with optional 1-based line range. Use this instead of run_command for file reads. If the path is uncertain, call list_files or search_files first.",
         parameters: strictObject({
           path: { type: "string" },
           offset: { type: "number", description: "Start line, default 1" },
@@ -551,7 +551,7 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "list_files",
-        description: "List workspace files in a directory. Use this before reading guessed project files.",
+        description: "List files in a task folder directory. Use this before reading guessed project files.",
         parameters: strictObject({
           path: { type: "string", description: "Directory path, default ." },
           recursive: { type: "boolean", description: "Whether to recurse" }

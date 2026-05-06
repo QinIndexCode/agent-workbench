@@ -45,6 +45,10 @@ export class ContextAssembler {
       usedTokens += estimateTokens(loadedSkills);
     }
 
+    const workingFolderLayer = this.buildWorkingFolderLayer(task);
+    layers.push(workingFolderLayer);
+    usedTokens += estimateTokens(workingFolderLayer);
+
     const skillLayer = await this.buildSkillMetaLayer(task, preferences);
     if (skillLayer) {
       layers.push(skillLayer);
@@ -165,6 +169,15 @@ export class ContextAssembler {
     lines.push(`User language preference: ${preferences.language}`);
     lines.push(`Auto approval preference: ${preferences.autoApprove}`);
     return lines.join("\n");
+  }
+
+  private buildWorkingFolderLayer(task: TaskDetail): string {
+    return [
+      "## Current Working Folder",
+      `Task folder ID: ${task.folderId || "default"}`,
+      `Tool root: ${task.workRoot || "(default workbench root)"}`,
+      "Relative file paths and command cwd values are resolved inside this root. Do not assume files outside it are visible."
+    ].join("\n");
   }
 
   private async buildProjectLayer(): Promise<string> {

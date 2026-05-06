@@ -18,7 +18,7 @@ import type {
   TaskMemory,
   UserPreferences
 } from "@scc/shared";
-import { defaultPreferences, normalizeSkillRecord, normalizeTaskDetail, type EncryptedSecretValue, type WorkbenchStore } from "@scc/core";
+import { defaultPreferences, normalizeSkillRecord, normalizeTaskDetail, normalizeTaskFolderRecord, type EncryptedSecretValue, type WorkbenchStore } from "@scc/core";
 
 type Namespace =
   | "tasks"
@@ -70,15 +70,18 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   }
 
   async saveTaskFolder(record: TaskFolderRecord): Promise<void> {
-    this.upsert("task_folders", record.id, record);
+    this.upsert("task_folders", record.id, normalizeTaskFolderRecord(record));
   }
 
   async getTaskFolder(folderId: string): Promise<TaskFolderRecord | undefined> {
-    return this.get<TaskFolderRecord>("task_folders", folderId);
+    const folder = this.get<TaskFolderRecord>("task_folders", folderId);
+    return folder ? normalizeTaskFolderRecord(folder) : undefined;
   }
 
   async listTaskFolders(): Promise<TaskFolderRecord[]> {
-    return this.list<TaskFolderRecord>("task_folders").sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+    return this.list<TaskFolderRecord>("task_folders")
+      .map((folder) => normalizeTaskFolderRecord(folder))
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
   }
 
   async deleteTaskFolder(folderId: string): Promise<void> {

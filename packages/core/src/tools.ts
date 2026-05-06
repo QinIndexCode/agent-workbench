@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import type { ToolCall, ToolResult } from "@scc/shared";
 import { createId, nowIso } from "./ids.js";
+import { findWorkspaceRoot } from "./workspace-root.js";
 
 export interface ToolExecutor {
   execute(call: ToolCall, options?: ToolExecutionOptions): Promise<ToolResult>;
@@ -12,6 +13,7 @@ export interface ToolExecutor {
 
 export interface ToolExecutionOptions {
   signal?: AbortSignal;
+  workRoot?: string;
 }
 
 export interface ToolExecutorDelegate extends ToolExecutor {
@@ -42,16 +44,16 @@ export class ShellToolExecutor implements ToolExecutor {
       return this.runCommand(call, options);
     }
     if (call.toolName === "read_file") {
-      return this.readFile(call);
+      return this.readFile(call, options);
     }
     if (call.toolName === "edit_file") {
-      return this.editFile(call);
+      return this.editFile(call, options);
     }
     if (call.toolName === "search_files") {
-      return this.searchFiles(call);
+      return this.searchFiles(call, options);
     }
     if (call.toolName === "list_files") {
-      return this.listFiles(call);
+      return this.listFiles(call, options);
     }
 
     return this.result(call, false, `Unknown tool: ${call.toolName}`);
@@ -71,7 +73,8 @@ export class ShellToolExecutor implements ToolExecutor {
       process.platform === "win32"
         ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]
         : ["-lc", command];
-    const cwd = this.resolveWorkspacePath(String(call.args["cwd"] ?? "."));
+    const root = this.rootFor(options);
+    const cwd = this.resolveWorkspacePath(String(call.args["cwd"] ?? "."), root);
 
     return new Promise<ToolResult>((resolveResult) => {
       let stdout = "";
@@ -124,9 +127,9 @@ export class ShellToolExecutor implements ToolExecutor {
     });
   }
 
-  private async readFile(call: ToolCall): Promise<ToolResult> {
+  private async readFile(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     try {
-      const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""));
+      const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
       const content = await readFile(path, "utf8");
       const offset = Math.max(1, Number(call.args["offset"] ?? 1));
       const limit = Math.max(1, Number(call.args["limit"] ?? 200));
@@ -154,9 +157,9 @@ export class ShellToolExecutor implements ToolExecutor {
     }
   }
 
-  private async editFile(call: ToolCall): Promise<ToolResult> {
+  private async editFile(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     try {
-      const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""));
+      const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
       const edits = Array.isArray(call.args["edits"]) ? call.args["edits"] : [];
       if (edits.length === 0) return this.result(call, false, "No edits provided.");
 
@@ -201,11 +204,11 @@ export class ShellToolExecutor implements ToolExecutor {
     }
   }
 
-  private async searchFiles(call: ToolCall): Promise<ToolResult> {
+  private async searchFiles(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     try {
       const query = String(call.args["query"] ?? "");
       if (!query.trim()) return this.result(call, false, "Missing query.");
-      const root = this.resolveWorkspacePath(String(call.args["path"] ?? "."));
+      const root = this.resolveWorkspacePath(String(call.args["path"] ?? "."), this.rootFor(options));
       const files = await walk(root, 300);
       const matches: Array<{ path: string; line?: number; text?: string }> = [];
       for (const file of files) {
@@ -229,9 +232,9 @@ export class ShellToolExecutor implements ToolExecutor {
     }
   }
 
-  private async listFiles(call: ToolCall): Promise<ToolResult> {
+  private async listFiles(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     try {
-      const root = this.resolveWorkspacePath(String(call.args["path"] ?? "."));
+      const root = this.resolveWorkspacePath(String(call.args["path"] ?? "."), this.rootFor(options));
       const recursive = Boolean(call.args["recursive"] ?? false);
       const files = recursive ? await walk(root, 500) : await list(root);
       return this.result(call, true, JSON.stringify({ path: root, files }, null, 2));
@@ -251,15 +254,22 @@ export class ShellToolExecutor implements ToolExecutor {
     };
   }
 
-  private resolveWorkspacePath(input: string): string {
-    return resolveWorkspacePath(this.workspaceRoot, input);
+  private rootFor(options: ToolExecutionOptions = {}): string {
+    return resolve(options.workRoot?.trim() || this.workspaceRoot);
+  }
+
+  private resolveWorkspacePath(input: string, root: string): string {
+    return resolveWorkspacePath(root, input);
   }
 }
 
 function resolveWorkspacePath(root: string, input: string): string {
   if (!input.trim()) throw new Error("Missing path.");
-  const full = resolve(root, input);
-  if (full !== root && !full.startsWith(root + sep)) {
+  const resolvedRoot = resolve(root);
+  const full = resolve(resolvedRoot, input);
+  const compareRoot = process.platform === "win32" ? resolvedRoot.toLowerCase() : resolvedRoot;
+  const compareFull = process.platform === "win32" ? full.toLowerCase() : full;
+  if (compareFull !== compareRoot && !compareFull.startsWith(compareRoot + sep)) {
     throw new Error(`Path is outside the workspace: ${input}`);
   }
   return full;
@@ -325,25 +335,4 @@ async function materializeOutput(workspaceRoot: string, resultId: string, output
     null,
     2
   );
-}
-
-function findWorkspaceRoot(): string {
-  const configured = process.env["SCC_WORKSPACE_ROOT"];
-  if (configured?.trim()) return resolve(configured);
-
-  let current = process.cwd();
-  while (true) {
-    const packagePath = resolve(current, "package.json");
-    if (existsSync(packagePath)) {
-      try {
-        const parsed = JSON.parse(readFileSync(packagePath, "utf8")) as Record<string, unknown>;
-        if (Array.isArray(parsed["workspaces"])) return current;
-      } catch {
-        // Keep walking; a malformed package file should not hide a valid parent workspace.
-      }
-    }
-    const parent = resolve(current, "..");
-    if (parent === current) return process.cwd();
-    current = parent;
-  }
 }

@@ -17,6 +17,7 @@ import type {
   UserPreferences
 } from "@scc/shared";
 import { normalizeSkillRecord } from "./experience.js";
+import { findWorkspaceRoot } from "./workspace-root.js";
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -117,16 +118,16 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
   }
 
   async saveTaskFolder(record: TaskFolderRecord): Promise<void> {
-    this.taskFolders.set(record.id, clone(record));
+    this.taskFolders.set(record.id, normalizeTaskFolderRecord(clone(record)));
   }
 
   async getTaskFolder(folderId: string): Promise<TaskFolderRecord | undefined> {
     const folder = this.taskFolders.get(folderId);
-    return folder ? clone(folder) : undefined;
+    return folder ? normalizeTaskFolderRecord(clone(folder)) : undefined;
   }
 
   async listTaskFolders(): Promise<TaskFolderRecord[]> {
-    return [...this.taskFolders.values()].map((record) => clone(record)).sort(compareTaskFolders);
+    return [...this.taskFolders.values()].map((record) => normalizeTaskFolderRecord(clone(record))).sort(compareTaskFolders);
   }
 
   async deleteTaskFolder(folderId: string): Promise<void> {
@@ -309,7 +310,18 @@ export function pendingApprovals(task: TaskDetail): ToolApproval[] {
 export function normalizeTaskDetail(task: TaskDetail): TaskDetail {
   return {
     ...task,
-    folderId: task.folderId || "default"
+    folderId: task.folderId || "default",
+    workRoot: task.workRoot || findWorkspaceRoot()
+  };
+}
+
+export function normalizeTaskFolderRecord(record: TaskFolderRecord): TaskFolderRecord {
+  const rootPath = record.rootPath?.trim() || findWorkspaceRoot();
+  return {
+    ...record,
+    rootPath,
+    isDefault: record.id === "default" || Boolean(record.isDefault),
+    exists: record.exists ?? true
   };
 }
 

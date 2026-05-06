@@ -12,12 +12,15 @@ export function TaskThread({
   error,
   language,
   engineStatus,
+  folderOptions,
+  folderValue,
   preferences,
   modelLabel,
   modelOptions,
   permissionPreset,
   permissionScopeLabel,
   onModelChange,
+  onFolderChange,
   onOpenConnect,
   onOpenPermissionSettings,
   onPermissionPresetChange,
@@ -34,12 +37,15 @@ export function TaskThread({
   error: string | null;
   language?: string | null;
   engineStatus: EngineStatus;
+  folderOptions?: Array<{ description?: string; label: string; value: string }> | undefined;
+  folderValue?: string | undefined;
   preferences: UserPreferences | null;
   modelLabel: string;
   modelOptions: Array<{ label: string; value: string }>;
   permissionPreset: ComposerPermissionMode;
   permissionScopeLabel: string;
   onModelChange: (modelId: string) => void;
+  onFolderChange?: ((folderId: string) => void) | undefined;
   onOpenConnect: () => void;
   onOpenPermissionSettings: () => void;
   onPermissionPresetChange: (preset: PermissionPreset) => void;
@@ -93,6 +99,8 @@ export function TaskThread({
       <Composer
         busy={busy}
         draft={draft}
+        folderOptions={folderOptions}
+        folderValue={folderValue}
         language={language ?? null}
         modelLabel={modelLabel}
         modelOptions={modelOptions}
@@ -102,6 +110,7 @@ export function TaskThread({
         running={running}
         mode={mode}
         onDraftChange={setDraft}
+        onFolderChange={onFolderChange}
         onModelChange={onModelChange}
         onOpenPermissionSettings={onOpenPermissionSettings}
         onPermissionPresetChange={onPermissionPresetChange}

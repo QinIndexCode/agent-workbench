@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as z from "zod/v4";
@@ -192,6 +192,27 @@ describe("AgentWorkbench", () => {
     expect(deltas.map((event) => event.summary).join("")).toBe("Hello stream.");
     expect(final?.summary).toBe("Hello stream.");
     expect(final?.payload["streamId"]).toBe(deltas[0]?.payload["streamId"]);
+  });
+
+  it("snapshots the selected local folder root when a task is created", async () => {
+    const firstRoot = mkdtempSync(join(tmpdir(), "scc-work-root-a-"));
+    const secondRoot = mkdtempSync(join(tmpdir(), "scc-work-root-b-"));
+    try {
+      const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+      const folder = await workbench.createTaskFolder({ name: "External project", rootPath: firstRoot });
+      const task = await workbench.createTask("inspect this local folder", "Inspect folder", folder.id);
+
+      expect(task.folderId).toBe(folder.id);
+      expect(task.workRoot).toBe(resolve(firstRoot));
+
+      await workbench.updateTaskFolder(folder.id, { rootPath: secondRoot });
+      const persisted = await workbench.getTask(task.id);
+      expect(persisted?.folderId).toBe(folder.id);
+      expect(persisted?.workRoot).toBe(resolve(firstRoot));
+    } finally {
+      rmSync(firstRoot, { recursive: true, force: true });
+      rmSync(secondRoot, { recursive: true, force: true });
+    }
   });
 
   it("continues a completed task instead of creating a separate context", async () => {
@@ -673,6 +694,72 @@ describe("ShellToolExecutor", () => {
 
     expect(result.ok).toBe(true);
     expect(result.output).toContain("ok");
+  });
+
+  it("executes file tools relative to the task work root and rejects path escapes", async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), "scc-tool-work-root-"));
+    const outsideRoot = mkdtempSync(join(tmpdir(), "scc-tool-outside-"));
+    try {
+      writeFileSync(join(workRoot, "inside.txt"), "inside");
+      writeFileSync(join(outsideRoot, "outside.txt"), "outside");
+      const executor = new ShellToolExecutor();
+
+      const listed = await executor.execute(
+        {
+          id: createId("tool_call"),
+          toolName: "list_files",
+          args: { path: "." }
+        },
+        { workRoot }
+      );
+      expect(listed.ok).toBe(true);
+      expect(listed.output).toContain("inside.txt");
+
+      const read = await executor.execute(
+        {
+          id: createId("tool_call"),
+          toolName: "read_file",
+          args: { path: "inside.txt" }
+        },
+        { workRoot }
+      );
+      expect(read.ok).toBe(true);
+      expect(read.output).toContain("inside");
+
+      const escaped = await executor.execute(
+        {
+          id: createId("tool_call"),
+          toolName: "read_file",
+          args: { path: join(outsideRoot, "outside.txt") }
+        },
+        { workRoot }
+      );
+      expect(escaped.ok).toBe(false);
+      expect(escaped.output).toContain("outside the workspace");
+    } finally {
+      rmSync(workRoot, { recursive: true, force: true });
+      rmSync(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("runs commands in the task work root by default", async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), "scc-command-work-root-"));
+    try {
+      const executor = new ShellToolExecutor();
+      const result = await executor.execute(
+        {
+          id: createId("tool_call"),
+          toolName: "run_command",
+          args: { command: process.platform === "win32" ? "(Get-Location).Path" : "pwd" }
+        },
+        { workRoot }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.output.toLowerCase()).toContain(resolve(workRoot).toLowerCase());
+    } finally {
+      rmSync(workRoot, { recursive: true, force: true });
+    }
   });
 
   it("requires expectedHash before editing existing files", async () => {

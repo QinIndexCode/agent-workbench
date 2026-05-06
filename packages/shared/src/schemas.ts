@@ -125,6 +125,7 @@ export const TaskDetailSchema = z.object({
   id: z.string(),
   title: z.string(),
   folderId: z.string().default("default"),
+  workRoot: z.string().default(""),
   status: TaskStatusSchema,
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -157,6 +158,10 @@ export const TaskTitleResponseSchema = z.object({
 export const TaskFolderRecordSchema = z.object({
   id: z.string(),
   name: z.string(),
+  rootPath: z.string().default(""),
+  isDefault: z.boolean().default(false),
+  exists: z.boolean().default(true),
+  lastValidatedAt: z.string().optional(),
   sortOrder: z.number().int(),
   createdAt: z.string(),
   updatedAt: z.string()
@@ -164,13 +169,15 @@ export const TaskFolderRecordSchema = z.object({
 
 export const TaskFolderCreateRequestSchema = z
   .object({
-    name: z.string().min(1).max(64)
+    name: z.string().min(1).max(64),
+    rootPath: z.string().min(1).optional()
   })
   .strict();
 
 export const TaskFolderPatchRequestSchema = z
   .object({
     name: z.string().min(1).max(64).optional(),
+    rootPath: z.string().min(1).optional(),
     sortOrder: z.number().int().optional()
   })
   .strict();

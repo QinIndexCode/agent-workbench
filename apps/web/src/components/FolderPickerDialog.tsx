@@ -1,33 +1,47 @@
 import { FolderOpen, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export function FolderPickerDialog({
   cancelLabel,
   confirmLabel,
-  fieldLabel,
+  nameLabel,
   open,
-  placeholder,
+  initialName,
+  initialPath,
+  pathLabel,
+  pathPlaceholder,
   title,
   onCancel,
   onConfirm
 }: {
   cancelLabel: string;
   confirmLabel: string;
-  fieldLabel: string;
+  nameLabel: string;
   open: boolean;
-  placeholder: string;
+  initialName?: string;
+  initialPath?: string;
+  pathLabel: string;
+  pathPlaceholder: string;
   title: string;
   onCancel: () => void;
-  onConfirm: (path: string) => void;
+  onConfirm: (input: { name: string; rootPath: string }) => void;
 }) {
-  const [path, setPath] = useState("");
+  const [name, setName] = useState(initialName ?? "");
+  const [path, setPath] = useState(initialPath ?? "");
+
+  useEffect(() => {
+    if (!open) return;
+    setName(initialName ?? "");
+    setPath(initialPath ?? "");
+  }, [initialName, initialPath, open]);
 
   if (!open) return null;
 
   const handleConfirm = () => {
     const trimmed = path.trim();
     if (!trimmed) return;
-    onConfirm(trimmed);
+    onConfirm({ name: name.trim() || folderNameFromPath(trimmed), rootPath: trimmed });
+    setName("");
     setPath("");
   };
 
@@ -53,16 +67,25 @@ export function FolderPickerDialog({
         </header>
         <div className="confirmBody">
           <div className="folderPickerField">
-            <label htmlFor="folder-path">{fieldLabel}</label>
+            <label htmlFor="folder-name">{nameLabel}</label>
+            <input
+              id="folder-name"
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <div className="folderPickerField">
+            <label htmlFor="folder-path">{pathLabel}</label>
             <div className="folderPickerInputWrap">
               <input
                 id="folder-path"
                 type="text"
-                placeholder={placeholder}
+                placeholder={pathPlaceholder}
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
                 onKeyDown={handleKeyDown}
-                autoFocus
               />
               <span className="folderPickerBrowse" aria-hidden="true">
                 <FolderOpen size={16} />
@@ -86,4 +109,9 @@ export function FolderPickerDialog({
       </section>
     </div>
   );
+}
+
+function folderNameFromPath(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, "");
+  return normalized.split(/[\\/]/).pop() || normalized || "Folder";
 }

@@ -1,5 +1,5 @@
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowUp, ChevronDown, Eye, LoaderCircle, Mic, MicOff, Paperclip, ShieldAlert, ShieldQuestion, SlidersHorizontal, Square } from "lucide-react";
+import { ArrowUp, ChevronDown, Eye, Folder, LoaderCircle, Mic, MicOff, Paperclip, ShieldAlert, ShieldQuestion, SlidersHorizontal, Square } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
 
 function VoiceWaveform() {
@@ -36,6 +36,8 @@ export function Composer({
   busy,
   draft,
   language,
+  folderOptions = [],
+  folderValue,
   modelLabel,
   modelOptions = [],
   modelValue,
@@ -44,6 +46,7 @@ export function Composer({
   running,
   mode,
   onDraftChange,
+  onFolderChange,
   onModelChange,
   onOpenPermissionSettings,
   onPermissionPresetChange,
@@ -53,6 +56,8 @@ export function Composer({
   busy: boolean;
   draft?: string;
   language?: string | null;
+  folderOptions?: Array<{ description?: string; label: string; value: string }> | undefined;
+  folderValue?: string | undefined;
   modelLabel?: string;
   modelOptions?: Array<{ label: string; value: string }>;
   modelValue?: string;
@@ -61,6 +66,7 @@ export function Composer({
   running: boolean;
   mode: ComposerMode;
   onDraftChange?: (text: string) => void;
+  onFolderChange?: ((folderId: string) => void) | undefined;
   onModelChange?: (modelId: string) => void;
   onOpenPermissionSettings?: () => void;
   onPermissionPresetChange?: (preset: PermissionPreset) => void;
@@ -69,6 +75,7 @@ export function Composer({
 }) {
   const [localText, setLocalText] = useState("");
   const [listening, setListening] = useState(false);
+  const [folderOpen, setFolderOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [permissionOpen, setPermissionOpen] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
@@ -81,6 +88,7 @@ export function Composer({
   const modeCopy = labels.modes[mode];
   const permissionOptions = getPermissionOptions(labels);
   const currentPermission = permissionOptions.find((option) => option.value === permissionPreset) ?? permissionOptions[0]!;
+  const currentFolder = folderOptions.find((option) => option.value === folderValue) ?? folderOptions[0];
   const currentModel = modelOptions.find((option) => option.value === modelValue) ?? modelOptions[0];
   const icon = busy ? (
     <LoaderCircle className="spin" size={18} />
@@ -142,6 +150,48 @@ export function Composer({
             {listening ? <MicOff size={17} /> : <Mic size={17} />}
           </button>
           <span className="composerDivider" aria-hidden="true" />
+          {folderOptions.length > 0 && currentFolder ? (
+            <div className={folderOpen ? "composerModelAccordion composerFolderAccordion open" : "composerModelAccordion composerFolderAccordion"} title={`${labels.folder}: ${currentFolder.description ?? currentFolder.label}`}>
+              <button
+                aria-expanded={folderOpen}
+                aria-label={labels.folderToggle}
+                className="modelAccordionTrigger folderAccordionTrigger"
+                disabled={busy}
+                type="button"
+                onClick={() => {
+                  setFolderOpen((open) => !open);
+                  setModelOpen(false);
+                  setPermissionOpen(false);
+                }}
+              >
+                <Folder size={13} aria-hidden="true" />
+                <span className="modelTriggerText">
+                  <strong>{currentFolder.label}</strong>
+                </span>
+                <ChevronDown className="accordionChevron" size={13} />
+              </button>
+              <div className="modelAccordionPanel folderAccordionPanel" aria-label={labels.folder} aria-hidden={!folderOpen}>
+                {folderOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    aria-pressed={(folderValue || currentFolder.value) === option.value}
+                    className={(folderValue || currentFolder.value) === option.value ? "modelOption folderOption selected" : "modelOption folderOption"}
+                    disabled={busy}
+                    tabIndex={folderOpen ? 0 : -1}
+                    title={option.description ?? option.label}
+                    type="button"
+                    onClick={() => {
+                      onFolderChange?.(option.value);
+                      setFolderOpen(false);
+                    }}
+                  >
+                    <span>{option.label}</span>
+                    {option.description ? <small>{option.description}</small> : null}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {modelOptions.length > 0 && currentModel ? (
             <div className={modelOpen ? "composerModelAccordion open" : "composerModelAccordion"} title={`${labels.model}: ${currentModel.label}`}>
               <button
@@ -152,6 +202,7 @@ export function Composer({
                 type="button"
                 onClick={() => {
                   setModelOpen((open) => !open);
+                  setFolderOpen(false);
                   setPermissionOpen(false);
                 }}
               >
@@ -192,6 +243,7 @@ export function Composer({
               type="button"
               onClick={() => {
                 setPermissionOpen((open) => !open);
+                setFolderOpen(false);
                 setModelOpen(false);
               }}
             >

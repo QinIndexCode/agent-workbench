@@ -32,7 +32,7 @@ export function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("providers");
   const [librarySection, setLibrarySection] = useState<LibrarySection>("skills");
   const [libraryQuery, setLibraryQuery] = useState("");
-  const [activeTaskFolderId, setActiveTaskFolderId] = useState("all");
+  const [activeTaskFolderId, setActiveTaskFolderId] = useState("default");
   const [titleIssue, setTitleIssue] = useState<{ goal: string; error: string } | null>(null);
   const language = data.preferences?.language ?? "zh-CN";
   const engineStatus = data.error ? "attention" : data.realtimeConnected ? "streaming" : "running";
@@ -44,6 +44,14 @@ export function App() {
   const modelOptions =
     activeProvider?.models.map((model) => ({ label: model.label || model.id, value: model.id })) ??
     modelProvider.models.map((model) => ({ label: model.id, value: model.id }));
+  const taskFolderOptions = data.taskFolders.length > 0
+    ? data.taskFolders.map((folder) => ({
+        label: folder.name,
+        value: folder.id,
+        ...(folder.rootPath ? { description: folder.rootPath } : {})
+      }))
+    : [{ label: language === "zh-CN" ? "默认文件夹" : "Default", value: "default" }];
+  const composerFolderValue = activeTaskFolderId;
 
   return (
     <main className={activeView === "docs" ? "shell docsShell" : "shell"}>
@@ -83,9 +91,9 @@ export function App() {
           }}
           onDelete={(taskId, options) => data.deleteTask(taskId, options)}
           onClearFolder={(folderId, options) => data.runSideAction(() => api.clearTaskFolder(folderId, options))}
-          onCreateFolder={(name) => data.runSideAction(() => api.createTaskFolder({ name }))}
+          onCreateFolder={(name, rootPath) => data.runSideAction(() => api.createTaskFolder({ name, rootPath }))}
           onFolderSelect={(folderId) => setActiveTaskFolderId(folderId)}
-          onUpdateFolder={(folderId, name) => data.runSideAction(() => api.patchTaskFolder(folderId, { name }))}
+          onUpdateFolder={(folderId, name, rootPath) => data.runSideAction(() => api.patchTaskFolder(folderId, { name, rootPath }))}
           onSelect={(taskId) => {
             setActiveView("tasks");
             setTaskDrawerOpen(false);
@@ -101,12 +109,15 @@ export function App() {
           error={data.error}
           language={language}
           engineStatus={engineStatus}
+          folderOptions={taskFolderOptions}
+          folderValue={composerFolderValue}
           preferences={data.preferences}
           modelLabel={modelLabel}
           modelOptions={modelOptions}
           permissionPreset={permissionPreset}
           permissionScopeLabel={permissionScopeLabel}
           onModelChange={(modelId) => updateModelSelection(modelId)}
+          onFolderChange={(folderId) => setActiveTaskFolderId(folderId)}
           onOpenConnect={() => {
             setSettingsSection("permissions");
             setActiveView("settings");
@@ -270,7 +281,7 @@ export function App() {
     try {
       const title = await api.generateTaskTitle(goal, language, useLocalFallback);
       setTitleIssue(null);
-      return api.createTask(goal, title.title, taskCreateFolderId(activeTaskFolderId));
+      return api.createTask(goal, title.title, activeTaskFolderId);
     } catch (error) {
       setTitleIssue({ goal, error: error instanceof Error ? error.message : String(error) });
       throw error;
@@ -350,10 +361,6 @@ export function App() {
       api.mergeSkills(group.canonicalSkillId, { targetSkillId: group.canonicalSkillId, sourceSkillIds, deleteSources: true })
     );
   }
-}
-
-function taskCreateFolderId(activeFolderId: string): string | undefined {
-  return activeFolderId === "all" ? undefined : activeFolderId;
 }
 
 function getPermissionPreset(permissions: Array<{ riskCategory: RiskCategory }>): ComposerPermissionMode {

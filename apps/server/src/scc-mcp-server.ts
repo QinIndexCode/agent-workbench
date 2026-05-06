@@ -33,9 +33,9 @@ export function createSccMcpServer(workbench: AgentWorkbench): McpServer {
       title: "Create SCC task",
       description: "Create and start a new SCC agent task.",
       annotations: { destructiveHint: false, openWorldHint: false },
-      inputSchema: { goal: z.string(), title: z.string().optional() }
+      inputSchema: { goal: z.string(), title: z.string().optional(), folderId: z.string().optional() }
     },
-    async ({ goal, title }) => textResult(await workbench.createTask(goal, title))
+    async ({ goal, title, folderId }) => textResult(await workbench.createTask(goal, title, folderId))
   );
 
   server.registerTool(
