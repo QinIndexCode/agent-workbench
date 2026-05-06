@@ -35,8 +35,10 @@ import {
   SkillStatusPatchSchema,
   SkillUpdateRequestSchema,
   TaskFolderClearRequestSchema,
+  TaskFolderDeleteRequestSchema,
   TaskFolderCreateRequestSchema,
   TaskFolderPatchRequestSchema,
+  TaskPatchRequestSchema,
   TaskTitleRequestSchema,
   TaskDeleteRequestSchema,
   type ModelPreset,
@@ -134,11 +136,12 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.delete("/api/task-folders/:id", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = TaskFolderDeleteRequestSchema.parse(request.body ?? {});
     try {
-      await workbench.deleteTaskFolder(id);
-      return reply.code(204).send();
+      return reply.code(200).send(await workbench.deleteTaskFolder(id, input));
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") ? 404 : 400).send({ error: message });
     }
   });
 
@@ -156,6 +159,17 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const task = await workbench.getTask(id);
     return task ? task : reply.code(404).send({ error: "Task not found" });
+  });
+
+  app.patch("/api/tasks/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = TaskPatchRequestSchema.parse(request.body);
+    try {
+      return await workbench.updateTask(id, input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") ? 404 : 400).send({ error: message });
+    }
   });
 
   app.delete("/api/tasks/:id", async (request, reply) => {

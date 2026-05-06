@@ -40,9 +40,12 @@ import type {
   TaskMemorySchema,
   TaskFolderClearRequestSchema,
   TaskFolderClearResultSchema,
+  TaskFolderDeleteRequestSchema,
+  TaskFolderDeleteResultSchema,
   TaskFolderCreateRequestSchema,
   TaskFolderPatchRequestSchema,
   TaskFolderRecordSchema,
+  TaskPatchRequestSchema,
   TaskTitleRequestSchema,
   TaskTitleResponseSchema,
   TaskDeleteRequestSchema,
@@ -79,6 +82,9 @@ export type TaskFolderCreateRequest = z.infer<typeof TaskFolderCreateRequestSche
 export type TaskFolderPatchRequest = z.infer<typeof TaskFolderPatchRequestSchema>;
 export type TaskFolderClearRequest = z.infer<typeof TaskFolderClearRequestSchema>;
 export type TaskFolderClearResult = z.infer<typeof TaskFolderClearResultSchema>;
+export type TaskFolderDeleteRequest = z.infer<typeof TaskFolderDeleteRequestSchema>;
+export type TaskFolderDeleteResult = z.infer<typeof TaskFolderDeleteResultSchema>;
+export type TaskPatchRequest = z.infer<typeof TaskPatchRequestSchema>;
 export type TaskDeleteRequest = z.infer<typeof TaskDeleteRequestSchema>;
 export type TaskDeleteResult = z.infer<typeof TaskDeleteResultSchema>;
 export type MessageRequest = z.infer<typeof MessageRequestSchema>;

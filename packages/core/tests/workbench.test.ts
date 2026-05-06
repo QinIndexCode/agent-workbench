@@ -215,6 +215,55 @@ describe("AgentWorkbench", () => {
     }
   });
 
+  it("edits task title and folder without changing the work root snapshot", async () => {
+    const firstRoot = mkdtempSync(join(tmpdir(), "scc-task-edit-a-"));
+    const secondRoot = mkdtempSync(join(tmpdir(), "scc-task-edit-b-"));
+    try {
+      const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+      const firstFolder = await workbench.createTaskFolder({ name: "Project A", rootPath: firstRoot });
+      const secondFolder = await workbench.createTaskFolder({ name: "Project B", rootPath: secondRoot });
+      const task = await workbench.createTask("inspect project", "Inspect project", firstFolder.id);
+
+      const updated = await workbench.updateTask(task.id, { title: "Renamed inspection", folderId: secondFolder.id });
+
+      expect(updated.title).toBe("Renamed inspection");
+      expect(updated.folderId).toBe(secondFolder.id);
+      expect(updated.workRoot).toBe(resolve(firstRoot));
+    } finally {
+      rmSync(firstRoot, { recursive: true, force: true });
+      rmSync(secondRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("deletes a task folder and its tasks without touching other folders", async () => {
+    const firstRoot = mkdtempSync(join(tmpdir(), "scc-folder-delete-a-"));
+    const secondRoot = mkdtempSync(join(tmpdir(), "scc-folder-delete-b-"));
+    try {
+      const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+      const firstFolder = await workbench.createTaskFolder({ name: "Delete me", rootPath: firstRoot });
+      const secondFolder = await workbench.createTaskFolder({ name: "Keep me", rootPath: secondRoot });
+      const deletedTask = await workbench.createTask("delete scoped task", "Delete scoped", firstFolder.id);
+      const keptTask = await workbench.createTask("keep scoped task", "Keep scoped", secondFolder.id);
+
+      const result = await workbench.deleteTaskFolder(firstFolder.id, { deleteLearningData: false, deleteDerivedSkills: false });
+
+      expect(result.deletedFolder).toBe(true);
+      expect(result.deletedTasks).toBe(1);
+      expect(await workbench.getTask(deletedTask.id)).toBeUndefined();
+      expect(await workbench.getTask(keptTask.id)).toBeDefined();
+      expect((await workbench.listTaskFolders()).some((folder) => folder.id === firstFolder.id)).toBe(false);
+    } finally {
+      rmSync(firstRoot, { recursive: true, force: true });
+      rmSync(secondRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to delete the default task folder", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+
+    await expect(workbench.deleteTaskFolder("default")).rejects.toThrow("Default folder cannot be deleted");
+  });
+
   it("continues a completed task instead of creating a separate context", async () => {
     const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
     const completed = await workbench.createTask("first request");

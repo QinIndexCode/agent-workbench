@@ -33,9 +33,12 @@ import type {
   TaskDetail,
   TaskFolderClearRequest,
   TaskFolderClearResult,
+  TaskFolderDeleteRequest,
+  TaskFolderDeleteResult,
   TaskFolderCreateRequest,
   TaskFolderPatchRequest,
   TaskFolderRecord,
+  TaskPatchRequest,
   TaskTitleResponse,
   TaskMemory,
   UserPreferences
@@ -82,14 +85,17 @@ export const api = {
   patchTaskFolder(folderId: string, input: TaskFolderPatchRequest): Promise<TaskFolderRecord> {
     return request(`/api/task-folders/${folderId}`, { method: "PATCH", body: JSON.stringify(input) });
   },
-  deleteTaskFolder(folderId: string): Promise<void> {
-    return request(`/api/task-folders/${folderId}`, { method: "DELETE" });
+  deleteTaskFolder(folderId: string, input: TaskFolderDeleteRequest = { deleteLearningData: false, deleteDerivedSkills: false }): Promise<TaskFolderDeleteResult> {
+    return request(`/api/task-folders/${folderId}`, { method: "DELETE", body: JSON.stringify(input) });
   },
   clearTaskFolder(folderId: string, input: TaskFolderClearRequest): Promise<TaskFolderClearResult> {
     return request(`/api/task-folders/${folderId}/clear`, { method: "POST", body: JSON.stringify(input) });
   },
   getTask(taskId: string): Promise<TaskDetail> {
     return request(`/api/tasks/${taskId}`);
+  },
+  patchTask(taskId: string, input: TaskPatchRequest): Promise<TaskDetail> {
+    return request(`/api/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(input) });
   },
   deleteTask(taskId: string, input: TaskDeleteRequest = { deleteLearningData: false, deleteDerivedSkills: false }): Promise<TaskDeleteResult> {
     return request(`/api/tasks/${taskId}`, { method: "DELETE", body: JSON.stringify(input) });

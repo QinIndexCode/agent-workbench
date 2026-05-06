@@ -14,9 +14,11 @@ import type {
   SkillRecord,
   TaskDeleteRequest,
   TaskDetail,
+  TaskFolderDeleteRequest,
   TaskFolderRecord,
   TaskEvent,
   TaskMemory,
+  TaskPatchRequest,
   ToolApproval,
   UserPreferences
 } from "@scc/shared";
@@ -46,7 +48,9 @@ export interface WorkbenchData {
   refresh: (nextId?: string | null) => Promise<void>;
   selectTask: (taskId: string) => Promise<void>;
   clearSelection: () => void;
+  patchTask: (taskId: string, input: TaskPatchRequest) => Promise<void>;
   deleteTask: (taskId: string, options: TaskDeleteRequest) => Promise<void>;
+  deleteTaskFolder: (folderId: string, options: TaskFolderDeleteRequest) => Promise<void>;
   runTaskAction: (action: () => Promise<TaskDetail>) => Promise<void>;
   runSideAction: (action: () => Promise<unknown>) => Promise<void>;
 }
@@ -205,6 +209,30 @@ export function useWorkbenchData(): WorkbenchData {
     });
   }
 
+  async function patchTask(taskId: string, input: TaskPatchRequest) {
+    await run(async () => {
+      const updated = await api.patchTask(taskId, input);
+      if (selectedIdRef.current === taskId) {
+        setSelected(updated);
+      }
+      await refresh(selectedIdRef.current);
+    });
+  }
+
+  async function deleteTaskFolder(folderId: string, options: TaskFolderDeleteRequest) {
+    await run(async () => {
+      const affectsSelected = Boolean(selected && (selected.folderId || "default") === folderId);
+      await api.deleteTaskFolder(folderId, options);
+      if (affectsSelected) {
+        newTaskModeRef.current = true;
+        selectedIdRef.current = null;
+        setSelectedId(null);
+        setSelected(null);
+      }
+      await refresh(affectsSelected ? null : selectedIdRef.current);
+    });
+  }
+
   async function runTaskAction(action: () => Promise<TaskDetail>) {
     await run(async () => {
       const task = await action();
@@ -259,7 +287,9 @@ export function useWorkbenchData(): WorkbenchData {
     refresh,
     selectTask,
     clearSelection,
+    patchTask,
     deleteTask,
+    deleteTaskFolder,
     runTaskAction,
     runSideAction
   };

@@ -54,9 +54,18 @@ test("manages task folders from the sidebar on desktop and mobile", async ({ pag
   const taskRow = page.locator(".taskItem").filter({ hasText: `Folder ${suffix}` });
   await expect(taskRow).toBeVisible();
 
-  await taskRow.getByLabel(new RegExp(`Delete task Folder ${suffix}`)).click();
+  await taskRow.getByLabel(new RegExp(`Edit task Folder ${suffix}`)).click();
+  const taskEditDialog = page.locator(".taskEditDialog");
+  await expect(taskEditDialog).toBeVisible();
+  await taskEditDialog.getByLabel("Task title").fill(`Folder renamed ${suffix}`);
+  await taskEditDialog.getByRole("button", { name: "Save" }).click();
+  await page.getByLabel("Search tasks").fill(`Folder renamed ${suffix}`);
+  const renamedTaskRow = page.locator(".taskItem").filter({ hasText: `Folder renamed ${suffix}` });
+  await expect(renamedTaskRow).toBeVisible();
+
+  await renamedTaskRow.getByLabel(new RegExp(`Delete task Folder renamed ${suffix}`)).click();
   await page.locator(".confirmDialog").getByRole("button", { name: "Delete" }).click();
-  await expect(taskRow).toHaveCount(0);
+  await expect(renamedTaskRow).toHaveCount(0);
 
   const second = await (await request.post(`${apiBase}/api/tasks`, {
     data: { goal: `Folder cleanup ${suffix}`, title: `Cleanup ${suffix}`, folderId: folder.id }
@@ -64,9 +73,11 @@ test("manages task folders from the sidebar on desktop and mobile", async ({ pag
   await page.reload();
   await openTaskDrawer(page);
   await page.locator(".folderTreeMain").filter({ hasText: `Ops ${suffix}` }).click();
-  await page.getByLabel(`Clear tasks Ops ${suffix}`).click();
-  await page.locator(".confirmDialog").getByRole("button", { name: "Clear tasks" }).click();
+  await page.getByLabel(`Delete folder Ops ${suffix}`).click();
+  await expect(page.locator(".confirmDialog")).toContainText("real disk directory will not be deleted");
+  await page.locator(".confirmDialog").getByRole("button", { name: "Delete folder" }).click();
   await expect.poll(async () => (await request.get(`${apiBase}/api/tasks/${second.id}`)).status()).toBe(404);
+  await expect(page.locator(".folderTreeMain").filter({ hasText: `Ops ${suffix}` })).toHaveCount(0);
 });
 
 test("manages model providers and MCP servers from settings", async ({ page }, testInfo) => {

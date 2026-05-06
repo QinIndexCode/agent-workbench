@@ -1,9 +1,10 @@
-import type { TaskDeleteRequest, TaskDetail, TaskFolderClearRequest, TaskFolderRecord } from "@scc/shared";
+import type { TaskDeleteRequest, TaskDetail, TaskFolderDeleteRequest, TaskFolderRecord, TaskPatchRequest } from "@scc/shared";
 import { BookOpen, ChevronRight, Clock3, Edit3, FileText, Folder, FolderPlus, HelpCircle, Plus, Search, Settings, Terminal, Trash2 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { getUiCopy } from "../i18n.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { FolderPickerDialog } from "./FolderPickerDialog.js";
+import { TaskEditDialog } from "./TaskEditDialog.js";
 
 export type EngineStatus = "running" | "streaming" | "attention";
 
@@ -18,13 +19,14 @@ export function TaskList({
   engineStatus,
   onClose,
   onDelete,
-  onClearFolder,
+  onDeleteFolder,
   onCreateFolder,
   onOpenDocs,
   onOpenHistory,
   onOpenLibrary,
   onSelect,
   onFolderSelect,
+  onUpdateTask,
   onUpdateFolder,
   onNewTask,
   onOpenSettings,
@@ -40,13 +42,14 @@ export function TaskList({
   engineStatus: EngineStatus;
   onClose: () => void;
   onDelete: (taskId: string, options: TaskDeleteRequest) => Promise<void>;
-  onClearFolder: (folderId: string, options: TaskFolderClearRequest) => Promise<void>;
+  onDeleteFolder: (folderId: string, options: TaskFolderDeleteRequest) => Promise<void>;
   onCreateFolder: (name: string, rootPath: string) => Promise<void>;
   onOpenDocs: () => void;
   onOpenHistory?: () => void;
   onOpenLibrary: () => void;
   onSelect: (taskId: string) => void;
   onFolderSelect: (folderId: string) => void;
+  onUpdateTask: (taskId: string, input: TaskPatchRequest) => Promise<void>;
   onUpdateFolder: (folderId: string, name: string, rootPath: string) => Promise<void>;
   onNewTask: () => void;
   onOpenSettings: () => void;
@@ -56,8 +59,9 @@ export function TaskList({
   const [searchOpen, setSearchOpen] = useState(false);
   const [expandedFolderId, setExpandedFolderId] = useState<string>(activeFolderId);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
-  const [clearingFolderId, setClearingFolderId] = useState<string | null>(null);
+  const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
   const [folderEditor, setFolderEditor] = useState<{ id: string | null; name: string; rootPath: string } | null>(null);
+  const [taskEditorId, setTaskEditorId] = useState<string | null>(null);
   const [deleteLearningData, setDeleteLearningData] = useState(false);
   const [deleteDerivedSkills, setDeleteDerivedSkills] = useState(false);
   const [utilityOpen, setUtilityOpen] = useState(false);
@@ -67,9 +71,10 @@ export function TaskList({
   const mainButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const text = getUiCopy(language).shell;
   const confirmingTask = confirmingId ? tasks.find((task) => task.id === confirmingId) ?? null : null;
-  const folderItems = useMemo(() => {
+  const editingTask = taskEditorId ? tasks.find((task) => task.id === taskEditorId) ?? null : null;
+  const editorFolders = useMemo<TaskFolderRecord[]>(() => {
     const hasDefault = folders.some((folder) => folder.id === "default");
-    const normalized = hasDefault
+    return hasDefault
       ? folders
       : [
           {
@@ -84,23 +89,23 @@ export function TaskList({
           },
           ...folders
         ];
-    return normalized.map((folder) => ({
+  }, [folders, text.defaultFolder]);
+  const folderItems = useMemo(() => {
+    return editorFolders.map((folder) => ({
         id: folder.id,
         name: folder.name,
         rootPath: folder.rootPath,
         system: folder.id === "default" || folder.isDefault,
         browseOnly: false
       }));
-  }, [folders, text.defaultFolder]);
-  const activeFolder = folderItems.find((folder) => folder.id === activeFolderId) ?? folderItems[0]!;
-  const clearingFolder = clearingFolderId ? folderItems.find((folder) => folder.id === clearingFolderId) ?? null : null;
+  }, [editorFolders]);
+  const deletingFolder = deletingFolderId ? folderItems.find((folder) => folder.id === deletingFolderId) ?? null : null;
   const folderCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const task of tasks) {
       const folderId = task.folderId || "default";
       counts.set(folderId, (counts.get(folderId) ?? 0) + 1);
     }
-    counts.set("all", tasks.length);
     return counts;
   }, [tasks]);
 
@@ -202,7 +207,6 @@ export function TaskList({
           <nav className="folderTree" aria-label={text.folders}>
             {folderItems.map((folder) => {
               const folderTasks = getFolderTasks(folder.id);
-              const isActive = folder.id === activeFolderId;
               const isExpanded = expandedFolderId === folder.id;
               return (
                 <div className={isExpanded ? "folderTreeItem expanded" : "folderTreeItem"} key={folder.id}>
@@ -282,20 +286,21 @@ export function TaskList({
                         <Edit3 size={13} />
                       </button>
                     ) : null}
-                    <button
-                      aria-label={`${text.clearFolder} ${folder.name}`}
-                      className="folderDeleteButton"
-                      disabled={(folderCounts.get(folder.id) ?? 0) === 0}
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setClearingFolderId(folder.id);
-                        setDeleteLearningData(false);
-                        setDeleteDerivedSkills(false);
-                      }}
-                    >
-                      <Trash2 size={13} />
-                    </button>
+                    {!folder.system ? (
+                      <button
+                        aria-label={`${text.deleteFolder} ${folder.name}`}
+                        className="folderDeleteButton"
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setDeletingFolderId(folder.id);
+                          setDeleteLearningData(false);
+                          setDeleteDerivedSkills(false);
+                        }}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    ) : null}
                   </div>
                   {isExpanded ? (
                     <div className="folderTaskList">
@@ -315,9 +320,21 @@ export function TaskList({
                               <small>{task.status.replace("_", " ")}</small>
                             </button>
                             <button
+                              aria-label={`${text.editTask} ${task.title}`}
+                              className="taskEditButton"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setTaskEditorId(task.id);
+                              }}
+                              type="button"
+                            >
+                              <Edit3 size={14} />
+                            </button>
+                            <button
                               aria-label={`${text.deleteTask} ${task.title}`}
                               className="taskDeleteButton"
-                              onClick={() => {
+                              onClick={(event) => {
+                                event.stopPropagation();
                                 setConfirmingId(task.id);
                                 setDeleteLearningData(false);
                                 setDeleteDerivedSkills(false);
@@ -433,19 +450,43 @@ export function TaskList({
           void action.then(() => setFolderEditor(null));
         }}
       />
+      <TaskEditDialog
+        cancelLabel={text.cancel}
+        confirmLabel={text.save}
+        folderLabel={text.taskFolder}
+        folders={editorFolders}
+        initialFolderId={editingTask?.folderId ?? "default"}
+        initialTitle={editingTask?.title ?? ""}
+        open={Boolean(editingTask)}
+        title={text.editTaskTitle}
+        titleLabel={text.taskTitle}
+        onCancel={() => setTaskEditorId(null)}
+        onConfirm={(input) => {
+          if (!editingTask) return;
+          void onUpdateTask(editingTask.id, input).then(() => setTaskEditorId(null));
+        }}
+      />
       <ConfirmDialog
         cancelLabel={text.cancel}
-        confirmLabel={text.clearFolder}
-        open={Boolean(clearingFolder)}
-        title={text.clearFolderTitle}
-        onCancel={() => setClearingFolderId(null)}
+        confirmLabel={text.deleteFolder}
+        open={Boolean(deletingFolder)}
+        title={text.deleteFolderTitle}
+        onCancel={() => setDeletingFolderId(null)}
         onConfirm={() => {
-          if (!clearingFolder) return;
-          void onClearFolder(clearingFolder.id, { deleteLearningData, deleteDerivedSkills }).then(() => setClearingFolderId(null));
+          if (!deletingFolder) return;
+          void onDeleteFolder(deletingFolder.id, { deleteLearningData, deleteDerivedSkills }).then(() => setDeletingFolderId(null));
         }}
       >
         <div className="deleteOptions">
-          <p>{clearingFolder ? text.clearFolderBody(clearingFolder.name) : ""}</p>
+          {deletingFolder ? (
+            <>
+              <p className="dangerCopy">{text.deleteFolderBody(deletingFolder.name, folderCounts.get(deletingFolder.id) ?? 0)}</p>
+              <p className="folderPathWarning">
+                <strong>{text.folderPath}:</strong> {deletingFolder.rootPath || text.defaultFolder}
+              </p>
+              <p>{text.deleteFolderDiskSafe}</p>
+            </>
+          ) : null}
           <label>
             <input
               checked={deleteLearningData}

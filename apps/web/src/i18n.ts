@@ -40,8 +40,15 @@ const copy = {
       folderTasks: (count: number) => `${count} 个任务`,
       clearFolderTitle: "清空此文件夹的任务？",
       clearFolderBody: (name: string) => `“${name}” 中的任务会被删除，文件夹会保留。`,
+      deleteFolderTitle: "删除此任务文件夹？",
+      deleteFolderBody: (name: string, count: number) => `“${name}” 会从 SCC 中删除，里面的 ${count} 个任务也会被永久删除。`,
+      deleteFolderDiskSafe: "不会删除真实磁盘目录，但任务线程、审批记录和所选学习数据无法恢复。",
       noTasks: "还没有任务。",
       noMatchingTasks: "没有匹配的任务。",
+      editTask: "编辑任务",
+      editTaskTitle: "编辑任务",
+      taskTitle: "任务标题",
+      taskFolder: "所属文件夹",
       deleteTask: "删除任务",
       deleteTaskTitle: "删除任务？",
       deleteRunning: "当前运行会先停止，然后删除任务。",
@@ -49,7 +56,8 @@ const copy = {
       deleteLearning: "同时删除此任务产生的经验和记忆",
       deleteDerivedSkills: "删除仅由此任务派生的 Skill",
       cancel: "取消",
-      delete: "删除"
+      delete: "删除",
+      save: "保存"
     },
     settings: {
       title: "设置",
@@ -67,6 +75,13 @@ const copy = {
       connect: "Connect",
       heroTitle: "开启新任务",
       heroSubtitle: "描述你想解决的问题。SCC 会组装上下文、请求必要权限，并把执行证据清晰展示给你。",
+      heroSubtitleVariants: [
+        "描述你想解决的问题。SCC 会组装上下文、请求必要权限，并把执行证据清晰展示给你。",
+        "写下你的目标，让 SCC 为你分析、规划、执行。",
+        "从一句话开始，SCC 会帮你拆解任务并逐步完成。",
+        "告诉 SCC 你想做什么，它会把复杂的事情变简单。",
+        "输入你的需求，SCC 将自动规划最佳执行路径。"
+      ],
       suggestions: [
         {
           title: "查看系统状态",
@@ -248,8 +263,15 @@ const copy = {
       folderTasks: (count: number) => `${count} task${count === 1 ? "" : "s"}`,
       clearFolderTitle: "Clear this folder's tasks?",
       clearFolderBody: (name: string) => `Tasks in "${name}" will be deleted. The folder will be kept.`,
+      deleteFolderTitle: "Delete this task folder?",
+      deleteFolderBody: (name: string, count: number) => `"${name}" will be removed from SCC and its ${count} task${count === 1 ? "" : "s"} will be permanently deleted.`,
+      deleteFolderDiskSafe: "The real disk directory will not be deleted, but task threads, approvals, and selected learning data cannot be restored.",
       noTasks: "No tasks yet.",
       noMatchingTasks: "No matching tasks.",
+      editTask: "Edit task",
+      editTaskTitle: "Edit task",
+      taskTitle: "Task title",
+      taskFolder: "Folder",
       deleteTask: "Delete task",
       deleteTaskTitle: "Delete task?",
       deleteRunning: "The current run will be stopped before deletion.",
@@ -257,7 +279,8 @@ const copy = {
       deleteLearning: "Remove memories and experiences from this task",
       deleteDerivedSkills: "Delete skills derived only from this task",
       cancel: "Cancel",
-      delete: "Delete"
+      delete: "Delete",
+      save: "Save"
     },
     settings: {
       title: "Settings",
@@ -275,6 +298,13 @@ const copy = {
       connect: "Connect",
       heroTitle: "Start a new task",
       heroSubtitle: "Describe the problem you want solved. SCC assembles context, asks for the right permissions, and keeps evidence visible.",
+      heroSubtitleVariants: [
+        "Describe the problem you want solved. SCC assembles context, asks for the right permissions, and keeps evidence visible.",
+        "Write your goal and let SCC analyze, plan, and execute for you.",
+        "Start with one sentence — SCC will break it down and handle the rest.",
+        "Tell SCC what you need. It makes complex tasks simple.",
+        "Type your request and SCC will find the best path to get it done."
+      ],
       suggestions: [
         {
           title: "Inspect system load",

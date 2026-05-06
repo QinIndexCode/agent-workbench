@@ -17,9 +17,12 @@ import type {
   RiskCategory,
   TaskFolderClearRequest,
   TaskFolderClearResult,
+  TaskFolderDeleteRequest,
+  TaskFolderDeleteResult,
   TaskFolderCreateRequest,
   TaskFolderPatchRequest,
   TaskFolderRecord,
+  TaskPatchRequest,
   TaskTitleRequest,
   TaskTitleResponse,
   SkillCreateRequest,
@@ -170,14 +173,19 @@ export class AgentWorkbench {
     return updated;
   }
 
-  async deleteTaskFolder(folderId: string): Promise<void> {
+  async deleteTaskFolder(
+    folderId: string,
+    input: TaskFolderDeleteRequest = { deleteLearningData: false, deleteDerivedSkills: false }
+  ): Promise<TaskFolderDeleteResult> {
     if (folderId === "default") throw new Error("Default folder cannot be deleted.");
-    for (const task of await this.store.listTasks()) {
-      if (task.folderId === folderId) {
-        await this.store.saveTask({ ...task, folderId: "default", updatedAt: nowIso() });
-      }
-    }
+    const folder = await this.store.getTaskFolder(folderId);
+    if (!folder) throw new Error(`Task folder not found: ${folderId}`);
+    const cleared = await this.clearTaskFolder(folderId, input);
     await this.store.deleteTaskFolder(folderId);
+    return {
+      ...cleared,
+      deletedFolder: true
+    };
   }
 
   async clearTaskFolder(folderId: string, input: TaskFolderClearRequest): Promise<TaskFolderClearResult> {
@@ -235,6 +243,26 @@ export class AgentWorkbench {
 
   async getTask(taskId: string): Promise<TaskDetail | undefined> {
     return this.store.getTask(taskId);
+  }
+
+  async updateTask(taskId: string, input: TaskPatchRequest): Promise<TaskDetail> {
+    return this.runTaskExclusive(taskId, async () => {
+      const task = await this.requiredTask(taskId);
+      let folderId = task.folderId || "default";
+      if (input.folderId !== undefined) {
+        const folder = await this.resolveTaskFolder(input.folderId);
+        folderId = folder.id;
+      }
+      const title = input.title?.trim();
+      const updated: TaskDetail = {
+        ...task,
+        ...(title ? { title } : {}),
+        folderId,
+        updatedAt: nowIso()
+      };
+      await this.store.saveTask(updated);
+      return updated;
+    });
   }
 
   async deleteTask(taskId: string, options: TaskDeleteRequest = { deleteLearningData: false, deleteDerivedSkills: false }): Promise<TaskDeleteResult> {

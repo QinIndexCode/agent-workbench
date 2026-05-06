@@ -198,6 +198,19 @@ export const TaskFolderClearResultSchema = z.object({
   updatedSkills: z.number().int().nonnegative()
 });
 
+export const TaskFolderDeleteRequestSchema = TaskFolderClearRequestSchema;
+
+export const TaskFolderDeleteResultSchema = TaskFolderClearResultSchema.extend({
+  deletedFolder: z.boolean()
+});
+
+export const TaskPatchRequestSchema = z
+  .object({
+    title: z.string().min(1).max(120).optional(),
+    folderId: z.string().min(1).optional()
+  })
+  .strict();
+
 export const TaskDeleteRequestSchema = z
   .object({
     deleteLearningData: z.boolean().default(false),

@@ -562,6 +562,7 @@
   font-size: 12px;
 }
 
+.taskEditButton,
 .taskDeleteButton {
   display: grid;
   place-items: center;
@@ -576,10 +577,19 @@
   cursor: pointer;
 }
 
+.folderTaskItem:hover .taskEditButton,
 .folderTaskItem:hover .taskDeleteButton,
+.taskEditButton:focus-visible,
 .taskDeleteButton:focus-visible,
+.folderTaskItem.selected .taskEditButton,
 .folderTaskItem.selected .taskDeleteButton {
   opacity: 1;
+}
+
+.taskEditButton:hover {
+  color: var(--accent-strong);
+  background: var(--surface-hover);
+  border-color: var(--accent-border);
 }
 
 .taskDeleteButton:hover {
@@ -597,7 +607,8 @@
   gap: 10px;
 }
 
-.folderPickerField label {
+.folderPickerField label,
+.folderPickerField .fieldLabel {
   color: var(--muted-strong);
   font-size: 13px;
   font-weight: 600;
@@ -636,6 +647,45 @@
 
 .folderPickerField > input:focus {
   border-color: var(--accent-border);
+}
+
+.folderChoiceList {
+  display: grid;
+  max-height: 190px;
+  gap: 6px;
+  overflow: auto;
+}
+
+.folderChoice {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 9px 10px;
+  color: var(--muted-strong);
+  text-align: left;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.folderChoice:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.folderChoice.selected {
+  color: var(--text);
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.folderChoice small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .folderPickerInputWrap input:focus {

@@ -90,9 +90,13 @@ export function App() {
             setTaskDrawerOpen(false);
           }}
           onDelete={(taskId, options) => data.deleteTask(taskId, options)}
-          onClearFolder={(folderId, options) => data.runSideAction(() => api.clearTaskFolder(folderId, options))}
+          onDeleteFolder={(folderId, options) => {
+            if (activeTaskFolderId === folderId) setActiveTaskFolderId("default");
+            return data.deleteTaskFolder(folderId, options);
+          }}
           onCreateFolder={(name, rootPath) => data.runSideAction(() => api.createTaskFolder({ name, rootPath }))}
           onFolderSelect={(folderId) => setActiveTaskFolderId(folderId)}
+          onUpdateTask={(taskId, input) => data.patchTask(taskId, input)}
           onUpdateFolder={(folderId, name, rootPath) => data.runSideAction(() => api.patchTaskFolder(folderId, { name, rootPath }))}
           onSelect={(taskId) => {
             setActiveView("tasks");

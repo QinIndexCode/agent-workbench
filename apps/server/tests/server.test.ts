@@ -96,6 +96,27 @@ describe("server API", () => {
     expect(created.folderId).toBe(folder.id);
     expect(created.workRoot).toBe(resolve(localRoot));
 
+    const renamed = (
+      await app.inject({
+        method: "PATCH",
+        url: `/api/tasks/${created.id}`,
+        payload: { title: "Process check renamed", folderId: "default" }
+      })
+    ).json();
+    expect(renamed.title).toBe("Process check renamed");
+    expect(renamed.folderId).toBe("default");
+    expect(renamed.workRoot).toBe(resolve(localRoot));
+
+    expect(
+      (
+        await app.inject({
+          method: "PATCH",
+          url: `/api/tasks/${created.id}`,
+          payload: { unexpected: true }
+        })
+      ).statusCode
+    ).toBe(400);
+
     const patched = (
       await app.inject({
         method: "PATCH",
@@ -112,16 +133,25 @@ describe("server API", () => {
     });
     expect(invalid.statusCode).toBe(400);
 
-    const cleared = (
+    const second = (
       await app.inject({
         method: "POST",
-        url: `/api/task-folders/${folder.id}/clear`,
+        url: "/api/tasks",
+        payload: { goal: "delete with folder", title: "Folder delete check", folderId: folder.id }
+      })
+    ).json();
+    const deleted = (
+      await app.inject({
+        method: "DELETE",
+        url: `/api/task-folders/${folder.id}`,
         payload: { deleteLearningData: false, deleteDerivedSkills: false }
       })
     ).json();
-    expect(cleared.deletedTasks).toBe(1);
-    expect((await app.inject(`/api/tasks/${created.id}`)).statusCode).toBe(404);
-    expect((await app.inject({ method: "DELETE", url: `/api/task-folders/${folder.id}` })).statusCode).toBe(204);
+    expect(deleted.deletedFolder).toBe(true);
+    expect(deleted.deletedTasks).toBe(1);
+    expect((await app.inject(`/api/tasks/${created.id}`)).statusCode).toBe(200);
+    expect((await app.inject(`/api/tasks/${second.id}`)).statusCode).toBe(404);
+    expect((await app.inject({ method: "DELETE", url: "/api/task-folders/default" })).statusCode).toBe(400);
     rmSync(localRoot, { recursive: true, force: true });
     await app.close();
   });

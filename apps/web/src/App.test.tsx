@@ -142,9 +142,9 @@ describe("Workbench components", () => {
         selectedId="task_1"
         activeFolderId="default"
         onClose={vi.fn()}
-        onClearFolder={vi.fn()}
         onCreateFolder={vi.fn()}
         onDelete={vi.fn()}
+        onDeleteFolder={vi.fn()}
         onFolderSelect={vi.fn()}
         onOpenDocs={vi.fn()}
         onOpenLibrary={onOpenLibrary}
@@ -152,6 +152,7 @@ describe("Workbench components", () => {
         onOpenSettings={vi.fn()}
         onOpenSupport={vi.fn()}
         onSelect={onSelect}
+        onUpdateTask={vi.fn()}
         onUpdateFolder={vi.fn()}
       />
     );
@@ -162,7 +163,7 @@ describe("Workbench components", () => {
     expect(onOpenLibrary).toHaveBeenCalledOnce();
   });
 
-  it("renders the new task hero and fills the composer from suggestions", () => {
+  it("renders the new task hero and composer", () => {
     const onSubmit = vi.fn();
     render(
       <TaskThread
@@ -189,9 +190,8 @@ describe("Workbench components", () => {
       />
     );
 
-    expect(screen.getByText("Start a new task")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Inspect system load"));
-    expect(screen.getByLabelText("Task input")).toHaveValue("Show me which desktop software is running and which processes use the most CPU and memory");
+    expect(screen.getByRole("heading", { name: "New task" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Task input")).toHaveValue("");
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -207,9 +207,9 @@ describe("Workbench components", () => {
         selectedId="task_1"
         activeFolderId="default"
         onClose={vi.fn()}
-        onClearFolder={vi.fn()}
         onCreateFolder={vi.fn()}
         onDelete={onDelete}
+        onDeleteFolder={vi.fn()}
         onFolderSelect={vi.fn()}
         onOpenDocs={vi.fn()}
         onOpenLibrary={vi.fn()}
@@ -217,6 +217,7 @@ describe("Workbench components", () => {
         onOpenSettings={vi.fn()}
         onOpenSupport={vi.fn()}
         onSelect={vi.fn()}
+        onUpdateTask={vi.fn()}
         onUpdateFolder={vi.fn()}
       />
     );
@@ -230,7 +231,7 @@ describe("Workbench components", () => {
     await waitFor(() => expect(onDelete).toHaveBeenCalledWith("task_1", { deleteLearningData: true, deleteDerivedSkills: true }));
   });
 
-  it("filters tasks by folder and clears folder tasks from the sidebar", async () => {
+  it("filters tasks by folder and edits/deletes folders and tasks from the sidebar", async () => {
     const folder: TaskFolderRecord = {
       id: "folder_ops",
       name: "Operations",
@@ -242,9 +243,11 @@ describe("Workbench components", () => {
       updatedAt: new Date().toISOString()
     };
     const onFolderSelect = vi.fn();
-    const onClearFolder = vi.fn().mockResolvedValue(undefined);
+    const onDeleteFolder = vi.fn().mockResolvedValue(undefined);
     const onCreateFolder = vi.fn().mockResolvedValue(undefined);
     const onUpdateFolder = vi.fn().mockResolvedValue(undefined);
+    const onUpdateTask = vi.fn().mockResolvedValue(undefined);
+    const onSelect = vi.fn();
     render(
       <TaskList
         activeView="tasks"
@@ -258,16 +261,17 @@ describe("Workbench components", () => {
         selectedId={null}
         activeFolderId="folder_ops"
         onClose={vi.fn()}
-        onClearFolder={onClearFolder}
         onCreateFolder={onCreateFolder}
         onDelete={vi.fn()}
+        onDeleteFolder={onDeleteFolder}
         onFolderSelect={onFolderSelect}
         onOpenDocs={vi.fn()}
         onOpenLibrary={vi.fn()}
         onNewTask={vi.fn()}
         onOpenSettings={vi.fn()}
         onOpenSupport={vi.fn()}
-        onSelect={vi.fn()}
+        onSelect={onSelect}
+        onUpdateTask={onUpdateTask}
         onUpdateFolder={onUpdateFolder}
       />
     );
@@ -277,6 +281,7 @@ describe("Workbench components", () => {
     expect(screen.queryByText("Default check")).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("Default"));
     expect(onFolderSelect).toHaveBeenCalledWith("default");
+    onFolderSelect.mockClear();
 
     fireEvent.click(screen.getByLabelText("New folder"));
     fireEvent.change(screen.getByLabelText("Folder name"), { target: { value: "Research" } });
@@ -285,16 +290,27 @@ describe("Workbench components", () => {
     await waitFor(() => expect(onCreateFolder).toHaveBeenCalledWith("Research", process.cwd()));
 
     fireEvent.click(screen.getByLabelText("Edit folder Operations"));
+    expect(onFolderSelect).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("Folder name"), { target: { value: "Ops" } });
     fireEvent.change(screen.getByLabelText("Local path"), { target: { value: process.cwd() } });
     fireEvent.click(within(screen.getByRole("dialog", { name: "Edit folder" })).getByRole("button", { name: "Edit folder" }));
     await waitFor(() => expect(onUpdateFolder).toHaveBeenCalledWith("folder_ops", "Ops", process.cwd()));
 
-    fireEvent.click(screen.getByLabelText("Clear tasks Operations"));
-    expect(screen.getByText("Clear this folder's tasks?")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Operations"));
+    onFolderSelect.mockClear();
+    fireEvent.click(screen.getByLabelText("Edit task Ops check"));
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Ops renamed" } });
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Edit task" })).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onUpdateTask).toHaveBeenCalledWith("task_ops", { title: "Ops renamed", folderId: "folder_ops" }));
+
+    fireEvent.click(screen.getByLabelText("Delete folder Operations"));
+    expect(onFolderSelect).not.toHaveBeenCalled();
+    expect(screen.getByText("Delete this task folder?")).toBeInTheDocument();
+    expect(screen.getByText(/will be removed from SCC/)).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Remove memories and experiences from this task"));
-    fireEvent.click(screen.getByRole("button", { name: "Clear tasks" }));
-    await waitFor(() => expect(onClearFolder).toHaveBeenCalledWith("folder_ops", { deleteLearningData: true, deleteDerivedSkills: false }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete folder" }));
+    await waitFor(() => expect(onDeleteFolder).toHaveBeenCalledWith("folder_ops", { deleteLearningData: true, deleteDerivedSkills: false }));
   });
 
   it("renders user-facing timeline evidence", () => {
@@ -810,7 +826,7 @@ describe("Workbench components", () => {
     );
 
     render(<App />);
-    expect(await screen.findByText("Start a new task")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "check host" } });
     fireEvent.click(screen.getByLabelText("Send"));
 

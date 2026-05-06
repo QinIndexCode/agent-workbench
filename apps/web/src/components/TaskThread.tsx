@@ -1,6 +1,6 @@
 import type { ApprovalDecision, TaskDetail, UserPreferences } from "@scc/shared";
-import { BookOpen, Code2, Cpu, Menu, Settings, Terminal } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Menu, Terminal } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { getUiCopy } from "../i18n.js";
 import { Composer, type ComposerMode, type ComposerPermissionMode, type PermissionPreset } from "./Composer.js";
 import type { EngineStatus } from "./TaskList.js";
@@ -94,7 +94,7 @@ export function TaskThread({
       {task ? (
         <Timeline language={language ?? null} task={task} onApprovalDecision={onApprovalDecision} />
       ) : (
-        <NewTaskHero language={language ?? null} onUseSuggestion={(prompt) => setDraft(prompt)} />
+        <NewTaskHero language={language ?? null} />
       )}
       <Composer
         busy={busy}
@@ -136,33 +136,57 @@ function getThreadMeta(task: TaskDetail | null, mode: ComposerMode, language?: s
 }
 
 function NewTaskHero({
-  language,
-  onUseSuggestion
+  language
 }: {
   language?: string | null;
-  onUseSuggestion: (prompt: string) => void;
 }) {
   const text = getUiCopy(language).thread;
-  const icons = [Cpu, Code2, BookOpen] as const;
+  const [displayTitle, setDisplayTitle] = useState("");
+  const [displaySubtitle, setDisplaySubtitle] = useState("");
+  const [isTypingTitle, setIsTypingTitle] = useState(true);
+  const [showCursor, setShowCursor] = useState(true);
+
+  useEffect(() => {
+    const title = text.heroTitle;
+    const subtitleVariants = (text as unknown as { heroSubtitleVariants?: readonly string[] }).heroSubtitleVariants;
+    const variants = Array.isArray(subtitleVariants) && subtitleVariants.length > 0 ? [...subtitleVariants] : [text.heroSubtitle];
+    const subtitle = variants[Math.floor(Math.random() * variants.length)] ?? text.heroSubtitle;
+    let titleIndex = 0;
+    let subtitleIndex = 0;
+
+    const titleInterval = setInterval(() => {
+      if (titleIndex < title.length) {
+        titleIndex++;
+        setDisplayTitle(title.slice(0, titleIndex));
+      } else {
+        clearInterval(titleInterval);
+        setIsTypingTitle(false);
+      }
+    }, 60);
+
+    const subtitleInterval = setInterval(() => {
+      if (subtitleIndex < subtitle.length) {
+        subtitleIndex++;
+        setDisplaySubtitle(subtitle.slice(0, subtitleIndex));
+      } else {
+        clearInterval(subtitleInterval);
+        setShowCursor(false);
+      }
+    }, 30);
+
+    return () => {
+      clearInterval(titleInterval);
+      clearInterval(subtitleInterval);
+    };
+  }, [text.heroTitle, text.heroSubtitle]);
+
   return (
     <div className="newTaskHero">
-      <div className="newTaskHeroIcon" aria-hidden="true">
-        <Terminal size={26} />
-      </div>
-      <h2>{text.heroTitle}</h2>
-      <p>{text.heroSubtitle}</p>
-      <div className="suggestionGrid">
-        {text.suggestions.map((suggestion, index) => {
-          const Icon = icons[index] ?? Settings;
-          return (
-            <button className="suggestionCard" key={suggestion.title} onClick={() => onUseSuggestion(suggestion.prompt)} type="button">
-              <Icon size={21} />
-              <strong>{suggestion.title}</strong>
-              <span>{suggestion.description}</span>
-            </button>
-          );
-        })}
-      </div>
+      <h2>{displayTitle}</h2>
+      <p>
+        {displaySubtitle}
+        {showCursor && <span className="typeCursor" />}
+      </p>
     </div>
   );
 }
