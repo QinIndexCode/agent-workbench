@@ -24,6 +24,9 @@ export function TaskThread({
   onOpenTasks,
   onSubmit,
   onStop,
+  titleIssue,
+  onRetryTitle,
+  onUseLocalTitle,
   onApprovalDecision
 }: {
   task: TaskDetail | null;
@@ -43,6 +46,9 @@ export function TaskThread({
   onOpenTasks: () => void;
   onSubmit: (mode: ComposerMode, text: string) => void;
   onStop: () => void;
+  titleIssue?: { goal: string; error: string } | null;
+  onRetryTitle: () => void;
+  onUseLocalTitle: () => void;
   onApprovalDecision: (approvalId: string, decision: ApprovalDecision) => void;
 }) {
   const running = task?.status === "running" || task?.status === "waiting_approval";
@@ -72,6 +78,13 @@ export function TaskThread({
       </header>
 
       <div className={error ? "errorLine" : "errorLine emptyError"}>{error}</div>
+      {titleIssue ? (
+        <div className="titleIssue">
+          <span>{text.thread.titleGenerationFailed}</span>
+          <button type="button" onClick={onRetryTitle}>{text.thread.retryTitle}</button>
+          <button type="button" onClick={onUseLocalTitle}>{text.thread.useLocalTitle}</button>
+        </div>
+      ) : null}
       {task ? (
         <Timeline language={language ?? null} task={task} onApprovalDecision={onApprovalDecision} />
       ) : (

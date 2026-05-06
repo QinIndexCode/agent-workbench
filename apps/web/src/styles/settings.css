@@ -1851,35 +1851,27 @@
 
 .libraryView {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  padding: 24px max(22px, calc((100vw - var(--sidebar-width) - 1120px) / 2));
-  overflow: auto;
-  background: var(--app-bg);
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .libraryHeader {
   display: flex;
-  gap: 18px;
-  align-items: end;
+  gap: 12px;
+  align-items: center;
   justify-content: space-between;
   min-width: 0;
-  padding-bottom: 18px;
+  min-height: 68px;
+  padding: 14px 22px 12px;
+  background: color-mix(in srgb, var(--app-bg) 92%, var(--surface) 8%);
+  border-bottom: 1px solid var(--border);
 }
 
-.libraryTitleBlock {
-  min-width: 0;
-}
-
-.libraryTitleBlock h1 {
+.libraryHeader h1 {
   margin: 0;
-  font-size: 24px;
-  font-weight: 720;
-}
-
-.libraryTitleBlock p {
-  max-width: 680px;
-  margin: 5px 0 0;
-  color: var(--muted);
+  font-size: 19px;
+  font-weight: 680;
+  letter-spacing: 0;
+  line-height: 1.25;
 }
 
 .librarySearch {
@@ -1887,8 +1879,8 @@
   grid-template-columns: 18px minmax(0, 1fr);
   gap: 8px;
   align-items: center;
-  width: min(420px, 42vw);
-  min-height: 42px;
+  width: min(320px, 36vw);
+  min-height: 38px;
   padding: 0 12px;
   color: var(--muted);
   background: var(--surface-container);
@@ -1904,59 +1896,72 @@
   outline: 0;
 }
 
-.librarySections {
+.libraryBody {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  padding-bottom: 18px;
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: 20px;
+  min-height: 0;
+  padding: 22px max(22px, calc((100vw - var(--sidebar-width) - 1120px) / 2));
+  overflow: hidden;
+  background: var(--app-bg);
 }
 
-.librarySectionCard {
+.libraryNav,
+.libraryPanel {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.libraryNav {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr);
-  gap: 12px;
+  align-content: start;
+  gap: 9px;
+}
+
+.libraryNavItem {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 10px;
   align-items: center;
-  min-height: 78px;
-  padding: 12px;
+  justify-content: start;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
   color: var(--muted-strong);
+  font-size: 13px;
+  font-weight: 640;
   text-align: left;
-  background: var(--surface-container);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
-.librarySectionCard:hover,
-.librarySectionCard.selected {
+.libraryNavItem:hover,
+.libraryNavItem.selected {
   color: var(--text);
-  background: color-mix(in srgb, var(--surface-container-high) 84%, var(--accent-soft) 16%);
-  border-color: color-mix(in srgb, var(--border-strong) 70%, var(--accent-border) 30%);
+  background: var(--surface-selected);
+  border-color: var(--accent-border);
 }
 
-.librarySectionIcon {
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-border);
-  border-radius: var(--radius-sm);
-}
-
-.librarySectionCard strong,
-.librarySectionCard small {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.librarySectionCard small {
-  margin-top: 3px;
+.libraryNavItem svg {
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
-  white-space: nowrap;
+}
+
+.libraryNavItem:hover svg,
+.libraryNavItem.selected svg {
+  color: var(--accent);
+}
+
+.libraryPanel {
+  padding: 0 2px 30px;
+}
+
+.libraryPanel > section {
+  width: 100%;
+  max-width: 1040px;
+  min-width: 0;
 }
 
 .libraryContent {
@@ -1971,21 +1976,23 @@
   align-items: start;
   justify-content: space-between;
   min-width: 0;
-  padding-bottom: 14px;
+  padding-bottom: 10px;
 }
 
 .libraryContentHeader h2,
 .libraryPanelHero h3,
 .libraryPreviewHeader h3 {
   margin: 0;
-  font-size: 18px;
+  font-size: 17px;
+  font-weight: 650;
 }
 
 .libraryContentHeader p,
 .libraryPanelHero p,
 .libraryPreviewHeader p {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   color: var(--muted);
+  font-size: 13px;
 }
 
 .libraryManagerGrid {
@@ -1999,14 +2006,14 @@
 .libraryMetaGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin: 4px 0 14px;
+  gap: 8px;
+  margin: 2px 0 10px;
 }
 
 .libraryMetaGrid div {
   min-width: 0;
-  padding: 10px;
-  background: #0b0f12;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--surface-container) 70%, transparent);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }

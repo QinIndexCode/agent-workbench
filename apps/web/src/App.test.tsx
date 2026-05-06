@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GlobalPermissionGrant, KnowledgeItem, ModelProviderRecord, SkillRecord, TaskDetail, ToolApproval, UserPreferences } from "@scc/shared";
+import type { GlobalPermissionGrant, KnowledgeItem, ModelProviderRecord, SkillRecord, TaskDetail, TaskFolderRecord, ToolApproval, UserPreferences } from "@scc/shared";
 import { App } from "./App.js";
 import { ApprovalCard } from "./components/ApprovalCard.js";
 import { Composer } from "./components/Composer.js";
@@ -92,6 +92,7 @@ describe("Workbench components", () => {
   const task: TaskDetail = {
     id: "task_1",
     title: "Check host",
+    folderId: "default",
     status: "waiting_approval",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -126,15 +127,21 @@ describe("Workbench components", () => {
         engineStatus="running"
         open={false}
         tasks={[task]}
+        folders={[]}
         selectedId="task_1"
+        activeFolderId="all"
         onClose={vi.fn()}
+        onClearFolder={vi.fn()}
+        onCreateFolder={vi.fn()}
         onDelete={vi.fn()}
+        onFolderSelect={vi.fn()}
         onOpenDocs={vi.fn()}
         onOpenLibrary={onOpenLibrary}
         onNewTask={vi.fn()}
         onOpenSettings={vi.fn()}
         onOpenSupport={vi.fn()}
         onSelect={onSelect}
+        onUpdateFolder={vi.fn()}
       />
     );
     expect(screen.getByText("waiting approval")).toBeInTheDocument();
@@ -165,6 +172,8 @@ describe("Workbench components", () => {
         onOpenTasks={vi.fn()}
         onSubmit={onSubmit}
         onStop={vi.fn()}
+        onRetryTitle={vi.fn()}
+        onUseLocalTitle={vi.fn()}
         onApprovalDecision={vi.fn()}
       />
     );
@@ -183,15 +192,21 @@ describe("Workbench components", () => {
         engineStatus="running"
         open={false}
         tasks={[task]}
+        folders={[]}
         selectedId="task_1"
+        activeFolderId="all"
         onClose={vi.fn()}
+        onClearFolder={vi.fn()}
+        onCreateFolder={vi.fn()}
         onDelete={onDelete}
+        onFolderSelect={vi.fn()}
         onOpenDocs={vi.fn()}
         onOpenLibrary={vi.fn()}
         onNewTask={vi.fn()}
         onOpenSettings={vi.fn()}
         onOpenSupport={vi.fn()}
         onSelect={vi.fn()}
+        onUpdateFolder={vi.fn()}
       />
     );
 
@@ -202,6 +217,68 @@ describe("Workbench components", () => {
     fireEvent.click(screen.getByText("Delete"));
 
     await waitFor(() => expect(onDelete).toHaveBeenCalledWith("task_1", { deleteLearningData: true, deleteDerivedSkills: true }));
+  });
+
+  it("filters tasks by folder and clears folder tasks from the sidebar", async () => {
+    const folder: TaskFolderRecord = {
+      id: "folder_ops",
+      name: "Operations",
+      sortOrder: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const onFolderSelect = vi.fn();
+    const onClearFolder = vi.fn().mockResolvedValue(undefined);
+    const onCreateFolder = vi.fn().mockResolvedValue(undefined);
+    const onUpdateFolder = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TaskList
+        activeView="tasks"
+        engineStatus="running"
+        open={false}
+        tasks={[
+          { ...task, id: "task_ops", title: "Ops check", folderId: "folder_ops" },
+          { ...task, id: "task_default", title: "Default check", folderId: "default" }
+        ]}
+        folders={[folder]}
+        selectedId={null}
+        activeFolderId="folder_ops"
+        onClose={vi.fn()}
+        onClearFolder={onClearFolder}
+        onCreateFolder={onCreateFolder}
+        onDelete={vi.fn()}
+        onFolderSelect={onFolderSelect}
+        onOpenDocs={vi.fn()}
+        onOpenLibrary={vi.fn()}
+        onNewTask={vi.fn()}
+        onOpenSettings={vi.fn()}
+        onOpenSupport={vi.fn()}
+        onSelect={vi.fn()}
+        onUpdateFolder={onUpdateFolder}
+      />
+    );
+
+    expect(screen.getByText("Task folders")).toBeInTheDocument();
+    expect(screen.getByText("Ops check")).toBeInTheDocument();
+    expect(screen.queryByText("Default check")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("All tasks"));
+    expect(onFolderSelect).toHaveBeenCalledWith("all");
+
+    fireEvent.click(screen.getByLabelText("New folder"));
+    fireEvent.change(screen.getByLabelText("Folder name"), { target: { value: "Research" } });
+    fireEvent.click(within(screen.getByRole("dialog", { name: "New folder" })).getByRole("button", { name: "New folder" }));
+    await waitFor(() => expect(onCreateFolder).toHaveBeenCalledWith("Research"));
+
+    fireEvent.click(screen.getByLabelText("Edit folder Operations"));
+    fireEvent.change(screen.getByLabelText("Folder name"), { target: { value: "Ops" } });
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Edit folder" })).getByRole("button", { name: "Edit folder" }));
+    await waitFor(() => expect(onUpdateFolder).toHaveBeenCalledWith("folder_ops", "Ops"));
+
+    fireEvent.click(screen.getByLabelText("Clear tasks Operations"));
+    expect(screen.getByText("Clear this folder's tasks?")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Remove memories and experiences from this task"));
+    fireEvent.click(screen.getByRole("button", { name: "Clear tasks" }));
+    await waitFor(() => expect(onClearFolder).toHaveBeenCalledWith("folder_ops", { deleteLearningData: true, deleteDerivedSkills: false }));
   });
 
   it("renders user-facing timeline evidence", () => {
@@ -634,9 +711,9 @@ describe("Workbench components", () => {
       ]
     };
     let currentTasks: TaskDetail[] = [];
-    const createTask = vi.fn((goal: string) => {
+    const createTask = vi.fn((goal: string, title: string) => {
       currentTasks = [created];
-      return created;
+      return { ...created, title };
     });
     const sendMessage = vi.fn();
 
@@ -644,9 +721,11 @@ describe("Workbench components", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
+        if (url === "/api/task-folders") return jsonResponse([{ id: "default", name: "Default", sortOrder: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }]);
+        if (url === "/api/tasks/title" && init?.method === "POST") return jsonResponse({ title: "Check host", source: "model" });
         if (url === "/api/tasks" && init?.method === "POST") {
-          const body = JSON.parse(String(init.body)) as { goal: string };
-          return jsonResponse(createTask(body.goal));
+          const body = JSON.parse(String(init.body)) as { goal: string; title: string };
+          return jsonResponse(createTask(body.goal, body.title));
         }
         if (url === "/api/tasks") return jsonResponse(currentTasks);
         if (url === "/api/tasks/task_1") return jsonResponse(currentTasks.find((item) => item.id === "task_1") ?? created);
@@ -720,6 +799,7 @@ describe("Workbench components", () => {
     fireEvent.click(screen.getByLabelText("Send"));
 
     expect(await screen.findByText("Reads host state")).toBeInTheDocument();
+    expect(createTask).toHaveBeenCalledWith("check host", "Check host");
     fireEvent.click(screen.getByText("Allow once"));
     await waitFor(() => expect(screen.getByText("Top process: node")).toBeInTheDocument());
 
@@ -734,6 +814,7 @@ describe("Workbench components", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
+        if (url === "/api/task-folders") return jsonResponse([{ id: "default", name: "Default", sortOrder: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }]);
         if (url === "/api/tasks") return jsonResponse([]);
         if (
           url === "/api/experiences" ||

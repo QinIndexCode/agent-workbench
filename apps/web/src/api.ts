@@ -31,6 +31,12 @@ import type {
   TaskDeleteRequest,
   TaskDeleteResult,
   TaskDetail,
+  TaskFolderClearRequest,
+  TaskFolderClearResult,
+  TaskFolderCreateRequest,
+  TaskFolderPatchRequest,
+  TaskFolderRecord,
+  TaskTitleResponse,
   TaskMemory,
   UserPreferences
 } from "@scc/shared";
@@ -55,11 +61,32 @@ export const api = {
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     return url.toString();
   },
-  createTask(goal: string): Promise<TaskDetail> {
-    return request("/api/tasks", { method: "POST", body: JSON.stringify({ goal }) });
+  generateTaskTitle(goal: string, language?: string | null, useLocalFallback = false): Promise<TaskTitleResponse> {
+    return request("/api/tasks/title", {
+      method: "POST",
+      body: JSON.stringify({ goal, ...(language ? { language } : {}), useLocalFallback })
+    });
+  },
+  createTask(goal: string, title: string, folderId?: string): Promise<TaskDetail> {
+    return request("/api/tasks", { method: "POST", body: JSON.stringify({ goal, title, ...(folderId ? { folderId } : {}) }) });
   },
   listTasks(): Promise<TaskDetail[]> {
     return request("/api/tasks");
+  },
+  listTaskFolders(): Promise<TaskFolderRecord[]> {
+    return request("/api/task-folders");
+  },
+  createTaskFolder(input: TaskFolderCreateRequest): Promise<TaskFolderRecord> {
+    return request("/api/task-folders", { method: "POST", body: JSON.stringify(input) });
+  },
+  patchTaskFolder(folderId: string, input: TaskFolderPatchRequest): Promise<TaskFolderRecord> {
+    return request(`/api/task-folders/${folderId}`, { method: "PATCH", body: JSON.stringify(input) });
+  },
+  deleteTaskFolder(folderId: string): Promise<void> {
+    return request(`/api/task-folders/${folderId}`, { method: "DELETE" });
+  },
+  clearTaskFolder(folderId: string, input: TaskFolderClearRequest): Promise<TaskFolderClearResult> {
+    return request(`/api/task-folders/${folderId}/clear`, { method: "POST", body: JSON.stringify(input) });
   },
   getTask(taskId: string): Promise<TaskDetail> {
     return request(`/api/tasks/${taskId}`);

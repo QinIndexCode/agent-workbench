@@ -38,6 +38,13 @@ import type {
   SkillStatusPatchSchema,
   SkillUpdateRequestSchema,
   TaskMemorySchema,
+  TaskFolderClearRequestSchema,
+  TaskFolderClearResultSchema,
+  TaskFolderCreateRequestSchema,
+  TaskFolderPatchRequestSchema,
+  TaskFolderRecordSchema,
+  TaskTitleRequestSchema,
+  TaskTitleResponseSchema,
   TaskDeleteRequestSchema,
   TaskDeleteResultSchema,
   TaskDetailSchema,
@@ -65,6 +72,13 @@ export type ToolApproval = z.infer<typeof ToolApprovalSchema>;
 export type TaskEvent = z.infer<typeof TaskEventSchema>;
 export type TaskDetail = z.infer<typeof TaskDetailSchema>;
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;
+export type TaskTitleRequest = z.infer<typeof TaskTitleRequestSchema>;
+export type TaskTitleResponse = z.infer<typeof TaskTitleResponseSchema>;
+export type TaskFolderRecord = z.infer<typeof TaskFolderRecordSchema>;
+export type TaskFolderCreateRequest = z.infer<typeof TaskFolderCreateRequestSchema>;
+export type TaskFolderPatchRequest = z.infer<typeof TaskFolderPatchRequestSchema>;
+export type TaskFolderClearRequest = z.infer<typeof TaskFolderClearRequestSchema>;
+export type TaskFolderClearResult = z.infer<typeof TaskFolderClearResultSchema>;
 export type TaskDeleteRequest = z.infer<typeof TaskDeleteRequestSchema>;
 export type TaskDeleteResult = z.infer<typeof TaskDeleteResultSchema>;
 export type MessageRequest = z.infer<typeof MessageRequestSchema>;

@@ -32,6 +32,8 @@ export function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("providers");
   const [librarySection, setLibrarySection] = useState<LibrarySection>("skills");
   const [libraryQuery, setLibraryQuery] = useState("");
+  const [activeTaskFolderId, setActiveTaskFolderId] = useState("all");
+  const [titleIssue, setTitleIssue] = useState<{ goal: string; error: string } | null>(null);
   const language = data.preferences?.language ?? "zh-CN";
   const engineStatus = data.error ? "attention" : data.realtimeConnected ? "streaming" : "running";
   const activeProvider = data.modelProviders.find((provider) => provider.id === data.preferences?.activeModelProviderId) ?? data.modelProviders.find((provider) => provider.enabled);
@@ -52,7 +54,9 @@ export function App() {
           language={language}
           open={taskDrawerOpen}
           tasks={data.tasks}
+          folders={data.taskFolders}
           selectedId={data.selectedId}
+          activeFolderId={activeTaskFolderId}
           onClose={() => setTaskDrawerOpen(false)}
           onNewTask={() => {
             setActiveView("tasks");
@@ -78,6 +82,10 @@ export function App() {
             setTaskDrawerOpen(false);
           }}
           onDelete={(taskId, options) => data.deleteTask(taskId, options)}
+          onClearFolder={(folderId, options) => data.runSideAction(() => api.clearTaskFolder(folderId, options))}
+          onCreateFolder={(name) => data.runSideAction(() => api.createTaskFolder({ name }))}
+          onFolderSelect={(folderId) => setActiveTaskFolderId(folderId)}
+          onUpdateFolder={(folderId, name) => data.runSideAction(() => api.patchTaskFolder(folderId, { name }))}
           onSelect={(taskId) => {
             setActiveView("tasks");
             setTaskDrawerOpen(false);
@@ -111,6 +119,9 @@ export function App() {
           onOpenTasks={() => setTaskDrawerOpen(true)}
           onSubmit={(mode, text) => submitComposer(mode, text)}
           onStop={() => data.selected && void data.runTaskAction(() => api.control(data.selected!.id, "pause"))}
+          titleIssue={titleIssue}
+          onRetryTitle={() => titleIssue && submitNewTask(titleIssue.goal, false)}
+          onUseLocalTitle={() => titleIssue && submitNewTask(titleIssue.goal, true)}
           onApprovalDecision={(approvalId, decision) => approve(approvalId, decision)}
         />
       ) : activeView === "history" ? (
@@ -131,6 +142,7 @@ export function App() {
           query={libraryQuery}
           onQuery={setLibraryQuery}
           onSection={(section) => setLibrarySection(section)}
+          onOpenTasks={() => setTaskDrawerOpen(true)}
         >
           {{
             skills: (
@@ -242,13 +254,27 @@ export function App() {
   }
 
   function submitComposer(mode: ComposerMode, text: string) {
-    void data.runTaskAction(() => {
-      if (mode === "guidance" || mode === "continue") {
-        if (!data.selected) return api.createTask(text);
-        return api.sendMessage(data.selected.id, text);
-      }
-      return api.createTask(text);
-    });
+    if (mode === "guidance" || mode === "continue") {
+      setTitleIssue(null);
+      void data.runTaskAction(() => (data.selected ? api.sendMessage(data.selected.id, text) : submitNewTaskAction(text, false)));
+      return;
+    }
+    submitNewTask(text, false);
+  }
+
+  function submitNewTask(goal: string, useLocalFallback: boolean) {
+    void data.runTaskAction(() => submitNewTaskAction(goal, useLocalFallback));
+  }
+
+  async function submitNewTaskAction(goal: string, useLocalFallback: boolean) {
+    try {
+      const title = await api.generateTaskTitle(goal, language, useLocalFallback);
+      setTitleIssue(null);
+      return api.createTask(goal, title.title, taskCreateFolderId(activeTaskFolderId));
+    } catch (error) {
+      setTitleIssue({ goal, error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
   }
 
   function approve(approvalId: string, decision: ApprovalDecision) {
@@ -324,6 +350,10 @@ export function App() {
       api.mergeSkills(group.canonicalSkillId, { targetSkillId: group.canonicalSkillId, sourceSkillIds, deleteSources: true })
     );
   }
+}
+
+function taskCreateFolderId(activeFolderId: string): string | undefined {
+  return activeFolderId === "all" ? undefined : activeFolderId;
 }
 
 function getPermissionPreset(permissions: Array<{ riskCategory: RiskCategory }>): ComposerPermissionMode {

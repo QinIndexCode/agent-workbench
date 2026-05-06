@@ -14,13 +14,15 @@ import type {
   SkillConflict,
   SkillRecord,
   TaskDetail,
+  TaskFolderRecord,
   TaskMemory,
   UserPreferences
 } from "@scc/shared";
-import { defaultPreferences, normalizeSkillRecord, type EncryptedSecretValue, type WorkbenchStore } from "@scc/core";
+import { defaultPreferences, normalizeSkillRecord, normalizeTaskDetail, type EncryptedSecretValue, type WorkbenchStore } from "@scc/core";
 
 type Namespace =
   | "tasks"
+  | "task_folders"
   | "experiences"
   | "task_memories"
   | "patterns"
@@ -51,19 +53,36 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   }
 
   async saveTask(task: TaskDetail): Promise<void> {
-    this.upsert("tasks", task.id, task);
+    this.upsert("tasks", task.id, normalizeTaskDetail(task));
   }
 
   async getTask(taskId: string): Promise<TaskDetail | undefined> {
-    return this.get<TaskDetail>("tasks", taskId);
+    const task = this.get<TaskDetail>("tasks", taskId);
+    return task ? normalizeTaskDetail(task) : undefined;
   }
 
   async listTasks(): Promise<TaskDetail[]> {
-    return this.list<TaskDetail>("tasks").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return this.list<TaskDetail>("tasks").map((task) => normalizeTaskDetail(task)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   async deleteTask(taskId: string): Promise<void> {
     this.delete("tasks", taskId);
+  }
+
+  async saveTaskFolder(record: TaskFolderRecord): Promise<void> {
+    this.upsert("task_folders", record.id, record);
+  }
+
+  async getTaskFolder(folderId: string): Promise<TaskFolderRecord | undefined> {
+    return this.get<TaskFolderRecord>("task_folders", folderId);
+  }
+
+  async listTaskFolders(): Promise<TaskFolderRecord[]> {
+    return this.list<TaskFolderRecord>("task_folders").sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+  }
+
+  async deleteTaskFolder(folderId: string): Promise<void> {
+    this.delete("task_folders", folderId);
   }
 
   async saveExperience(record: ExperienceRecord): Promise<void> {

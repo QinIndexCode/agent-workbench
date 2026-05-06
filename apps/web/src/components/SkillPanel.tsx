@@ -473,7 +473,7 @@ function getSkillCopy(language?: string | null) {
   const zh = language === "zh-CN";
   return {
     title: "Skills",
-    subtitle: zh ? "先浏览、再编辑。Skill 只保存可复用方法，不保存单次任务结果。" : "Browse first, edit deliberately. Skills store reusable methods, not one-off task results.",
+    subtitle: zh ? "浏览、编辑和导出可复用的 Agent 能力。" : "Browse, edit, and export reusable agent capabilities.",
     reflect: zh ? "Agent 反思" : "Agent reflection",
     newSkill: zh ? "新建 Skill" : "New skill",
     latestReflection: zh ? "最近反思" : "Latest reflection",

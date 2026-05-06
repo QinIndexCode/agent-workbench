@@ -28,6 +28,17 @@ const copy = {
         attention: "LOCAL ENGINE: NEEDS ATTENTION"
       },
       searchTasks: "搜索任务",
+      folders: "任务文件夹",
+      allTasks: "全部任务",
+      defaultFolder: "未分类",
+      addFolder: "新建文件夹",
+      editFolder: "编辑文件夹",
+      deleteFolder: "删除文件夹",
+      clearFolder: "清空任务",
+      folderName: "文件夹名称",
+      folderTasks: (count: number) => `${count} 个任务`,
+      clearFolderTitle: "清空此文件夹的任务？",
+      clearFolderBody: (name: string) => `“${name}” 中的任务会被删除，文件夹会保留。`,
       noTasks: "还没有任务。",
       noMatchingTasks: "没有匹配的任务。",
       deleteTask: "删除任务",
@@ -73,7 +84,10 @@ const copy = {
         }
       ],
       runningGuidance: "运行中 · 输入会作为待处理引导",
-      continueTask: (status: string) => `${status} · 输入会继续当前任务`
+      continueTask: (status: string) => `${status} · 输入会继续当前任务`,
+      titleGenerationFailed: "短标题生成失败。",
+      retryTitle: "重试",
+      useLocalTitle: "使用本地标题继续"
     },
     composer: {
       modes: {
@@ -219,6 +233,17 @@ const copy = {
         attention: "LOCAL ENGINE: NEEDS ATTENTION"
       },
       searchTasks: "Search tasks",
+      folders: "Task folders",
+      allTasks: "All tasks",
+      defaultFolder: "Uncategorized",
+      addFolder: "New folder",
+      editFolder: "Edit folder",
+      deleteFolder: "Delete folder",
+      clearFolder: "Clear tasks",
+      folderName: "Folder name",
+      folderTasks: (count: number) => `${count} task${count === 1 ? "" : "s"}`,
+      clearFolderTitle: "Clear this folder's tasks?",
+      clearFolderBody: (name: string) => `Tasks in "${name}" will be deleted. The folder will be kept.`,
       noTasks: "No tasks yet.",
       noMatchingTasks: "No matching tasks.",
       deleteTask: "Delete task",
@@ -264,7 +289,10 @@ const copy = {
         }
       ],
       runningGuidance: "Running · input becomes pending guidance",
-      continueTask: (status: string) => `${status} · input continues this task`
+      continueTask: (status: string) => `${status} · input continues this task`,
+      titleGenerationFailed: "Short title generation failed.",
+      retryTitle: "Retry",
+      useLocalTitle: "Use local title"
     },
     composer: {
       modes: {

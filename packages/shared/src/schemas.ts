@@ -124,6 +124,7 @@ export const TaskEventSchema = z.object({
 export const TaskDetailSchema = z.object({
   id: z.string(),
   title: z.string(),
+  folderId: z.string().default("default"),
   status: TaskStatusSchema,
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -135,9 +136,60 @@ export const TaskDetailSchema = z.object({
 export const CreateTaskRequestSchema = z
   .object({
     goal: z.string().min(1),
-    title: z.string().min(1).optional()
+    title: z.string().min(1),
+    folderId: z.string().min(1).optional()
   })
   .strict();
+
+export const TaskTitleRequestSchema = z
+  .object({
+    goal: z.string().min(1),
+    language: z.string().optional(),
+    useLocalFallback: z.boolean().default(false)
+  })
+  .strict();
+
+export const TaskTitleResponseSchema = z.object({
+  title: z.string().min(1),
+  source: z.enum(["model", "local_fallback"])
+});
+
+export const TaskFolderRecordSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  sortOrder: z.number().int(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const TaskFolderCreateRequestSchema = z
+  .object({
+    name: z.string().min(1).max(64)
+  })
+  .strict();
+
+export const TaskFolderPatchRequestSchema = z
+  .object({
+    name: z.string().min(1).max(64).optional(),
+    sortOrder: z.number().int().optional()
+  })
+  .strict();
+
+export const TaskFolderClearRequestSchema = z
+  .object({
+    deleteLearningData: z.boolean().default(false),
+    deleteDerivedSkills: z.boolean().default(false)
+  })
+  .strict();
+
+export const TaskFolderClearResultSchema = z.object({
+  folderId: z.string(),
+  deletedTasks: z.number().int().nonnegative(),
+  deletedExperiences: z.number().int().nonnegative(),
+  deletedTaskMemories: z.number().int().nonnegative(),
+  deletedSkills: z.number().int().nonnegative(),
+  updatedSkills: z.number().int().nonnegative()
+});
 
 export const TaskDeleteRequestSchema = z
   .object({

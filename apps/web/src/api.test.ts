@@ -15,10 +15,16 @@ describe("api client", () => {
       json: async () => ({ id: "task_1", status: "completed" })
     });
 
-    await expect(api.createTask("hello")).resolves.toMatchObject({ id: "task_1" });
+    await expect(api.createTask("hello", "Greeting")).resolves.toMatchObject({ id: "task_1" });
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/tasks",
-      expect.objectContaining({ method: "POST", body: JSON.stringify({ goal: "hello" }) })
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ goal: "hello", title: "Greeting" }) })
+    );
+
+    await api.generateTaskTitle("hello", "en-US");
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/tasks/title",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ goal: "hello", language: "en-US", useLocalFallback: false }) })
     );
 
     await api.decideApproval("task_1", "approval_1", "allow_once");

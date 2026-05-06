@@ -14,7 +14,7 @@ test("creates a host observation task and shows approval", async ({ page, reques
   await page.goto("/");
   await openNavItem(page, "New Task");
   await page.getByLabel("Task input").fill("帮我看一下当前桌面运行的软件有哪些，性能占用最高的是哪些");
-  await page.getByLabel("Task input").press("Enter");
+  await submitInput(page);
 
   const approval = page.locator(".approvalCard");
   await expect(approval.getByText("host observation")).toBeVisible();
@@ -27,7 +27,7 @@ test("creates a host observation task and shows approval", async ({ page, reques
   await expect(page.locator(".event.tool_result").filter({ hasText: "Tool evidence returned." }).first()).toBeVisible();
 
   await page.getByLabel("Task input").fill("再看一次当前运行的软件");
-  await page.getByLabel("Task input").press("Enter");
+  await submitInput(page);
   await expect(page.locator(".approvalCard")).toHaveCount(0);
   await expect(page.getByText("host_observation: global permission")).toBeVisible();
   await expect(page.locator(".event.tool_result").filter({ hasText: "Tool evidence returned." }).first()).toBeVisible();
@@ -38,8 +38,38 @@ test("creates a host observation task and shows approval", async ({ page, reques
   await expect(page.getByText("Permissions and preferences")).toBeVisible();
 });
 
+test("manages task folders from the sidebar on desktop and mobile", async ({ page, request }, testInfo) => {
+  const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
+  const folder = await (await request.post(`${apiBase}/api/task-folders`, { data: { name: `Ops ${suffix}` } })).json();
+  const taskResponse = await request.post(`${apiBase}/api/tasks`, {
+    data: { goal: `Folder task ${suffix}`, title: `Folder ${suffix}`, folderId: folder.id }
+  });
+  expect(taskResponse.status()).toBe(201);
+
+  await page.goto("/");
+  await openTaskDrawer(page);
+  await expect(page.getByText("Task folders")).toBeVisible();
+  await page.getByText(`Ops ${suffix}`).click();
+  await page.getByLabel("Search tasks").fill(`Folder ${suffix}`);
+  const taskRow = page.locator(".taskItem").filter({ hasText: `Folder ${suffix}` });
+  await expect(taskRow).toBeVisible();
+
+  await taskRow.getByLabel(new RegExp(`Delete task Folder ${suffix}`)).click();
+  await page.locator(".confirmDialog").getByRole("button", { name: "Delete" }).click();
+  await expect(taskRow).toHaveCount(0);
+
+  const second = await (await request.post(`${apiBase}/api/tasks`, {
+    data: { goal: `Folder cleanup ${suffix}`, title: `Cleanup ${suffix}`, folderId: folder.id }
+  })).json();
+  await page.reload();
+  await openTaskDrawer(page);
+  await page.getByText(`Ops ${suffix}`).click();
+  await page.getByLabel(`Clear tasks Ops ${suffix}`).click();
+  await page.locator(".confirmDialog").getByRole("button", { name: "Clear tasks" }).click();
+  await expect.poll(async () => (await request.get(`${apiBase}/api/tasks/${second.id}`)).status()).toBe(404);
+});
+
 test("manages model providers and MCP servers from settings", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === "mobile", "settings management is covered on desktop; mobile keeps task-flow coverage");
   const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
   await page.goto("/");
   await openNavItem(page, /Settings/);
@@ -87,9 +117,10 @@ test("manages model providers and MCP servers from settings", async ({ page }, t
 });
 
 test("covers library, reflection, and history management", async ({ page, request }, testInfo) => {
-  test.skip(testInfo.project.name === "mobile", "library and history CRUD are covered on desktop; mobile keeps task-flow coverage");
   const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
-  const taskResponse = await request.post(`${apiBase}/api/tasks`, { data: { goal: `E2E history cleanup ${suffix}` } });
+  const taskResponse = await request.post(`${apiBase}/api/tasks`, {
+    data: { goal: `E2E history cleanup ${suffix}`, title: `History ${suffix}` }
+  });
   const task = await taskResponse.json();
   await page.goto("/");
 
@@ -109,7 +140,7 @@ test("covers library, reflection, and history management", async ({ page, reques
   await expect(page.locator(".skillDialog").getByLabel("Title")).toHaveValue(`E2E Skill ${suffix}`);
   await page.locator(".skillDialog").getByRole("button", { name: "Cancel" }).click();
 
-  await page.getByRole("tab", { name: /Knowledge/ }).click();
+  await page.getByRole("button", { name: /Knowledge/ }).click();
   await page.getByRole("button", { name: "New item" }).click();
   const knowledgeDialog = page.locator(".knowledgeDialog");
   await knowledgeDialog.getByLabel("Title").fill(`E2E Knowledge ${suffix}`);
@@ -119,16 +150,16 @@ test("covers library, reflection, and history management", async ({ page, reques
   const knowledgeRow = page.locator(".knowledgeRow").filter({ hasText: `E2E Knowledge ${suffix}` });
   await expect(knowledgeRow).toBeVisible();
 
-  await page.getByRole("tab", { name: /Reflections/ }).click();
+  await page.getByRole("button", { name: /Reflections/ }).click();
   await page.getByRole("button", { name: "Run reflection" }).click();
   await expect(page.locator(".reflectionList")).toBeVisible();
 
   await openNavItem(page, /History/);
   await expect(page.getByRole("heading", { name: "History" })).toBeVisible();
-  await page.getByLabel("Search history").fill(`E2E history cleanup ${suffix}`);
-  const historyRow = page.locator(".historyRow").filter({ hasText: `E2E history cleanup ${suffix}` });
+  await page.getByLabel("Search history").fill(`History ${suffix}`);
+  const historyRow = page.locator(".historyRow").filter({ hasText: `History ${suffix}` });
   await expect(historyRow).toBeVisible();
-  await historyRow.getByLabel(new RegExp(`Delete E2E history cleanup ${suffix}`)).click();
+  await historyRow.getByLabel(new RegExp(`Delete History ${suffix}`)).click();
   await expect(historyRow).toHaveCount(0);
   expect((await request.get(`${apiBase}/api/tasks/${task.id}`)).status()).toBe(404);
 
@@ -136,7 +167,7 @@ test("covers library, reflection, and history management", async ({ page, reques
   await skillRow.getByLabel(`Delete E2E Skill ${suffix}`).click();
   await page.locator(".confirmDialog").getByRole("button", { name: "Delete" }).click();
   await expect(skillRow).toHaveCount(0);
-  await page.getByRole("tab", { name: /Knowledge/ }).click();
+  await page.getByRole("button", { name: /Knowledge/ }).click();
   await knowledgeRow.getByLabel(`Delete E2E Knowledge ${suffix}`).click();
   await page.locator(".confirmDialog").getByRole("button", { name: "Delete" }).click();
   await expect(knowledgeRow).toHaveCount(0);
@@ -146,5 +177,22 @@ async function openNavItem(page: import("@playwright/test").Page, name: string |
   if ((page.viewportSize()?.width ?? 1440) <= 760) {
     await page.getByRole("button", { name: /Tasks/ }).click();
   }
-  await page.getByRole("button", { name }).click();
+  await page.locator(".sidebarNav").getByRole("button", { name }).click();
+}
+
+async function openTaskDrawer(page: import("@playwright/test").Page): Promise<void> {
+  if ((page.viewportSize()?.width ?? 1440) <= 760) {
+    await page.getByRole("button", { name: /Tasks/ }).click();
+  }
+}
+
+async function submitInput(page: import("@playwright/test").Page): Promise<void> {
+  await page.getByLabel("Task input").press("Enter");
+  const useLocalTitle = page.getByRole("button", { name: "Use local title" });
+  try {
+    await useLocalTitle.waitFor({ state: "visible", timeout: 2_000 });
+    await useLocalTitle.click();
+  } catch {
+    // A configured model provider generated the title, so no fallback action was shown.
+  }
 }

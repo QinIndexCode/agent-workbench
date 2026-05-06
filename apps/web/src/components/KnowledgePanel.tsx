@@ -302,7 +302,7 @@ function getKnowledgeCopy(language?: string | null) {
   const zh = language === "zh-CN";
   return {
     title: zh ? "知识库" : "Knowledge",
-    subtitle: zh ? "像资料夹一样浏览项目事实、说明文件和可引用内容。" : "Browse project facts, notes, and referenceable content like a library.",
+    subtitle: zh ? "浏览项目事实、说明文件和可引用内容。" : "Browse project facts, notes, and referenceable content.",
     upload: zh ? "上传文件" : "Upload files",
     newItem: zh ? "新建条目" : "New item",
     search: zh ? "搜索知识库" : "Search knowledge",

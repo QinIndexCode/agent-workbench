@@ -33,7 +33,7 @@ describe("server API", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/tasks",
-      payload: { goal: "check running processes" }
+      payload: { goal: "check running processes", title: "Process check" }
     });
 
     expect(response.statusCode).toBe(201);
@@ -52,10 +52,65 @@ describe("server API", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/tasks",
-      payload: { goal: "hello", unexpected: true }
+      payload: { goal: "hello", title: "Hello", unexpected: true }
     });
 
     expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("generates local fallback titles and manages task folders", async () => {
+    const app = await createApp({
+      workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ConfiguredToolModelClient("Get-Process") })
+    });
+
+    const titleResponse = await app.inject({
+      method: "POST",
+      url: "/api/tasks/title",
+      payload: { goal: "请帮我深入检查当前项目结构并给出下一步优化建议", language: "zh-CN", useLocalFallback: true }
+    });
+    expect(titleResponse.statusCode).toBe(200);
+    expect(titleResponse.json()).toMatchObject({ source: "local_fallback" });
+    expect(titleResponse.json().title.length).toBeLessThanOrEqual(18);
+
+    expect((await app.inject("/api/task-folders")).json().map((folder: { id: string }) => folder.id)).toContain("default");
+    const folder = (
+      await app.inject({
+        method: "POST",
+        url: "/api/task-folders",
+        payload: { name: "System checks" }
+      })
+    ).json();
+    expect(folder.name).toBe("System checks");
+
+    const created = (
+      await app.inject({
+        method: "POST",
+        url: "/api/tasks",
+        payload: { goal: "check running processes", title: "Process check", folderId: folder.id }
+      })
+    ).json();
+    expect(created.folderId).toBe(folder.id);
+
+    const patched = (
+      await app.inject({
+        method: "PATCH",
+        url: `/api/task-folders/${folder.id}`,
+        payload: { name: "Host checks" }
+      })
+    ).json();
+    expect(patched.name).toBe("Host checks");
+
+    const cleared = (
+      await app.inject({
+        method: "POST",
+        url: `/api/task-folders/${folder.id}/clear`,
+        payload: { deleteLearningData: false, deleteDerivedSkills: false }
+      })
+    ).json();
+    expect(cleared.deletedTasks).toBe(1);
+    expect((await app.inject(`/api/tasks/${created.id}`)).statusCode).toBe(404);
+    expect((await app.inject({ method: "DELETE", url: `/api/task-folders/${folder.id}` })).statusCode).toBe(204);
     await app.close();
   });
 
@@ -71,7 +126,7 @@ describe("server API", () => {
     const createResponse = await app.inject({
       method: "POST",
       url: "/api/tasks",
-      payload: { goal: "check running processes" }
+      payload: { goal: "check running processes", title: "Process check" }
     });
     const initial = createResponse.json();
     const created = await waitForTask(app, initial.id, (task) => task.approvals.length > 0);
@@ -229,7 +284,7 @@ describe("server API", () => {
       await app.inject({
         method: "POST",
         url: "/api/tasks",
-        payload: { goal: "check running processes" }
+        payload: { goal: "check running processes", title: "Process check" }
       })
     ).json();
     const pending = await waitForTask(app, created.id, (task) => task.approvals.length > 0);

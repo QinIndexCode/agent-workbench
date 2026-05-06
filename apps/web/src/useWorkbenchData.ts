@@ -14,6 +14,7 @@ import type {
   SkillRecord,
   TaskDeleteRequest,
   TaskDetail,
+  TaskFolderRecord,
   TaskEvent,
   TaskMemory,
   ToolApproval,
@@ -23,6 +24,7 @@ import { api } from "./api.js";
 
 export interface WorkbenchData {
   tasks: TaskDetail[];
+  taskFolders: TaskFolderRecord[];
   selected: TaskDetail | null;
   selectedId: string | null;
   memories: TaskMemory[];
@@ -51,6 +53,7 @@ export interface WorkbenchData {
 
 export function useWorkbenchData(): WorkbenchData {
   const [tasks, setTasks] = useState<TaskDetail[]>([]);
+  const [taskFolders, setTaskFolders] = useState<TaskFolderRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selected, setSelected] = useState<TaskDetail | null>(null);
   const [memories, setMemories] = useState<TaskMemory[]>([]);
@@ -75,6 +78,7 @@ export function useWorkbenchData(): WorkbenchData {
   async function refresh(nextId?: string | null) {
     const [
       list,
+      nextTaskFolders,
       nextMemories,
       nextPatterns,
       nextSkills,
@@ -90,6 +94,7 @@ export function useWorkbenchData(): WorkbenchData {
       nextMcpTools
     ] = await Promise.all([
       api.listTasks(),
+      api.listTaskFolders(),
       api.listTaskMemories(),
       api.listPatterns(),
       api.listSkills(),
@@ -105,6 +110,7 @@ export function useWorkbenchData(): WorkbenchData {
       api.listMcpTools()
     ]);
     setTasks(list);
+    setTaskFolders(nextTaskFolders);
     const hasExplicitNext = nextId !== undefined;
     const preferredId = hasExplicitNext ? nextId : selectedIdRef.current;
     const preferredExists = preferredId ? list.some((task) => task.id === preferredId) : false;
@@ -231,6 +237,7 @@ export function useWorkbenchData(): WorkbenchData {
 
   return {
     tasks,
+    taskFolders,
     selected,
     selectedId,
     memories,

@@ -58,7 +58,9 @@
   display: grid;
   grid-template-columns: 1fr;
   gap: 10px;
-  margin-top: 36px;
+  margin-top: 32px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
 }
 
 .sidebarNavButton {
@@ -134,16 +136,136 @@
   outline: 0;
 }
 
-.historyPanel {
-  display: none;
+.folderPanel {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 10px;
+  margin-top: 18px;
   min-height: 0;
-  margin-top: 2px;
+  position: relative;
+  z-index: 1;
 }
 
-.historyPanel.open {
+.folderPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.folderList {
+  display: grid;
+  gap: 5px;
+}
+
+.folderItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 27px 27px;
+  gap: 3px;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+
+.folderItem.selected {
+  background: color-mix(in srgb, var(--surface-selected) 72%, transparent);
+  border-color: color-mix(in srgb, var(--accent-border) 46%, transparent);
+}
+
+.folderItemMain {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 8px;
+  color: var(--muted-strong);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.folderItemMain span {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folderItemMain small {
+  color: var(--muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.folderIconButton {
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.folderIconButton:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.folderIconButton:disabled {
+  cursor: default;
+  opacity: 0.28;
+}
+
+.folderIconButton.dangerIcon:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+.folderEditField {
+  display: grid;
+  gap: 8px;
+}
+
+.folderEditField span {
+  color: var(--muted-strong);
+  font-size: 13px;
+}
+
+.folderEditField input {
+  min-height: 38px;
+  padding: 0 10px;
+  color: var(--text);
+  background: #090d0f;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: 0;
+}
+
+.historyPanel {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
+  min-height: 0;
+  margin-top: 14px;
+  padding-top: 14px;
+  position: relative;
+  z-index: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
 }
 
 .taskList {
@@ -404,6 +526,11 @@
     box-shadow: var(--shadow);
     transform: translateX(-105%);
     transition: transform 0.18s ease;
+  }
+
+  .folderList {
+    max-height: 30vh;
+    overflow: auto;
   }
 
   .sidebar.open {

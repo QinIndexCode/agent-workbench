@@ -15,6 +15,13 @@ import type {
   ProjectMemoryCreateRequest,
   ReflectionSession,
   RiskCategory,
+  TaskFolderClearRequest,
+  TaskFolderClearResult,
+  TaskFolderCreateRequest,
+  TaskFolderPatchRequest,
+  TaskFolderRecord,
+  TaskTitleRequest,
+  TaskTitleResponse,
   SkillCreateRequest,
   SkillDuplicateGroup,
   SkillMergeRequest,
@@ -42,6 +49,7 @@ import {
 } from "./experience.js";
 import { FallbackModelClient, type ModelClient } from "./fallback-model.js";
 import { createId, nowIso } from "./ids.js";
+import type { ResolvedModelProviderConfig } from "./openai-model.js";
 import { PermissionEngine, type PermissionState, type RiskAssessment } from "./permission-engine.js";
 import { LocalSecretBox, maskSecret } from "./secrets.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
@@ -83,21 +91,22 @@ export class AgentWorkbench {
     this.onEvent = options.onEvent;
   }
 
-  async createTask(goal: string, title = goal.slice(0, 72)): Promise<TaskDetail> {
-    const task = await this.initializeTask(goal, title);
+  async createTask(goal: string, title = createLocalTaskTitle(goal), folderId = "default"): Promise<TaskDetail> {
+    const task = await this.initializeTask(goal, title, folderId);
     return this.runTaskExclusive(task.id, () => this.step(task.id));
   }
 
-  async startTask(goal: string, title = goal.slice(0, 72)): Promise<TaskDetail> {
-    const task = await this.initializeTask(goal, title);
+  async startTask(goal: string, title = createLocalTaskTitle(goal), folderId = "default"): Promise<TaskDetail> {
+    const task = await this.initializeTask(goal, title, folderId);
     void this.runTaskExclusive(task.id, () => this.step(task.id)).catch((error) => {
       void this.failBackgroundRun(task.id, error);
     });
     return task;
   }
 
-  private async initializeTask(goal: string, title: string): Promise<TaskDetail> {
+  private async initializeTask(goal: string, title: string, folderId: string): Promise<TaskDetail> {
     const task = this.emptyTask(title);
+    task.folderId = folderId || "default";
     this.addEvent(task, "task_created", "Task created");
     this.addEvent(task, "user_message", goal);
     this.setStatus(task, "running");
@@ -107,6 +116,77 @@ export class AgentWorkbench {
 
   async listTasks(): Promise<TaskDetail[]> {
     return this.store.listTasks();
+  }
+
+  async generateTaskTitle(input: TaskTitleRequest): Promise<TaskTitleResponse> {
+    if (input.useLocalFallback) return { title: createLocalTaskTitle(input.goal, input.language), source: "local_fallback" };
+    const provider = await this.resolveModelProviderConfig();
+    if (!provider) throw new Error("No model provider is configured for title generation.");
+    const title = normalizeGeneratedTaskTitle(await generateTaskTitleWithProvider(provider, input.goal, input.language), input.goal, input.language);
+    return { title, source: "model" };
+  }
+
+  async listTaskFolders(): Promise<TaskFolderRecord[]> {
+    return [defaultTaskFolder(), ...(await this.store.listTaskFolders()).filter((folder) => folder.id !== "default")];
+  }
+
+  async createTaskFolder(input: TaskFolderCreateRequest): Promise<TaskFolderRecord> {
+    const existing = await this.store.listTaskFolders();
+    const now = nowIso();
+    const folder: TaskFolderRecord = {
+      id: createId("folder"),
+      name: input.name.trim(),
+      sortOrder: existing.length + 1,
+      createdAt: now,
+      updatedAt: now
+    };
+    await this.store.saveTaskFolder(folder);
+    return folder;
+  }
+
+  async updateTaskFolder(folderId: string, input: TaskFolderPatchRequest): Promise<TaskFolderRecord> {
+    if (folderId === "default") throw new Error("Default folder cannot be edited.");
+    const folder = await this.store.getTaskFolder(folderId);
+    if (!folder) throw new Error(`Task folder not found: ${folderId}`);
+    const updated: TaskFolderRecord = {
+      ...folder,
+      ...(input.name ? { name: input.name.trim() } : {}),
+      ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
+      updatedAt: nowIso()
+    };
+    await this.store.saveTaskFolder(updated);
+    return updated;
+  }
+
+  async deleteTaskFolder(folderId: string): Promise<void> {
+    if (folderId === "default") throw new Error("Default folder cannot be deleted.");
+    for (const task of await this.store.listTasks()) {
+      if (task.folderId === folderId) {
+        await this.store.saveTask({ ...task, folderId: "default", updatedAt: nowIso() });
+      }
+    }
+    await this.store.deleteTaskFolder(folderId);
+  }
+
+  async clearTaskFolder(folderId: string, input: TaskFolderClearRequest): Promise<TaskFolderClearResult> {
+    const tasks = (await this.store.listTasks()).filter((task) => folderId === "all" || task.folderId === folderId);
+    const result: TaskFolderClearResult = {
+      folderId,
+      deletedTasks: 0,
+      deletedExperiences: 0,
+      deletedTaskMemories: 0,
+      deletedSkills: 0,
+      updatedSkills: 0
+    };
+    for (const task of tasks) {
+      const deleted = await this.deleteTask(task.id, input);
+      result.deletedTasks += deleted.deletedTask ? 1 : 0;
+      result.deletedExperiences += deleted.deletedExperiences;
+      result.deletedTaskMemories += deleted.deletedTaskMemories;
+      result.deletedSkills += deleted.deletedSkills;
+      result.updatedSkills += deleted.updatedSkills;
+    }
+    return result;
   }
 
   async getTask(taskId: string): Promise<TaskDetail | undefined> {
@@ -769,6 +849,7 @@ export class AgentWorkbench {
     return {
       id,
       title,
+      folderId: "default",
       status: "idle",
       createdAt: now,
       updatedAt: now,
@@ -944,6 +1025,25 @@ export class AgentWorkbench {
     return created;
   }
 
+  private async resolveModelProviderConfig(): Promise<ResolvedModelProviderConfig | null> {
+    const preferences = await this.store.getPreferences();
+    const providers = (await this.store.listModelProviders()).filter((provider) => provider.enabled);
+    const provider =
+      providers.find((item) => item.id === preferences.activeModelProviderId) ??
+      providers.find((item) => item.apiKeyRef) ??
+      null;
+    if (!provider?.apiKeyRef) return null;
+    const encrypted = await this.store.getModelProviderSecret(provider.id);
+    if (!encrypted) return null;
+    return {
+      providerId: provider.id,
+      protocol: provider.protocol,
+      apiKey: this.secretBox.decrypt(encrypted),
+      ...(provider.baseUrl ? { baseURL: provider.baseUrl } : {}),
+      model: provider.defaultModelId
+    };
+  }
+
   private createGlobalGrant(riskCategory: RiskCategory, reason?: string): GlobalPermissionGrant {
     return {
       id: createId("global_permission"),
@@ -957,6 +1057,124 @@ export class AgentWorkbench {
 
 function sanitizeProviderError(input: string): string {
   return input.replace(/\bsk-[A-Za-z0-9_\-*]{8,}/g, "[redacted-api-key]");
+}
+
+async function fetchWithTimeout(input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1], timeoutMs = 8_000): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function generateTaskTitleWithProvider(provider: ResolvedModelProviderConfig, goal: string, language?: string): Promise<string> {
+  const isChinese = prefersChinese(language, goal);
+  const instruction = isChinese
+    ? "为用户任务生成一个简短中文标题。只输出标题，8到18个汉字，不要引号、编号、Markdown 或解释。"
+    : "Generate a short task title. Output only the title, 3 to 6 words, no quotes, numbering, Markdown, or explanation.";
+  if (provider.protocol === "anthropic_messages") {
+    const response = await fetchWithTimeout(`${provider.baseURL || "https://api.anthropic.com"}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": provider.apiKey,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        max_tokens: 48,
+        system: instruction,
+        messages: [{ role: "user", content: goal }]
+      })
+    });
+    if (!response.ok) throw new Error(await response.text());
+    const payload = (await response.json()) as Record<string, unknown>;
+    const parts = Array.isArray(payload["content"]) ? payload["content"] : [];
+    return parts.map((part) => (typeof part === "object" && part ? String((part as Record<string, unknown>)["text"] ?? "") : "")).join(" ");
+  }
+  if (provider.protocol === "gemini") {
+    const base = provider.baseURL || "https://generativelanguage.googleapis.com/v1beta";
+    const response = await fetchWithTimeout(`${base}/models/${encodeURIComponent(provider.model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: instruction }] },
+        contents: [{ role: "user", parts: [{ text: goal }] }]
+      })
+    });
+    if (!response.ok) throw new Error(await response.text());
+    const payload = (await response.json()) as Record<string, unknown>;
+    const candidates = Array.isArray(payload["candidates"]) ? payload["candidates"] : [];
+    const first = candidates[0] as Record<string, unknown> | undefined;
+    const content = first?.["content"] as Record<string, unknown> | undefined;
+    const parts = Array.isArray(content?.["parts"]) ? content.parts : [];
+    return parts.map((part) => (typeof part === "object" && part ? String((part as Record<string, unknown>)["text"] ?? "") : "")).join(" ");
+  }
+  const base = provider.baseURL || "https://api.openai.com/v1";
+  const response = await fetchWithTimeout(`${base.replace(/\/$/, "")}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${provider.apiKey}`
+    },
+    body: JSON.stringify({
+      model: provider.model,
+      max_tokens: 48,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: instruction },
+        { role: "user", content: goal }
+      ]
+    })
+  });
+  if (!response.ok) throw new Error(await response.text());
+  const payload = (await response.json()) as Record<string, unknown>;
+  const choices = Array.isArray(payload["choices"]) ? payload["choices"] : [];
+  const first = choices[0] as Record<string, unknown> | undefined;
+  const message = first?.["message"] as Record<string, unknown> | undefined;
+  return String(message?.["content"] ?? "");
+}
+
+export function createLocalTaskTitle(goal: string, language?: string): string {
+  const compact = goal.replace(/```[\s\S]*?```/g, " ").replace(/\s+/g, " ").trim();
+  if (prefersChinese(language, compact)) {
+    const cleaned = compact.replace(/[，。！？；：、,.!?;:()[\]{}"'“”‘’`~@#$%^&*_+=|\\/<>-]/g, "").trim();
+    return cleaned.slice(0, 18) || "新任务";
+  }
+  const words = compact.replace(/[^\p{L}\p{N}\s-]/gu, " ").trim().split(/\s+/).filter(Boolean).slice(0, 6);
+  return words.length > 0 ? words.map((word) => word[0]?.toUpperCase() + word.slice(1)).join(" ") : "New Task";
+}
+
+function normalizeGeneratedTaskTitle(raw: string, goal: string, language?: string): string {
+  const candidate = raw
+    .replace(/```[\s\S]*?```/g, " ")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-*\d.、\s]+/, "").trim())
+    .find(Boolean) ?? "";
+  const stripped = candidate.replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, "").trim();
+  if (!stripped) return createLocalTaskTitle(goal, language);
+  if (prefersChinese(language, `${stripped} ${goal}`)) {
+    const cleaned = stripped.replace(/[，。！？；：、,.!?;:()[\]{}"'“”‘’`~@#$%^&*_+=|\\/<>-]/g, "").replace(/\s+/g, "");
+    return (cleaned || createLocalTaskTitle(goal, language)).slice(0, 18);
+  }
+  return stripped.split(/\s+/).slice(0, 6).join(" ") || createLocalTaskTitle(goal, language);
+}
+
+function prefersChinese(language: string | undefined, text: string): boolean {
+  return language?.toLowerCase().startsWith("zh") || /[\u4e00-\u9fa5]/.test(text);
+}
+
+function defaultTaskFolder(): TaskFolderRecord {
+  const now = nowIso();
+  return {
+    id: "default",
+    name: "Default",
+    sortOrder: 0,
+    createdAt: now,
+    updatedAt: now
+  };
 }
 
 function inferBuiltInToolMetadata(call: ToolCall): Record<string, unknown> {

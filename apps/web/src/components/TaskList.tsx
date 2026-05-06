@@ -1,5 +1,5 @@
-import type { TaskDeleteRequest, TaskDetail } from "@scc/shared";
-import { BookOpen, Clock3, FileText, HelpCircle, Plus, Search, Settings, Terminal, Trash2 } from "lucide-react";
+import type { TaskDeleteRequest, TaskDetail, TaskFolderClearRequest, TaskFolderRecord } from "@scc/shared";
+import { BookOpen, Clock3, Edit3, FileText, Folder, FolderPlus, HelpCircle, Plus, Search, Settings, Terminal, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { getUiCopy } from "../i18n.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -10,15 +10,21 @@ export function TaskList({
   language,
   open,
   tasks,
+  folders,
   selectedId,
+  activeFolderId,
   activeView,
   engineStatus,
   onClose,
   onDelete,
+  onClearFolder,
+  onCreateFolder,
   onOpenDocs,
   onOpenHistory,
   onOpenLibrary,
   onSelect,
+  onFolderSelect,
+  onUpdateFolder,
   onNewTask,
   onOpenSettings,
   onOpenSupport
@@ -26,31 +32,60 @@ export function TaskList({
   language?: string | null;
   open: boolean;
   tasks: TaskDetail[];
+  folders: TaskFolderRecord[];
   selectedId: string | null;
+  activeFolderId: string;
   activeView: "tasks" | "history" | "library" | "docs" | "settings";
   engineStatus: EngineStatus;
   onClose: () => void;
   onDelete: (taskId: string, options: TaskDeleteRequest) => Promise<void>;
+  onClearFolder: (folderId: string, options: TaskFolderClearRequest) => Promise<void>;
+  onCreateFolder: (name: string) => Promise<void>;
   onOpenDocs: () => void;
   onOpenHistory?: () => void;
   onOpenLibrary: () => void;
   onSelect: (taskId: string) => void;
+  onFolderSelect: (folderId: string) => void;
+  onUpdateFolder: (folderId: string, name: string) => Promise<void>;
   onNewTask: () => void;
   onOpenSettings: () => void;
   onOpenSupport: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [clearingFolderId, setClearingFolderId] = useState<string | null>(null);
+  const [folderEditor, setFolderEditor] = useState<{ id: string | null; name: string } | null>(null);
   const [deleteLearningData, setDeleteLearningData] = useState(false);
   const [deleteDerivedSkills, setDeleteDerivedSkills] = useState(false);
   const text = getUiCopy(language).shell;
   const confirmingTask = confirmingId ? tasks.find((task) => task.id === confirmingId) ?? null : null;
+  const folderItems = useMemo(
+    () => [
+      { id: "all", name: text.allTasks, system: true },
+      { id: "default", name: text.defaultFolder, system: true },
+      ...folders.filter((folder) => folder.id !== "default").map((folder) => ({ id: folder.id, name: folder.name, system: false }))
+    ],
+    [folders, text.allTasks, text.defaultFolder]
+  );
+  const activeFolder = folderItems.find((folder) => folder.id === activeFolderId) ?? folderItems[0]!;
+  const clearingFolder = clearingFolderId ? folderItems.find((folder) => folder.id === clearingFolderId) ?? null : null;
+  const folderCounts = useMemo(() => {
+    const counts = new Map<string, number>([["all", tasks.length]]);
+    for (const task of tasks) {
+      const folderId = task.folderId || "default";
+      counts.set(folderId, (counts.get(folderId) ?? 0) + 1);
+    }
+    return counts;
+  }, [tasks]);
   const visibleTasks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    if (!normalized) return tasks;
-    return tasks.filter((task) => `${task.title} ${task.status}`.toLowerCase().includes(normalized));
-  }, [query, tasks]);
+    return tasks.filter((task) => {
+      const folderId = task.folderId || "default";
+      const folderMatch = activeFolderId === "all" || folderId === activeFolderId;
+      const queryMatch = !normalized || `${task.title} ${task.status}`.toLowerCase().includes(normalized);
+      return folderMatch && queryMatch;
+    });
+  }, [activeFolderId, query, tasks]);
 
   return (
     <>
@@ -77,7 +112,6 @@ export function TaskList({
           <button
             className="sidebarNavButton primary"
             onClick={() => {
-              setHistoryOpen(false);
               onNewTask();
             }}
             type="button"
@@ -88,7 +122,6 @@ export function TaskList({
           <button
             className={activeView === "history" ? "sidebarNavButton selected" : "sidebarNavButton"}
             onClick={() => {
-              setHistoryOpen(false);
               onOpenHistory?.();
             }}
             type="button"
@@ -105,7 +138,44 @@ export function TaskList({
             {text.settings}
           </button>
         </div>
-        <div className={historyOpen ? "historyPanel open" : "historyPanel"} aria-hidden={!historyOpen}>
+        <section className="folderPanel" aria-label={text.folders}>
+          <div className="folderPanelHeader">
+            <span>{text.folders}</span>
+            <button aria-label={text.addFolder} className="folderIconButton" type="button" onClick={() => setFolderEditor({ id: null, name: "" })}>
+              <FolderPlus size={14} />
+            </button>
+          </div>
+          <nav className="folderList" aria-label={text.folders}>
+            {folderItems.map((folder) => (
+              <div className={folder.id === activeFolderId ? "folderItem selected" : "folderItem"} key={folder.id}>
+                <button className="folderItemMain" type="button" onClick={() => onFolderSelect(folder.id)}>
+                  <Folder size={14} />
+                  <span>{folder.name}</span>
+                  <small>{text.folderTasks(folderCounts.get(folder.id) ?? 0)}</small>
+                </button>
+                {!folder.system ? (
+                  <button aria-label={`${text.editFolder} ${folder.name}`} className="folderIconButton" type="button" onClick={() => setFolderEditor({ id: folder.id, name: folder.name })}>
+                    <Edit3 size={13} />
+                  </button>
+                ) : null}
+                <button
+                  aria-label={`${text.clearFolder} ${folder.name}`}
+                  className="folderIconButton dangerIcon"
+                  disabled={(folderCounts.get(folder.id) ?? 0) === 0}
+                  type="button"
+                  onClick={() => {
+                    setClearingFolderId(folder.id);
+                    setDeleteLearningData(false);
+                    setDeleteDerivedSkills(false);
+                  }}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+          </nav>
+        </section>
+        <section className="historyPanel open" aria-label={activeFolder.name}>
           <label className="taskSearch">
             <Search aria-hidden="true" size={14} />
             <input
@@ -122,7 +192,6 @@ export function TaskList({
                 <button
                   className="taskItemMain"
                   onClick={() => {
-                    setHistoryOpen(true);
                     onSelect(task.id);
                   }}
                   type="button"
@@ -145,7 +214,7 @@ export function TaskList({
               </div>
             ))}
           </nav>
-        </div>
+        </section>
         <div className="sidebarUtility">
           <button className="sidebarUtilityButton" onClick={onOpenSupport} type="button">
             <HelpCircle size={15} />
@@ -170,6 +239,58 @@ export function TaskList({
       >
         <div className="deleteOptions">
           <p>{confirmingTask?.status === "running" || confirmingTask?.status === "waiting_approval" ? text.deleteRunning : text.deleteThread}</p>
+          <label>
+            <input
+              checked={deleteLearningData}
+              onChange={(event) => {
+                setDeleteLearningData(event.target.checked);
+                if (!event.target.checked) setDeleteDerivedSkills(false);
+              }}
+              type="checkbox"
+            />
+            {text.deleteLearning}
+          </label>
+          <label className={!deleteLearningData ? "disabledOption" : ""}>
+            <input
+              checked={deleteDerivedSkills}
+              disabled={!deleteLearningData}
+              onChange={(event) => setDeleteDerivedSkills(event.target.checked)}
+              type="checkbox"
+            />
+            {text.deleteDerivedSkills}
+          </label>
+        </div>
+      </ConfirmDialog>
+      <ConfirmDialog
+        cancelLabel={text.cancel}
+        confirmLabel={folderEditor?.id ? text.editFolder : text.addFolder}
+        open={Boolean(folderEditor)}
+        title={folderEditor?.id ? text.editFolder : text.addFolder}
+        onCancel={() => setFolderEditor(null)}
+        onConfirm={() => {
+          if (!folderEditor?.name.trim()) return;
+          const action = folderEditor.id ? onUpdateFolder(folderEditor.id, folderEditor.name.trim()) : onCreateFolder(folderEditor.name.trim());
+          void action.then(() => setFolderEditor(null));
+        }}
+      >
+        <label className="folderEditField">
+          <span>{text.folderName}</span>
+          <input autoFocus value={folderEditor?.name ?? ""} onChange={(event) => setFolderEditor((current) => current ? { ...current, name: event.target.value } : current)} />
+        </label>
+      </ConfirmDialog>
+      <ConfirmDialog
+        cancelLabel={text.cancel}
+        confirmLabel={text.clearFolder}
+        open={Boolean(clearingFolder)}
+        title={text.clearFolderTitle}
+        onCancel={() => setClearingFolderId(null)}
+        onConfirm={() => {
+          if (!clearingFolder) return;
+          void onClearFolder(clearingFolder.id, { deleteLearningData, deleteDerivedSkills }).then(() => setClearingFolderId(null));
+        }}
+      >
+        <div className="deleteOptions">
+          <p>{clearingFolder ? text.clearFolderBody(clearingFolder.name) : ""}</p>
           <label>
             <input
               checked={deleteLearningData}

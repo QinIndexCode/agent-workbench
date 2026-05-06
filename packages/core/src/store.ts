@@ -11,6 +11,7 @@ import type {
   SkillConflict,
   SkillRecord,
   TaskDetail,
+  TaskFolderRecord,
   TaskMemory,
   ToolApproval,
   UserPreferences
@@ -26,6 +27,10 @@ export interface WorkbenchStore {
   getTask(taskId: string): Promise<TaskDetail | undefined>;
   listTasks(): Promise<TaskDetail[]>;
   deleteTask(taskId: string): Promise<void>;
+  saveTaskFolder(record: TaskFolderRecord): Promise<void>;
+  getTaskFolder(folderId: string): Promise<TaskFolderRecord | undefined>;
+  listTaskFolders(): Promise<TaskFolderRecord[]>;
+  deleteTaskFolder(folderId: string): Promise<void>;
   saveExperience(record: ExperienceRecord): Promise<void>;
   listExperiences(): Promise<ExperienceRecord[]>;
   deleteExperience(experienceId: string): Promise<void>;
@@ -77,6 +82,7 @@ export interface EncryptedSecretValue {
 
 export class InMemoryWorkbenchStore implements WorkbenchStore {
   private readonly tasks = new Map<string, TaskDetail>();
+  private readonly taskFolders = new Map<string, TaskFolderRecord>();
   private readonly experiences = new Map<string, ExperienceRecord>();
   private readonly taskMemories = new Map<string, TaskMemory>();
   private readonly patterns = new Map<string, PatternRecord>();
@@ -92,22 +98,39 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
   private preferences: UserPreferences | null = null;
 
   async saveTask(task: TaskDetail): Promise<void> {
-    this.tasks.set(task.id, clone(task));
+    this.tasks.set(task.id, normalizeTaskDetail(clone(task)));
   }
 
   async getTask(taskId: string): Promise<TaskDetail | undefined> {
     const task = this.tasks.get(taskId);
-    return task ? clone(task) : undefined;
+    return task ? normalizeTaskDetail(clone(task)) : undefined;
   }
 
   async listTasks(): Promise<TaskDetail[]> {
     return [...this.tasks.values()]
-      .map((task) => clone(task))
+      .map((task) => normalizeTaskDetail(clone(task)))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   async deleteTask(taskId: string): Promise<void> {
     this.tasks.delete(taskId);
+  }
+
+  async saveTaskFolder(record: TaskFolderRecord): Promise<void> {
+    this.taskFolders.set(record.id, clone(record));
+  }
+
+  async getTaskFolder(folderId: string): Promise<TaskFolderRecord | undefined> {
+    const folder = this.taskFolders.get(folderId);
+    return folder ? clone(folder) : undefined;
+  }
+
+  async listTaskFolders(): Promise<TaskFolderRecord[]> {
+    return [...this.taskFolders.values()].map((record) => clone(record)).sort(compareTaskFolders);
+  }
+
+  async deleteTaskFolder(folderId: string): Promise<void> {
+    this.taskFolders.delete(folderId);
   }
 
   async saveExperience(record: ExperienceRecord): Promise<void> {
@@ -281,6 +304,17 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
 
 export function pendingApprovals(task: TaskDetail): ToolApproval[] {
   return task.approvals.filter((approval) => approval.status === "pending");
+}
+
+export function normalizeTaskDetail(task: TaskDetail): TaskDetail {
+  return {
+    ...task,
+    folderId: task.folderId || "default"
+  };
+}
+
+function compareTaskFolders(a: TaskFolderRecord, b: TaskFolderRecord): number {
+  return a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
 }
 
 export function defaultPreferences(): UserPreferences {
