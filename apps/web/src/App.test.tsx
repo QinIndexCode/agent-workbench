@@ -590,7 +590,7 @@ describe("Workbench components", () => {
     expect(onConnect).toHaveBeenCalledWith("mock");
   });
 
-  it("creates a task, resolves an approval, and starts a new task from a completed thread", async () => {
+  it("creates a task, resolves an approval, and continues from a completed thread", async () => {
     const approval: ToolApproval = {
       id: "approval_1",
       taskId: "task_1",
@@ -693,8 +693,22 @@ describe("Workbench components", () => {
           return jsonResponse(completed);
         }
         if (url.endsWith("/messages")) {
-          sendMessage(url);
-          return jsonResponse(completed);
+          const body = JSON.parse(String(init?.body)) as { content: string };
+          sendMessage(url, body.content);
+          return jsonResponse({
+            ...completed,
+            events: [
+              ...completed.events,
+              {
+                id: "event_continue",
+                taskId: "task_1",
+                type: "user_message",
+                createdAt: new Date().toISOString(),
+                summary: body.content,
+                payload: {}
+              }
+            ]
+          });
         }
         return jsonResponse([]);
       })
@@ -711,9 +725,8 @@ describe("Workbench components", () => {
 
     fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "second goal" } });
     fireEvent.click(screen.getByLabelText("Send"));
-    await waitFor(() => expect(createTask).toHaveBeenCalledWith("second goal"));
-    expect(createTask).toHaveBeenCalledTimes(2);
-    expect(sendMessage).not.toHaveBeenCalled();
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith("/api/tasks/task_1/messages", "second goal"));
+    expect(createTask).toHaveBeenCalledTimes(1);
   });
 
   it("moves governance surfaces into settings", async () => {

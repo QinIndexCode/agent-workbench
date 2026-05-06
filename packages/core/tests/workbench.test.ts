@@ -194,6 +194,20 @@ describe("AgentWorkbench", () => {
     expect(final?.payload["streamId"]).toBe(deltas[0]?.payload["streamId"]);
   });
 
+  it("continues a completed task instead of creating a separate context", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+    const completed = await workbench.createTask("first request");
+
+    const continued = await workbench.appendMessage(completed.id, "follow up in the same task");
+
+    expect(continued.id).toBe(completed.id);
+    expect(continued.status).toBe("completed");
+    expect(continued.events.filter((event) => event.type === "user_message").map((event) => event.summary)).toEqual([
+      "first request",
+      "follow up in the same task"
+    ]);
+  });
+
   it("keeps running user input pending until the next safe point", async () => {
     const workbench = new AgentWorkbench({
       store: new InMemoryWorkbenchStore(),

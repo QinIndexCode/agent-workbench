@@ -6,8 +6,6 @@ import { Composer, type ComposerMode, type ComposerPermissionMode, type Permissi
 import type { EngineStatus } from "./TaskList.js";
 import { Timeline } from "./Timeline.js";
 
-const continueStatuses = new Set(["idle", "paused"]);
-
 export function TaskThread({
   task,
   busy,
@@ -104,8 +102,7 @@ export function TaskThread({
 function getComposerMode(task: TaskDetail | null): ComposerMode {
   if (!task) return "new_task";
   if (task.status === "running" || task.status === "waiting_approval") return "guidance";
-  if (continueStatuses.has(task.status)) return "continue";
-  return "new_task";
+  return "continue";
 }
 
 function getThreadMeta(task: TaskDetail | null, mode: ComposerMode, language?: string | null): string {
@@ -113,8 +110,7 @@ function getThreadMeta(task: TaskDetail | null, mode: ComposerMode, language?: s
   if (!task) return text.ready;
   const status = task.status.replace("_", " ");
   if (mode === "guidance") return text.runningGuidance;
-  if (mode === "continue") return text.continueTask(status);
-  return text.startsNewTask(status);
+  return text.continueTask(status);
 }
 
 function NewTaskHero({

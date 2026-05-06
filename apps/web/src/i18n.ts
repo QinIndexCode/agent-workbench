@@ -73,8 +73,7 @@ const copy = {
         }
       ],
       runningGuidance: "运行中 · 输入会作为待处理引导",
-      continueTask: (status: string) => `${status} · 输入会继续当前任务`,
-      startsNewTask: (status: string) => `${status} · 输入会创建新任务`
+      continueTask: (status: string) => `${status} · 输入会继续当前任务`
     },
     composer: {
       modes: {
@@ -265,8 +264,7 @@ const copy = {
         }
       ],
       runningGuidance: "Running · input becomes pending guidance",
-      continueTask: (status: string) => `${status} · input continues this task`,
-      startsNewTask: (status: string) => `${status} · input starts a new task`
+      continueTask: (status: string) => `${status} · input continues this task`
     },
     composer: {
       modes: {
