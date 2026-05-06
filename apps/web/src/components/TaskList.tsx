@@ -1,8 +1,9 @@
 import type { TaskDeleteRequest, TaskDetail, TaskFolderClearRequest, TaskFolderRecord } from "@scc/shared";
-import { BookOpen, Clock3, Edit3, FileText, Folder, FolderPlus, HelpCircle, Plus, Search, Settings, Terminal, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { BookOpen, ChevronRight, Clock3, Edit3, FileText, Folder, FolderPlus, HelpCircle, Plus, Search, Settings, Terminal, Trash2 } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
 import { getUiCopy } from "../i18n.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { FolderPickerDialog } from "./FolderPickerDialog.js";
 
 export type EngineStatus = "running" | "streaming" | "attention";
 
@@ -52,40 +53,61 @@ export function TaskList({
   onOpenSupport: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [expandedFolderId, setExpandedFolderId] = useState<string>(activeFolderId);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [clearingFolderId, setClearingFolderId] = useState<string | null>(null);
   const [folderEditor, setFolderEditor] = useState<{ id: string | null; name: string } | null>(null);
   const [deleteLearningData, setDeleteLearningData] = useState(false);
   const [deleteDerivedSkills, setDeleteDerivedSkills] = useState(false);
+  const [utilityOpen, setUtilityOpen] = useState(false);
+  const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number; visible: boolean }>({ text: "", x: 0, y: 0, visible: false });
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const toggleButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const mainButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const text = getUiCopy(language).shell;
   const confirmingTask = confirmingId ? tasks.find((task) => task.id === confirmingId) ?? null : null;
-  const folderItems = useMemo(
-    () => [
-      { id: "all", name: text.allTasks, system: true },
-      { id: "default", name: text.defaultFolder, system: true },
-      ...folders.filter((folder) => folder.id !== "default").map((folder) => ({ id: folder.id, name: folder.name, system: false }))
-    ],
-    [folders, text.allTasks, text.defaultFolder]
-  );
+  const folderItems = useMemo(() => {
+    const hasDefault = folders.some((folder) => folder.id === "default");
+    const normalized = hasDefault
+      ? folders
+      : [
+          {
+            id: "default",
+            name: text.defaultFolder,
+            sortOrder: 0,
+            createdAt: "",
+            updatedAt: ""
+          },
+          ...folders
+        ];
+    return [
+      { id: "all", name: text.allTasks, system: true, browseOnly: true },
+      ...normalized.map((folder) => ({ id: folder.id, name: folder.name, system: folder.id === "default", browseOnly: false }))
+    ];
+  }, [folders, text.allTasks, text.defaultFolder]);
   const activeFolder = folderItems.find((folder) => folder.id === activeFolderId) ?? folderItems[0]!;
   const clearingFolder = clearingFolderId ? folderItems.find((folder) => folder.id === clearingFolderId) ?? null : null;
   const folderCounts = useMemo(() => {
-    const counts = new Map<string, number>([["all", tasks.length]]);
+    const counts = new Map<string, number>();
     for (const task of tasks) {
       const folderId = task.folderId || "default";
       counts.set(folderId, (counts.get(folderId) ?? 0) + 1);
     }
+    counts.set("all", tasks.length);
     return counts;
   }, [tasks]);
-  const visibleTasks = useMemo(() => {
+
+  const filteredTasks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return tasks.filter((task) => {
-      const folderId = task.folderId || "default";
-      const folderMatch = activeFolderId === "all" || folderId === activeFolderId;
-      const queryMatch = !normalized || `${task.title} ${task.status}`.toLowerCase().includes(normalized);
-      return folderMatch && queryMatch;
-    });
-  }, [activeFolderId, query, tasks]);
+    if (!normalized) return tasks;
+    return tasks.filter((task) => `${task.title} ${task.status}`.toLowerCase().includes(normalized));
+  }, [query, tasks]);
+
+  const getFolderTasks = (folderId: string) => {
+    if (folderId === "all") return filteredTasks;
+    return filteredTasks.filter((task) => (task.folderId || "default") === folderId);
+  };
 
   return (
     <>
@@ -133,99 +155,226 @@ export function TaskList({
             <BookOpen size={16} />
             {text.library}
           </button>
-          <button className={activeView === "settings" ? "sidebarNavButton selected" : "sidebarNavButton"} onClick={onOpenSettings} type="button">
-            <Settings size={16} />
-            {text.settings}
-          </button>
         </div>
         <section className="folderPanel" aria-label={text.folders}>
           <div className="folderPanelHeader">
-            <span>{text.folders}</span>
-            <button aria-label={text.addFolder} className="folderIconButton" type="button" onClick={() => setFolderEditor({ id: null, name: "" })}>
-              <FolderPlus size={14} />
-            </button>
+            <span className={searchOpen ? "folderPanelTitle hidden" : "folderPanelTitle"}>{text.folders}</span>
+            <div className="folderPanelActions">
+              <div className={searchOpen ? "folderSearchWrap open" : "folderSearchWrap"}>
+                <Search aria-hidden="true" size={13} />
+                <input
+                  aria-label={text.searchTasks}
+                  autoFocus={searchOpen}
+                  placeholder={text.searchTasks}
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+                <button
+                  aria-label={text.close}
+                  className="folderSearchClose"
+                  onClick={() => {
+                    setSearchOpen(false);
+                    setQuery("");
+                  }}
+                  type="button"
+                >
+                  <span aria-hidden="true">&times;</span>
+                </button>
+              </div>
+              <button
+                aria-label={language === "zh-CN" ? "打开任务搜索" : "Open task search"}
+                className={searchOpen ? "folderIconButton searchHidden" : "folderIconButton"}
+                onClick={() => setSearchOpen(true)}
+                type="button"
+              >
+                <Search size={14} />
+              </button>
+              <button aria-label={text.addFolder} className="folderIconButton" type="button" onClick={() => setFolderEditor({ id: null, name: "" })}>
+                <FolderPlus size={14} />
+              </button>
+            </div>
           </div>
-          <nav className="folderList" aria-label={text.folders}>
-            {folderItems.map((folder) => (
-              <div className={folder.id === activeFolderId ? "folderItem selected" : "folderItem"} key={folder.id}>
-                <button className="folderItemMain" type="button" onClick={() => onFolderSelect(folder.id)}>
-                  <Folder size={14} />
-                  <span>{folder.name}</span>
-                  <small>{text.folderTasks(folderCounts.get(folder.id) ?? 0)}</small>
-                </button>
-                {!folder.system ? (
-                  <button aria-label={`${text.editFolder} ${folder.name}`} className="folderIconButton" type="button" onClick={() => setFolderEditor({ id: folder.id, name: folder.name })}>
-                    <Edit3 size={13} />
-                  </button>
-                ) : null}
-                <button
-                  aria-label={`${text.clearFolder} ${folder.name}`}
-                  className="folderIconButton dangerIcon"
-                  disabled={(folderCounts.get(folder.id) ?? 0) === 0}
-                  type="button"
-                  onClick={() => {
-                    setClearingFolderId(folder.id);
-                    setDeleteLearningData(false);
-                    setDeleteDerivedSkills(false);
-                  }}
-                >
-                  <Trash2 size={13} />
-                </button>
-              </div>
-            ))}
-          </nav>
-        </section>
-        <section className="historyPanel open" aria-label={activeFolder.name}>
-          <label className="taskSearch">
-            <Search aria-hidden="true" size={14} />
-            <input
-              aria-label={text.searchTasks}
-              placeholder={text.searchTasks}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-          <nav className="taskList" aria-label="Task list">
-            {visibleTasks.length === 0 ? <p className="sidebarEmpty">{tasks.length === 0 ? text.noTasks : text.noMatchingTasks}</p> : null}
-            {visibleTasks.map((task) => (
-              <div className={activeView === "tasks" && task.id === selectedId ? "taskItem selected" : "taskItem"} key={task.id}>
-                <button
-                  className="taskItemMain"
-                  onClick={() => {
-                    onSelect(task.id);
-                  }}
-                  type="button"
-                >
-                  <span>{task.title}</span>
-                  <small>{task.status.replace("_", " ")}</small>
-                </button>
-                <button
-                  aria-label={`${text.deleteTask} ${task.title}`}
-                  className="taskDeleteButton"
-                  onClick={() => {
-                    setConfirmingId(task.id);
-                    setDeleteLearningData(false);
-                    setDeleteDerivedSkills(false);
-                  }}
-                  type="button"
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
+          <nav className="folderTree" aria-label={text.folders}>
+            {folderItems.map((folder) => {
+              const folderTasks = getFolderTasks(folder.id);
+              const isActive = folder.id === activeFolderId;
+              const isExpanded = expandedFolderId === folder.id;
+              return (
+                <div className={isExpanded ? "folderTreeItem expanded" : "folderTreeItem"} key={folder.id}>
+                  <div className="folderTreeRow">
+                    <button
+                      ref={(el) => {
+                        if (el) toggleButtonRefs.current.set(folder.id, el);
+                      }}
+                      className="folderTreeToggle"
+                      type="button"
+                      onClick={() => {
+                        if (isExpanded) {
+                          setExpandedFolderId("");
+                        } else {
+                          setExpandedFolderId(folder.id);
+                          onFolderSelect(folder.id);
+                        }
+                      }}
+                      aria-expanded={isExpanded}
+                    >
+                      <ChevronRight
+                        size={13}
+                        className={isExpanded ? "folderTreeChevron open" : "folderTreeChevron"}
+                      />
+                    </button>
+                    <button
+                      ref={(el) => {
+                        if (el) mainButtonRefs.current.set(folder.id, el);
+                      }}
+                      className="folderTreeMain"
+                      type="button"
+                      onClick={() => {
+                        if (isExpanded) {
+                          setExpandedFolderId("");
+                        } else {
+                          setExpandedFolderId(folder.id);
+                          onFolderSelect(folder.id);
+                        }
+                      }}
+                      onMouseEnter={(event) => {
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        setTooltip({
+                          text: folder.name,
+                          x: rect.left,
+                          y: rect.top - 8,
+                          visible: true
+                        });
+                      }}
+                      onMouseLeave={() => setTooltip((prev) => ({ ...prev, visible: false }))}
+                    >
+                      <Folder size={14} />
+                      <span className="folderName">{folder.name.split(/[\\/]/).pop() || folder.name}</span>
+                      <small className="folderTaskCount">{text.folderTasks(folderCounts.get(folder.id) ?? 0)}</small>
+                    </button>
+                    <button
+                      aria-label={`${text.newTask} ${folder.name}`}
+                      className="folderAddTaskButton"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onFolderSelect(folder.id);
+                        onNewTask();
+                      }}
+                    >
+                      <Plus size={13} />
+                    </button>
+                    {!folder.browseOnly && !folder.system ? (
+                      <button
+                        aria-label={`${text.editFolder} ${folder.name}`}
+                        className="folderEditButton"
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setFolderEditor({ id: folder.id, name: folder.name });
+                        }}
+                      >
+                        <Edit3 size={13} />
+                      </button>
+                    ) : null}
+                    <button
+                      aria-label={`${text.clearFolder} ${folder.name}`}
+                      className="folderDeleteButton"
+                      disabled={(folderCounts.get(folder.id) ?? 0) === 0}
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setClearingFolderId(folder.id);
+                        setDeleteLearningData(false);
+                        setDeleteDerivedSkills(false);
+                      }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                  {isExpanded ? (
+                    <div className="folderTaskList">
+                      {folderTasks.length === 0 ? (
+                        <p className="folderEmpty">{query ? text.noMatchingTasks : text.noTasks}</p>
+                      ) : (
+                        folderTasks.map((task) => (
+                          <div className={activeView === "tasks" && task.id === selectedId ? "folderTaskItem taskItem selected" : "folderTaskItem taskItem"} key={task.id}>
+                            <button
+                              className="folderTaskItemMain"
+                              onClick={() => {
+                                onSelect(task.id);
+                              }}
+                              type="button"
+                            >
+                              <span>{task.title}</span>
+                              <small>{task.status.replace("_", " ")}</small>
+                            </button>
+                            <button
+                              aria-label={`${text.deleteTask} ${task.title}`}
+                              className="taskDeleteButton"
+                              onClick={() => {
+                                setConfirmingId(task.id);
+                                setDeleteLearningData(false);
+                                setDeleteDerivedSkills(false);
+                              }}
+                              type="button"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
           </nav>
         </section>
         <div className="sidebarUtility">
-          <button className="sidebarUtilityButton" onClick={onOpenSupport} type="button">
-            <HelpCircle size={15} />
-            {text.support}
+          <button
+            aria-expanded={utilityOpen}
+            className={utilityOpen ? "sidebarUtilityToggle open" : "sidebarUtilityToggle"}
+            onClick={() => setUtilityOpen((v) => !v)}
+            type="button"
+          >
+            <Settings size={16} />
           </button>
-          <button className="sidebarUtilityButton" onClick={onOpenDocs} type="button">
-            <FileText size={15} />
-            {text.docs}
-          </button>
+          <div className={utilityOpen ? "sidebarUtilityMenu open" : "sidebarUtilityMenu"}>
+            <button
+              className={activeView === "settings" ? "sidebarUtilityItem selected" : "sidebarUtilityItem"}
+              onClick={() => {
+                onOpenSettings();
+                setUtilityOpen(false);
+              }}
+              type="button"
+            >
+              <Settings size={14} />
+              {text.settings}
+            </button>
+            <button className="sidebarUtilityItem" onClick={onOpenSupport} type="button">
+              <HelpCircle size={14} />
+              {text.support}
+            </button>
+            <button className="sidebarUtilityItem" onClick={onOpenDocs} type="button">
+              <FileText size={14} />
+              {text.docs}
+            </button>
+          </div>
         </div>
       </aside>
+      <div
+        ref={tooltipRef}
+        className="folderTooltip"
+        style={{
+          display: tooltip.visible ? "block" : "none",
+          left: tooltip.x,
+          top: tooltip.y,
+          transform: "translateY(-100%)"
+        }}
+      >
+        {tooltip.text}
+      </div>
       <ConfirmDialog
         cancelLabel={text.cancel}
         confirmLabel={text.delete}
@@ -261,23 +410,21 @@ export function TaskList({
           </label>
         </div>
       </ConfirmDialog>
-      <ConfirmDialog
+      <FolderPickerDialog
         cancelLabel={text.cancel}
         confirmLabel={folderEditor?.id ? text.editFolder : text.addFolder}
+        fieldLabel={text.folderName}
         open={Boolean(folderEditor)}
+        placeholder={text.folderName}
         title={folderEditor?.id ? text.editFolder : text.addFolder}
         onCancel={() => setFolderEditor(null)}
-        onConfirm={() => {
-          if (!folderEditor?.name.trim()) return;
-          const action = folderEditor.id ? onUpdateFolder(folderEditor.id, folderEditor.name.trim()) : onCreateFolder(folderEditor.name.trim());
+        onConfirm={(path) => {
+          const name = path.trim();
+          if (!name) return;
+          const action = folderEditor?.id ? onUpdateFolder(folderEditor.id, name) : onCreateFolder(name);
           void action.then(() => setFolderEditor(null));
         }}
-      >
-        <label className="folderEditField">
-          <span>{text.folderName}</span>
-          <input autoFocus value={folderEditor?.name ?? ""} onChange={(event) => setFolderEditor((current) => current ? { ...current, name: event.target.value } : current)} />
-        </label>
-      </ConfirmDialog>
+      />
       <ConfirmDialog
         cancelLabel={text.cancel}
         confirmLabel={text.clearFolder}

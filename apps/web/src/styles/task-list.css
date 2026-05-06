@@ -113,32 +113,10 @@
   border-color: color-mix(in srgb, var(--accent-border) 80%, transparent);
 }
 
-.taskSearch {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-  gap: 7px;
-  align-items: center;
-  margin-top: 14px;
-  padding: 0 9px;
-  min-height: 34px;
-  color: var(--muted);
-  background: #090d0f;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-}
-
-.taskSearch input {
-  width: 100%;
-  min-width: 0;
-  color: var(--text);
-  background: transparent;
-  border: 0;
-  outline: 0;
-}
-
 .folderPanel {
-  display: grid;
-  flex: 0 0 auto;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
   gap: 10px;
   margin-top: 18px;
   min-height: 0;
@@ -151,47 +129,196 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  min-height: 28px;
   color: var(--muted);
   font-size: 11px;
   font-weight: 760;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+  flex-shrink: 0;
 }
 
-.folderList {
-  display: grid;
-  gap: 5px;
+.folderPanelTitle {
+  overflow: hidden;
+  opacity: 1;
+  transition: opacity 160ms ease, width 160ms ease;
+  white-space: nowrap;
 }
 
-.folderItem {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 27px 27px;
-  gap: 3px;
+.folderPanelTitle.hidden {
+  opacity: 0;
+  width: 0;
+}
+
+.folderPanelActions {
+  display: flex;
+  gap: 4px;
   align-items: center;
+  margin-left: auto;
+  position: relative;
+}
+
+.folderSearchWrap {
+  position: absolute;
+  right: 31px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  width: 0;
+  min-height: 28px;
+  padding: 0;
+  overflow: hidden;
+  color: var(--muted);
+  background: #090d0f;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  opacity: 0.52;
+  pointer-events: auto;
+  transition: width 200ms ease, opacity 160ms ease, padding 160ms ease, border-color 160ms ease;
+}
+
+.folderSearchWrap.open {
+  width: 220px;
+  padding: 0 7px;
+  border-color: var(--border);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.folderSearchWrap input {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  outline: 0;
+}
+
+.folderSearchWrap input::placeholder {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.folderSearchClose {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.folderSearchClose:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.folderIconButton.searchHidden {
+  opacity: 0.52;
+  pointer-events: auto;
+}
+
+.folderTree {
+  display: grid;
+  gap: 2px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.folderTreeItem {
+  display: flex;
+  flex-direction: column;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
 }
 
-.folderItem.selected {
-  background: color-mix(in srgb, var(--surface-selected) 72%, transparent);
-  border-color: color-mix(in srgb, var(--accent-border) 46%, transparent);
+.folderTreeItem.expanded {
+  background: color-mix(in srgb, var(--surface-selected) 40%, transparent);
+  border-color: color-mix(in srgb, var(--accent-border) 30%, transparent);
 }
 
-.folderItemMain {
+.folderTreeRow {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 27px;
+  gap: 2px;
+  align-items: center;
+  min-height: 36px;
+  position: relative;
+}
+
+.folderTreeToggle {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  outline: none;
+}
+
+.folderTreeToggle:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.folderTreeToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.folderTreeToggle:active {
+  outline: none;
+}
+
+.folderTreeChevron {
+  transition: transform 150ms ease;
+}
+
+.folderTreeChevron.open {
+  transform: rotate(90deg);
+}
+
+.folderTreeMain {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   min-height: 34px;
-  padding: 0 8px;
+  padding: 0 4px;
   color: var(--muted-strong);
   text-align: left;
   background: transparent;
   border: 0;
   cursor: pointer;
+  outline: none;
 }
 
-.folderItemMain span {
+.folderTreeMain:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.folderTreeMain:active {
+  outline: none;
+}
+
+.folderTreeMain span {
   overflow: hidden;
   color: var(--text);
   font-size: 12.5px;
@@ -200,7 +327,25 @@
   white-space: nowrap;
 }
 
-.folderItemMain small {
+.folderTooltip {
+  position: fixed;
+  z-index: 9999;
+  display: none;
+  max-width: 320px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.3);
+  pointer-events: none;
+}
+
+.folderTreeMain small {
   color: var(--muted);
   font-size: 10.5px;
   white-space: nowrap;
@@ -236,55 +381,127 @@
   border-color: var(--danger-border);
 }
 
-.folderEditField {
-  display: grid;
-  gap: 8px;
+.folderTaskCount {
+  transition: opacity 120ms ease;
 }
 
-.folderEditField span {
-  color: var(--muted-strong);
+.folderTreeRow:hover .folderTaskCount {
+  opacity: 0;
+}
+
+.folderAddTaskButton {
+  position: absolute;
+  right: 58px;
+  top: 4px;
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  color: var(--muted);
   font-size: 13px;
-}
-
-.folderEditField input {
-  min-height: 38px;
-  padding: 0 10px;
-  color: var(--text);
-  background: #090d0f;
-  border: 1px solid var(--border);
+  line-height: 1;
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  outline: 0;
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  z-index: 3;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
 }
 
-.historyPanel {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-height: 0;
-  margin-top: 14px;
-  padding-top: 14px;
-  position: relative;
-  z-index: 0;
-  border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
-}
-
-.taskList {
+.folderEditButton {
+  position: absolute;
+  right: 30px;
+  top: 4px;
   display: grid;
-  align-content: start;
-  gap: 6px;
-  margin-top: 14px;
-  min-height: 0;
-  overflow: auto;
-  padding-right: 2px;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  z-index: 3;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
 }
 
-.taskItem {
+.folderTreeRow:hover .folderAddTaskButton,
+.folderTreeRow:hover .folderEditButton {
+  opacity: 1;
+}
+
+.folderAddTaskButton:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.folderEditButton:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.folderDeleteButton {
+  position: absolute;
+  right: 2px;
+  top: 4px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px;
-  gap: 6px;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  opacity: 0.52;
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 3;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.folderTreeRow:hover .folderDeleteButton {
+  opacity: 1;
+}
+
+.folderDeleteButton:hover {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.folderTaskList {
+  display: grid;
+  gap: 2px;
+  padding: 2px 2px 4px 28px;
+  animation: folderExpand 160ms ease;
+}
+
+@keyframes folderExpand {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.folderTaskItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  gap: 4px;
   align-items: start;
   width: 100%;
-  padding: 10px 11px;
+  padding: 8px 10px;
   color: #d5dbd7;
   text-align: left;
   background: transparent;
@@ -293,20 +510,20 @@
   cursor: pointer;
 }
 
-.taskItem:hover,
-.taskItem.selected {
+.folderTaskItem:hover,
+.folderTaskItem.selected {
   background: var(--surface-selected);
   border-color: var(--accent-border);
 }
 
-.taskItem:hover:not(.selected) {
+.folderTaskItem:hover:not(.selected) {
   background: var(--surface-2);
   border-color: var(--border);
 }
 
-.taskItemMain {
+.folderTaskItemMain {
   display: grid;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
   padding: 0;
   color: inherit;
@@ -316,35 +533,40 @@
   cursor: pointer;
 }
 
-.taskItemMain:hover {
+.folderTaskItemMain:hover {
   background: transparent;
   border-color: transparent;
 }
 
-.taskItemMain span {
+.folderTaskItemMain span {
   overflow: hidden;
   color: var(--text);
-  font-size: 13.5px;
+  font-size: 12.5px;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.taskItemMain small,
-.sidebarEmpty {
+.folderTaskItemMain small,
+.folderEmpty {
   color: var(--muted);
 }
 
-.taskItemMain small {
-  font-size: 12px;
+.folderTaskItemMain small {
+  font-size: 11.5px;
   text-transform: lowercase;
+}
+
+.folderEmpty {
+  margin: 8px 6px;
+  font-size: 12px;
 }
 
 .taskDeleteButton {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   color: var(--muted);
   background: transparent;
@@ -354,9 +576,9 @@
   cursor: pointer;
 }
 
-.taskItem:hover .taskDeleteButton,
+.folderTaskItem:hover .taskDeleteButton,
 .taskDeleteButton:focus-visible,
-.taskItem.selected .taskDeleteButton {
+.folderTaskItem.selected .taskDeleteButton {
   opacity: 1;
 }
 
@@ -364,6 +586,92 @@
   color: var(--danger);
   background: var(--danger-bg);
   border-color: var(--danger-border);
+}
+
+.folderPickerDialog {
+  width: min(90vw, 420px);
+}
+
+.folderPickerField {
+  display: grid;
+  gap: 10px;
+}
+
+.folderPickerField label {
+  color: var(--muted-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.folderPickerInputWrap {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.folderPickerInputWrap input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 12px;
+  color: var(--text);
+  font-size: 13px;
+  background: #090d0f;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: 0;
+}
+
+.folderPickerInputWrap input:focus {
+  border-color: var(--accent-border);
+}
+
+.folderPickerBrowse {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  color: var(--muted-strong);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.folderPickerBrowse:hover {
+  color: var(--text);
+  background: var(--surface-selected);
+  border-color: var(--accent-border);
+}
+
+.folderPickerBrowse:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.primaryButton {
+  min-height: 36px;
+  padding: 0 16px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--accent);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.primaryButton:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.primaryButton:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .taskDeleteConfirm {
@@ -486,21 +794,86 @@
 }
 
 .sidebarUtility {
+  position: relative;
   display: grid;
-  gap: 10px;
+  gap: 6px;
   margin-top: auto;
-  padding-top: 18px;
+  padding-top: 14px;
+  flex-shrink: 0;
+  z-index: 2;
 }
 
-.sidebarUtilityButton {
+.sidebarUtilityToggle {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin: 0 0 0 4px;
+  padding: 0;
+  color: var(--muted-strong);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.sidebarUtilityToggle:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.sidebarUtilityToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sidebarUtilityToggle.open {
+  color: var(--text);
+  background: var(--surface-selected);
+  border-color: var(--accent-border);
+}
+
+.sidebarUtilityMenu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  gap: 4px;
+  overflow: hidden;
+  max-height: 0;
+  padding: 0 4px;
+  opacity: 0;
+  background: var(--sidebar-bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--border) 60%, transparent);
+  pointer-events: none;
+  transition: max-height 200ms ease, opacity 160ms ease, padding 160ms ease;
+}
+
+.sidebarUtilityMenu.open {
+  max-height: 160px;
+  padding: 4px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sidebarUtilityItem {
   display: inline-grid;
   grid-auto-flow: column;
   gap: 10px;
   align-items: center;
   justify-content: start;
+  width: 100%;
   min-height: 36px;
-  padding: 0 18px;
+  padding: 0 14px;
   color: var(--muted-strong);
+  font-size: 13px;
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
@@ -508,10 +881,16 @@
   text-align: left;
 }
 
-.sidebarUtilityButton:hover {
+.sidebarUtilityItem:hover {
   color: var(--text);
   background: var(--surface-2);
   border-color: var(--border);
+}
+
+.sidebarUtilityItem.selected {
+  color: var(--text);
+  background: var(--surface-selected);
+  border-color: color-mix(in srgb, var(--accent-border) 80%, transparent);
 }
 
 @media (max-width: 760px) {
@@ -528,8 +907,8 @@
     transition: transform 0.18s ease;
   }
 
-  .folderList {
-    max-height: 30vh;
+  .folderTree {
+    max-height: 50vh;
     overflow: auto;
   }
 

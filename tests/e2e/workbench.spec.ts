@@ -177,6 +177,11 @@ async function openNavItem(page: import("@playwright/test").Page, name: string |
   if ((page.viewportSize()?.width ?? 1440) <= 760) {
     await page.getByRole("button", { name: /Tasks/ }).click();
   }
+  if (String(name).includes("Settings")) {
+    await page.locator(".sidebarUtilityToggle").click();
+    await page.locator(".sidebarUtilityMenu").getByRole("button", { name }).click();
+    return;
+  }
   await page.locator(".sidebarNav").getByRole("button", { name }).click();
 }
 
