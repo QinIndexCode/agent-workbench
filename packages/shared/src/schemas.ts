@@ -98,6 +98,8 @@ export const TaskEventSchema = z.object({
   type: z.enum([
     "task_created",
     "user_message",
+    "attachment_added",
+    "attachment_removed",
     "assistant_delta",
     "assistant_message",
     "thinking_delta",
@@ -110,6 +112,14 @@ export const TaskEventSchema = z.object({
     "tool_result",
     "status_changed",
     "task_memory_created",
+    "conversation_summary_created",
+    "plan_created",
+    "plan_step_started",
+    "plan_step_completed",
+    "plan_step_blocked",
+    "plan_revised",
+    "web_search_result",
+    "scheduled_task_created",
     "pattern_discovered",
     "reflection_started",
     "reflection_completed",
@@ -119,6 +129,64 @@ export const TaskEventSchema = z.object({
   createdAt: z.string(),
   summary: z.string(),
   payload: z.record(z.unknown()).default({})
+});
+
+export const TaskAttachmentKindSchema = z.enum(["text", "markdown", "code", "data", "image", "pdf", "office", "binary"]);
+
+export const TaskAttachmentSchema = z.object({
+  id: z.string(),
+  taskId: z.string().optional(),
+  fileName: z.string(),
+  mimeType: z.string().default("application/octet-stream"),
+  size: z.number().int().nonnegative(),
+  kind: TaskAttachmentKindSchema,
+  storagePath: z.string(),
+  contentHash: z.string(),
+  textPreview: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const TaskAttachmentUploadRequestSchema = z
+  .object({
+    fileName: z.string().min(1),
+    mimeType: z.string().default("application/octet-stream"),
+    size: z.number().int().nonnegative(),
+    dataBase64: z.string().min(1)
+  })
+  .strict();
+
+export const ConversationSummarySchema = z.object({
+  id: z.string(),
+  taskId: z.string(),
+  rangeStartEventId: z.string(),
+  rangeEndEventId: z.string(),
+  summary: z.string(),
+  tokenEstimate: z.number().int().nonnegative(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const ContextPackSchema = z.object({
+  id: z.string(),
+  taskId: z.string(),
+  layers: z.array(z.object({ name: z.string(), summary: z.string(), tokenEstimate: z.number().int().nonnegative() })),
+  createdAt: z.string()
+});
+
+export const TaskPlanStepSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.enum(["pending", "running", "completed", "blocked"]),
+  detail: z.string().optional(),
+  updatedAt: z.string()
+});
+
+export const TaskPlanSchema = z.object({
+  taskId: z.string(),
+  title: z.string(),
+  steps: z.array(TaskPlanStepSchema),
+  updatedAt: z.string()
 });
 
 export const TaskDetailSchema = z.object({
@@ -138,7 +206,8 @@ export const CreateTaskRequestSchema = z
   .object({
     goal: z.string().min(1),
     title: z.string().min(1),
-    folderId: z.string().min(1).optional()
+    folderId: z.string().min(1).optional(),
+    attachmentIds: z.array(z.string().min(1)).default([])
   })
   .strict();
 
@@ -230,7 +299,8 @@ export const TaskDeleteResultSchema = z.object({
 
 export const MessageRequestSchema = z
   .object({
-    content: z.string().min(1)
+    content: z.string().min(1),
+    attachmentIds: z.array(z.string().min(1)).default([])
   })
   .strict();
 
@@ -258,7 +328,7 @@ export const GlobalPermissionGrantSchema = z.object({
 export const UserPreferencesSchema = z.object({
   llmProvider: z.enum(["mimo", "openai", "openai_compatible", "custom"]).default("mimo"),
   activeModelProviderId: z.string().optional(),
-  defaultModel: z.string().default("gpt-5.4-mini"),
+  defaultModel: z.string().default("mimo-v2.5"),
   providerBaseUrl: z.string().default(""),
   contextMode: z.enum(["auto", "manual"]).default("auto"),
   customModelContextWindow: z.number().int().positive().optional(),
@@ -266,6 +336,10 @@ export const UserPreferencesSchema = z.object({
   autoApprove: z.enum(["none", "low", "medium", "all"]).default("none"),
   showThinking: z.boolean().default(true),
   language: z.string().default("zh-CN"),
+  agentTone: z.enum(["concise", "balanced", "warm", "formal"]).default("balanced"),
+  emojiStyle: z.enum(["auto", "minimal", "expressive", "never"]).default("auto"),
+  agentRole: z.string().default("Pragmatic engineering assistant"),
+  responseDetail: z.enum(["brief", "normal", "detailed"]).default("normal"),
   reflectionEnabled: z.boolean().default(true),
   reflectionSchedule: z.string().default("02:00"),
   skillAutoInject: z.boolean().default(true),
@@ -273,6 +347,7 @@ export const UserPreferencesSchema = z.object({
   mcpApprovalMode: z.enum(["confirm_each", "confirm_dangerous", "auto"]).default("confirm_dangerous"),
   sanitizeSensitiveData: z.boolean().default(true),
   encryptStorage: z.boolean().default(false),
+  customPermissionSnapshot: z.array(z.enum(["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"])).optional(),
   updatedAt: z.string()
 });
 
@@ -291,6 +366,86 @@ export const EncryptedSecretRefSchema = z.object({
   secretId: z.string(),
   last4: z.string().optional(),
   updatedAt: z.string()
+});
+
+export const ScheduledTaskSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  prompt: z.string(),
+  folderId: z.string().default("default"),
+  modelProviderId: z.string().optional(),
+  permissionPreset: z.enum(["ask", "read_only", "custom", "all"]).default("ask"),
+  schedule: z.object({
+    kind: z.enum(["once", "interval"]),
+    runAt: z.string().optional(),
+    intervalMinutes: z.number().int().positive().optional()
+  }),
+  status: z.enum(["active", "paused", "completed"]),
+  nextRunAt: z.string(),
+  lastRunAt: z.string().optional(),
+  lastTaskId: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const ScheduledTaskCreateRequestSchema = z
+  .object({
+    title: z.string().min(1),
+    prompt: z.string().min(1),
+    folderId: z.string().default("default"),
+    modelProviderId: z.string().optional(),
+    permissionPreset: z.enum(["ask", "read_only", "custom", "all"]).default("ask"),
+    runAt: z.string().optional(),
+    intervalMinutes: z.number().int().positive().optional()
+  })
+  .strict();
+
+export const ScheduledTaskPatchRequestSchema = ScheduledTaskCreateRequestSchema.partial()
+  .extend({
+    status: z.enum(["active", "paused", "completed"]).optional()
+  })
+  .strict();
+
+export const WebSearchProviderKindSchema = z.enum(["brave", "serpapi", "duckduckgo", "custom"]);
+
+export const WebSearchProviderConfigSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  kind: WebSearchProviderKindSchema,
+  endpoint: z.string().optional(),
+  apiKeyRef: EncryptedSecretRefSchema.optional(),
+  enabled: z.boolean().default(true),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const WebSearchProviderCreateRequestSchema = z
+  .object({
+    label: z.string().min(1),
+    kind: WebSearchProviderKindSchema,
+    endpoint: z.string().optional(),
+    apiKey: z.string().optional(),
+    enabled: z.boolean().default(true)
+  })
+  .strict();
+
+export const WebSearchProviderPatchRequestSchema = z
+  .object({
+    label: z.string().min(1).optional(),
+    kind: WebSearchProviderKindSchema.optional(),
+    endpoint: z.string().optional(),
+    apiKey: z.string().optional(),
+    clearApiKey: z.boolean().optional(),
+    enabled: z.boolean().optional()
+  })
+  .strict();
+
+export const WebSearchResultSchema = z.object({
+  title: z.string(),
+  url: z.string(),
+  snippet: z.string(),
+  source: z.string().optional(),
+  publishedAt: z.string().optional()
 });
 
 export const ModelProviderRecordSchema = z.object({

@@ -8,6 +8,7 @@ import {
   LocalSecretBox,
   McpRegistry,
   ShellToolExecutor,
+  WebSearchToolExecutor,
   createModelClientFromEnvironment,
   loadOpenAiProviderConfig,
   type OpenAIProviderConfigWithName,
@@ -28,6 +29,8 @@ import {
   ModelProviderPatchRequestSchema,
   PreferencesPatchSchema,
   ProjectMemoryCreateRequestSchema,
+  ScheduledTaskCreateRequestSchema,
+  ScheduledTaskPatchRequestSchema,
   SkillBulkDeleteRequestSchema,
   SkillCorrectionRequestSchema,
   SkillCreateRequestSchema,
@@ -41,8 +44,11 @@ import {
   TaskPatchRequestSchema,
   TaskTitleRequestSchema,
   TaskDeleteRequestSchema,
+  TaskAttachmentUploadRequestSchema,
   type ModelPreset,
-  type TaskEvent
+  type TaskEvent,
+  WebSearchProviderCreateRequestSchema,
+  WebSearchProviderPatchRequestSchema
 } from "@scc/shared";
 import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError, z } from "zod";
@@ -88,6 +94,14 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   app.addHook("onClose", async () => closeRuntime?.());
   if (!options.workbench) await bootstrapMimoProviderFromApiKeyDoc(workbench);
   await workbench.recoverInterruptedTasks();
+  const scheduler = options.workbench
+    ? undefined
+    : setInterval(() => {
+        void workbench.runDueScheduledTasks().catch((error) => app.log.warn({ err: error }, "Scheduled task processing failed"));
+      }, 60_000);
+  app.addHook("onClose", async () => {
+    if (scheduler) clearInterval(scheduler);
+  });
 
   app.get("/health", async () => ({ ok: true }));
 
@@ -105,7 +119,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   app.post("/api/tasks", async (request, reply) => {
     const input = CreateTaskRequestSchema.parse(request.body);
     try {
-      const task = await workbench.startTask(input.goal, input.title, input.folderId);
+      const task = await workbench.startTask(input.goal, input.title, input.folderId, input.attachmentIds);
       return reply.code(201).send(task);
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
@@ -188,6 +202,33 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     return task ? task.events : reply.code(404).send({ error: "Task not found" });
   });
 
+  app.get("/api/tasks/:id/attachments", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const task = await workbench.getTask(id);
+    return task ? workbench.listTaskAttachments(id) : reply.code(404).send({ error: "Task not found" });
+  });
+
+  app.get("/api/tasks/:id/summaries", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const task = await workbench.getTask(id);
+    return task ? workbench.listConversationSummaries(id) : reply.code(404).send({ error: "Task not found" });
+  });
+
+  app.post("/api/task-attachments", async (request, reply) => {
+    const input = TaskAttachmentUploadRequestSchema.parse(request.body);
+    try {
+      return reply.code(201).send(await workbench.uploadTaskAttachment(input));
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete("/api/task-attachments/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    await workbench.deleteTaskAttachment(id);
+    return reply.code(204).send();
+  });
+
   app.get("/api/tasks/:id/events/ws", { websocket: true }, async (socket, request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const task = await workbench.getTask(id);
@@ -200,7 +241,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = MessageRequestSchema.parse(request.body);
     try {
-      return await workbench.appendMessage(id, input.content);
+      return await workbench.appendMessage(id, input.content, input.attachmentIds);
     } catch (error) {
       return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -399,6 +440,57 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     return reply.code(204).send();
   });
 
+  app.get("/api/scheduled-tasks", async () => workbench.listScheduledTasks());
+
+  app.post("/api/scheduled-tasks", async (request, reply) => {
+    const input = ScheduledTaskCreateRequestSchema.parse(request.body);
+    try {
+      return reply.code(201).send(await workbench.createScheduledTask(input));
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.patch("/api/scheduled-tasks/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = ScheduledTaskPatchRequestSchema.parse(request.body);
+    try {
+      return await workbench.updateScheduledTask(id, input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") ? 404 : 400).send({ error: message });
+    }
+  });
+
+  app.delete("/api/scheduled-tasks/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    await workbench.deleteScheduledTask(id);
+    return reply.code(204).send();
+  });
+
+  app.get("/api/web-search/providers", async () => workbench.listWebSearchProviders());
+
+  app.post("/api/web-search/providers", async (request, reply) => {
+    const input = WebSearchProviderCreateRequestSchema.parse(request.body);
+    return reply.code(201).send(await workbench.createWebSearchProvider(input));
+  });
+
+  app.patch("/api/web-search/providers/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = WebSearchProviderPatchRequestSchema.parse(request.body);
+    try {
+      return await workbench.updateWebSearchProvider(id, input);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete("/api/web-search/providers/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    await workbench.deleteWebSearchProvider(id);
+    return reply.code(204).send();
+  });
+
   app.get("/api/reflections", async () => workbench.listReflectionSessions());
 
   app.post("/api/reflections", async (request, reply) => reply.code(201).send(await workbench.runReflection()));
@@ -499,7 +591,7 @@ function createDefaultRuntime(onEvent: (event: TaskEvent) => void): { workbench:
   const contextAssembler = new ContextAssembler(store);
   const mcpRegistry = new McpRegistry(store);
   const secretBox = new LocalSecretBox();
-  const tools = new CompositeToolExecutor(new ShellToolExecutor(), [mcpRegistry]);
+  const tools = new CompositeToolExecutor(new ShellToolExecutor(), [mcpRegistry, new WebSearchToolExecutor(store)]);
   const workbench = new AgentWorkbench({
     store,
     contextAssembler,

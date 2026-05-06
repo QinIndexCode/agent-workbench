@@ -1,5 +1,6 @@
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowUp, ChevronDown, Eye, Folder, LoaderCircle, Mic, MicOff, Paperclip, ShieldAlert, ShieldQuestion, SlidersHorizontal, Square } from "lucide-react";
+import { ArrowUp, ChevronDown, Eye, Folder, LoaderCircle, MessageCircle, Mic, MicOff, Paperclip, ShieldAlert, SlidersHorizontal, Square } from "lucide-react";
+import type { TaskAttachment } from "@scc/shared";
 import { getUiCopy } from "../i18n.js";
 
 function VoiceWaveform() {
@@ -34,6 +35,9 @@ type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
 
 export function Composer({
   busy,
+  attachments = [],
+  attachmentBusy = false,
+  attachmentError,
   draft,
   language,
   folderOptions = [],
@@ -46,14 +50,22 @@ export function Composer({
   running,
   mode,
   onDraftChange,
+  onFilesSelected,
+  onRemoveAttachment,
   onFolderChange,
   onModelChange,
   onOpenPermissionSettings,
+  onOpenCustomPermissions,
+  onRestoreCustomPermissions,
+  hasCustomSnapshot = false,
   onPermissionPresetChange,
   onSubmit,
   onStop
 }: {
   busy: boolean;
+  attachments?: TaskAttachment[];
+  attachmentBusy?: boolean;
+  attachmentError?: string | null;
   draft?: string;
   language?: string | null;
   folderOptions?: Array<{ description?: string; label: string; value: string }> | undefined;
@@ -66,9 +78,14 @@ export function Composer({
   running: boolean;
   mode: ComposerMode;
   onDraftChange?: (text: string) => void;
+  onFilesSelected?: (files: File[]) => Promise<void> | void;
+  onRemoveAttachment?: (attachmentId: string) => Promise<void> | void;
   onFolderChange?: ((folderId: string) => void) | undefined;
   onModelChange?: (modelId: string) => void;
   onOpenPermissionSettings?: () => void;
+  onOpenCustomPermissions?: () => void;
+  onRestoreCustomPermissions?: () => void;
+  hasCustomSnapshot?: boolean;
   onPermissionPresetChange?: (preset: PermissionPreset) => void;
   onSubmit: (text: string) => void;
   onStop: () => void;
@@ -133,10 +150,28 @@ export function Composer({
           className="visuallyHidden"
           onChange={(event) => void attachFiles(event.currentTarget.files)}
         />
+        {attachments.length > 0 || attachmentBusy || attachmentError ? (
+          <div className="attachmentTray" aria-label={labels.attachments}>
+            {attachments.map((attachment) => (
+              <span className="attachmentChip" key={attachment.id} title={`${attachment.fileName} · ${formatFileSize(attachment.size)}`}>
+                <FileKindIcon kind={attachment.kind} />
+                <span>
+                  <strong>{attachment.fileName}</strong>
+                  <small>{formatFileSize(attachment.size)}</small>
+                </span>
+                <button type="button" aria-label={labels.removeAttachment(attachment.fileName)} onClick={() => void onRemoveAttachment?.(attachment.id)}>
+                  ×
+                </button>
+              </span>
+            ))}
+            {attachmentBusy ? <span className="attachmentChip uploading"><LoaderCircle className="spin" size={14} /> {labels.uploading}</span> : null}
+            {attachmentError ? <span className="attachmentError">{attachmentError}</span> : null}
+          </div>
+        ) : null}
       </div>
       <div className="composerFooter">
         <div className="composerToolbar" aria-label="Input actions">
-          <button className="composerToolButton" aria-label={labels.attachFile} disabled={busy} type="button" onClick={() => fileInputRef.current?.click()}>
+          <button className="composerToolButton" aria-label={labels.attachFile} disabled={busy || attachmentBusy} type="button" onClick={() => fileInputRef.current?.click()}>
             <Paperclip size={17} />
           </button>
           <button
@@ -255,6 +290,8 @@ export function Composer({
               {permissionOptions.map((option) => (
                 <PermissionPresetButton
                   key={option.value}
+                  currentPreset={permissionPreset}
+                  hasCustomSnapshot={hasCustomSnapshot}
                   disabled={busy}
                   description={option.description}
                   icon={option.icon}
@@ -263,7 +300,11 @@ export function Composer({
                   tabIndex={permissionOpen ? 0 : -1}
                   value={option.value}
                   onOpenCustom={() => {
-                    onOpenPermissionSettings?.();
+                    onOpenCustomPermissions?.();
+                    setPermissionOpen(false);
+                  }}
+                  onRestoreCustom={() => {
+                    onRestoreCustomPermissions?.();
                     setPermissionOpen(false);
                   }}
                   onSelect={(preset) => {
@@ -301,8 +342,7 @@ export function Composer({
 
   async function attachFiles(files: FileList | null) {
     if (!files?.length) return;
-    const snippets = await Promise.all([...files].slice(0, 5).map((file) => fileToPromptBlock(file, labels.attachedFile)));
-    appendText(snippets.join("\n\n"));
+    await onFilesSelected?.([...files]);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -350,6 +390,8 @@ export function Composer({
 }
 
 function PermissionPresetButton({
+  currentPreset,
+  hasCustomSnapshot,
   description,
   disabled,
   icon,
@@ -358,8 +400,11 @@ function PermissionPresetButton({
   tabIndex,
   value,
   onOpenCustom,
+  onRestoreCustom,
   onSelect
 }: {
+  currentPreset: ComposerPermissionMode;
+  hasCustomSnapshot: boolean;
   description: string;
   disabled: boolean;
   icon: ReactNode;
@@ -368,6 +413,7 @@ function PermissionPresetButton({
   tabIndex: number;
   value: ComposerPermissionMode;
   onOpenCustom: (() => void) | undefined;
+  onRestoreCustom: (() => void) | undefined;
   onSelect: ((preset: PermissionPreset) => void) | undefined;
 }) {
   return (
@@ -379,7 +425,14 @@ function PermissionPresetButton({
       title={description}
       onClick={() => {
         if (value === "custom") {
-          onOpenCustom?.();
+          if (currentPreset === "custom") {
+            return;
+          }
+          if (hasCustomSnapshot) {
+            onRestoreCustom?.();
+          } else {
+            onOpenCustom?.();
+          }
           return;
         }
         onSelect?.(value);
@@ -404,7 +457,7 @@ function getPermissionOptions(labels: ReturnType<typeof getUiCopy>["composer"]):
   return [
     {
       description: labels.permissionPresetDescriptions.ask,
-      icon: <ShieldQuestion size={14} />,
+      icon: <MessageCircle size={14} />,
       label: labels.permissionPresets.ask,
       value: "ask"
     },
@@ -446,22 +499,13 @@ function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
   return win.SpeechRecognition ?? win.webkitSpeechRecognition ?? null;
 }
 
-async function fileToPromptBlock(file: File, label: string): Promise<string> {
-  const size = formatFileSize(file.size);
-  const header = `${label}: ${file.name} (${file.type || "unknown"}, ${size})`;
-  if (!isLikelyTextFile(file) || file.size > 220_000) return header;
-  const text = await file.text();
-  const clipped = text.length > 120_000 ? `${text.slice(0, 120_000)}\n\n[content truncated]` : text;
-  return `${header}\n\n\`\`\`\n${clipped}\n\`\`\``;
-}
-
-function isLikelyTextFile(file: File): boolean {
-  if (file.type.startsWith("text/") || file.type.includes("json") || file.type.includes("xml")) return true;
-  return /\.(md|txt|json|ts|tsx|js|jsx|css|html|xml|yaml|yml|toml|py|rs|go|java|cs|cpp|c|h)$/i.test(file.name);
-}
-
 function formatFileSize(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function FileKindIcon({ kind }: { kind: TaskAttachment["kind"] }) {
+  const label = kind === "image" ? "IMG" : kind === "pdf" ? "PDF" : kind === "office" ? "DOC" : kind === "code" ? "</>" : kind === "data" ? "CSV" : kind === "binary" ? "BIN" : "TXT";
+  return <em aria-hidden="true">{label}</em>;
 }

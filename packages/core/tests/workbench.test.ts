@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -16,10 +16,12 @@ import {
   ContextAssembler,
   InMemoryWorkbenchStore,
   McpRegistry,
+  WebSearchToolExecutor,
   type ModelClient,
   type ModelStreamHandlers,
   type ModelTurn,
   PermissionEngine,
+  buildHistoryLayer,
   detectSkillConflicts,
   createExperience,
   createId,
@@ -61,6 +63,72 @@ describe("ContextAssembler", () => {
     expect(context.systemPrompt).toContain("do not inspect files first");
     expect(context.systemPrompt).toContain("Do not claim the project name");
     expect(context.systemPrompt).toContain("Use Markdown for readable structure");
+  });
+
+  it("keeps the latest user message when a long history is truncated", () => {
+    const task: TaskDetail = {
+      id: "task_long_history",
+      title: "Long history",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_old",
+          taskId: "task_long_history",
+          type: "assistant_message",
+          createdAt: nowIso(),
+          summary: "old context ".repeat(200),
+          payload: {}
+        },
+        {
+          id: "event_latest",
+          taskId: "task_long_history",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "LATEST_USER_MARKER " + "important current request ".repeat(120),
+          payload: {}
+        }
+      ]
+    };
+
+    const history = buildHistoryLayer(task, 80);
+
+    expect(history).toContain("LATEST_USER_MARKER");
+    expect(history).toContain("latest event truncated");
+    expect(history).toContain("earlier events omitted");
+  });
+
+  it("creates an auditable summary pack instead of only dropping old context", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const assembler = new ContextAssembler(store);
+    const task: TaskDetail = {
+      id: "task_summary",
+      title: "Long task",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: Array.from({ length: 36 }, (_, index) => ({
+        id: `event_${index}`,
+        taskId: "task_summary",
+        type: (index % 3 === 0 ? "tool_result" : index % 3 === 1 ? "assistant_message" : "user_message") as const,
+        createdAt: nowIso(),
+        summary: index === 35 ? "LATEST_DECISION_MARKER keep this detail" : `older event ${index}`,
+        payload: index % 3 === 0 ? { toolName: "read_file", ok: true } : {}
+      }))
+    };
+
+    const context = await assembler.assemble(task);
+    const summaries = await store.listConversationSummaries(task.id);
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.summary).toContain("older event");
+    expect(context.input).toContain("Conversation Summary");
+    expect(context.input).toContain("LATEST_DECISION_MARKER");
   });
 });
 
@@ -131,6 +199,38 @@ class StreamingFinalModel implements ModelClient {
   }
 }
 
+class CancellableStreamingModel implements ModelClient {
+  aborted = false;
+
+  async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    await stream?.onAssistantDelta("started");
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 500);
+      stream?.signal?.addEventListener(
+        "abort",
+        () => {
+          this.aborted = true;
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true }
+      );
+    });
+    if (stream?.signal?.aborted) return { kind: "final", message: "This final message should not be recorded." };
+    await stream?.onAssistantDelta("late");
+    return { kind: "final", message: "late final" };
+  }
+}
+
+async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 1000): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 describe("PermissionEngine", () => {
   it("classifies Get-Process as host observation", () => {
     const engine = new PermissionEngine();
@@ -192,6 +292,106 @@ describe("AgentWorkbench", () => {
     expect(deltas.map((event) => event.summary).join("")).toBe("Hello stream.");
     expect(final?.summary).toBe("Hello stream.");
     expect(final?.payload["streamId"]).toBe(deltas[0]?.payload["streamId"]);
+  });
+
+  it("pauses an in-flight model stream without recording a final answer", async () => {
+    const model = new CancellableStreamingModel();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model });
+    const started = await workbench.startTask("stream until I stop it", "Streaming pause");
+    await waitFor(async () => Boolean((await workbench.getTask(started.id))?.events.some((event) => event.type === "assistant_delta")));
+
+    const paused = await workbench.control(started.id, "pause");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const persisted = await workbench.getTask(started.id);
+
+    expect(model.aborted).toBe(true);
+    expect(paused.status).toBe("paused");
+    expect(persisted?.status).toBe("paused");
+    expect(persisted?.events.some((event) => event.type === "assistant_message")).toBe(false);
+    expect(persisted?.events.filter((event) => event.type === "assistant_delta").map((event) => event.summary).join("")).toBe("started");
+  });
+
+  it("copies uploaded attachments, links them to tasks, and exposes them to context as references", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const assembler = new ContextAssembler(store);
+    const workbench = new AgentWorkbench({ store, contextAssembler: assembler, model: new StreamingFinalModel() });
+    const uploaded = await workbench.uploadTaskAttachment({
+      fileName: "notes.md",
+      mimeType: "text/markdown",
+      size: Buffer.byteLength("# Notes\nImportant fixture content."),
+      dataBase64: Buffer.from("# Notes\nImportant fixture content.").toString("base64")
+    });
+
+    const task = await workbench.createTask("summarize attached notes", "Summarize notes", undefined, [uploaded.id]);
+    const linked = await workbench.listTaskAttachments(task.id);
+    const context = await assembler.assemble(task);
+
+    expect(linked).toHaveLength(1);
+    expect(linked[0]?.taskId).toBe(task.id);
+    expect(existsSync(uploaded.storagePath)).toBe(true);
+    expect(task.events.some((event) => event.type === "attachment_added")).toBe(true);
+    expect(context.input).toContain("notes.md (markdown");
+    expect(context.input).toContain("Important fixture content");
+  });
+
+  it("runs due scheduled tasks through the normal task pipeline", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+    const scheduled = await workbench.createScheduledTask({
+      title: "Daily note",
+      prompt: "summarize today's project state",
+      folderId: "default",
+      permissionPreset: "ask",
+      runAt: new Date(Date.now() - 60_000).toISOString()
+    });
+
+    const changed = await workbench.runDueScheduledTasks(new Date());
+    const tasks = await workbench.listTasks();
+
+    expect(changed[0]?.id).toBe(scheduled.id);
+    expect(changed[0]?.status).toBe("completed");
+    expect(tasks.some((task) => task.title === "Daily note")).toBe(true);
+    expect(tasks.find((task) => task.title === "Daily note")?.events.some((event) => event.type === "scheduled_task_created")).toBe(true);
+  });
+
+  it("executes web_search through permission grants and records search evidence", async () => {
+    const server = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          results: [
+            { title: "SCC docs", url: `http://example.test${request.url ?? ""}`, snippet: "Workbench documentation" },
+            { title: "Agent tools", url: "http://example.test/tools", snippet: "Tool evidence model" }
+          ]
+        })
+      );
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      const workbench = new AgentWorkbench({
+        store,
+        tools: new CompositeToolExecutor(new StubToolExecutor(), [new WebSearchToolExecutor(store)]),
+        model: new SingleToolModel("web_search", { query: "scc workbench", limit: 2 })
+      });
+      await workbench.createWebSearchProvider({
+        label: "Local search",
+        kind: "custom",
+        endpoint: `http://127.0.0.1:${port}/search?q={query}&limit={limit}`,
+        enabled: true
+      });
+      await workbench.grantGlobalPermission("network", "search smoke");
+
+      const completed = await workbench.createTask("search current docs");
+      const searchEvent = completed.events.find((event) => event.type === "web_search_result");
+
+      expect(completed.status).toBe("completed");
+      expect(searchEvent?.summary).toBe("Search evidence returned");
+      expect(JSON.stringify(searchEvent?.payload)).toContain("SCC docs");
+      expect(completed.events.some((event) => event.type === "approval_auto_granted" && event.payload["riskCategory"] === "network")).toBe(true);
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
   });
 
   it("snapshots the selected local folder root when a task is created", async () => {

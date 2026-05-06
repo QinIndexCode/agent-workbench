@@ -9,6 +9,7 @@ import type {
   PatternRecord,
   ProjectMemory,
   ReflectionSession,
+  ScheduledTask,
   SkillConflict,
   SkillDuplicateGroup,
   SkillRecord,
@@ -20,7 +21,8 @@ import type {
   TaskMemory,
   TaskPatchRequest,
   ToolApproval,
-  UserPreferences
+  UserPreferences,
+  WebSearchProviderConfig
 } from "@scc/shared";
 import { api } from "./api.js";
 
@@ -42,6 +44,8 @@ export interface WorkbenchData {
   modelProviders: ModelProviderRecord[];
   mcpServers: Array<McpServerConfig & { status: McpServerStatus }>;
   mcpTools: McpToolSummary[];
+  scheduledTasks: ScheduledTask[];
+  webSearchProviders: WebSearchProviderConfig[];
   realtimeConnected: boolean;
   busy: boolean;
   error: string | null;
@@ -73,6 +77,8 @@ export function useWorkbenchData(): WorkbenchData {
   const [modelProviders, setModelProviders] = useState<ModelProviderRecord[]>([]);
   const [mcpServers, setMcpServers] = useState<Array<McpServerConfig & { status: McpServerStatus }>>([]);
   const [mcpTools, setMcpTools] = useState<McpToolSummary[]>([]);
+  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
+  const [webSearchProviders, setWebSearchProviders] = useState<WebSearchProviderConfig[]>([]);
   const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +101,9 @@ export function useWorkbenchData(): WorkbenchData {
       nextKnowledgeItems,
       nextModelProviders,
       nextMcpServers,
-      nextMcpTools
+      nextMcpTools,
+      nextScheduledTasks,
+      nextWebSearchProviders
     ] = await Promise.all([
       api.listTasks(),
       api.listTaskFolders(),
@@ -111,7 +119,9 @@ export function useWorkbenchData(): WorkbenchData {
       api.listKnowledgeItems(),
       api.listModelProviders(),
       api.listMcpServers(),
-      api.listMcpTools()
+      api.listMcpTools(),
+      api.listScheduledTasks(),
+      api.listWebSearchProviders()
     ]);
     setTasks(list);
     setTaskFolders(nextTaskFolders);
@@ -135,6 +145,8 @@ export function useWorkbenchData(): WorkbenchData {
     setModelProviders(nextModelProviders);
     setMcpServers(nextMcpServers);
     setMcpTools(nextMcpTools);
+    setScheduledTasks(nextScheduledTasks);
+    setWebSearchProviders(nextWebSearchProviders);
   }
 
   useEffect(() => {
@@ -281,6 +293,8 @@ export function useWorkbenchData(): WorkbenchData {
     modelProviders,
     mcpServers,
     mcpTools,
+    scheduledTasks,
+    webSearchProviders,
     realtimeConnected,
     busy,
     error,

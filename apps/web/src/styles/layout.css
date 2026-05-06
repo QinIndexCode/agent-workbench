@@ -6,6 +6,7 @@
   min-height: 100vh;
   overflow: hidden;
   background: var(--app-bg);
+  transition: grid-template-columns 260ms ease;
 }
 
 .shell.docsShell {

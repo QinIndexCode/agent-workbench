@@ -10,7 +10,7 @@ import {
   PencilLine,
   RotateCcw,
   ShieldAlert,
-  ShieldQuestion,
+  MessageCircle,
   SlidersHorizontal,
   TerminalSquare,
   X
@@ -28,6 +28,8 @@ export function PermissionsPanel({
   permissions,
   preferences,
   preferencesOnly = false,
+  startCustom = false,
+  onStartCustomConsumed,
   onGrant,
   onRevoke,
   onPermissionPresetChange,
@@ -37,6 +39,8 @@ export function PermissionsPanel({
   permissions: GlobalPermissionGrant[];
   preferences: UserPreferences | null;
   preferencesOnly?: boolean;
+  startCustom?: boolean;
+  onStartCustomConsumed?: () => void;
   onGrant: (riskCategory: RiskCategory) => void;
   onRevoke: (riskCategory: RiskCategory) => void;
   onPermissionPresetChange?: (preset: PermissionPreset) => void;
@@ -55,6 +59,13 @@ export function PermissionsPanel({
       setPendingMode(null);
     }
   }, [permissionMode, pendingMode]);
+
+  useEffect(() => {
+    if (startCustom) {
+      setCustomEditing(true);
+      onStartCustomConsumed?.();
+    }
+  }, [startCustom, onStartCustomConsumed]);
 
   return (
     <section className="permissionsPanel">
@@ -183,6 +194,43 @@ export function PermissionsPanel({
                 ]}
               />
               <PreferenceSelect
+                label={text.agentTone}
+                value={preferences?.agentTone ?? "balanced"}
+                onChange={(value) => emitPreference({ agentTone: value as UserPreferences["agentTone"] })}
+                options={[
+                  ["concise", text.agentToneOptions.concise],
+                  ["balanced", text.agentToneOptions.balanced],
+                  ["warm", text.agentToneOptions.warm],
+                  ["formal", text.agentToneOptions.formal]
+                ]}
+              />
+              <PreferenceSelect
+                label={text.emojiStyle}
+                value={preferences?.emojiStyle ?? "auto"}
+                onChange={(value) => emitPreference({ emojiStyle: value as UserPreferences["emojiStyle"] })}
+                options={[
+                  ["auto", text.emojiStyleOptions.auto],
+                  ["minimal", text.emojiStyleOptions.minimal],
+                  ["expressive", text.emojiStyleOptions.expressive],
+                  ["never", text.emojiStyleOptions.never]
+                ]}
+              />
+              <PreferenceSelect
+                label={text.responseDetail}
+                value={preferences?.responseDetail ?? "normal"}
+                onChange={(value) => emitPreference({ responseDetail: value as UserPreferences["responseDetail"] })}
+                options={[
+                  ["brief", text.responseDetailOptions.brief],
+                  ["normal", text.responseDetailOptions.normal],
+                  ["detailed", text.responseDetailOptions.detailed]
+                ]}
+              />
+              <PreferenceInput
+                label={text.agentRole}
+                value={preferences?.agentRole ?? ""}
+                onChange={(value) => emitPreference({ agentRole: value })}
+              />
+              <PreferenceSelect
                 label={text.autoApprove}
                 value={preferences?.autoApprove ?? "none"}
                 onChange={(value) => emitPreference({ autoApprove: value as UserPreferences["autoApprove"] })}
@@ -291,7 +339,7 @@ function PermissionModeSwitch({
 function getModeIcon(mode: PermissionSettingsMode, size = 14) {
   switch (mode) {
     case "ask":
-      return <ShieldQuestion size={size} aria-hidden="true" />;
+      return <MessageCircle size={size} aria-hidden="true" />;
     case "read_only":
       return <Eye size={size} aria-hidden="true" />;
     case "custom":

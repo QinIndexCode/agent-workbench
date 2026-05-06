@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ApprovalDecision, TaskDetail, TaskEvent, ToolApproval } from "@scc/shared";
 import { getUiCopy } from "../i18n.js";
 import { ApprovalCard } from "./ApprovalCard.js";
@@ -6,6 +6,7 @@ import { MarkdownText } from "./MarkdownText.js";
 
 const visibleEventTypes = new Set<TaskEvent["type"]>([
   "user_message",
+  "attachment_added",
   "assistant_delta",
   "assistant_message",
   "thinking_delta",
@@ -14,7 +15,14 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
   "approval_pending",
   "approval_resolved",
   "approval_auto_granted",
-  "tool_result"
+  "tool_result",
+  "conversation_summary_created",
+  "plan_created",
+  "plan_step_started",
+  "plan_step_completed",
+  "plan_step_blocked",
+  "plan_revised",
+  "web_search_result"
 ]);
 
 export function Timeline({
@@ -27,6 +35,7 @@ export function Timeline({
   onApprovalDecision: (approvalId: string, decision: ApprovalDecision) => void;
 }) {
   const timelineRef = useRef<HTMLDivElement>(null);
+  const [atBottom, setAtBottom] = useState(true);
   const items = useMemo(
     () =>
       buildTimelineItems(
@@ -42,8 +51,13 @@ export function Timeline({
   const lastEventId = task?.events[task.events.length - 1]?.id ?? "empty";
 
   useEffect(() => {
+    setAtBottom(true);
+  }, [task?.id]);
+
+  useEffect(() => {
     const node = timelineRef.current;
     if (!node) return;
+    if (!atBottom && task?.id === node.dataset["taskId"]) return;
     if (typeof node.scrollTo === "function") {
       node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
     } else {
@@ -54,10 +68,25 @@ export function Timeline({
   if (!task) return <div className="empty">{getUiCopy(language).thread.startGoal}</div>;
 
   return (
-    <div className="timeline" ref={timelineRef}>
-      {items.map((item) => (
-        <TimelineEvent item={item} key={item.key} approvals={task.approvals} language={language ?? null} onApprovalDecision={onApprovalDecision} />
-      ))}
+    <div className="timelineWrap">
+      <div
+        className="timeline"
+        data-task-id={task.id}
+        ref={timelineRef}
+        onScroll={(event) => {
+          const node = event.currentTarget;
+          setAtBottom(node.scrollHeight - node.scrollTop - node.clientHeight < 120);
+        }}
+      >
+        {items.map((item) => (
+          <TimelineEvent item={item} key={item.key} approvals={task.approvals} language={language ?? null} onApprovalDecision={onApprovalDecision} />
+        ))}
+      </div>
+      {!atBottom ? (
+        <button className="jumpToBottom" type="button" onClick={() => timelineRef.current?.scrollTo({ top: timelineRef.current.scrollHeight, behavior: "smooth" })}>
+          {language === "zh-CN" ? "跳到底部" : "Jump to latest"}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -106,6 +135,31 @@ function TimelineEvent({
     );
   }
 
+  if (event.type === "attachment_added") {
+    return (
+      <article className="event attachment_added">
+        <small>{zh ? "附件" : "attachment"}</small>
+        <MarkdownText content={`${event.summary}\n\n${formatBytes(Number(event.payload["size"] ?? 0))} · ${String(event.payload["kind"] ?? "file")}`} />
+      </article>
+    );
+  }
+
+  if (event.type === "conversation_summary_created") {
+    return (
+      <article className="event note conversation_summary_created">
+        <span>{zh ? "已压缩较早上下文" : "Earlier context compacted"}</span>
+      </article>
+    );
+  }
+
+  if (event.type.startsWith("plan_")) {
+    return (
+      <article className={`event note ${event.type}`}>
+        <span>{event.summary}</span>
+      </article>
+    );
+  }
+
   if (event.type === "approval_pending") {
     const approvalId = String(event.payload["approvalId"] ?? "");
     const approval = approvals.find((item) => item.id === approvalId && item.status === "pending");
@@ -144,6 +198,13 @@ function TimelineEvent({
       <MarkdownText content={event.summary} />
     </article>
   );
+}
+
+function formatBytes(size: number): string {
+  if (!Number.isFinite(size) || size <= 0) return "0 B";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function buildTimelineItems(events: TaskEvent[]): TimelineItem[] {

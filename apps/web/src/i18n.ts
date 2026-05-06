@@ -65,6 +65,8 @@ const copy = {
         providers: ["模型配置", "添加模型、管理本地密钥、预设厂商和当前使用模型"],
         permissions: ["权限", "全局风险授权、审批策略和 Agent 偏好"],
         mcp: ["MCP", "连接的工具服务器和已发现工具"],
+        scheduled: ["定时任务", "一次性或周期性触发 Agent 任务"],
+        search: ["网络搜索", "配置 Agent 可选择使用的搜索 Provider"],
         preferences: ["偏好", "语言、思考展示、反思和敏感数据处理"]
       }
     },
@@ -73,6 +75,7 @@ const copy = {
       ready: "准备开始新任务",
       startGoal: "从一个目标开始。",
       connect: "Connect",
+      configureModel: "配置模型",
       heroTitle: "开启新任务",
       heroSubtitle: "描述你想解决的问题。SCC 会组装上下文、请求必要权限，并把执行证据清晰展示给你。",
       heroSubtitleVariants: [
@@ -122,6 +125,9 @@ const copy = {
       voiceInputStop: "停止听写",
       voiceUnsupported: "当前浏览器不支持语音输入",
       attachedFile: "已附加文件",
+      attachments: "附件",
+      uploading: "上传中",
+      removeAttachment: (name: string) => `移除 ${name}`,
       folder: "文件夹",
       folderToggle: "选择工作文件夹",
       model: "Model",
@@ -172,6 +178,10 @@ const copy = {
       preferencesSubtitle: "这些设置影响界面语言、运行展示和学习策略。",
       providerTitle: "模型 Provider",
       language: "界面与回复语言",
+      agentTone: "Agent 语气",
+      emojiStyle: "Emoji 使用",
+      agentRole: "Agent 角色",
+      responseDetail: "回答详略",
       llmProvider: "LLM Provider",
       defaultModel: "默认模型",
       customModel: "自定义模型 ID",
@@ -223,6 +233,23 @@ const copy = {
       contextModeOptions: {
         auto: "自动",
         manual: "手动"
+      },
+      agentToneOptions: {
+        concise: "简洁",
+        balanced: "均衡",
+        warm: "温和",
+        formal: "正式"
+      },
+      emojiStyleOptions: {
+        auto: "自动",
+        minimal: "少量",
+        expressive: "更活泼",
+        never: "不用"
+      },
+      responseDetailOptions: {
+        brief: "简短",
+        normal: "正常",
+        detailed: "详细"
       },
       risks: {
         host_observation: ["主机观察", "查看进程、系统信息、资源占用等只读主机状态。"],
@@ -288,6 +315,8 @@ const copy = {
         providers: ["Model configuration", "Add models, manage local keys, presets, and the active model"],
         permissions: ["Permissions", "Global risk grants, approval policy, and agent preferences"],
         mcp: ["MCP", "Connected tool servers and discovered tools"],
+        scheduled: ["Scheduled tasks", "One-shot or recurring agent tasks"],
+        search: ["Web search", "Configure search providers the agent can choose"],
         preferences: ["Preferences", "Language, thinking display, reflection, and sensitive data handling"]
       }
     },
@@ -296,6 +325,7 @@ const copy = {
       ready: "Ready for a new task",
       startGoal: "Start with a goal.",
       connect: "Connect",
+      configureModel: "Configure model",
       heroTitle: "Start a new task",
       heroSubtitle: "Describe the problem you want solved. SCC assembles context, asks for the right permissions, and keeps evidence visible.",
       heroSubtitleVariants: [
@@ -345,6 +375,9 @@ const copy = {
       voiceInputStop: "Stop dictation",
       voiceUnsupported: "Voice input is not supported in this browser",
       attachedFile: "Attached file",
+      attachments: "Attachments",
+      uploading: "Uploading",
+      removeAttachment: (name: string) => `Remove ${name}`,
       folder: "Folder",
       folderToggle: "Choose work folder",
       model: "Model",
@@ -395,6 +428,10 @@ const copy = {
       preferencesSubtitle: "These settings control language, runtime display, and learning behavior.",
       providerTitle: "Model provider",
       language: "UI and response language",
+      agentTone: "Agent tone",
+      emojiStyle: "Emoji use",
+      agentRole: "Agent role",
+      responseDetail: "Response detail",
       llmProvider: "LLM provider",
       defaultModel: "Default model",
       customModel: "Custom model id",
@@ -446,6 +483,23 @@ const copy = {
       contextModeOptions: {
         auto: "Auto",
         manual: "Manual"
+      },
+      agentToneOptions: {
+        concise: "Concise",
+        balanced: "Balanced",
+        warm: "Warm",
+        formal: "Formal"
+      },
+      emojiStyleOptions: {
+        auto: "Auto",
+        minimal: "Minimal",
+        expressive: "Expressive",
+        never: "Never"
+      },
+      responseDetailOptions: {
+        brief: "Brief",
+        normal: "Normal",
+        detailed: "Detailed"
       },
       risks: {
         host_observation: ["Host observation", "Read-only host state such as processes, system info, and resource usage."],

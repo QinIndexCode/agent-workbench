@@ -1,5 +1,6 @@
-import type { SkillRecord, TaskDetail, TaskEvent, ToolCall, UserPreferences } from "@scc/shared";
+import type { ConversationSummary, SkillRecord, TaskAttachment, TaskDetail, TaskEvent, ToolCall, UserPreferences } from "@scc/shared";
 import { findRelevantSkills } from "./experience.js";
+import { createId, nowIso } from "./ids.js";
 import type { WorkbenchStore } from "./store.js";
 
 export interface TokenBudget {
@@ -61,6 +62,12 @@ export class ContextAssembler {
       usedTokens += estimateTokens(projectLayer);
     }
 
+    const attachmentLayer = await this.buildAttachmentLayer(task.id);
+    if (attachmentLayer) {
+      layers.push(attachmentLayer);
+      usedTokens += estimateTokens(attachmentLayer);
+    }
+
     const tracker = this.getFileStateTracker(task.id);
     const fileLayer = tracker.buildFileStateTable();
     const fileTokens = estimateTokens(fileLayer);
@@ -69,8 +76,15 @@ export class ContextAssembler {
       usedTokens += fileTokens;
     }
 
+    const summary = await this.ensureConversationSummary(task);
+    if (summary) {
+      const summaryLayer = `## Conversation Summary\n${summary.summary}`;
+      layers.push(summaryLayer);
+      usedTokens += estimateTokens(summaryLayer);
+    }
+
     const remaining = tokenBudget.maxTotal - usedTokens - tokenBudget.reservedForResponse;
-    layers.push(buildHistoryLayer(task, Math.max(1000, remaining), tracker));
+    layers.push(buildHistoryLayer(task, Math.max(1000, remaining), tracker, summary?.rangeEndEventId));
 
     const nonEmpty = layers.filter((layer) => layer.trim().length > 0);
     return {
@@ -155,6 +169,10 @@ export class ContextAssembler {
   private buildSystemLayer(preferences: UserPreferences): string {
     const lines = [
       "You are the SCC workbench agent.",
+      `User preferred agent role: ${preferences.agentRole || "Pragmatic engineering assistant"}.`,
+      `User preferred tone: ${preferences.agentTone || "balanced"}.`,
+      `User preferred response detail: ${preferences.responseDetail || "normal"}.`,
+      `User emoji preference: ${preferences.emojiStyle || "auto"}.`,
       "Choose the next action yourself based on the user's goal, available tools, permissions, and evidence.",
       "Use tools when the environment must be observed. Do not invent host, file, network, or command results.",
       "Scripts, builds, tests, and command output are tool evidence for you to interpret; they are never task-completion judges.",
@@ -162,10 +180,19 @@ export class ContextAssembler {
       "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
       "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
       "If you need a file but are unsure it exists, list or search first instead of guessing paths such as README.md.",
-      "Keep normal answers concise, calm, and product-like. Avoid decorative emoji, hype, and marketing-style introductions unless the user asks for that tone.",
+      "When reporting a debug fix, base the root cause and final summary only on observed tool output and source code; do not speculate about code you did not see.",
+      "After debugging or editing code, the final answer should include the observed failure, exact root cause expression or file location when known, changed files, and verification result.",
+      "Keep normal answers concise, calm, and product-like.",
+      "Use emoji only when it fits the user's tone, preference, and task context; avoid emoji in serious debugging or incident-style work unless the user likes that style.",
+      "Avoid hype, decorative openings, and marketing-style introductions unless the user asks for that tone.",
       "Use Markdown for readable structure when helpful: short headings, bullets, tables, and code blocks are supported."
     ];
     if (preferences.language === "zh-CN") lines.push("Respond in Chinese unless the user asks otherwise.");
+    if (preferences.emojiStyle === "never") lines.push("Do not use emoji.");
+    if (preferences.emojiStyle === "minimal") lines.push("Use emoji rarely and only when they improve clarity or warmth.");
+    if (preferences.emojiStyle === "expressive") lines.push("Emoji are acceptable when they match the task and user's tone.");
+    if (preferences.responseDetail === "brief") lines.push("Prefer concise answers unless the task requires detail.");
+    if (preferences.responseDetail === "detailed") lines.push("Provide enough detail for a careful user to audit the reasoning and result.");
     lines.push(`User language preference: ${preferences.language}`);
     lines.push(`Auto approval preference: ${preferences.autoApprove}`);
     return lines.join("\n");
@@ -187,6 +214,43 @@ export class ContextAssembler {
       "## Project Context",
       ...memories.slice(0, 5).map((memory) => `### ${memory.title} [${memory.category}]\n${memory.content.slice(0, 1000)}`)
     ].join("\n\n");
+  }
+
+  private async buildAttachmentLayer(taskId: string): Promise<string> {
+    const attachments = await this.store.listTaskAttachments(taskId);
+    if (attachments.length === 0) return "";
+    return [
+      "## Task Attachments",
+      "Use attachment references as evidence. Large or binary files may require explicit read/analysis tools before claiming details.",
+      ...attachments.map(formatAttachmentForContext)
+    ].join("\n");
+  }
+
+  private async ensureConversationSummary(task: TaskDetail): Promise<ConversationSummary | undefined> {
+    const existing = await this.store.listConversationSummaries(task.id);
+    const latest = existing.at(-1);
+    const visibleEvents = task.events.filter((event) => !["assistant_delta", "thinking_delta"].includes(event.type));
+    if (visibleEvents.length < 28) return latest;
+    const latestCoveredIndex = latest ? visibleEvents.findIndex((event) => event.id === latest.rangeEndEventId) : -1;
+    if (latest && visibleEvents.length - latestCoveredIndex < 18) return latest;
+    const startIndex = latestCoveredIndex >= 0 ? latestCoveredIndex + 1 : 0;
+    const endIndex = Math.max(startIndex, visibleEvents.length - 12);
+    const slice = visibleEvents.slice(startIndex, endIndex);
+    if (slice.length < 8) return latest;
+    const summaryText = buildExtractiveConversationSummary(slice);
+    const now = nowIso();
+    const summary: ConversationSummary = {
+      id: createId("summary"),
+      taskId: task.id,
+      rangeStartEventId: slice[0]!.id,
+      rangeEndEventId: slice.at(-1)!.id,
+      summary: latest ? `${latest.summary}\n\n${summaryText}` : summaryText,
+      tokenEstimate: estimateTokens(summaryText),
+      createdAt: now,
+      updatedAt: now
+    };
+    await this.store.saveConversationSummary(summary);
+    return summary;
   }
 
   private sessionFor(taskId: string): LoadedSkillSession {
@@ -284,20 +348,25 @@ export class FileStateTracker {
   }
 }
 
-export function buildHistoryLayer(task: TaskDetail, maxTokens: number, tracker?: FileStateTracker): string {
+export function buildHistoryLayer(task: TaskDetail, maxTokens: number, tracker?: FileStateTracker, afterEventId?: string): string {
   const events = task.events.filter(
     (event) =>
       !["status_changed", "task_created", "task_memory_created", "pattern_discovered", "reflection_completed"].includes(event.type)
   );
+  const startIndex = afterEventId ? events.findIndex((event) => event.id === afterEventId) + 1 : 0;
+  const visibleEvents = startIndex > 0 ? events.slice(startIndex) : events;
   const formatted: string[] = [];
   let usedTokens = 0;
-  for (let index = events.length - 1; index >= 0; index--) {
-    const event = events[index];
+  for (let index = visibleEvents.length - 1; index >= 0; index--) {
+    const event = visibleEvents[index];
     if (!event) continue;
     const text = formatEvent(event, tracker);
     if (!text) continue;
     const tokens = estimateTokens(text);
     if (usedTokens + tokens > maxTokens) {
+      if (formatted.length === 0) {
+        formatted.unshift(truncateToTokenBudget(text, maxTokens));
+      }
       formatted.unshift("... (earlier events omitted)");
       break;
     }
@@ -311,6 +380,8 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
   switch (event.type) {
     case "user_message":
       return `**User**: ${event.summary}`;
+    case "attachment_added":
+      return `**Attachment Added**: ${event.summary}`;
     case "assistant_delta":
     case "thinking_delta":
       return "";
@@ -318,11 +389,12 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
       return `**Agent**: ${event.summary}`;
     case "tool_requested":
       return `**Tool Call**: ${event.payload["toolName"]}(${JSON.stringify(event.payload["args"] ?? {})})`;
-    case "tool_result":
-      if (tracker && isFileContentInTracker(event, tracker)) {
-        return `**Tool Result**: File content recorded in Known Files.`;
-      }
+    case "tool_result": {
+      const fileResult = formatFileToolResult(event);
+      if (tracker && isFileContentInTracker(event, tracker) && fileResult) return fileResult;
+      if (fileResult) return fileResult;
       return `**Tool Result**:\n${formatToolOutput(String(event.payload["output"] ?? ""))}`;
+    }
     case "approval_pending":
       return `**Approval Required**: ${event.payload["toolName"]} [${event.payload["riskCategory"]}]`;
     case "approval_auto_granted":
@@ -333,9 +405,38 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
       return `**Guidance**: ${event.summary}`;
     case "guidance_pending":
       return `**Pending Guidance**: ${event.summary}`;
+    case "conversation_summary_created":
+      return "";
+    case "plan_created":
+    case "plan_step_started":
+    case "plan_step_completed":
+    case "plan_step_blocked":
+    case "plan_revised":
+      return `**Plan**: ${event.summary}`;
+    case "web_search_result":
+      return `**Web Search**: ${event.summary}`;
     default:
       return `**${event.type}**: ${event.summary}`;
   }
+}
+
+function formatAttachmentForContext(attachment: TaskAttachment): string {
+  const preview = attachment.textPreview ? `\nPreview:\n${attachment.textPreview.slice(0, 1200)}` : "";
+  return `- ${attachment.id}: ${attachment.fileName} (${attachment.kind}, ${attachment.mimeType}, ${attachment.size} bytes, hash ${attachment.contentHash})${preview}`;
+}
+
+function buildExtractiveConversationSummary(events: TaskEvent[]): string {
+  const lines = events
+    .map((event) => formatEvent(event))
+    .filter(Boolean)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const compact = lines.slice(0, 18).map((line) => `- ${line.slice(0, 360)}`).join("\n");
+  return [
+    "Earlier conversation was compacted to keep the task within the model context window.",
+    "Retain these facts as prior evidence, but prefer fresh tool evidence when exact file contents or host state matter.",
+    compact
+  ].join("\n");
 }
 
 export function estimateTokens(text: string): number {
@@ -355,11 +456,50 @@ function formatToolOutput(output: string): string {
   return `${output.slice(0, 2000)}\n\n... (${output.length - 4000} chars omitted) ...\n\n${output.slice(-2000)}`;
 }
 
+function truncateToTokenBudget(text: string, maxTokens: number): string {
+  const budget = Math.max(1, maxTokens);
+  let used = 0;
+  let index = 0;
+  for (; index < text.length; index++) {
+    const token = estimateTokens(text[index] ?? "");
+    if (used + token > budget) break;
+    used += token;
+  }
+  if (index >= text.length) return text;
+  return `${text.slice(0, index)}\n... (latest event truncated to fit context)`;
+}
+
 function isFileContentInTracker(event: TaskEvent, tracker: FileStateTracker): boolean {
   const output = String(event.payload["output"] ?? "");
   const parsed = parseJson(output);
   const path = String(parsed["path"] ?? "");
   return Boolean(path && tracker.hasFile(path));
+}
+
+function formatFileToolResult(event: TaskEvent): string | null {
+  const output = String(event.payload["output"] ?? "");
+  const parsed = parseJson(output);
+  const path = typeof parsed["path"] === "string" ? parsed["path"] : "";
+  if (!path) return null;
+
+  if (typeof parsed["content"] === "string") {
+    const content = parsed["content"];
+    const partial = parsed["partial"] ? " partial" : "";
+    const hashValue = typeof parsed["hash"] === "string" ? ` hash=${parsed["hash"]}` : "";
+    return [
+      `**Tool Result read_file**: ${path}${partial}${hashValue}`,
+      "```",
+      content.length > 1800 ? `${content.slice(0, 1800)}\n... (file excerpt truncated)` : content,
+      "```"
+    ].join("\n");
+  }
+
+  if (typeof parsed["changed"] === "boolean") {
+    const hashValue = typeof parsed["hash"] === "string" ? ` hash=${parsed["hash"]}` : "";
+    return `**Tool Result edit_file**: ${path} changed=${parsed["changed"]}${hashValue}`;
+  }
+
+  return null;
 }
 
 function extractErrorSummary(output: string): string {

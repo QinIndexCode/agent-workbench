@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup } from "@scc/shared";
+import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup, TaskAttachment } from "@scc/shared";
 import { api } from "./api.js";
 import { DocsView } from "./components/DocsView.js";
 import { HistoryPage } from "./components/HistoryPage.js";
@@ -10,10 +10,12 @@ import { ModelProvidersPanel } from "./components/ModelProvidersPanel.js";
 import { PermissionsPanel } from "./components/PermissionsPanel.js";
 import { ReflectionPanel } from "./components/ReflectionPanel.js";
 import { SettingsView, type SettingsSection } from "./components/SettingsView.js";
+import { ScheduledTasksPanel } from "./components/ScheduledTasksPanel.js";
 import { SkillPanel } from "./components/SkillPanel.js";
 import { SupportDialog } from "./components/SupportDialog.js";
 import { TaskList } from "./components/TaskList.js";
 import { TaskThread } from "./components/TaskThread.js";
+import { WebSearchPanel } from "./components/WebSearchPanel.js";
 import type { ComposerMode, ComposerPermissionMode, PermissionPreset } from "./components/Composer.js";
 import { normalizeContextPatch, providerById } from "./llm-presets.js";
 import { useWorkbenchData } from "./useWorkbenchData.js";
@@ -34,12 +36,17 @@ export function App() {
   const [libraryQuery, setLibraryQuery] = useState("");
   const [activeTaskFolderId, setActiveTaskFolderId] = useState("default");
   const [titleIssue, setTitleIssue] = useState<{ goal: string; error: string } | null>(null);
+  const [settingsStartCustom, setSettingsStartCustom] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<TaskAttachment[]>([]);
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const language = data.preferences?.language ?? "zh-CN";
   const engineStatus = data.error ? "attention" : data.realtimeConnected ? "streaming" : "running";
   const activeProvider = data.modelProviders.find((provider) => provider.id === data.preferences?.activeModelProviderId) ?? data.modelProviders.find((provider) => provider.enabled);
   const modelLabel = activeProvider?.defaultModelId || data.preferences?.defaultModel || "not configured";
   const permissionPreset = getPermissionPreset(data.permissions);
   const permissionScopeLabel = formatPermissionPreset(permissionPreset, language);
+  const hasCustomSnapshot = Boolean(data.preferences?.customPermissionSnapshot?.length);
   const modelProvider = providerById(data.preferences?.llmProvider);
   const modelOptions =
     activeProvider?.models.map((model) => ({ label: model.label || model.id, value: model.id })) ??
@@ -110,6 +117,9 @@ export function App() {
         <TaskThread
           task={data.selected}
           busy={data.busy}
+          attachments={pendingAttachments}
+          attachmentBusy={attachmentBusy}
+          attachmentError={attachmentError}
           error={data.error}
           language={language}
           engineStatus={engineStatus}
@@ -121,15 +131,24 @@ export function App() {
           permissionPreset={permissionPreset}
           permissionScopeLabel={permissionScopeLabel}
           onModelChange={(modelId) => updateModelSelection(modelId)}
+          onFilesSelected={(files) => uploadComposerFiles(files)}
+          onRemoveAttachment={(attachmentId) => removeComposerAttachment(attachmentId)}
           onFolderChange={(folderId) => setActiveTaskFolderId(folderId)}
           onOpenConnect={() => {
-            setSettingsSection("permissions");
+            setSettingsSection("providers");
             setActiveView("settings");
           }}
           onOpenPermissionSettings={() => {
             setSettingsSection("permissions");
             setActiveView("settings");
           }}
+          onOpenCustomPermissions={() => {
+            setSettingsStartCustom(true);
+            setSettingsSection("permissions");
+            setActiveView("settings");
+          }}
+          onRestoreCustomPermissions={() => restoreCustomPermissions()}
+          hasCustomSnapshot={hasCustomSnapshot}
           onPermissionPresetChange={(preset) => applyPermissionPreset(preset)}
           onOpenTasks={() => setTaskDrawerOpen(true)}
           onSubmit={(mode, text) => submitComposer(mode, text)}
@@ -225,6 +244,8 @@ export function App() {
                 language={language}
                 permissions={data.permissions}
                 preferences={data.preferences}
+                startCustom={settingsStartCustom}
+                onStartCustomConsumed={() => setSettingsStartCustom(false)}
                 onGrant={(risk) => void grantGlobal(risk)}
                 onRevoke={(risk) => void data.runSideAction(() => api.revokeGlobalPermission(risk))}
                 onPermissionPresetChange={(preset) => applyPermissionPreset(preset)}
@@ -241,6 +262,25 @@ export function App() {
                 onConnect={(serverId) => data.runSideAction(() => api.connectMcpServer(serverId))}
                 onDisconnect={(serverId) => data.runSideAction(() => api.disconnectMcpServer(serverId))}
                 onDelete={(serverId) => data.runSideAction(() => api.deleteMcpServer(serverId))}
+              />
+            ),
+            scheduled: (
+              <ScheduledTasksPanel
+                folders={data.taskFolders}
+                language={language}
+                scheduledTasks={data.scheduledTasks}
+                onCreate={(input) => data.runSideAction(() => api.createScheduledTask(input))}
+                onDelete={(taskId) => data.runSideAction(() => api.deleteScheduledTask(taskId))}
+                onUpdate={(taskId, input) => data.runSideAction(() => api.patchScheduledTask(taskId, input))}
+              />
+            ),
+            search: (
+              <WebSearchPanel
+                language={language}
+                providers={data.webSearchProviders}
+                onCreate={(input) => data.runSideAction(() => api.createWebSearchProvider(input))}
+                onDelete={(providerId) => data.runSideAction(() => api.deleteWebSearchProvider(providerId))}
+                onUpdate={(providerId, input) => data.runSideAction(() => api.patchWebSearchProvider(providerId, input))}
               />
             ),
             preferences: (
@@ -269,23 +309,32 @@ export function App() {
   }
 
   function submitComposer(mode: ComposerMode, text: string) {
+    const attachmentIds = pendingAttachments.map((attachment) => attachment.id);
     if (mode === "guidance" || mode === "continue") {
       setTitleIssue(null);
-      void data.runTaskAction(() => (data.selected ? api.sendMessage(data.selected.id, text) : submitNewTaskAction(text, false)));
+      void data.runTaskAction(async () => {
+        const task = data.selected ? await api.sendMessage(data.selected.id, text, attachmentIds) : await submitNewTaskAction(text, false, attachmentIds);
+        setPendingAttachments([]);
+        return task;
+      });
       return;
     }
-    submitNewTask(text, false);
+    submitNewTask(text, false, attachmentIds);
   }
 
-  function submitNewTask(goal: string, useLocalFallback: boolean) {
-    void data.runTaskAction(() => submitNewTaskAction(goal, useLocalFallback));
+  function submitNewTask(goal: string, useLocalFallback: boolean, attachmentIds = pendingAttachments.map((attachment) => attachment.id)) {
+    void data.runTaskAction(async () => {
+      const task = await submitNewTaskAction(goal, useLocalFallback, attachmentIds);
+      setPendingAttachments([]);
+      return task;
+    });
   }
 
-  async function submitNewTaskAction(goal: string, useLocalFallback: boolean) {
+  async function submitNewTaskAction(goal: string, useLocalFallback: boolean, attachmentIds = pendingAttachments.map((attachment) => attachment.id)) {
     try {
       const title = await api.generateTaskTitle(goal, language, useLocalFallback);
       setTitleIssue(null);
-      return api.createTask(goal, title.title, activeTaskFolderId);
+      return api.createTask(goal, title.title, activeTaskFolderId, attachmentIds);
     } catch (error) {
       setTitleIssue({ goal, error: error instanceof Error ? error.message : String(error) });
       throw error;
@@ -315,6 +364,12 @@ export function App() {
   function applyPermissionPreset(preset: PermissionPreset) {
     void data.runSideAction(async () => {
       const granted = new Set(data.permissions.map((permission) => permission.riskCategory));
+
+      if (permissionPreset === "custom") {
+        const snapshot = allRiskCategories.filter((risk) => granted.has(risk));
+        await api.updatePreferences(normalizeContextPatch(data.preferences, { customPermissionSnapshot: snapshot }));
+      }
+
       const target = new Set<RiskCategory>(
         preset === "all" ? allRiskCategories : preset === "read_only" ? readOnlyRiskCategories : []
       );
@@ -323,6 +378,22 @@ export function App() {
           await api.grantGlobalPermission(risk, `User selected ${preset} permission preset from the composer.`);
         }
         if (!target.has(risk) && granted.has(risk)) {
+          await api.revokeGlobalPermission(risk);
+        }
+      }
+    });
+  }
+
+  function restoreCustomPermissions() {
+    const snapshot = data.preferences?.customPermissionSnapshot;
+    if (!snapshot || snapshot.length === 0) return;
+    void data.runSideAction(async () => {
+      const granted = new Set(data.permissions.map((p) => p.riskCategory));
+      for (const risk of allRiskCategories) {
+        if (snapshot.includes(risk) && !granted.has(risk)) {
+          await api.grantGlobalPermission(risk, "Restored custom permission snapshot.");
+        }
+        if (!snapshot.includes(risk) && granted.has(risk)) {
           await api.revokeGlobalPermission(risk);
         }
       }
@@ -346,6 +417,34 @@ export function App() {
     });
   }
 
+  async function uploadComposerFiles(files: File[]) {
+    setAttachmentBusy(true);
+    setAttachmentError(null);
+    try {
+      const uploaded: TaskAttachment[] = [];
+      for (const file of files) {
+        if (file.size > 20 * 1024 * 1024) throw new Error(`${file.name} exceeds the 20MB file limit.`);
+        const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
+        uploaded.push(await api.uploadTaskAttachment({ fileName: file.name, mimeType: file.type || "application/octet-stream", size: file.size, dataBase64 }));
+      }
+      const totalBytes = [...pendingAttachments, ...uploaded].reduce((sum, attachment) => sum + attachment.size, 0);
+      if (totalBytes > 100 * 1024 * 1024) {
+        for (const attachment of uploaded) await api.deleteTaskAttachment(attachment.id).catch(() => undefined);
+        throw new Error("Task attachments exceed the 100MB task limit.");
+      }
+      setPendingAttachments((current) => [...current, ...uploaded]);
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAttachmentBusy(false);
+    }
+  }
+
+  async function removeComposerAttachment(attachmentId: string) {
+    await api.deleteTaskAttachment(attachmentId).catch(() => undefined);
+    setPendingAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId));
+  }
+
   async function exportSkill(skillId: string) {
     await data.runSideAction(async () => {
       const payload = await api.exportSkill(skillId);
@@ -365,6 +464,16 @@ export function App() {
       api.mergeSkills(group.canonicalSkillId, { targetSkillId: group.canonicalSkillId, sourceSkillIds, deleteSources: true })
     );
   }
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
 }
 
 function getPermissionPreset(permissions: Array<{ riskCategory: RiskCategory }>): ComposerPermissionMode {

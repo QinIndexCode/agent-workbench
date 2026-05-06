@@ -70,23 +70,30 @@ export class OpenAIModelClient implements ModelClient {
     if (provider?.protocol === "anthropic_messages") return this.nextAnthropic(task, context, provider, dynamicTools, stream);
     if (provider?.protocol === "gemini") return this.nextGemini(task, context, provider, dynamicTools, stream);
 
-    const model = provider?.model || preferences?.defaultModel?.trim() || this.defaultModel;
+    const preferenceModel =
+      preferences?.activeModelProviderId || preferences?.providerBaseUrl?.trim()
+        ? preferences.defaultModel?.trim()
+        : "";
+    const model = provider?.model || preferenceModel || this.defaultModel;
     const baseURL = normalizeBaseURL(provider?.baseURL || preferences?.providerBaseUrl?.trim() || this.defaultBaseURL);
     const apiKey = provider?.apiKey || this.apiKey;
     if (!apiKey) {
       return { kind: "final", message: "No model provider is configured. Add a model provider with an API key in Settings." };
     }
     const client = this.clientFor(baseURL, apiKey);
-    const response = await client.chat.completions.create({
-      model,
-      messages: [
-        { role: "system", content: context?.systemPrompt ?? fallbackInstructions() },
-        { role: "user", content: context?.input ?? buildInput(task) }
-      ],
-      stream: true,
-      tool_choice: "auto" as const,
-      tools: [...toolDefinitions(), ...dynamicTools] as OpenAI.Chat.Completions.ChatCompletionTool[]
-    });
+    const response = await client.chat.completions.create(
+      {
+        model,
+        messages: [
+          { role: "system", content: context?.systemPrompt ?? fallbackInstructions() },
+          { role: "user", content: context?.input ?? buildInput(task) }
+        ],
+        stream: true,
+        tool_choice: "auto" as const,
+        tools: [...toolDefinitions(), ...dynamicTools] as OpenAI.Chat.Completions.ChatCompletionTool[]
+      },
+      stream?.signal ? { signal: stream.signal } : undefined
+    );
 
     const streamed = await consumeChatCompletionStream(response, stream);
     const calls = streamed.calls;
@@ -123,6 +130,7 @@ export class OpenAIModelClient implements ModelClient {
   ): Promise<ModelTurn> {
     const response = await fetch(`${provider.baseURL || "https://api.anthropic.com"}/v1/messages`, {
       method: "POST",
+      ...(stream?.signal ? { signal: stream.signal } : {}),
       headers: {
         "content-type": "application/json",
         "x-api-key": provider.apiKey,
@@ -155,6 +163,7 @@ export class OpenAIModelClient implements ModelClient {
     const base = provider.baseURL || "https://generativelanguage.googleapis.com/v1beta";
     const response = await fetch(`${base}/models/${encodeURIComponent(provider.model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`, {
       method: "POST",
+      ...(stream?.signal ? { signal: stream.signal } : {}),
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: context?.systemPrompt ?? fallbackInstructions() }] },
@@ -198,6 +207,7 @@ async function consumeChatCompletionStream(
   const toolParts = new Map<number, StreamToolCallPart>();
 
   for await (const chunk of stream) {
+    if (handlers?.signal?.aborted) throw new Error("Model request cancelled by user.");
     const delta = readStreamDelta(chunk);
     if (!delta) continue;
 
@@ -270,7 +280,11 @@ function fallbackInstructions(): string {
     "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
     "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
     "If you need a file but are unsure it exists, list or search first instead of guessing paths such as README.md.",
-    "Keep normal answers concise, calm, and product-like. Avoid decorative emoji, hype, and marketing-style introductions unless the user asks for that tone.",
+    "When reporting a debug fix, base the root cause and final summary only on observed tool output and source code; do not speculate about code you did not see.",
+    "After debugging or editing code, the final answer should include the observed failure, exact root cause expression or file location when known, changed files, and verification result.",
+    "Keep normal answers concise, calm, and product-like.",
+    "Use emoji only when it fits the user's tone, preference, and task context; avoid emoji in serious debugging or incident-style work unless the user likes that style.",
+    "Avoid hype, decorative openings, and marketing-style introductions unless the user asks for that tone.",
     "Use Markdown for readable structure when helpful: short headings, bullets, tables, and code blocks are supported."
   ].join("\n");
 }
@@ -566,6 +580,17 @@ function toolDefinitions(): ModelToolDefinition[] {
         parameters: strictObject({
           skillId: { type: "string", description: "Skill ID from Available Skills" }
         }, ["skillId"])
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "web_search",
+        description: "Search the web through a configured provider when current external information is needed. Use sparingly and summarize only relevant evidence.",
+        parameters: strictObject({
+          query: { type: "string", description: "Focused search query." },
+          limit: { type: "number", description: "Number of results, default 5, max 10." }
+        }, ["query"])
       }
     }
   ];

@@ -1,4 +1,5 @@
 import type {
+  ConversationSummary,
   ExperienceRecord,
   GlobalPermissionGrant,
   KnowledgeItem,
@@ -8,13 +9,16 @@ import type {
   ProjectMemory,
   ReflectionSession,
   RiskCategory,
+  ScheduledTask,
   SkillConflict,
   SkillRecord,
+  TaskAttachment,
   TaskDetail,
   TaskFolderRecord,
   TaskMemory,
   ToolApproval,
-  UserPreferences
+  UserPreferences,
+  WebSearchProviderConfig
 } from "@scc/shared";
 import { normalizeSkillRecord } from "./experience.js";
 import { findWorkspaceRoot } from "./workspace-root.js";
@@ -28,6 +32,13 @@ export interface WorkbenchStore {
   getTask(taskId: string): Promise<TaskDetail | undefined>;
   listTasks(): Promise<TaskDetail[]>;
   deleteTask(taskId: string): Promise<void>;
+  saveTaskAttachment(record: TaskAttachment): Promise<void>;
+  getTaskAttachment(attachmentId: string): Promise<TaskAttachment | undefined>;
+  listTaskAttachments(taskId?: string): Promise<TaskAttachment[]>;
+  deleteTaskAttachment(attachmentId: string): Promise<void>;
+  saveConversationSummary(record: ConversationSummary): Promise<void>;
+  listConversationSummaries(taskId?: string): Promise<ConversationSummary[]>;
+  deleteConversationSummary(summaryId: string): Promise<void>;
   saveTaskFolder(record: TaskFolderRecord): Promise<void>;
   getTaskFolder(folderId: string): Promise<TaskFolderRecord | undefined>;
   listTaskFolders(): Promise<TaskFolderRecord[]>;
@@ -62,6 +73,17 @@ export interface WorkbenchStore {
   saveModelProviderSecret(providerId: string, secret: EncryptedSecretValue): Promise<void>;
   getModelProviderSecret(providerId: string): Promise<EncryptedSecretValue | undefined>;
   deleteModelProviderSecret(providerId: string): Promise<void>;
+  saveScheduledTask(record: ScheduledTask): Promise<void>;
+  getScheduledTask(taskId: string): Promise<ScheduledTask | undefined>;
+  listScheduledTasks(): Promise<ScheduledTask[]>;
+  deleteScheduledTask(taskId: string): Promise<void>;
+  saveWebSearchProvider(record: WebSearchProviderConfig): Promise<void>;
+  getWebSearchProvider(providerId: string): Promise<WebSearchProviderConfig | undefined>;
+  listWebSearchProviders(): Promise<WebSearchProviderConfig[]>;
+  deleteWebSearchProvider(providerId: string): Promise<void>;
+  saveWebSearchProviderSecret(providerId: string, secret: EncryptedSecretValue): Promise<void>;
+  getWebSearchProviderSecret(providerId: string): Promise<EncryptedSecretValue | undefined>;
+  deleteWebSearchProviderSecret(providerId: string): Promise<void>;
   saveReflectionSession(session: ReflectionSession): Promise<void>;
   listReflectionSessions(): Promise<ReflectionSession[]>;
   saveProjectMemory(record: ProjectMemory): Promise<void>;
@@ -83,6 +105,8 @@ export interface EncryptedSecretValue {
 
 export class InMemoryWorkbenchStore implements WorkbenchStore {
   private readonly tasks = new Map<string, TaskDetail>();
+  private readonly taskAttachments = new Map<string, TaskAttachment>();
+  private readonly conversationSummaries = new Map<string, ConversationSummary>();
   private readonly taskFolders = new Map<string, TaskFolderRecord>();
   private readonly experiences = new Map<string, ExperienceRecord>();
   private readonly taskMemories = new Map<string, TaskMemory>();
@@ -93,6 +117,9 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
   private readonly globalPermissions = new Map<RiskCategory, GlobalPermissionGrant>();
   private readonly modelProviders = new Map<string, ModelProviderRecord>();
   private readonly modelProviderSecrets = new Map<string, EncryptedSecretValue>();
+  private readonly scheduledTasks = new Map<string, ScheduledTask>();
+  private readonly webSearchProviders = new Map<string, WebSearchProviderConfig>();
+  private readonly webSearchProviderSecrets = new Map<string, EncryptedSecretValue>();
   private readonly reflectionSessions = new Map<string, ReflectionSession>();
   private readonly projectMemories = new Map<string, ProjectMemory>();
   private readonly knowledgeItems = new Map<string, KnowledgeItem>();
@@ -115,6 +142,41 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
 
   async deleteTask(taskId: string): Promise<void> {
     this.tasks.delete(taskId);
+  }
+
+  async saveTaskAttachment(record: TaskAttachment): Promise<void> {
+    this.taskAttachments.set(record.id, clone(record));
+  }
+
+  async getTaskAttachment(attachmentId: string): Promise<TaskAttachment | undefined> {
+    const record = this.taskAttachments.get(attachmentId);
+    return record ? clone(record) : undefined;
+  }
+
+  async listTaskAttachments(taskId?: string): Promise<TaskAttachment[]> {
+    return [...this.taskAttachments.values()]
+      .filter((record) => !taskId || record.taskId === taskId)
+      .map((record) => clone(record))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async deleteTaskAttachment(attachmentId: string): Promise<void> {
+    this.taskAttachments.delete(attachmentId);
+  }
+
+  async saveConversationSummary(record: ConversationSummary): Promise<void> {
+    this.conversationSummaries.set(record.id, clone(record));
+  }
+
+  async listConversationSummaries(taskId?: string): Promise<ConversationSummary[]> {
+    return [...this.conversationSummaries.values()]
+      .filter((record) => !taskId || record.taskId === taskId)
+      .map((record) => clone(record))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async deleteConversationSummary(summaryId: string): Promise<void> {
+    this.conversationSummaries.delete(summaryId);
   }
 
   async saveTaskFolder(record: TaskFolderRecord): Promise<void> {
@@ -260,6 +322,53 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
     this.modelProviderSecrets.delete(providerId);
   }
 
+  async saveScheduledTask(record: ScheduledTask): Promise<void> {
+    this.scheduledTasks.set(record.id, clone(record));
+  }
+
+  async getScheduledTask(taskId: string): Promise<ScheduledTask | undefined> {
+    const record = this.scheduledTasks.get(taskId);
+    return record ? clone(record) : undefined;
+  }
+
+  async listScheduledTasks(): Promise<ScheduledTask[]> {
+    return [...this.scheduledTasks.values()].map((record) => clone(record)).sort((a, b) => a.nextRunAt.localeCompare(b.nextRunAt));
+  }
+
+  async deleteScheduledTask(taskId: string): Promise<void> {
+    this.scheduledTasks.delete(taskId);
+  }
+
+  async saveWebSearchProvider(record: WebSearchProviderConfig): Promise<void> {
+    this.webSearchProviders.set(record.id, clone(record));
+  }
+
+  async getWebSearchProvider(providerId: string): Promise<WebSearchProviderConfig | undefined> {
+    const record = this.webSearchProviders.get(providerId);
+    return record ? clone(record) : undefined;
+  }
+
+  async listWebSearchProviders(): Promise<WebSearchProviderConfig[]> {
+    return [...this.webSearchProviders.values()].map((record) => clone(record)).sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  async deleteWebSearchProvider(providerId: string): Promise<void> {
+    this.webSearchProviders.delete(providerId);
+  }
+
+  async saveWebSearchProviderSecret(providerId: string, secret: EncryptedSecretValue): Promise<void> {
+    this.webSearchProviderSecrets.set(providerId, clone(secret));
+  }
+
+  async getWebSearchProviderSecret(providerId: string): Promise<EncryptedSecretValue | undefined> {
+    const secret = this.webSearchProviderSecrets.get(providerId);
+    return secret ? clone(secret) : undefined;
+  }
+
+  async deleteWebSearchProviderSecret(providerId: string): Promise<void> {
+    this.webSearchProviderSecrets.delete(providerId);
+  }
+
   async saveReflectionSession(session: ReflectionSession): Promise<void> {
     this.reflectionSessions.set(session.id, clone(session));
   }
@@ -333,7 +442,7 @@ export function defaultPreferences(): UserPreferences {
   return {
     llmProvider: "mimo",
     activeModelProviderId: undefined,
-    defaultModel: "gpt-5.4-mini",
+    defaultModel: "mimo-v2.5",
     providerBaseUrl: "",
     contextMode: "auto",
     customModelContextWindow: 128000,
@@ -341,6 +450,10 @@ export function defaultPreferences(): UserPreferences {
     autoApprove: "none",
     showThinking: true,
     language: "zh-CN",
+    agentTone: "balanced",
+    emojiStyle: "auto",
+    agentRole: "Pragmatic engineering assistant",
+    responseDetail: "normal",
     reflectionEnabled: true,
     reflectionSchedule: "02:00",
     skillAutoInject: true,

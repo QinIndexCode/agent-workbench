@@ -1,16 +1,18 @@
 import type { ReactNode } from "react";
-import { Menu, Cpu, Shield, Blocks, SlidersHorizontal } from "lucide-react";
+import { Menu, Cpu, Shield, Blocks, SlidersHorizontal, CalendarClock, Search } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
 import { PanelBoundary } from "./PanelBoundary.js";
 
-export type SettingsSection = "providers" | "permissions" | "mcp" | "preferences";
+export type SettingsSection = "providers" | "permissions" | "mcp" | "scheduled" | "search" | "preferences";
 
-const sectionIds: SettingsSection[] = ["providers", "permissions", "mcp", "preferences"];
+const sectionIds: SettingsSection[] = ["providers", "permissions", "mcp", "scheduled", "search", "preferences"];
 
 const sectionIcons: Record<SettingsSection, ReactNode> = {
   providers: <Cpu size={16} />,
   permissions: <Shield size={16} />,
   mcp: <Blocks size={16} />,
+  scheduled: <CalendarClock size={16} />,
+  search: <Search size={16} />,
   preferences: <SlidersHorizontal size={16} />
 };
 

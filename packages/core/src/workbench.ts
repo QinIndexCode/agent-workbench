@@ -1,5 +1,6 @@
 import type {
   ApprovalDecision,
+  ConversationSummary,
   ExperienceRecord,
   GlobalPermissionGrant,
   KnowledgeCreateRequest,
@@ -15,6 +16,9 @@ import type {
   ProjectMemoryCreateRequest,
   ReflectionSession,
   RiskCategory,
+  ScheduledTask,
+  ScheduledTaskCreateRequest,
+  ScheduledTaskPatchRequest,
   TaskFolderClearRequest,
   TaskFolderClearResult,
   TaskFolderDeleteRequest,
@@ -25,6 +29,9 @@ import type {
   TaskPatchRequest,
   TaskTitleRequest,
   TaskTitleResponse,
+  TaskAttachment,
+  TaskAttachmentKind,
+  TaskAttachmentUploadRequest,
   SkillCreateRequest,
   SkillDuplicateGroup,
   SkillMergeRequest,
@@ -36,10 +43,15 @@ import type {
   TaskEvent,
   ToolApproval,
   ToolCall,
-  ToolResult
+  ToolResult,
+  WebSearchProviderConfig,
+  WebSearchProviderCreateRequest,
+  WebSearchProviderPatchRequest
 } from "@scc/shared";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, resolve } from "node:path";
 import { stat } from "node:fs/promises";
-import { resolve } from "node:path";
 import { ContextAssembler } from "./context-assembler.js";
 import {
   createExperience,
@@ -59,6 +71,7 @@ import { PermissionEngine, type PermissionState, type RiskAssessment } from "./p
 import { LocalSecretBox, maskSecret } from "./secrets.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
 import { ShellToolExecutor, type ToolExecutor } from "./tools.js";
+import { createWebSearchApiKeyRef } from "./web-search.js";
 import { findWorkspaceRoot } from "./workspace-root.js";
 
 export interface ToolRiskProvider {
@@ -86,6 +99,7 @@ export class AgentWorkbench {
   private readonly secretBox = new LocalSecretBox();
   private readonly permissionState = new Map<string, PermissionState>();
   private readonly taskQueues = new Map<string, Promise<void>>();
+  private readonly runningModelControllers = new Map<string, AbortController>();
   private readonly runningToolControllers = new Map<string, AbortController>();
 
   constructor(options: AgentWorkbenchOptions = {}) {
@@ -97,26 +111,34 @@ export class AgentWorkbench {
     this.onEvent = options.onEvent;
   }
 
-  async createTask(goal: string, title = createLocalTaskTitle(goal), folderId = "default"): Promise<TaskDetail> {
-    const task = await this.initializeTask(goal, title, folderId);
+  async createTask(goal: string, title = createLocalTaskTitle(goal), folderId = "default", attachmentIds: string[] = []): Promise<TaskDetail> {
+    const task = await this.initializeTask(goal, title, folderId, attachmentIds);
     return this.runTaskExclusive(task.id, () => this.step(task.id));
   }
 
-  async startTask(goal: string, title = createLocalTaskTitle(goal), folderId = "default"): Promise<TaskDetail> {
-    const task = await this.initializeTask(goal, title, folderId);
+  async startTask(goal: string, title = createLocalTaskTitle(goal), folderId = "default", attachmentIds: string[] = []): Promise<TaskDetail> {
+    const task = await this.initializeTask(goal, title, folderId, attachmentIds);
     void this.runTaskExclusive(task.id, () => this.step(task.id)).catch((error) => {
       void this.failBackgroundRun(task.id, error);
     });
     return task;
   }
 
-  private async initializeTask(goal: string, title: string, folderId: string): Promise<TaskDetail> {
+  private async initializeTask(goal: string, title: string, folderId: string, attachmentIds: string[] = []): Promise<TaskDetail> {
     const folder = await this.resolveTaskFolder(folderId);
     const task = this.emptyTask(title);
     task.folderId = folder.id;
     task.workRoot = folder.rootPath;
     this.addEvent(task, "task_created", "Task created");
     this.addEvent(task, "user_message", goal);
+    this.addEvent(task, "plan_created", "Initial plan created", {
+      steps: [
+        { id: createId("plan_step"), title: "Understand the request", status: "completed" },
+        { id: createId("plan_step"), title: "Choose evidence or tools", status: "pending" },
+        { id: createId("plan_step"), title: "Return a visible result", status: "pending" }
+      ]
+    });
+    await this.attachUploadedFiles(task, attachmentIds);
     this.setStatus(task, "running");
     await this.store.saveTask(task);
     return task;
@@ -266,12 +288,19 @@ export class AgentWorkbench {
   }
 
   async deleteTask(taskId: string, options: TaskDeleteRequest = { deleteLearningData: false, deleteDerivedSkills: false }): Promise<TaskDeleteResult> {
-    this.cancelRunningTool(taskId);
+    this.cancelRunningTask(taskId);
     return this.runTaskExclusive(taskId, async () => {
       const task = await this.requiredTask(taskId);
       await this.store.deleteTask(taskId);
+      for (const attachment of await this.store.listTaskAttachments(taskId)) {
+        await this.deleteTaskAttachment(attachment.id);
+      }
+      for (const summary of await this.store.listConversationSummaries(taskId)) {
+        await this.store.deleteConversationSummary(summary.id);
+      }
       this.contextAssembler.cleanupTask(taskId);
       this.permissionState.delete(taskId);
+      this.runningModelControllers.delete(taskId);
       this.runningToolControllers.delete(taskId);
 
       const result: TaskDeleteResult = {
@@ -305,9 +334,54 @@ export class AgentWorkbench {
     });
   }
 
-  async appendMessage(taskId: string, content: string): Promise<TaskDetail> {
+  async uploadTaskAttachment(input: TaskAttachmentUploadRequest): Promise<TaskAttachment> {
+    const limits = taskAttachmentLimits();
+    if (input.size > limits.maxFileBytes) throw new Error(`Attachment exceeds ${Math.round(limits.maxFileBytes / 1024 / 1024)}MB limit.`);
+    const bytes = Buffer.from(input.dataBase64, "base64");
+    if (bytes.byteLength !== input.size) throw new Error("Attachment size does not match uploaded data.");
+    const now = nowIso();
+    const id = createId("attachment");
+    const contentHash = createHash("sha256").update(bytes).digest("hex");
+    const kind = classifyAttachment(input.fileName, input.mimeType);
+    const storagePath = resolve(findWorkspaceRoot(), "data", "attachments", `${id}-${sanitizeFileName(input.fileName)}`);
+    await mkdir(dirname(storagePath), { recursive: true });
+    await writeFile(storagePath, bytes);
+    const textPreview = await buildAttachmentTextPreview(storagePath, kind, input.mimeType);
+    const attachment: TaskAttachment = {
+      id,
+      fileName: input.fileName,
+      mimeType: input.mimeType || "application/octet-stream",
+      size: input.size,
+      kind,
+      storagePath,
+      contentHash,
+      ...(textPreview ? { textPreview } : {}),
+      createdAt: now,
+      updatedAt: now
+    };
+    await this.store.saveTaskAttachment(attachment);
+    return attachment;
+  }
+
+  async listTaskAttachments(taskId?: string): Promise<TaskAttachment[]> {
+    return this.store.listTaskAttachments(taskId);
+  }
+
+  async deleteTaskAttachment(attachmentId: string): Promise<void> {
+    const attachment = await this.store.getTaskAttachment(attachmentId);
+    if (!attachment) return;
+    await this.store.deleteTaskAttachment(attachmentId);
+    await rm(attachment.storagePath, { force: true }).catch(() => undefined);
+  }
+
+  async listConversationSummaries(taskId?: string): Promise<ConversationSummary[]> {
+    return this.store.listConversationSummaries(taskId);
+  }
+
+  async appendMessage(taskId: string, content: string, attachmentIds: string[] = []): Promise<TaskDetail> {
     return this.runTaskExclusive(taskId, async () => {
       const task = await this.requiredTask(taskId);
+      await this.attachUploadedFiles(task, attachmentIds);
       if (task.status === "running" || task.status === "waiting_approval") {
         this.addEvent(task, "guidance_pending", content, { status: "pending" });
         await this.store.saveTask(task);
@@ -330,7 +404,7 @@ export class AgentWorkbench {
       });
     }
 
-    this.cancelRunningTool(taskId);
+    this.cancelRunningTask(taskId);
     const task = await this.requiredTask(taskId);
     if (action === "pause") this.setStatus(task, "paused");
     if (action === "cancel") this.setStatus(task, "cancelled");
@@ -362,6 +436,13 @@ export class AgentWorkbench {
       });
 
       if (decision === "deny") {
+        this.addEvent(task, "tool_result", "Tool denied by user", {
+          toolCallId: approval.toolCall.id,
+          toolName: approval.toolCall.toolName,
+          args: approval.toolCall.args,
+          ok: false,
+          output: "Tool request denied by user. Explain the limitation, ask for a different approval, or choose a non-denied path."
+        });
         this.setStatus(task, "running");
         await this.store.saveTask(task);
         return this.step(task.id);
@@ -372,6 +453,11 @@ export class AgentWorkbench {
       const result = await this.executeTool(task.id, approval.toolCall);
       const latest = await this.requiredTask(task.id);
       this.addToolResultEvent(latest, approval.toolCall, result);
+      this.addEvent(latest, result.ok ? "plan_step_completed" : "plan_step_blocked", `${approval.toolCall.toolName}: ${result.ok ? "completed" : "blocked"}`, {
+        toolCallId: approval.toolCall.id,
+        toolName: approval.toolCall.toolName,
+        ok: result.ok
+      });
       await this.store.saveTask(latest);
       if (latest.status !== "running") return latest;
       return this.step(latest.id);
@@ -673,6 +759,142 @@ export class AgentWorkbench {
     }
   }
 
+  async listScheduledTasks(): Promise<ScheduledTask[]> {
+    return this.store.listScheduledTasks();
+  }
+
+  async createScheduledTask(input: ScheduledTaskCreateRequest): Promise<ScheduledTask> {
+    await this.resolveTaskFolder(input.folderId);
+    const now = nowIso();
+    const nextRunAt = computeNextRunAt(input.runAt, input.intervalMinutes);
+    const scheduled: ScheduledTask = {
+      id: createId("schedule"),
+      title: input.title,
+      prompt: input.prompt,
+      folderId: input.folderId,
+      ...(input.modelProviderId ? { modelProviderId: input.modelProviderId } : {}),
+      permissionPreset: input.permissionPreset,
+      schedule: {
+        kind: input.intervalMinutes ? "interval" : "once",
+        ...(input.runAt ? { runAt: input.runAt } : {}),
+        ...(input.intervalMinutes ? { intervalMinutes: input.intervalMinutes } : {})
+      },
+      status: "active",
+      nextRunAt,
+      createdAt: now,
+      updatedAt: now
+    };
+    await this.store.saveScheduledTask(scheduled);
+    return scheduled;
+  }
+
+  async updateScheduledTask(taskId: string, input: ScheduledTaskPatchRequest): Promise<ScheduledTask> {
+    const current = await this.store.getScheduledTask(taskId);
+    if (!current) throw new Error(`Scheduled task not found: ${taskId}`);
+    if (input.folderId) await this.resolveTaskFolder(input.folderId);
+    const nextInterval = input.intervalMinutes ?? current.schedule.intervalMinutes;
+    const nextRunAtInput = input.runAt ?? current.schedule.runAt;
+    const scheduleChanged = input.runAt !== undefined || input.intervalMinutes !== undefined;
+    const updated: ScheduledTask = {
+      ...current,
+      ...(input.title ? { title: input.title } : {}),
+      ...(input.prompt ? { prompt: input.prompt } : {}),
+      ...(input.folderId ? { folderId: input.folderId } : {}),
+      ...(input.modelProviderId !== undefined ? { modelProviderId: input.modelProviderId } : {}),
+      ...(input.permissionPreset ? { permissionPreset: input.permissionPreset } : {}),
+      ...(input.status ? { status: input.status } : {}),
+      ...(scheduleChanged
+        ? {
+            schedule: {
+              kind: nextInterval ? "interval" : "once",
+              ...(nextRunAtInput ? { runAt: nextRunAtInput } : {}),
+              ...(nextInterval ? { intervalMinutes: nextInterval } : {})
+            },
+            nextRunAt: computeNextRunAt(nextRunAtInput, nextInterval)
+          }
+        : {}),
+      updatedAt: nowIso()
+    };
+    await this.store.saveScheduledTask(updated);
+    return updated;
+  }
+
+  async deleteScheduledTask(taskId: string): Promise<void> {
+    await this.store.deleteScheduledTask(taskId);
+  }
+
+  async runDueScheduledTasks(now = new Date()): Promise<ScheduledTask[]> {
+    const changed: ScheduledTask[] = [];
+    for (const scheduled of await this.store.listScheduledTasks()) {
+      if (scheduled.status !== "active" || new Date(scheduled.nextRunAt).getTime() > now.getTime()) continue;
+      const task = await this.initializeTask(scheduled.prompt, scheduled.title, scheduled.folderId);
+      this.addEvent(task, "scheduled_task_created", scheduled.title, { scheduledTaskId: scheduled.id });
+      await this.store.saveTask(task);
+      void this.runTaskExclusive(task.id, () => this.step(task.id)).catch((error) => {
+        void this.failBackgroundRun(task.id, error);
+      });
+      const next = advanceScheduledTask(scheduled, task.id, now);
+      await this.store.saveScheduledTask(next);
+      changed.push(next);
+    }
+    return changed;
+  }
+
+  async listWebSearchProviders(): Promise<WebSearchProviderConfig[]> {
+    return this.store.listWebSearchProviders();
+  }
+
+  async createWebSearchProvider(input: WebSearchProviderCreateRequest): Promise<WebSearchProviderConfig> {
+    const now = nowIso();
+    const id = createId("web_search_provider");
+    const secret = input.apiKey ? this.secretBox.encrypt(input.apiKey) : undefined;
+    if (secret) await this.store.saveWebSearchProviderSecret(id, secret);
+    const provider: WebSearchProviderConfig = {
+      id,
+      label: input.label,
+      kind: input.kind,
+      ...(input.endpoint ? { endpoint: input.endpoint } : {}),
+      ...(secret ? { apiKeyRef: createWebSearchApiKeyRef(id, input.apiKey!, secret) } : {}),
+      enabled: input.enabled,
+      createdAt: now,
+      updatedAt: now
+    };
+    await this.store.saveWebSearchProvider(provider);
+    return provider;
+  }
+
+  async updateWebSearchProvider(providerId: string, input: WebSearchProviderPatchRequest): Promise<WebSearchProviderConfig> {
+    const current = await this.store.getWebSearchProvider(providerId);
+    if (!current) throw new Error(`Web search provider not found: ${providerId}`);
+    let apiKeyRef = current.apiKeyRef;
+    if (input.clearApiKey) {
+      await this.store.deleteWebSearchProviderSecret(providerId);
+      apiKeyRef = undefined;
+    }
+    if (input.apiKey) {
+      const secret = this.secretBox.encrypt(input.apiKey);
+      await this.store.saveWebSearchProviderSecret(providerId, secret);
+      apiKeyRef = createWebSearchApiKeyRef(providerId, input.apiKey, secret);
+    }
+    const updated: WebSearchProviderConfig = {
+      ...current,
+      ...(input.label ? { label: input.label } : {}),
+      ...(input.kind ? { kind: input.kind } : {}),
+      ...(input.endpoint !== undefined ? { endpoint: input.endpoint } : {}),
+      ...(apiKeyRef ? { apiKeyRef } : {}),
+      ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+      updatedAt: nowIso()
+    };
+    if (!apiKeyRef) delete updated.apiKeyRef;
+    await this.store.saveWebSearchProvider(updated);
+    return updated;
+  }
+
+  async deleteWebSearchProvider(providerId: string): Promise<void> {
+    await this.store.deleteWebSearchProvider(providerId);
+    await this.store.deleteWebSearchProviderSecret(providerId);
+  }
+
   async runReflection(): Promise<ReflectionSession> {
     const result = reflectMemories(await this.store.listTaskMemories(), await this.store.listPatterns());
     await this.store.saveReflectionSession(result.session);
@@ -789,12 +1011,14 @@ export class AgentWorkbench {
     if (task.status !== "running") return task;
 
     this.consumePendingGuidance(task);
+    await this.store.saveTask(task);
     const turn = await this.safeModelNext(task);
     this.addLoadedSkillEvents(task);
     if (!turn) return task;
     const stoppedAfterModel = await this.stoppedTask(task.id);
     if (stoppedAfterModel) return stoppedAfterModel;
     if (turn.kind === "final") {
+      this.addEvent(task, "plan_step_completed", "Return a visible result", { status: "completed" });
       this.addEvent(task, "assistant_message", turn.message, turn.streamId ? { streamId: turn.streamId } : {});
       this.setStatus(task, "completed");
       await this.recordExperience(task);
@@ -808,6 +1032,11 @@ export class AgentWorkbench {
 
       const assessment = (await this.toolRiskProvider?.assessTool(call)) ?? this.permissions.assess(call.toolName, call.args);
       const metadata = await this.describeToolCall(task, call, assessment);
+      this.addEvent(task, "plan_step_started", `Use ${call.toolName}`, {
+        toolCallId: call.id,
+        toolName: call.toolName,
+        riskCategory: assessment.category
+      });
       this.addEvent(task, "tool_requested", call.toolName, {
         toolCallId: call.id,
         toolName: call.toolName,
@@ -837,6 +1066,11 @@ export class AgentWorkbench {
       const result = await this.executeTool(task.id, call);
       const latest = await this.requiredTask(task.id);
       this.addToolResultEvent(latest, call, result);
+      this.addEvent(latest, result.ok ? "plan_step_completed" : "plan_step_blocked", `${call.toolName}: ${result.ok ? "completed" : "blocked"}`, {
+        toolCallId: call.id,
+        toolName: call.toolName,
+        ok: result.ok
+      });
       await this.store.saveTask(latest);
       if (latest.status !== "running") return latest;
       Object.assign(task, latest);
@@ -871,26 +1105,48 @@ export class AgentWorkbench {
 
   private async safeModelNext(task: TaskDetail): Promise<Awaited<ReturnType<ModelClient["next"]>> | null> {
     const streamId = createId("model_stream");
+    const controller = new AbortController();
+    this.runningModelControllers.set(task.id, controller);
     try {
       return await this.model.next(task, {
         streamId,
+        signal: controller.signal,
         onAssistantDelta: async (delta) => {
-          this.addEvent(task, "assistant_delta", delta, { streamId, delta });
-          await this.store.saveTask(task);
+          await this.addStreamingDelta(task, "assistant_delta", delta, streamId, controller.signal);
         },
         onThinkingDelta: async (delta) => {
-          this.addEvent(task, "thinking_delta", delta, { streamId, delta });
-          await this.store.saveTask(task);
+          await this.addStreamingDelta(task, "thinking_delta", delta, streamId, controller.signal);
         }
       });
     } catch (error) {
+      if (controller.signal.aborted) return null;
       const message = sanitizeProviderError(error instanceof Error ? error.message : String(error));
       this.addEvent(task, "assistant_message", `Model provider failed: ${message}`);
       this.setStatus(task, "failed");
       await this.updateLoadedSkillStats(task, false);
       await this.store.saveTask(task);
       return null;
+    } finally {
+      if (this.runningModelControllers.get(task.id) === controller) {
+        this.runningModelControllers.delete(task.id);
+      }
     }
+  }
+
+  private async addStreamingDelta(
+    task: TaskDetail,
+    type: "assistant_delta" | "thinking_delta",
+    delta: string,
+    streamId: string,
+    signal: AbortSignal
+  ): Promise<void> {
+    if (signal.aborted) return;
+    const current = await this.store.getTask(task.id);
+    if (!current || current.status !== "running" || signal.aborted) return;
+    this.addEvent(current, type, delta, { streamId, delta });
+    if (signal.aborted) return;
+    await this.store.saveTask(current);
+    Object.assign(task, current);
   }
 
   private async saveSkillWithConflicts(skill: SkillRecord): Promise<SkillRecord> {
@@ -966,6 +1222,11 @@ export class AgentWorkbench {
     this.runningToolControllers.get(taskId)?.abort();
   }
 
+  private cancelRunningTask(taskId: string): void {
+    this.runningModelControllers.get(taskId)?.abort();
+    this.cancelRunningTool(taskId);
+  }
+
   private async describeToolCall(task: TaskDetail, call: ToolCall, assessment: RiskAssessment): Promise<Record<string, unknown>> {
     const providerMetadata = (await this.toolRiskProvider?.describeToolCall?.(call)) ?? {};
     return {
@@ -986,7 +1247,15 @@ export class AgentWorkbench {
       ok: result.ok,
       output: result.output
     });
-    this.contextAssembler.getFileStateTracker(task.id).updateFromToolResult(task.events[task.events.length - 1]!);
+    const toolEvent = task.events[task.events.length - 1]!;
+    if (call.toolName === "web_search") {
+      this.addEvent(task, "web_search_result", result.ok ? "Search evidence returned" : "Search failed", {
+        toolCallId: result.toolCallId,
+        ok: result.ok,
+        output: result.output
+      });
+    }
+    this.contextAssembler.getFileStateTracker(task.id).updateFromToolResult(toolEvent);
   }
 
   private addApprovalPendingEvent(task: TaskDetail, approval: ToolApproval): void {
@@ -1129,10 +1398,38 @@ export class AgentWorkbench {
       ...(reason ? { reason } : {})
     };
   }
+
+  private async attachUploadedFiles(task: TaskDetail, attachmentIds: string[]): Promise<void> {
+    if (attachmentIds.length === 0) return;
+    const existingBytes = (await this.store.listTaskAttachments(task.id)).reduce((sum, attachment) => sum + attachment.size, 0);
+    let nextBytes = existingBytes;
+    for (const attachmentId of [...new Set(attachmentIds)]) {
+      const attachment = await this.store.getTaskAttachment(attachmentId);
+      if (!attachment) throw new Error(`Attachment not found: ${attachmentId}`);
+      if (attachment.taskId && attachment.taskId !== task.id) throw new Error(`Attachment already belongs to another task: ${attachmentId}`);
+      nextBytes += attachment.size;
+      if (nextBytes > taskAttachmentLimits().maxTaskBytes) {
+        throw new Error(`Task attachments exceed ${Math.round(taskAttachmentLimits().maxTaskBytes / 1024 / 1024)}MB limit.`);
+      }
+      const updated: TaskAttachment = { ...attachment, taskId: task.id, updatedAt: nowIso() };
+      await this.store.saveTaskAttachment(updated);
+      this.addEvent(task, "attachment_added", updated.fileName, {
+        attachmentId: updated.id,
+        fileName: updated.fileName,
+        mimeType: updated.mimeType,
+        size: updated.size,
+        kind: updated.kind,
+        contentHash: updated.contentHash,
+        textPreview: updated.textPreview
+      });
+    }
+  }
 }
 
 function sanitizeProviderError(input: string): string {
-  return input.replace(/\bsk-[A-Za-z0-9_\-*]{8,}/g, "[redacted-api-key]");
+  return input
+    .replace(/\bsk-[A-Za-z0-9_\-*]{8,}/g, "[redacted-api-key]")
+    .replace(/\btp-[A-Za-z0-9_\-*]{8,}/g, "[redacted-api-key]");
 }
 
 async function fetchWithTimeout(input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1], timeoutMs = 8_000): Promise<Response> {
@@ -1277,6 +1574,63 @@ function previewArgs(args: Record<string, unknown>): string {
   const raw = JSON.stringify(args, null, 2);
   if (raw.length <= 1600) return raw;
   return `${raw.slice(0, 1600)}\n... args truncated ...`;
+}
+
+function taskAttachmentLimits(): { maxFileBytes: number; maxTaskBytes: number } {
+  return {
+    maxFileBytes: Number(process.env["SCC_ATTACHMENT_MAX_FILE_BYTES"] ?? 20 * 1024 * 1024),
+    maxTaskBytes: Number(process.env["SCC_ATTACHMENT_MAX_TASK_BYTES"] ?? 100 * 1024 * 1024)
+  };
+}
+
+function classifyAttachment(fileName: string, mimeType: string): TaskAttachmentKind {
+  const ext = extname(fileName).toLowerCase();
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.includes("pdf") || ext === ".pdf") return "pdf";
+  if (/word|excel|powerpoint|officedocument/i.test(mimeType) || [".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"].includes(ext)) return "office";
+  if (mimeType.includes("json") || [".json", ".csv", ".tsv"].includes(ext)) return "data";
+  if (mimeType.includes("markdown") || ext === ".md") return "markdown";
+  if (mimeType.startsWith("text/") || [".txt", ".log"].includes(ext)) return "text";
+  if ([".js", ".jsx", ".ts", ".tsx", ".css", ".html", ".py", ".rs", ".go", ".java", ".cs", ".cpp", ".c", ".h", ".yaml", ".yml", ".toml"].includes(ext)) return "code";
+  return "binary";
+}
+
+function sanitizeFileName(fileName: string): string {
+  return basename(fileName).replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").slice(0, 180) || "attachment.bin";
+}
+
+async function buildAttachmentTextPreview(storagePath: string, kind: TaskAttachmentKind, mimeType: string): Promise<string | undefined> {
+  if (!["text", "markdown", "code", "data"].includes(kind) && !mimeType.startsWith("text/")) return undefined;
+  const content = await readFile(storagePath, "utf8").catch(() => "");
+  if (!content) return undefined;
+  return content.slice(0, 6000);
+}
+
+function computeNextRunAt(runAt?: string, intervalMinutes?: number): string {
+  if (runAt) return new Date(runAt).toISOString();
+  const minutes = intervalMinutes ?? 60;
+  return new Date(Date.now() + minutes * 60_000).toISOString();
+}
+
+function advanceScheduledTask(task: ScheduledTask, lastTaskId: string, now: Date): ScheduledTask {
+  const updatedAt = nowIso();
+  if (task.schedule.kind === "interval" && task.schedule.intervalMinutes) {
+    return {
+      ...task,
+      lastTaskId,
+      lastRunAt: now.toISOString(),
+      nextRunAt: new Date(now.getTime() + task.schedule.intervalMinutes * 60_000).toISOString(),
+      updatedAt
+    };
+  }
+  return {
+    ...task,
+    status: "completed",
+    lastTaskId,
+    lastRunAt: now.toISOString(),
+    nextRunAt: now.toISOString(),
+    updatedAt
+  };
 }
 
 function cleanTags(tags: string[]): string[] {

@@ -1,7 +1,9 @@
 import type { z } from "zod";
 import type {
   ApprovalDecisionSchema,
+  ConversationSummarySchema,
   CreateTaskRequestSchema,
+  ContextPackSchema,
   ExperienceRecordSchema,
   GlobalPermissionGrantSchema,
   KnowledgeCreateRequestSchema,
@@ -37,7 +39,15 @@ import type {
   SkillRecordSchema,
   SkillStatusPatchSchema,
   SkillUpdateRequestSchema,
+  ScheduledTaskCreateRequestSchema,
+  ScheduledTaskPatchRequestSchema,
+  ScheduledTaskSchema,
+  TaskAttachmentKindSchema,
+  TaskAttachmentSchema,
+  TaskAttachmentUploadRequestSchema,
   TaskMemorySchema,
+  TaskPlanSchema,
+  TaskPlanStepSchema,
   TaskFolderClearRequestSchema,
   TaskFolderClearResultSchema,
   TaskFolderDeleteRequestSchema,
@@ -56,7 +66,12 @@ import type {
   ToolApprovalSchema,
   ToolCallSchema,
   ToolResultSchema,
-  UserPreferencesSchema
+  UserPreferencesSchema,
+  WebSearchProviderConfigSchema,
+  WebSearchProviderCreateRequestSchema,
+  WebSearchProviderKindSchema,
+  WebSearchProviderPatchRequestSchema,
+  WebSearchResultSchema
 } from "./schemas.js";
 
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
@@ -73,6 +88,13 @@ export type McpServerCreateRequest = z.infer<typeof McpServerCreateRequestSchema
 export type McpServerPatchRequest = z.infer<typeof McpServerPatchRequestSchema>;
 export type ToolApproval = z.infer<typeof ToolApprovalSchema>;
 export type TaskEvent = z.infer<typeof TaskEventSchema>;
+export type TaskAttachmentKind = z.infer<typeof TaskAttachmentKindSchema>;
+export type TaskAttachment = z.infer<typeof TaskAttachmentSchema>;
+export type TaskAttachmentUploadRequest = z.infer<typeof TaskAttachmentUploadRequestSchema>;
+export type ConversationSummary = z.infer<typeof ConversationSummarySchema>;
+export type ContextPack = z.infer<typeof ContextPackSchema>;
+export type TaskPlanStep = z.infer<typeof TaskPlanStepSchema>;
+export type TaskPlan = z.infer<typeof TaskPlanSchema>;
 export type TaskDetail = z.infer<typeof TaskDetailSchema>;
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;
 export type TaskTitleRequest = z.infer<typeof TaskTitleRequestSchema>;
@@ -116,3 +138,11 @@ export type SkillCorrectionRequest = z.infer<typeof SkillCorrectionRequestSchema
 export type ReflectionSession = z.infer<typeof ReflectionSessionSchema>;
 export type ProjectMemory = z.infer<typeof ProjectMemorySchema>;
 export type ProjectMemoryCreateRequest = z.infer<typeof ProjectMemoryCreateRequestSchema>;
+export type ScheduledTask = z.infer<typeof ScheduledTaskSchema>;
+export type ScheduledTaskCreateRequest = z.infer<typeof ScheduledTaskCreateRequestSchema>;
+export type ScheduledTaskPatchRequest = z.infer<typeof ScheduledTaskPatchRequestSchema>;
+export type WebSearchProviderKind = z.infer<typeof WebSearchProviderKindSchema>;
+export type WebSearchProviderConfig = z.infer<typeof WebSearchProviderConfigSchema>;
+export type WebSearchProviderCreateRequest = z.infer<typeof WebSearchProviderCreateRequestSchema>;
+export type WebSearchProviderPatchRequest = z.infer<typeof WebSearchProviderPatchRequestSchema>;
+export type WebSearchResult = z.infer<typeof WebSearchResultSchema>;

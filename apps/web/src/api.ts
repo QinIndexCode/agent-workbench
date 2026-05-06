@@ -19,6 +19,9 @@ import type {
   ProjectMemoryCreateRequest,
   ReflectionSession,
   RiskCategory,
+  ScheduledTask,
+  ScheduledTaskCreateRequest,
+  ScheduledTaskPatchRequest,
   SkillBulkDeleteRequest,
   SkillCorrectionRequest,
   SkillConflict,
@@ -31,6 +34,8 @@ import type {
   TaskDeleteRequest,
   TaskDeleteResult,
   TaskDetail,
+  TaskAttachment,
+  TaskAttachmentUploadRequest,
   TaskFolderClearRequest,
   TaskFolderClearResult,
   TaskFolderDeleteRequest,
@@ -41,7 +46,11 @@ import type {
   TaskPatchRequest,
   TaskTitleResponse,
   TaskMemory,
-  UserPreferences
+  UserPreferences,
+  ConversationSummary,
+  WebSearchProviderConfig,
+  WebSearchProviderCreateRequest,
+  WebSearchProviderPatchRequest
 } from "@scc/shared";
 
 const apiBase = import.meta.env["VITE_API_BASE"] ?? "";
@@ -70,8 +79,8 @@ export const api = {
       body: JSON.stringify({ goal, ...(language ? { language } : {}), useLocalFallback })
     });
   },
-  createTask(goal: string, title: string, folderId?: string): Promise<TaskDetail> {
-    return request("/api/tasks", { method: "POST", body: JSON.stringify({ goal, title, ...(folderId ? { folderId } : {}) }) });
+  createTask(goal: string, title: string, folderId?: string, attachmentIds: string[] = []): Promise<TaskDetail> {
+    return request("/api/tasks", { method: "POST", body: JSON.stringify({ goal, title, ...(folderId ? { folderId } : {}), ...(attachmentIds.length ? { attachmentIds } : {}) }) });
   },
   listTasks(): Promise<TaskDetail[]> {
     return request("/api/tasks");
@@ -100,8 +109,20 @@ export const api = {
   deleteTask(taskId: string, input: TaskDeleteRequest = { deleteLearningData: false, deleteDerivedSkills: false }): Promise<TaskDeleteResult> {
     return request(`/api/tasks/${taskId}`, { method: "DELETE", body: JSON.stringify(input) });
   },
-  sendMessage(taskId: string, content: string): Promise<TaskDetail> {
-    return request(`/api/tasks/${taskId}/messages`, { method: "POST", body: JSON.stringify({ content }) });
+  sendMessage(taskId: string, content: string, attachmentIds: string[] = []): Promise<TaskDetail> {
+    return request(`/api/tasks/${taskId}/messages`, { method: "POST", body: JSON.stringify({ content, ...(attachmentIds.length ? { attachmentIds } : {}) }) });
+  },
+  uploadTaskAttachment(input: TaskAttachmentUploadRequest): Promise<TaskAttachment> {
+    return request("/api/task-attachments", { method: "POST", body: JSON.stringify(input) });
+  },
+  deleteTaskAttachment(attachmentId: string): Promise<void> {
+    return request(`/api/task-attachments/${attachmentId}`, { method: "DELETE" });
+  },
+  listTaskAttachments(taskId: string): Promise<TaskAttachment[]> {
+    return request(`/api/tasks/${taskId}/attachments`);
+  },
+  listConversationSummaries(taskId: string): Promise<ConversationSummary[]> {
+    return request(`/api/tasks/${taskId}/summaries`);
   },
   control(taskId: string, action: "pause" | "resume" | "cancel"): Promise<TaskDetail> {
     return request(`/api/tasks/${taskId}/control`, { method: "POST", body: JSON.stringify({ action }) });
@@ -216,6 +237,30 @@ export const api = {
   },
   deleteModelProvider(providerId: string): Promise<void> {
     return request(`/api/model-providers/${providerId}`, { method: "DELETE" });
+  },
+  listScheduledTasks(): Promise<ScheduledTask[]> {
+    return request("/api/scheduled-tasks");
+  },
+  createScheduledTask(input: ScheduledTaskCreateRequest): Promise<ScheduledTask> {
+    return request("/api/scheduled-tasks", { method: "POST", body: JSON.stringify(input) });
+  },
+  patchScheduledTask(taskId: string, input: ScheduledTaskPatchRequest): Promise<ScheduledTask> {
+    return request(`/api/scheduled-tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(input) });
+  },
+  deleteScheduledTask(taskId: string): Promise<void> {
+    return request(`/api/scheduled-tasks/${taskId}`, { method: "DELETE" });
+  },
+  listWebSearchProviders(): Promise<WebSearchProviderConfig[]> {
+    return request("/api/web-search/providers");
+  },
+  createWebSearchProvider(input: WebSearchProviderCreateRequest): Promise<WebSearchProviderConfig> {
+    return request("/api/web-search/providers", { method: "POST", body: JSON.stringify(input) });
+  },
+  patchWebSearchProvider(providerId: string, input: WebSearchProviderPatchRequest): Promise<WebSearchProviderConfig> {
+    return request(`/api/web-search/providers/${providerId}`, { method: "PATCH", body: JSON.stringify(input) });
+  },
+  deleteWebSearchProvider(providerId: string): Promise<void> {
+    return request(`/api/web-search/providers/${providerId}`, { method: "DELETE" });
   },
   listKnowledgeItems(): Promise<KnowledgeItem[]> {
     return request("/api/knowledge");

@@ -173,13 +173,21 @@ describe("Workbench components", () => {
         language="en-US"
         engineStatus="running"
         preferences={null}
+        attachments={[]}
+        attachmentBusy={false}
+        attachmentError={null}
         modelLabel="mimo-v2.5"
         modelOptions={[{ label: "Mimo v2.5", value: "mimo-v2.5" }]}
         permissionPreset="ask"
         permissionScopeLabel="Approval"
         onModelChange={vi.fn()}
+        onFilesSelected={vi.fn()}
+        onRemoveAttachment={vi.fn()}
         onOpenConnect={vi.fn()}
         onOpenPermissionSettings={vi.fn()}
+        onOpenCustomPermissions={vi.fn()}
+        onRestoreCustomPermissions={vi.fn()}
+        hasCustomSnapshot={false}
         onPermissionPresetChange={vi.fn()}
         onOpenTasks={vi.fn()}
         onSubmit={onSubmit}
@@ -467,6 +475,10 @@ describe("Workbench components", () => {
       autoApprove: "none",
       showThinking: true,
       language: "zh-CN",
+      agentTone: "balanced",
+      emojiStyle: "auto",
+      agentRole: "Pragmatic engineering assistant",
+      responseDetail: "normal",
       reflectionEnabled: true,
       reflectionSchedule: "02:00",
       skillAutoInject: true,
@@ -774,7 +786,9 @@ describe("Workbench components", () => {
           url === "/api/mcp/servers" ||
           url === "/api/mcp/tools" ||
           url === "/api/knowledge" ||
-          url === "/api/model-providers"
+          url === "/api/model-providers" ||
+          url === "/api/scheduled-tasks" ||
+          url === "/api/web-search/providers"
         ) {
           return jsonResponse([]);
         }
@@ -789,6 +803,10 @@ describe("Workbench components", () => {
             autoApprove: "none",
             showThinking: true,
             language: "en-US",
+            agentTone: "balanced",
+            emojiStyle: "auto",
+            agentRole: "Pragmatic engineering assistant",
+            responseDetail: "normal",
             reflectionEnabled: true,
             reflectionSchedule: "02:00",
             skillAutoInject: true,
@@ -861,7 +879,9 @@ describe("Workbench components", () => {
           url === "/api/mcp/servers" ||
           url === "/api/mcp/tools" ||
           url === "/api/knowledge" ||
-          url === "/api/model-providers"
+          url === "/api/model-providers" ||
+          url === "/api/scheduled-tasks" ||
+          url === "/api/web-search/providers"
         ) {
           return jsonResponse([]);
         }
@@ -876,6 +896,10 @@ describe("Workbench components", () => {
             autoApprove: "none",
             showThinking: true,
             language: "en-US",
+            agentTone: "balanced",
+            emojiStyle: "auto",
+            agentRole: "Pragmatic engineering assistant",
+            responseDetail: "normal",
             reflectionEnabled: true,
             reflectionSchedule: "02:00",
             skillAutoInject: true,
@@ -895,6 +919,10 @@ describe("Workbench components", () => {
     expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
     fireEvent.click(screen.getByText("Permissions"));
     expect(screen.getByText("Permissions and preferences")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Scheduled tasks"));
+    expect(screen.getByRole("heading", { name: "Scheduled tasks" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Web search"));
+    expect(screen.getByRole("heading", { name: "Web search" })).toBeInTheDocument();
   });
 });
 

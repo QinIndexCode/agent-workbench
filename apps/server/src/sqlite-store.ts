@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import type {
+  ConversationSummary,
   ExperienceRecord,
   GlobalPermissionGrant,
   KnowledgeItem,
@@ -11,17 +12,22 @@ import type {
   ProjectMemory,
   ReflectionSession,
   RiskCategory,
+  ScheduledTask,
   SkillConflict,
   SkillRecord,
+  TaskAttachment,
   TaskDetail,
   TaskFolderRecord,
   TaskMemory,
-  UserPreferences
+  UserPreferences,
+  WebSearchProviderConfig
 } from "@scc/shared";
 import { defaultPreferences, normalizeSkillRecord, normalizeTaskDetail, normalizeTaskFolderRecord, type EncryptedSecretValue, type WorkbenchStore } from "@scc/core";
 
 type Namespace =
   | "tasks"
+  | "task_attachments"
+  | "conversation_summaries"
   | "task_folders"
   | "experiences"
   | "task_memories"
@@ -32,6 +38,9 @@ type Namespace =
   | "global_permissions"
   | "model_providers"
   | "model_provider_secrets"
+  | "scheduled_tasks"
+  | "web_search_providers"
+  | "web_search_provider_secrets"
   | "preferences"
   | "reflection_sessions"
   | "project_memories"
@@ -67,6 +76,38 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
 
   async deleteTask(taskId: string): Promise<void> {
     this.delete("tasks", taskId);
+  }
+
+  async saveTaskAttachment(record: TaskAttachment): Promise<void> {
+    this.upsert("task_attachments", record.id, record);
+  }
+
+  async getTaskAttachment(attachmentId: string): Promise<TaskAttachment | undefined> {
+    return this.get<TaskAttachment>("task_attachments", attachmentId);
+  }
+
+  async listTaskAttachments(taskId?: string): Promise<TaskAttachment[]> {
+    return this.list<TaskAttachment>("task_attachments")
+      .filter((record) => !taskId || record.taskId === taskId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async deleteTaskAttachment(attachmentId: string): Promise<void> {
+    this.delete("task_attachments", attachmentId);
+  }
+
+  async saveConversationSummary(record: ConversationSummary): Promise<void> {
+    this.upsert("conversation_summaries", record.id, record);
+  }
+
+  async listConversationSummaries(taskId?: string): Promise<ConversationSummary[]> {
+    return this.list<ConversationSummary>("conversation_summaries")
+      .filter((record) => !taskId || record.taskId === taskId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async deleteConversationSummary(summaryId: string): Promise<void> {
+    this.delete("conversation_summaries", summaryId);
   }
 
   async saveTaskFolder(record: TaskFolderRecord): Promise<void> {
@@ -212,6 +253,50 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
 
   async deleteModelProviderSecret(providerId: string): Promise<void> {
     this.delete("model_provider_secrets", providerId);
+  }
+
+  async saveScheduledTask(record: ScheduledTask): Promise<void> {
+    this.upsert("scheduled_tasks", record.id, record);
+  }
+
+  async getScheduledTask(taskId: string): Promise<ScheduledTask | undefined> {
+    return this.get<ScheduledTask>("scheduled_tasks", taskId);
+  }
+
+  async listScheduledTasks(): Promise<ScheduledTask[]> {
+    return this.list<ScheduledTask>("scheduled_tasks").sort((a, b) => a.nextRunAt.localeCompare(b.nextRunAt));
+  }
+
+  async deleteScheduledTask(taskId: string): Promise<void> {
+    this.delete("scheduled_tasks", taskId);
+  }
+
+  async saveWebSearchProvider(record: WebSearchProviderConfig): Promise<void> {
+    this.upsert("web_search_providers", record.id, record);
+  }
+
+  async getWebSearchProvider(providerId: string): Promise<WebSearchProviderConfig | undefined> {
+    return this.get<WebSearchProviderConfig>("web_search_providers", providerId);
+  }
+
+  async listWebSearchProviders(): Promise<WebSearchProviderConfig[]> {
+    return this.list<WebSearchProviderConfig>("web_search_providers").sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  async deleteWebSearchProvider(providerId: string): Promise<void> {
+    this.delete("web_search_providers", providerId);
+  }
+
+  async saveWebSearchProviderSecret(providerId: string, secret: EncryptedSecretValue): Promise<void> {
+    this.upsert("web_search_provider_secrets", providerId, secret);
+  }
+
+  async getWebSearchProviderSecret(providerId: string): Promise<EncryptedSecretValue | undefined> {
+    return this.get<EncryptedSecretValue>("web_search_provider_secrets", providerId);
+  }
+
+  async deleteWebSearchProviderSecret(providerId: string): Promise<void> {
+    this.delete("web_search_provider_secrets", providerId);
   }
 
   async saveReflectionSession(session: ReflectionSession): Promise<void> {

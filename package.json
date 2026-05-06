@@ -11,6 +11,8 @@
     "build": "npm run build -w @scc/shared && npm run build -w @scc/core && npm run build -w @scc/server && npm run build -w @scc/web",
     "dev": "npm run dev -w @scc/server",
     "test": "vitest run",
+    "test:matrix": "vitest run tests/real-task-matrix/matrix.test.ts",
+    "smoke:live-model": "npm.cmd run build && node scripts/live-model-smoke.mjs",
     "test:e2e": "npm.cmd run build && playwright test",
     "typecheck": "tsc -b packages/shared packages/core apps/server apps/web",
     "check:no-old-control": "node scripts/check-no-old-control.mjs"

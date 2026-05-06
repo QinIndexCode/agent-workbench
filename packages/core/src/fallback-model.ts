@@ -7,6 +7,7 @@ export type ModelTurn =
 
 export interface ModelStreamHandlers {
   streamId: string;
+  signal?: AbortSignal;
   onAssistantDelta: (delta: string) => Promise<void>;
   onThinkingDelta: (delta: string) => Promise<void>;
 }

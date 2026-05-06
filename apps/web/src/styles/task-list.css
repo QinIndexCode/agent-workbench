@@ -3,9 +3,11 @@
   flex-direction: column;
   min-height: 0;
   padding: 20px;
+  position: relative;
   overflow: hidden;
   background: var(--sidebar-bg);
   border-right: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  transition: width 350ms ease-in-out, min-width 350ms ease-in-out, padding 350ms ease-in-out;
 }
 
 .brand {
@@ -129,7 +131,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  min-height: 28px;
+  height: 28px;
+  position: relative;
+  overflow: visible;
   color: var(--muted);
   font-size: 11px;
   font-weight: 760;
@@ -156,32 +160,39 @@
   align-items: center;
   margin-left: auto;
   position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+}
+
+.folderPanelActions > .folderIconButton {
+  transition: width 160ms ease, opacity 120ms ease, padding 160ms ease;
 }
 
 .folderSearchWrap {
   position: absolute;
-  right: 31px;
+  right: 35px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
-  gap: 6px;
+  gap: 4px;
   align-items: center;
+  height: 28px;
   width: 0;
-  min-height: 28px;
   padding: 0;
   overflow: hidden;
   color: var(--muted);
   background: #090d0f;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  opacity: 0.52;
-  pointer-events: auto;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 0;
   transition: width 200ms ease, opacity 160ms ease, padding 160ms ease, border-color 160ms ease;
 }
 
 .folderSearchWrap.open {
-  width: 220px;
-  padding: 0 7px;
+  width: 200px;
+  padding: 0 6px;
   border-color: var(--border);
   opacity: 1;
   pointer-events: auto;
@@ -190,8 +201,10 @@
 .folderSearchWrap input {
   flex: 1 1 auto;
   min-width: 0;
+  height: 100%;
   color: var(--text);
   font-size: 12px;
+  line-height: 26px;
   background: transparent;
   border: 0;
   outline: 0;
@@ -224,8 +237,12 @@
 }
 
 .folderIconButton.searchHidden {
-  opacity: 0.52;
-  pointer-events: auto;
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .folderTree {
@@ -957,6 +974,145 @@
   color: var(--text);
   background: var(--surface-selected);
   border-color: color-mix(in srgb, var(--accent-border) 80%, transparent);
+}
+
+.sidebarResizeHandle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+  opacity: 1;
+  transition: opacity 160ms ease;
+}
+
+.sidebarResizeHandle:hover {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.sidebarExpandedContent {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  visibility: visible;
+  transition: opacity 150ms ease, transform 150ms ease, visibility 0ms;
+}
+
+.sidebarExpandedContent.contentHidden {
+  opacity: 0;
+  transform: translateX(-20px);
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity 150ms ease, transform 150ms ease, visibility 0ms 150ms;
+}
+
+.sidebar.collapsed .sidebarResizeHandle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sidebarCollapsedRail {
+  position: absolute;
+  top: 20px;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 0 10px 0 0;
+  width: 52px;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  z-index: 2;
+}
+
+.sidebar.collapsed .sidebarCollapsedRail {
+  position: relative;
+  top: auto;
+  right: auto;
+  width: 100%;
+  padding: 10px 0;
+  align-items: center;
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+  transition: opacity 180ms ease;
+}
+
+.sidebarCollapsedIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.sidebarCollapsedIcon:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.sidebarCollapseButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin-left: auto;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.sidebarCollapseButton > svg {
+  transition: transform 260ms ease;
+}
+
+.sidebar.collapsed .sidebarCollapseButton > svg {
+  transform: rotate(180deg);
+}
+
+.sidebarCollapseButton:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+@keyframes sidebarIconSpin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(180deg); }
+}
+
+.sidebarCollapseButton > svg.spin {
+  animation: sidebarIconSpin 260ms ease forwards;
+}
+
+.sidebar.collapsed {
+  width: 52px;
+  min-width: 52px;
+  padding: 10px 0;
 }
 
 @media (max-width: 760px) {

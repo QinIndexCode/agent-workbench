@@ -27,6 +27,9 @@ export class PermissionEngine {
     if (toolName === "edit_file") {
       return { category: "workspace_write", reason: "edit_file changes local project files." };
     }
+    if (toolName === "web_search") {
+      return { category: "network", reason: "web_search reaches external search providers and web pages." };
+    }
 
     if (toolName !== "run_command") {
       return { category: "shell", reason: "Custom tool execution requires review." };

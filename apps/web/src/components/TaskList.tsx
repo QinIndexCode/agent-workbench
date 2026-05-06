@@ -1,6 +1,6 @@
 import type { TaskDeleteRequest, TaskDetail, TaskFolderDeleteRequest, TaskFolderRecord, TaskPatchRequest } from "@scc/shared";
-import { BookOpen, ChevronRight, Clock3, Edit3, FileText, Folder, FolderPlus, HelpCircle, Plus, Search, Settings, Terminal, Trash2 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { BookOpen, ChevronRight, Clock3, Edit3, FileText, Folder, FolderPlus, HelpCircle, PanelLeft, PanelLeftClose, Plus, Search, Settings, Terminal, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getUiCopy } from "../i18n.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { FolderPickerDialog } from "./FolderPickerDialog.js";
@@ -65,7 +65,14 @@ export function TaskList({
   const [deleteLearningData, setDeleteLearningData] = useState(false);
   const [deleteDerivedSkills, setDeleteDerivedSkills] = useState(false);
   const [utilityOpen, setUtilityOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [collapsedIconSpin, setCollapsedIconSpin] = useState(false);
+  const [contentHidden, setContentHidden] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(300);
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number; visible: boolean }>({ text: "", x: 0, y: 0, visible: false });
+  const draggingRef = useRef(false);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const preCollapseWidthRef = useRef(300);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const toggleButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const mainButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
@@ -115,6 +122,67 @@ export function TaskList({
     return tasks.filter((task) => `${task.title} ${task.status}`.toLowerCase().includes(normalized));
   }, [query, tasks]);
 
+  const MIN_SIDEBAR_WIDTH = 200;
+  const MAX_SIDEBAR_WIDTH = 480;
+
+  useEffect(() => {
+    const shell = document.querySelector(".shell") as HTMLElement | null;
+    if (!shell) return;
+    shell.style.setProperty("--sidebar-width", `${sidebarWidth}px`);
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (collapsed) {
+      preCollapseWidthRef.current = sidebarWidth;
+      setContentHidden(true);
+      const t = setTimeout(() => setSidebarWidth(52), 150);
+      return () => clearTimeout(t);
+    } else {
+      setSidebarWidth(preCollapseWidthRef.current);
+      const t = setTimeout(() => setContentHidden(false), 350);
+      return () => clearTimeout(t);
+    }
+  }, [collapsed]);
+
+  useEffect(() => {
+    if (collapsedIconSpin) {
+      const t = setTimeout(() => setCollapsedIconSpin(false), 300);
+      return () => clearTimeout(t);
+    }
+  }, [collapsedIconSpin]);
+
+  useEffect(() => {
+    const onMouseMove = (event: MouseEvent) => {
+      if (!draggingRef.current) return;
+      event.preventDefault();
+      const newWidth = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, event.clientX));
+      setSidebarWidth(newWidth);
+    };
+
+    const onMouseUp = () => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+
+    return () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
+  const handleResizeStart: React.MouseEventHandler<HTMLDivElement> = (event) => {
+    event.preventDefault();
+    if (collapsed) return;
+    draggingRef.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+
   const getFolderTasks = (folderId: string) => {
     return filteredTasks.filter((task) => (task.folderId || "default") === folderId);
   };
@@ -127,263 +195,300 @@ export function TaskList({
         onClick={onClose}
         type="button"
       />
-      <aside className={open ? "sidebar open" : "sidebar"}>
-        <div className="brand">
-          <span className="brandIcon">
-            <Terminal size={17} />
-          </span>
-          <span className="brandCopy">
-            <strong>SCC</strong>
-            <small>{text.engineStatus[engineStatus]}</small>
-          </span>
-          <button className="closeDrawerButton" onClick={onClose} type="button">
-            {text.close}
-          </button>
-        </div>
-        <div className="sidebarNav" aria-label={text.navigation}>
+      <aside ref={sidebarRef} className={collapsed ? "sidebar collapsed" : open ? "sidebar open" : "sidebar"}>
+        <div className="sidebarCollapsedRail">
           <button
-            className="sidebarNavButton primary"
+            className="sidebarCollapsedIcon"
+            onClick={() => setCollapsed(false)}
+            type="button"
+          >
+            <PanelLeft size={18} />
+          </button>
+          <button
+            className="sidebarCollapsedIcon"
             onClick={() => {
               onNewTask();
             }}
+            title={text.newTask}
             type="button"
           >
-            <Plus size={16} />
-            {text.newTask}
-          </button>
-          <button
-            className={activeView === "history" ? "sidebarNavButton selected" : "sidebarNavButton"}
-            onClick={() => {
-              onOpenHistory?.();
-            }}
-            type="button"
-          >
-            <Clock3 size={16} />
-            {text.history}
-          </button>
-          <button className={activeView === "library" ? "sidebarNavButton selected" : "sidebarNavButton"} onClick={onOpenLibrary} type="button">
-            <BookOpen size={16} />
-            {text.library}
+            <Plus size={18} />
           </button>
         </div>
-        <section className="folderPanel" aria-label={text.folders}>
-          <div className="folderPanelHeader">
-            <span className={searchOpen ? "folderPanelTitle hidden" : "folderPanelTitle"}>{text.folders}</span>
-            <div className="folderPanelActions">
-              <div className={searchOpen ? "folderSearchWrap open" : "folderSearchWrap"}>
-                <Search aria-hidden="true" size={13} />
-                <input
-                  aria-label={text.searchTasks}
-                  autoFocus={searchOpen}
-                  placeholder={text.searchTasks}
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
+        <div className={contentHidden ? "sidebarExpandedContent contentHidden" : "sidebarExpandedContent"}>
+          <div className="brand">
+            <span className="brandIcon">
+              <Terminal size={17} />
+            </span>
+            <span className="brandCopy">
+              <strong>SCC</strong>
+              <small>{text.engineStatus[engineStatus]}</small>
+            </span>
+            <button className="closeDrawerButton" onClick={onClose} type="button">
+              {text.close}
+            </button>
+            <button
+              aria-label="收起侧边栏"
+              className="sidebarCollapseButton"
+              onClick={() => {
+                setCollapsedIconSpin(true);
+                setCollapsed(true);
+              }}
+              title="收起侧边栏"
+              type="button"
+            >
+              <PanelLeftClose className={collapsedIconSpin ? "spin" : ""} size={16} />
+            </button>
+          </div>
+          <div className="sidebarNav" aria-label={text.navigation}>
+            <button
+              className="sidebarNavButton primary"
+              onClick={() => {
+                onNewTask();
+              }}
+              title={text.newTask}
+              type="button"
+            >
+              <Plus size={16} />
+              {text.newTask}
+            </button>
+            <button
+              className={activeView === "history" ? "sidebarNavButton selected" : "sidebarNavButton"}
+              onClick={() => {
+                onOpenHistory?.();
+              }}
+              title={text.history}
+              type="button"
+            >
+              <Clock3 size={16} />
+              {text.history}
+            </button>
+            <button className={activeView === "library" ? "sidebarNavButton selected" : "sidebarNavButton"} onClick={onOpenLibrary} title={text.library} type="button">
+              <BookOpen size={16} />
+              {text.library}
+            </button>
+          </div>
+            <section className="folderPanel" aria-label={text.folders}>
+              <div className="folderPanelHeader">
+                <span className={searchOpen ? "folderPanelTitle hidden" : "folderPanelTitle"}>{text.folders}</span>
+                <div className="folderPanelActions">
+                  <button
+                    aria-label={language === "zh-CN" ? "打开任务搜索" : "Open task search"}
+                    className={searchOpen ? "folderIconButton searchHidden" : "folderIconButton"}
+                    onClick={() => setSearchOpen(true)}
+                    type="button"
+                  >
+                    <Search size={14} />
+                  </button>
+                  <button aria-label={text.addFolder} className="folderIconButton" type="button" onClick={() => setFolderEditor({ id: null, name: "", rootPath: "" })}>
+                    <FolderPlus size={14} />
+                  </button>
+                </div>
+                <div className={searchOpen ? "folderSearchWrap open" : "folderSearchWrap"}>
+                  <Search aria-hidden="true" size={13} />
+                  <input
+                    aria-label={text.searchTasks}
+                    autoFocus={searchOpen}
+                    placeholder={text.searchTasks}
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                  />
+                  <button
+                    aria-label={text.close}
+                    className="folderSearchClose"
+                    onClick={() => {
+                      setSearchOpen(false);
+                      setQuery("");
+                    }}
+                    type="button"
+                  >
+                    <span aria-hidden="true">&times;</span>
+                  </button>
+                </div>
+              </div>
+              <nav className="folderTree" aria-label={text.folders}>
+                {folderItems.map((folder) => {
+                  const folderTasks = getFolderTasks(folder.id);
+                  const isExpanded = expandedFolderId === folder.id;
+                  return (
+                    <div className={isExpanded ? "folderTreeItem expanded" : "folderTreeItem"} key={folder.id}>
+                      <div className="folderTreeRow">
+                        <button
+                          ref={(el) => {
+                            if (el) toggleButtonRefs.current.set(folder.id, el);
+                          }}
+                          className="folderTreeToggle"
+                          type="button"
+                          onClick={() => {
+                            if (isExpanded) {
+                              setExpandedFolderId("");
+                            } else {
+                              setExpandedFolderId(folder.id);
+                              onFolderSelect(folder.id);
+                            }
+                          }}
+                          aria-expanded={isExpanded}
+                        >
+                          <ChevronRight
+                            size={13}
+                            className={isExpanded ? "folderTreeChevron open" : "folderTreeChevron"}
+                          />
+                        </button>
+                        <button
+                          ref={(el) => {
+                            if (el) mainButtonRefs.current.set(folder.id, el);
+                          }}
+                          className="folderTreeMain"
+                          type="button"
+                          onClick={() => {
+                            if (isExpanded) {
+                              setExpandedFolderId("");
+                            } else {
+                              setExpandedFolderId(folder.id);
+                              onFolderSelect(folder.id);
+                            }
+                          }}
+                          onMouseEnter={(event) => {
+                            const rect = event.currentTarget.getBoundingClientRect();
+                            setTooltip({
+                              text: folder.rootPath ? `${folder.name}\n${folder.rootPath}` : folder.name,
+                              x: rect.left,
+                              y: rect.top - 8,
+                              visible: true
+                            });
+                          }}
+                          onMouseLeave={() => setTooltip((prev) => ({ ...prev, visible: false }))}
+                        >
+                          <Folder size={14} />
+                          <span className="folderName">{folder.name.split(/[\\/]/).pop() || folder.name}</span>
+                          <small className="folderTaskCount">{text.folderTasks(folderCounts.get(folder.id) ?? 0)}</small>
+                        </button>
+                        <button
+                          aria-label={`${text.newTask} ${folder.name}`}
+                          className="folderAddTaskButton"
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onFolderSelect(folder.id);
+                            onNewTask();
+                          }}
+                        >
+                          <Plus size={13} />
+                        </button>
+                        {!folder.browseOnly && !folder.system ? (
+                          <button
+                            aria-label={`${text.editFolder} ${folder.name}`}
+                            className="folderEditButton"
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setFolderEditor({ id: folder.id, name: folder.name, rootPath: folder.rootPath ?? "" });
+                            }}
+                          >
+                            <Edit3 size={13} />
+                          </button>
+                        ) : null}
+                        {!folder.system ? (
+                          <button
+                            aria-label={`${text.deleteFolder} ${folder.name}`}
+                            className="folderDeleteButton"
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setDeletingFolderId(folder.id);
+                              setDeleteLearningData(false);
+                              setDeleteDerivedSkills(false);
+                            }}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        ) : null}
+                      </div>
+                      {isExpanded ? (
+                        <div className="folderTaskList">
+                          {folderTasks.length === 0 ? (
+                            <p className="folderEmpty">{query ? text.noMatchingTasks : text.noTasks}</p>
+                          ) : (
+                            folderTasks.map((task) => (
+                              <div className={activeView === "tasks" && task.id === selectedId ? "folderTaskItem taskItem selected" : "folderTaskItem taskItem"} key={task.id}>
+                                <button
+                                  className="folderTaskItemMain"
+                                  onClick={() => {
+                                    onSelect(task.id);
+                                  }}
+                                  type="button"
+                                >
+                                  <span>{task.title}</span>
+                                  <small>{task.status.replace("_", " ")}</small>
+                                </button>
+                                <button
+                                  aria-label={`${text.editTask} ${task.title}`}
+                                  className="taskEditButton"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setTaskEditorId(task.id);
+                                  }}
+                                  type="button"
+                                >
+                                  <Edit3 size={14} />
+                                </button>
+                                <button
+                                  aria-label={`${text.deleteTask} ${task.title}`}
+                                  className="taskDeleteButton"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setConfirmingId(task.id);
+                                    setDeleteLearningData(false);
+                                    setDeleteDerivedSkills(false);
+                                  }}
+                                  type="button"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </nav>
+            </section>
+            <div className="sidebarUtility">
+              <button
+                aria-expanded={utilityOpen}
+                className={utilityOpen ? "sidebarUtilityToggle open" : "sidebarUtilityToggle"}
+                onClick={() => setUtilityOpen((v) => !v)}
+                title={text.settings}
+                type="button"
+              >
+                <Settings size={16} />
+              </button>
+              <div className={utilityOpen ? "sidebarUtilityMenu open" : "sidebarUtilityMenu"}>
                 <button
-                  aria-label={text.close}
-                  className="folderSearchClose"
+                  className={activeView === "settings" ? "sidebarUtilityItem selected" : "sidebarUtilityItem"}
                   onClick={() => {
-                    setSearchOpen(false);
-                    setQuery("");
+                    onOpenSettings();
+                    setUtilityOpen(false);
                   }}
                   type="button"
                 >
-                  <span aria-hidden="true">&times;</span>
+                  <Settings size={14} />
+                  {text.settings}
+                </button>
+                <button className="sidebarUtilityItem" onClick={onOpenSupport} type="button">
+                  <HelpCircle size={14} />
+                  {text.support}
+                </button>
+                <button className="sidebarUtilityItem" onClick={onOpenDocs} type="button">
+                  <FileText size={14} />
+                  {text.docs}
                 </button>
               </div>
-              <button
-                aria-label={language === "zh-CN" ? "打开任务搜索" : "Open task search"}
-                className={searchOpen ? "folderIconButton searchHidden" : "folderIconButton"}
-                onClick={() => setSearchOpen(true)}
-                type="button"
-              >
-                <Search size={14} />
-              </button>
-              <button aria-label={text.addFolder} className="folderIconButton" type="button" onClick={() => setFolderEditor({ id: null, name: "", rootPath: "" })}>
-                <FolderPlus size={14} />
-              </button>
-            </div>
-          </div>
-          <nav className="folderTree" aria-label={text.folders}>
-            {folderItems.map((folder) => {
-              const folderTasks = getFolderTasks(folder.id);
-              const isExpanded = expandedFolderId === folder.id;
-              return (
-                <div className={isExpanded ? "folderTreeItem expanded" : "folderTreeItem"} key={folder.id}>
-                  <div className="folderTreeRow">
-                    <button
-                      ref={(el) => {
-                        if (el) toggleButtonRefs.current.set(folder.id, el);
-                      }}
-                      className="folderTreeToggle"
-                      type="button"
-                      onClick={() => {
-                        if (isExpanded) {
-                          setExpandedFolderId("");
-                        } else {
-                          setExpandedFolderId(folder.id);
-                          onFolderSelect(folder.id);
-                        }
-                      }}
-                      aria-expanded={isExpanded}
-                    >
-                      <ChevronRight
-                        size={13}
-                        className={isExpanded ? "folderTreeChevron open" : "folderTreeChevron"}
-                      />
-                    </button>
-                    <button
-                      ref={(el) => {
-                        if (el) mainButtonRefs.current.set(folder.id, el);
-                      }}
-                      className="folderTreeMain"
-                      type="button"
-                      onClick={() => {
-                        if (isExpanded) {
-                          setExpandedFolderId("");
-                        } else {
-                          setExpandedFolderId(folder.id);
-                          onFolderSelect(folder.id);
-                        }
-                      }}
-                      onMouseEnter={(event) => {
-                        const rect = event.currentTarget.getBoundingClientRect();
-                        setTooltip({
-                          text: folder.rootPath ? `${folder.name}\n${folder.rootPath}` : folder.name,
-                          x: rect.left,
-                          y: rect.top - 8,
-                          visible: true
-                        });
-                      }}
-                      onMouseLeave={() => setTooltip((prev) => ({ ...prev, visible: false }))}
-                    >
-                      <Folder size={14} />
-                      <span className="folderName">{folder.name.split(/[\\/]/).pop() || folder.name}</span>
-                      <small className="folderTaskCount">{text.folderTasks(folderCounts.get(folder.id) ?? 0)}</small>
-                    </button>
-                    <button
-                      aria-label={`${text.newTask} ${folder.name}`}
-                      className="folderAddTaskButton"
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onFolderSelect(folder.id);
-                        onNewTask();
-                      }}
-                    >
-                      <Plus size={13} />
-                    </button>
-                    {!folder.browseOnly && !folder.system ? (
-                      <button
-                        aria-label={`${text.editFolder} ${folder.name}`}
-                        className="folderEditButton"
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setFolderEditor({ id: folder.id, name: folder.name, rootPath: folder.rootPath ?? "" });
-                        }}
-                      >
-                        <Edit3 size={13} />
-                      </button>
-                    ) : null}
-                    {!folder.system ? (
-                      <button
-                        aria-label={`${text.deleteFolder} ${folder.name}`}
-                        className="folderDeleteButton"
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setDeletingFolderId(folder.id);
-                          setDeleteLearningData(false);
-                          setDeleteDerivedSkills(false);
-                        }}
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    ) : null}
-                  </div>
-                  {isExpanded ? (
-                    <div className="folderTaskList">
-                      {folderTasks.length === 0 ? (
-                        <p className="folderEmpty">{query ? text.noMatchingTasks : text.noTasks}</p>
-                      ) : (
-                        folderTasks.map((task) => (
-                          <div className={activeView === "tasks" && task.id === selectedId ? "folderTaskItem taskItem selected" : "folderTaskItem taskItem"} key={task.id}>
-                            <button
-                              className="folderTaskItemMain"
-                              onClick={() => {
-                                onSelect(task.id);
-                              }}
-                              type="button"
-                            >
-                              <span>{task.title}</span>
-                              <small>{task.status.replace("_", " ")}</small>
-                            </button>
-                            <button
-                              aria-label={`${text.editTask} ${task.title}`}
-                              className="taskEditButton"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setTaskEditorId(task.id);
-                              }}
-                              type="button"
-                            >
-                              <Edit3 size={14} />
-                            </button>
-                            <button
-                              aria-label={`${text.deleteTask} ${task.title}`}
-                              className="taskDeleteButton"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setConfirmingId(task.id);
-                                setDeleteLearningData(false);
-                                setDeleteDerivedSkills(false);
-                              }}
-                              type="button"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-          </nav>
-        </section>
-        <div className="sidebarUtility">
-          <button
-            aria-expanded={utilityOpen}
-            className={utilityOpen ? "sidebarUtilityToggle open" : "sidebarUtilityToggle"}
-            onClick={() => setUtilityOpen((v) => !v)}
-            type="button"
-          >
-            <Settings size={16} />
-          </button>
-          <div className={utilityOpen ? "sidebarUtilityMenu open" : "sidebarUtilityMenu"}>
-            <button
-              className={activeView === "settings" ? "sidebarUtilityItem selected" : "sidebarUtilityItem"}
-              onClick={() => {
-                onOpenSettings();
-                setUtilityOpen(false);
-              }}
-              type="button"
-            >
-              <Settings size={14} />
-              {text.settings}
-            </button>
-            <button className="sidebarUtilityItem" onClick={onOpenSupport} type="button">
-              <HelpCircle size={14} />
-              {text.support}
-            </button>
-            <button className="sidebarUtilityItem" onClick={onOpenDocs} type="button">
-              <FileText size={14} />
-              {text.docs}
-            </button>
           </div>
         </div>
+        <div className="sidebarResizeHandle" onMouseDown={handleResizeStart} />
       </aside>
       <div
         ref={tooltipRef}
