@@ -191,18 +191,18 @@ export function TaskList({
         onClick={onClose}
         type="button"
       />
+      <button
+        aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
+        className="sidebarToggleButton"
+        title={collapsed ? "展开侧边栏" : "收起侧边栏"}
+        type="button"
+        onClick={() => {
+          setCollapsed(!collapsed);
+        }}
+      >
+        <PanelLeft size={16} />
+      </button>
       <aside ref={sidebarRef} className={collapsed ? "sidebar collapsed" : open ? "sidebar open" : "sidebar"}>
-        <button
-          aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
-          className="sidebarToggleButton"
-          title={collapsed ? "展开侧边栏" : "收起侧边栏"}
-          type="button"
-          onClick={() => {
-            setCollapsed(!collapsed);
-          }}
-        >
-          <PanelLeft size={16} />
-        </button>
         <div className="sidebarCollapsedRail">
           <button
             className="sidebarCollapsedIcon"

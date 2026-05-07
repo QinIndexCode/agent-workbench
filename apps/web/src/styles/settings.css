@@ -1638,15 +1638,27 @@
   border-radius: var(--radius-sm);
 }
 
-.providerBadge svg {
+.providerBadge svg,
+.providerBadge img {
   width: 18px;
   height: 18px;
 }
 
-.providerBadgeText {
-  font-size: 10px;
-  font-weight: 820;
-  letter-spacing: 0.02em;
+.providerBrandIcon {
+  color: currentColor;
+  object-fit: contain;
+}
+
+.providerBadgeInline {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+}
+
+.providerBadgeInline svg,
+.providerBadgeInline img {
+  width: 14px;
+  height: 14px;
 }
 
 .providerLogo-mimo {

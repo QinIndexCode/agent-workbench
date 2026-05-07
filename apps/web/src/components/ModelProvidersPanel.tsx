@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ModelPreset, ModelProviderCreateRequest, ModelProviderPatchRequest, ModelProviderRecord, ProviderProtocol } from "@scc/shared";
-import { CheckCircle2, Edit3, Plus, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { CheckCircle2, Edit3, Plus, Trash2, X } from "lucide-react";
 import { CONTEXT_QUICK_PRESETS, MODEL_PROVIDER_PRESETS, formatTokenAmount, parseTokenAmount, type ModelProviderPreset } from "../llm-presets.js";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { ProviderBrandIcon } from "./ProviderBrandIcon.js";
 
 type ProviderDraft = {
   vendor: string;
@@ -75,7 +76,7 @@ export function ModelProvidersPanel({
       </header>
 
       <section className="activeModelSummary">
-        <ProviderIcon modelId={activeProvider?.defaultModelId ?? currentModelLabel ?? undefined} vendor={activeProvider?.vendor} />
+        <ProviderBrandIcon modelId={activeProvider?.defaultModelId ?? currentModelLabel ?? null} vendor={activeProvider?.vendor ?? null} />
         <div>
           <small>{text.currentModel}</small>
           <strong>{activeProvider?.defaultModelId ?? currentModelLabel ?? text.notConfigured}</strong>
@@ -87,7 +88,7 @@ export function ModelProvidersPanel({
         {providers.length === 0 ? <p className="muted">{text.empty}</p> : null}
         {providers.map((provider) => (
           <article className={provider.id === activeProviderId ? "providerRow active" : "providerRow"} key={provider.id}>
-            <ProviderIcon modelId={provider.defaultModelId} vendor={provider.vendor} />
+            <ProviderBrandIcon modelId={provider.defaultModelId} vendor={provider.vendor} />
             <div className="providerMain">
               <strong>{provider.label}</strong>
               <span>{provider.defaultModelId}</span>
@@ -150,7 +151,11 @@ export function ModelProvidersPanel({
                   <AccordionSelect
                     ariaLabel={text.vendor}
                     value={draft.vendor}
-                    options={MODEL_PROVIDER_PRESETS.map((preset) => ({ value: preset.vendor, label: preset.label }))}
+                    options={MODEL_PROVIDER_PRESETS.map((preset) => ({
+                      value: preset.vendor,
+                      label: preset.label,
+                      icon: <ProviderBrandIcon className="providerBadgeInline" modelId={preset.models[0]?.id} vendor={preset.vendor} />
+                    }))}
                     onChange={applyPreset}
                   />
                 </div>
@@ -208,8 +213,12 @@ export function ModelProvidersPanel({
                       ariaLabel={text.model}
                       value={draft.modelId}
                       options={[
-                        ...modelPresets.map((m) => ({ value: m.id, label: m.id })),
-                        { value: "__custom__", label: text.customModel }
+                        ...modelPresets.map((m) => ({
+                          value: m.id,
+                          label: m.id,
+                          icon: <ProviderBrandIcon className="providerBadgeInline" modelId={m.id} vendor={draft.vendor} />
+                        })),
+                        { value: "__custom__", label: text.customModel, icon: <ProviderBrandIcon className="providerBadgeInline" vendor="custom" /> }
                       ]}
                       onChange={selectModel}
                     />
@@ -399,64 +408,6 @@ function ToggleSettingRow({
       </button>
     </div>
   );
-}
-
-type ProviderIconMeta = {
-  label: string;
-  initial: string;
-};
-
-const providerIconMeta = {
-  openai: { label: "OpenAI", initial: "AI" },
-  anthropic: { label: "Anthropic", initial: "A" },
-  gemini: { label: "Gemini", initial: "G" },
-  deepseek: { label: "DeepSeek", initial: "DS" },
-  qwen: { label: "Qwen", initial: "Q" },
-  kimi: { label: "Kimi", initial: "K" },
-  mistral: { label: "Mistral", initial: "M" },
-  openrouter: { label: "OpenRouter", initial: "OR" },
-  mimo: { label: "Mimo", initial: "MI" },
-  xai: { label: "xAI", initial: "X" },
-  zhipu: { label: "Zhipu AI", initial: "Z" },
-  doubao: { label: "Doubao", initial: "DB" },
-  baidu: { label: "Baidu", initial: "B" },
-  meta: { label: "Meta", initial: "ME" },
-  nvidia: { label: "NVIDIA", initial: "N" },
-  minimax: { label: "MiniMax", initial: "MM" },
-  cohere: { label: "Cohere", initial: "C" },
-  stepfun: { label: "Stepfun", initial: "S" },
-  spark: { label: "iFlytek Spark", initial: "SP" },
-  custom: { label: "自定义模型", initial: "" }
-} satisfies Record<string, ProviderIconMeta>;
-
-type ProviderIconKind = keyof typeof providerIconMeta;
-
-function ProviderIcon({ vendor, modelId }: { vendor: string | null | undefined; modelId: string | null | undefined }) {
-  const kind = resolveProviderIconKind(vendor, modelId);
-  const meta: ProviderIconMeta = providerIconMeta[kind];
-  return (
-    <span aria-label={meta.label} className={`providerBadge providerLogo-${kind}`} role="img" title={meta.label}>
-      {kind === "custom" ? <SlidersHorizontal size={15} /> : <span className="providerBadgeText">{meta.initial}</span>}
-    </span>
-  );
-}
-
-function resolveProviderIconKind(vendor?: string | null, modelId?: string | null): ProviderIconKind {
-  const normalizedVendor = vendor?.trim().toLowerCase();
-  const normalizedModel = modelId?.trim();
-  const vendorPreset = normalizedVendor ? MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor === normalizedVendor) : null;
-  if (vendorPreset?.vendor && vendorPreset.vendor !== "custom") {
-    return asProviderIconKind(vendorPreset.vendor);
-  }
-  if (normalizedModel) {
-    const inferredPreset = MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor !== "custom" && preset.models.some((model) => model.id === normalizedModel));
-    if (inferredPreset) return asProviderIconKind(inferredPreset.vendor);
-  }
-  return "custom";
-}
-
-function asProviderIconKind(value: string): ProviderIconKind {
-  return value in providerIconMeta ? (value as ProviderIconKind) : "custom";
 }
 
 function draftFromPreset(preset: ModelProviderPreset): ProviderDraft {

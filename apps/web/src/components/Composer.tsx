@@ -71,7 +71,7 @@ export function Composer({
   folderOptions?: Array<{ description?: string; label: string; value: string }> | undefined;
   folderValue?: string | undefined;
   modelLabel?: string;
-  modelOptions?: Array<{ label: string; value: string }>;
+  modelOptions?: Array<{ icon?: ReactNode; label: string; value: string }>;
   modelValue?: string;
   permissionPreset?: ComposerPermissionMode;
   permissionScopeLabel?: string;
@@ -241,7 +241,7 @@ export function Composer({
                   setPermissionOpen(false);
                 }}
               >
-                <span className="modelDot" aria-hidden="true" />
+                {currentModel.icon ? <span className="modelTriggerIcon" aria-hidden="true">{currentModel.icon}</span> : <span className="modelDot" aria-hidden="true" />}
                 <span className="modelTriggerText">
                   <strong>{currentModel.label}</strong>
                 </span>
@@ -261,6 +261,7 @@ export function Composer({
                       setModelOpen(false);
                     }}
                   >
+                    {option.icon ? <span className="modelOptionIcon" aria-hidden="true">{option.icon}</span> : null}
                     <span>{option.label}</span>
                   </button>
                 ))}

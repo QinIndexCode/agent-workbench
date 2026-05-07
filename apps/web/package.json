@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@lobehub/icons-static-svg": "^1.88.0",
     "@scc/shared": "0.1.0",
     "lucide-react": "^0.508.0",
     "react": "^19.1.0",

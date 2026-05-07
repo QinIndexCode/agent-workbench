@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -7,7 +8,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as z from "zod/v4";
 import { describe, expect, it } from "vitest";
-import type { TaskDetail, ToolCall, ToolResult } from "@scc/shared";
+import type { RiskCategory, TaskDetail, ToolCall, ToolResult } from "@scc/shared";
 import { ShellToolExecutor } from "../src/tools.js";
 import {
   AgentWorkbench,
@@ -221,6 +222,20 @@ class SingleToolModel implements ModelClient {
   }
 }
 
+class SequenceToolModel implements ModelClient {
+  constructor(private readonly calls: Array<{ toolName: string; args: Record<string, unknown> }>) {}
+
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    const completedCalls = task.events.filter((event) => event.type === "tool_result").length;
+    const nextCall = this.calls[completedCalls];
+    if (!nextCall) return { kind: "final", message: "Sequence complete." };
+    return {
+      kind: "tool_calls",
+      calls: [{ id: createId("tool_call"), toolName: nextCall.toolName, args: nextCall.args }]
+    };
+  }
+}
+
 class StreamingFinalModel implements ModelClient {
   async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
     await stream?.onThinkingDelta("Checking the request and available evidence.");
@@ -333,6 +348,38 @@ describe("AgentWorkbench", () => {
     expect(tools.calls).toHaveLength(1);
     expect(completed.events.some((event) => event.type === "tool_result")).toBe(true);
     expect(completed.events.some((event) => event.type === "assistant_message")).toBe(true);
+  });
+
+  it("waits for approval before executing every risky tool category", async () => {
+    const cases: Array<{
+      args: Record<string, unknown>;
+      riskCategory: RiskCategory;
+      toolName: string;
+    }> = [
+      { toolName: "run_command", args: { command: "Get-Process | Select-Object -First 5" }, riskCategory: "host_observation" },
+      { toolName: "edit_file", args: { path: "note.txt", expectedHash: "abc", edits: [] }, riskCategory: "workspace_write" },
+      { toolName: "web_search", args: { query: "SCC workbench" }, riskCategory: "network" },
+      { toolName: "run_command", args: { command: "Stop-Process -Id 99999" }, riskCategory: "destructive" }
+    ];
+
+    for (const testCase of cases) {
+      const tools = new StubToolExecutor();
+      const workbench = new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        tools,
+        model: new SingleToolModel(testCase.toolName, testCase.args)
+      });
+
+      const created = await workbench.createTask(`approval check for ${testCase.riskCategory}`);
+      const approvalIndex = created.events.findIndex((event) => event.type === "approval_pending");
+      const toolResultIndex = created.events.findIndex((event) => event.type === "tool_result");
+
+      expect(created.status).toBe("waiting_approval");
+      expect(created.approvals[0]?.riskCategory).toBe(testCase.riskCategory);
+      expect(tools.calls).toHaveLength(0);
+      expect(approvalIndex).toBeGreaterThanOrEqual(0);
+      expect(toolResultIndex).toBe(-1);
+    }
   });
 
   it("records streaming thinking and assistant deltas before final response", async () => {
@@ -521,6 +568,52 @@ describe("AgentWorkbench", () => {
       expect(rolledBack.restoredFiles).toBe(1);
       expect(readFileSync(filePath, "utf8")).toBe("before\n");
       expect((await workbench.getTask(completed.id))?.events.some((event) => event.type === "task_rollback_completed")).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rolls back a task to the earliest checkpoint for files edited multiple times", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-checkpoint-chain-"));
+    const hash = (content: string) => createHash("sha256").update(content).digest("hex").slice(0, 16);
+    try {
+      mkdirSync(join(root, "src"), { recursive: true });
+      const filePath = join(root, "src", "note.txt");
+      writeFileSync(filePath, "before\n", "utf8");
+      const workbench = new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        model: new SequenceToolModel([
+          {
+            toolName: "edit_file",
+            args: {
+              path: "src/note.txt",
+              expectedHash: hash("before\n"),
+              edits: [{ startLine: 1, endLine: 1, newText: "middle" }]
+            }
+          },
+          {
+            toolName: "edit_file",
+            args: {
+              path: "src/note.txt",
+              expectedHash: hash("middle\n"),
+              edits: [{ startLine: 1, endLine: 1, newText: "after" }]
+            }
+          }
+        ]),
+        tools: new ShellToolExecutor()
+      });
+      const folder = await workbench.createTaskFolder({ name: "Checkpoint chain root", rootPath: root });
+      await workbench.grantGlobalPermission("workspace_write", "checkpoint chain test");
+
+      const completed = await workbench.createTask("edit note twice", "Edit note twice", folder.id);
+      const checkpoints = await workbench.listTaskCheckpoints(completed.id);
+
+      expect(checkpoints).toHaveLength(2);
+      expect(readFileSync(filePath, "utf8")).toBe("after\n");
+
+      const rolledBack = await workbench.rollbackTask(completed.id);
+      expect(rolledBack.restoredFiles).toBe(1);
+      expect(readFileSync(filePath, "utf8")).toBe("before\n");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -825,6 +918,54 @@ describe("AgentWorkbench", () => {
     expect(created.status).toBe("completed");
     expect(created.approvals).toHaveLength(0);
     expect(created.events.some((event) => event.type === "approval_auto_granted")).toBe(true);
+    expect(tools.calls).toHaveLength(1);
+  });
+
+  it("only bypasses approval for globally granted risk categories", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const readTools = new StubToolExecutor();
+    const readWorkbench = new AgentWorkbench({
+      store,
+      tools: readTools,
+      model: new SingleToolModel("list_files", { path: "." })
+    });
+
+    await readWorkbench.grantGlobalPermission("workspace_read", "read-only preset");
+    const readTask = await readWorkbench.createTask("list project files");
+
+    expect(readTask.status).toBe("completed");
+    expect(readTask.approvals).toHaveLength(0);
+    expect(readTask.events.some((event) => event.type === "approval_auto_granted" && event.payload["riskCategory"] === "workspace_read")).toBe(true);
+    expect(readTools.calls).toHaveLength(1);
+
+    const writeTools = new StubToolExecutor();
+    const writeWorkbench = new AgentWorkbench({
+      store,
+      tools: writeTools,
+      model: new SingleToolModel("edit_file", { path: "note.txt", expectedHash: "abc", edits: [] })
+    });
+    const writeTask = await writeWorkbench.createTask("edit project file");
+
+    expect(writeTask.status).toBe("waiting_approval");
+    expect(writeTask.approvals[0]?.riskCategory).toBe("workspace_write");
+    expect(writeTools.calls).toHaveLength(0);
+  });
+
+  it("audits all-mode style global grants for destructive requests", async () => {
+    const allRisks: RiskCategory[] = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
+    const tools = new StubToolExecutor();
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools,
+      model: new SingleToolModel("run_command", { command: "Stop-Process -Id 99999" })
+    });
+
+    for (const risk of allRisks) await workbench.grantGlobalPermission(risk, "all preset");
+    const completed = await workbench.createTask("destructive all-mode audit");
+
+    expect(completed.status).toBe("completed");
+    expect(completed.approvals).toHaveLength(0);
+    expect(completed.events.some((event) => event.type === "approval_auto_granted" && event.payload["riskCategory"] === "destructive")).toBe(true);
     expect(tools.calls).toHaveLength(1);
   });
 

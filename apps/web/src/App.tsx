@@ -9,6 +9,7 @@ import { LibraryView, type LibrarySection } from "./components/LibraryView.js";
 import { McpPanel } from "./components/McpPanel.js";
 import { ModelProvidersPanel } from "./components/ModelProvidersPanel.js";
 import { PermissionsPanel } from "./components/PermissionsPanel.js";
+import { ProviderBrandIcon } from "./components/ProviderBrandIcon.js";
 import { ReflectionPanel } from "./components/ReflectionPanel.js";
 import { SettingsView, type SettingsSection } from "./components/SettingsView.js";
 import { ScheduledTasksPanel } from "./components/ScheduledTasksPanel.js";
@@ -50,8 +51,16 @@ export function App() {
   const hasCustomSnapshot = Boolean(data.preferences?.customPermissionSnapshot?.length);
   const modelProvider = providerById(data.preferences?.llmProvider);
   const modelOptions =
-    activeProvider?.models.map((model) => ({ label: model.label || model.id, value: model.id })) ??
-    modelProvider.models.map((model) => ({ label: model.id, value: model.id }));
+    activeProvider?.models.map((model) => ({
+      icon: <ProviderBrandIcon className="providerBadgeInline" modelId={model.id} vendor={activeProvider.vendor} />,
+      label: model.label || model.id,
+      value: model.id
+    })) ??
+    modelProvider.models.map((model) => ({
+      icon: <ProviderBrandIcon className="providerBadgeInline" modelId={model.id} vendor={modelProvider.vendor} />,
+      label: model.id,
+      value: model.id
+    }));
   const taskFolderOptions = data.taskFolders.length > 0
     ? data.taskFolders.map((folder) => ({
         label: folder.id === "default" || folder.isDefault ? getDefaultFolderLabel(language) : folder.name,

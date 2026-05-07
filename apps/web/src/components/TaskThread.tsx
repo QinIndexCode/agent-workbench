@@ -174,7 +174,7 @@ function TaskPlanPanel({ language, task, onRollbackLatest }: { language?: string
       </ol>
       {checkpointCount > 0 && onRollbackLatest ? (
         <button className="rollbackButton" type="button" onClick={onRollbackLatest}>
-          {zh ? "回滚最近改动" : "Rollback latest changes"}
+          {zh ? "回滚本任务改动" : "Rollback task changes"}
         </button>
       ) : null}
     </aside>

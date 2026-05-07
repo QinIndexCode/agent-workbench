@@ -880,6 +880,18 @@
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
 }
 
+.modelTriggerIcon,
+.modelOptionIcon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.modelTriggerIcon .providerBadgeInline {
+  width: 20px;
+  height: 20px;
+}
+
 .modelTriggerText {
   display: block;
   min-width: 0;
@@ -951,13 +963,15 @@
 }
 
 .modelOption {
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
   justify-items: start;
   min-width: 150px;
   padding: 9px 10px;
   text-align: left;
 }
 
-.modelOption span {
+.modelOption > span:not(.modelOptionIcon) {
   color: var(--text);
   font-size: 12px;
   font-weight: 700;
@@ -968,6 +982,7 @@
 }
 
 .folderOption {
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
   min-width: 210px;
 }

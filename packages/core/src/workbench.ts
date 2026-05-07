@@ -366,7 +366,7 @@ export class AgentWorkbench {
       const task = await this.requiredTask(taskId);
       const checkpoint = input.checkpointId
         ? await this.store.getTaskCheckpoint(input.checkpointId)
-        : (await this.store.listTaskCheckpoints(taskId))[0];
+        : this.buildTaskRollbackCheckpoint(task, await this.store.listTaskCheckpoints(taskId));
       if (!checkpoint || checkpoint.taskId !== taskId) throw new Error("No checkpoint is available for this task.");
       try {
         const result = await this.restoreCheckpointFiles(task, checkpoint);
@@ -386,6 +386,27 @@ export class AgentWorkbench {
         throw error;
       }
     });
+  }
+
+  private buildTaskRollbackCheckpoint(task: TaskDetail, checkpoints: TaskCheckpoint[]): TaskCheckpoint | undefined {
+    if (checkpoints.length === 0) return undefined;
+    const ordered = [...checkpoints].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const earliestByPath = new Map<string, TaskCheckpoint["files"][number]>();
+    for (const checkpoint of ordered) {
+      const root = resolve(checkpoint.workRoot || task.workRoot || findWorkspaceRoot());
+      for (const file of checkpoint.files) {
+        const resolvedPath = resolveTaskPath(root, file.path);
+        const key = process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath;
+        if (!earliestByPath.has(key)) earliestByPath.set(key, file);
+      }
+    }
+    const first = ordered[0]!;
+    return {
+      ...first,
+      reason: "rollback all task file changes",
+      files: [...earliestByPath.values()],
+      truncated: ordered.some((checkpoint) => checkpoint.truncated)
+    };
   }
 
   async uploadTaskAttachment(input: TaskAttachmentUploadRequest): Promise<TaskAttachment> {

@@ -22,6 +22,7 @@ test("creates a host observation task and shows approval", async ({ page, reques
   await expect(approval.getByText("Allow for this task")).toBeVisible();
   await expect(approval.getByText("Allow globally")).toBeVisible();
   await expect(approval.getByText("Deny")).toBeVisible();
+  await expect(page.locator(".event.tool_result")).toHaveCount(0);
 
   await approval.getByText("Allow globally").click();
   await expect(page.locator(".event.tool_result").filter({ hasText: "Tool evidence returned." }).first()).toBeVisible();
