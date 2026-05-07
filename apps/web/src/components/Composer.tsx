@@ -2,6 +2,7 @@ import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowUp, ChevronDown, Eye, Folder, LoaderCircle, MessageCircle, Mic, MicOff, Paperclip, ShieldAlert, SlidersHorizontal, Square } from "lucide-react";
 import type { TaskAttachment } from "@scc/shared";
 import { getUiCopy } from "../i18n.js";
+import { FileTypeIcon } from "./FileTypeIcon.js";
 
 function VoiceWaveform() {
   return (
@@ -154,7 +155,7 @@ export function Composer({
           <div className="attachmentTray" aria-label={labels.attachments}>
             {attachments.map((attachment) => (
               <span className="attachmentChip" key={attachment.id} title={`${attachment.fileName} · ${formatFileSize(attachment.size)}`}>
-                <FileKindIcon kind={attachment.kind} />
+                <FileTypeIcon fileName={attachment.fileName} kind={attachment.kind} />
                 <span>
                   <strong>{attachment.fileName}</strong>
                   <small>{formatFileSize(attachment.size)}</small>
@@ -504,9 +505,4 @@ function formatFileSize(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function FileKindIcon({ kind }: { kind: TaskAttachment["kind"] }) {
-  const label = kind === "image" ? "IMG" : kind === "pdf" ? "PDF" : kind === "office" ? "DOC" : kind === "code" ? "</>" : kind === "data" ? "CSV" : kind === "binary" ? "BIN" : "TXT";
-  return <em aria-hidden="true">{label}</em>;
 }

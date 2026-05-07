@@ -200,6 +200,16 @@ export function PermissionsPanel({
                 ]}
               />
               <PreferenceSelect
+                label={text.theme}
+                value={preferences?.theme ?? "dark"}
+                onChange={(value) => emitPreference({ theme: value as UserPreferences["theme"] })}
+                options={[
+                  ["dark", text.themeOptions.dark],
+                  ["light", text.themeOptions.light],
+                  ["system", text.themeOptions.system]
+                ]}
+              />
+              <PreferenceSelect
                 label={text.agentTone}
                 value={preferences?.agentTone ?? "balanced"}
                 onChange={(value) => emitPreference({ agentTone: value as UserPreferences["agentTone"] })}

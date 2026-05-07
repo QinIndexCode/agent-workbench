@@ -394,6 +394,7 @@ export const UserPreferencesSchema = z.object({
   autoApprove: z.enum(["none", "low", "medium", "all"]).default("none"),
   showThinking: z.boolean().default(true),
   language: z.string().default("zh-CN"),
+  theme: z.enum(["dark", "light", "system"]).default("dark"),
   agentTone: z.enum(["concise", "balanced", "warm", "formal"]).default("balanced"),
   agentRole: z.string().default("Pragmatic engineering assistant"),
   responseDetail: z.enum(["brief", "normal", "detailed"]).default("normal"),

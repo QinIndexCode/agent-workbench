@@ -607,6 +607,7 @@ export function defaultPreferences(): UserPreferences {
     autoApprove: "none",
     showThinking: true,
     language: "zh-CN",
+    theme: "dark",
     agentTone: "balanced",
     agentRole: "Pragmatic engineering assistant",
     responseDetail: "normal",

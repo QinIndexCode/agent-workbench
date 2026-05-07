@@ -489,8 +489,12 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.delete("/api/scheduled-tasks/:id", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
-    await workbench.deleteScheduledTask(id);
-    return reply.code(204).send();
+    try {
+      await workbench.deleteScheduledTask(id);
+      return reply.code(204).send();
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.get("/api/web-search/providers", async () => workbench.listWebSearchProviders());

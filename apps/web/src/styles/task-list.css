@@ -27,8 +27,8 @@
   width: 39px;
   height: 39px;
   color: var(--accent);
-  background: #05080b;
-  border: 1px solid #111923;
+  background: var(--surface-container-low);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: 0 10px 22px rgb(0 0 0 / 0.22);
 }
@@ -125,7 +125,7 @@
   margin-top: 18px;
   min-height: 0;
   position: relative;
-  z-index: 1;
+  z-index: 0;
 }
 
 .folderPanelHeader {
@@ -183,7 +183,7 @@
   padding: 0;
   overflow: hidden;
   color: var(--muted);
-  background: #090d0f;
+  background: var(--surface-container-low);
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   opacity: 0;
@@ -521,7 +521,7 @@
   align-items: start;
   width: 100%;
   padding: 8px 10px;
-  color: #d5dbd7;
+  color: var(--muted-strong);
   text-align: left;
   background: transparent;
   border: 1px solid transparent;
@@ -646,7 +646,7 @@
   padding: 0 12px;
   color: var(--text);
   font-size: 13px;
-  background: #090d0f;
+  background: var(--surface-container-low);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   outline: 0;
@@ -658,7 +658,7 @@
   padding: 0 12px;
   color: var(--text);
   font-size: 13px;
-  background: #090d0f;
+  background: var(--surface-container-low);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   outline: 0;
@@ -766,7 +766,7 @@
   margin-top: 7px;
   padding: 10px;
   color: var(--muted-strong);
-  background: #0b0f12;
+  background: var(--surface-container-low);
   border: 1px solid var(--danger-border);
   border-radius: var(--radius-sm);
   cursor: default;
@@ -885,7 +885,7 @@
   margin-top: auto;
   padding-top: 14px;
   flex-shrink: 0;
-  z-index: 2;
+  z-index: 20;
 }
 
 .sidebarUtilityToggle {
@@ -927,6 +927,7 @@
   right: 0;
   bottom: calc(100% + 6px);
   left: 0;
+  z-index: 21;
   display: grid;
   gap: 4px;
   overflow: hidden;

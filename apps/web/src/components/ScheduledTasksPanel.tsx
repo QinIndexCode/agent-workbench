@@ -45,12 +45,15 @@ export function ScheduledTasksPanel({
       <div className="compactList">
         {scheduledTasks.length === 0 ? <p className="emptyState">{zh ? "还没有定时任务。" : "No scheduled tasks yet."}</p> : null}
         {visibleTasks.map((task) => (
-          <article className="providerRow scheduledTaskRow" key={task.id}>
+          <article className={isDefaultReflectionTask(task) ? "providerRow scheduledTaskRow systemTaskRow" : "providerRow scheduledTaskRow"} key={task.id}>
             <span className={task.type === "reflection" ? "providerIcon reflectionIcon" : "providerIcon"}>
               {task.type === "reflection" ? <Sparkles size={17} /> : <CalendarClock size={17} />}
             </span>
             <div className="scheduledTaskMain">
-              <strong>{task.title}</strong>
+              <strong>
+                {task.title}
+                {isDefaultReflectionTask(task) ? <span className="systemTaskBadge">{zh ? "系统默认" : "System default"}</span> : null}
+              </strong>
               <span className="scheduledPrompt">{task.prompt}</span>
               <small>{scheduleSummary(task, language)} · {new Date(task.nextRunAt).toLocaleString()} · {folderName(folders, task.folderId, language)}</small>
               {task.lastRunSummary ? <small>{task.lastRunSummary}</small> : null}
@@ -69,8 +72,26 @@ export function ScheduledTasksPanel({
               >
                 {task.status === "active" ? <PauseCircle size={15} /> : <PlayCircle size={15} />}
               </button>
-              <button className="iconButton" type="button" onClick={() => setEditing(task)}><Pencil size={15} /></button>
-              <button className="iconButton danger" type="button" onClick={() => setConfirmDeleteId(task.id)}><Trash2 size={15} /></button>
+              <button
+                aria-label={zh ? "编辑定时任务" : "Edit scheduled task"}
+                className="iconButton"
+                title={zh ? "编辑" : "Edit"}
+                type="button"
+                onClick={() => setEditing(task)}
+              >
+                <Pencil size={15} />
+              </button>
+              {!isDefaultReflectionTask(task) ? (
+                <button
+                  aria-label={zh ? "删除定时任务" : "Delete scheduled task"}
+                  className="iconButton danger"
+                  title={zh ? "删除" : "Delete"}
+                  type="button"
+                  onClick={() => setConfirmDeleteId(task.id)}
+                >
+                  <Trash2 size={15} />
+                </button>
+              ) : null}
             </div>
           </article>
         ))}
@@ -115,6 +136,10 @@ export function ScheduledTasksPanel({
     </ConfirmDialog>
     </>
   );
+}
+
+function isDefaultReflectionTask(task: ScheduledTask): boolean {
+  return task.id === "schedule_agent_reflection" || task.type === "reflection";
 }
 
 function buildSchedulePreview(scheduleKind: string, frequency?: string, timeOfDay?: string, intervalHours?: string, intervalMinutes?: string, zh = false): string {

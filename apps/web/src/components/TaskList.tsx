@@ -453,23 +453,37 @@ export function TaskList({
               >
                 <Settings size={16} />
               </button>
-              <div className={utilityOpen ? "sidebarUtilityMenu open" : "sidebarUtilityMenu"}>
+              <div
+                aria-hidden={!utilityOpen}
+                className={utilityOpen ? "sidebarUtilityMenu open" : "sidebarUtilityMenu"}
+              >
                 <button
                   className={activeView === "settings" ? "sidebarUtilityItem selected" : "sidebarUtilityItem"}
                   onClick={() => {
                     onOpenSettings();
                     setUtilityOpen(false);
                   }}
+                  tabIndex={utilityOpen ? 0 : -1}
                   type="button"
                 >
                   <Settings size={14} />
                   {text.settings}
                 </button>
-                <button className="sidebarUtilityItem" onClick={onOpenSupport} type="button">
+                <button
+                  className="sidebarUtilityItem"
+                  onClick={onOpenSupport}
+                  tabIndex={utilityOpen ? 0 : -1}
+                  type="button"
+                >
                   <HelpCircle size={14} />
                   {text.support}
                 </button>
-                <button className="sidebarUtilityItem" onClick={onOpenDocs} type="button">
+                <button
+                  className="sidebarUtilityItem"
+                  onClick={onOpenDocs}
+                  tabIndex={utilityOpen ? 0 : -1}
+                  type="button"
+                >
                   <FileText size={14} />
                   {text.docs}
                 </button>

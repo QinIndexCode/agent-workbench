@@ -277,6 +277,11 @@ describe("server API", () => {
     const reflectionResponse = await app.inject({ method: "POST", url: "/api/reflections" });
     expect(reflectionResponse.statusCode).toBe(201);
 
+    const scheduledTasks = (await app.inject("/api/scheduled-tasks")).json();
+    expect(scheduledTasks.some((task: { id: string; type: string }) => task.id === "schedule_agent_reflection" && task.type === "reflection")).toBe(true);
+    const deleteReflection = await app.inject({ method: "DELETE", url: "/api/scheduled-tasks/schedule_agent_reflection" });
+    expect(deleteReflection.statusCode).toBe(400);
+
     const memoryResponse = await app.inject({
       method: "POST",
       url: "/api/project-memories",

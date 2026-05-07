@@ -236,83 +236,15 @@ function NewTaskHero({
   language?: string | null;
 }) {
   const text = getUiCopy(language).thread;
-  const [displayTitle, setDisplayTitle] = useState("");
-  const [displaySubtitle, setDisplaySubtitle] = useState("");
-  const [showCursor, setShowCursor] = useState(true);
-
-  useEffect(() => {
-    const heroTitleVariants = (text as unknown as { heroTitleVariants?: readonly string[] }).heroTitleVariants;
-    const titlePool = Array.isArray(heroTitleVariants) && heroTitleVariants.length > 0 ? [...heroTitleVariants] : [text.heroTitle];
-    const subtitleVariants = (text as unknown as { heroSubtitleVariants?: readonly string[] }).heroSubtitleVariants;
-    const subtitlePool = Array.isArray(subtitleVariants) && subtitleVariants.length > 0 ? [...subtitleVariants] : [text.heroSubtitle];
-
-    let cancelled = false;
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    const schedule = (fn: () => void, ms: number) => {
-      if (!cancelled) timers.push(setTimeout(fn, ms));
-    };
-    const delay = (ms: number) => new Promise<void>((resolve) => {
-      schedule(resolve, ms);
-    });
-
-    const pickRandom = (arr: readonly string[]) => arr[Math.floor(Math.random() * arr.length)]!;
-
-    const runCycle = async () => {
-      while (!cancelled) {
-        const title = pickRandom(titlePool);
-        const subtitle = pickRandom(subtitlePool);
-
-        setDisplayTitle("");
-        setDisplaySubtitle("");
-        setShowCursor(true);
-
-        for (let i = 1; i <= title.length; i++) {
-          if (cancelled) return;
-          setDisplayTitle(title.slice(0, i));
-          await delay(60);
-        }
-
-        for (let i = 1; i <= subtitle.length; i++) {
-          if (cancelled) return;
-          setDisplaySubtitle(subtitle.slice(0, i));
-          await delay(30);
-        }
-
-        await delay(18000);
-        if (cancelled) return;
-
-        setShowCursor(false);
-        const maxLen = Math.max(title.length, subtitle.length);
-
-        for (let i = maxLen; i >= 0; i--) {
-          if (cancelled) return;
-          setDisplayTitle(title.slice(0, i));
-          setDisplaySubtitle(subtitle.slice(0, i));
-          await delay(30);
-        }
-      }
-    };
-
-    runCycle();
-
-    return () => {
-      cancelled = true;
-      timers.forEach(clearTimeout);
-    };
-  }, [text.heroTitle, text.heroSubtitle]);
-
-  const cursorInTitle = showCursor && displaySubtitle.length === 0;
+  const heroTitleVariants = (text as unknown as { heroTitleVariants?: readonly string[] }).heroTitleVariants;
+  const heroSubtitleVariants = (text as unknown as { heroSubtitleVariants?: readonly string[] }).heroSubtitleVariants;
+  const title = Array.isArray(heroTitleVariants) && heroTitleVariants[0] ? heroTitleVariants[0] : text.heroTitle;
+  const subtitle = Array.isArray(heroSubtitleVariants) && heroSubtitleVariants[0] ? heroSubtitleVariants[0] : text.heroSubtitle;
 
   return (
     <div className="newTaskHero">
-      <h2>
-        {displayTitle}
-        {cursorInTitle && <span className="typeCursor" />}
-      </h2>
-      <p>
-        {displaySubtitle}
-        {showCursor && !cursorInTitle && <span className="typeCursor" />}
-      </p>
+      <h2>{title}</h2>
+      <p>{subtitle}</p>
     </div>
   );
 }

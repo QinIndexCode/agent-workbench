@@ -205,6 +205,7 @@ const copy = {
       personalizeSubtitle: "配置界面语言、回复风格和技能注入行为。",
       providerTitle: "模型 Provider",
       language: "界面与回复语言",
+      theme: "外观主题",
       agentTone: "Agent 语气",
       agentRole: "Agent 角色",
       responseDetail: "回答详略",
@@ -266,6 +267,11 @@ const copy = {
         brief: "简短",
         normal: "正常",
         detailed: "详细"
+      },
+      themeOptions: {
+        dark: "黑色",
+        light: "白色",
+        system: "跟随系统"
       },
       risks: {
         host_observation: ["主机观察", "查看进程、系统信息、资源占用等只读主机状态。"],
@@ -470,6 +476,7 @@ const copy = {
       personalizeSubtitle: "Configure UI language, reply style, and skill injection behavior.",
       providerTitle: "Model provider",
       language: "UI and response language",
+      theme: "Appearance theme",
       agentTone: "Agent tone",
       agentRole: "Agent role",
       responseDetail: "Response detail",
@@ -531,6 +538,11 @@ const copy = {
         brief: "Brief",
         normal: "Normal",
         detailed: "Detailed"
+      },
+      themeOptions: {
+        dark: "Dark",
+        light: "Light",
+        system: "System"
       },
       risks: {
         host_observation: ["Host observation", "Read-only host state such as processes, system info, and resource usage."],

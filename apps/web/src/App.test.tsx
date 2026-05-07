@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GlobalPermissionGrant, KnowledgeItem, ModelProviderRecord, SkillRecord, TaskDetail, TaskFolderRecord, ToolApproval, UserPreferences } from "@scc/shared";
+import type { GlobalPermissionGrant, KnowledgeItem, ModelProviderRecord, ScheduledTask, SkillRecord, TaskDetail, TaskFolderRecord, ToolApproval, UserPreferences } from "@scc/shared";
 import { App } from "./App.js";
 import { ApprovalCard } from "./components/ApprovalCard.js";
 import { Composer } from "./components/Composer.js";
@@ -12,6 +12,7 @@ import { KnowledgePanel } from "./components/KnowledgePanel.js";
 import { ModelProvidersPanel } from "./components/ModelProvidersPanel.js";
 import { PermissionsPanel } from "./components/PermissionsPanel.js";
 import { SkillPanel } from "./components/SkillPanel.js";
+import { ScheduledTasksPanel } from "./components/ScheduledTasksPanel.js";
 import { TaskList } from "./components/TaskList.js";
 import { TaskThread } from "./components/TaskThread.js";
 import { Timeline } from "./components/Timeline.js";
@@ -475,6 +476,7 @@ describe("Workbench components", () => {
       autoApprove: "none",
       showThinking: true,
       language: "zh-CN",
+      theme: "dark",
       agentTone: "balanced",
       agentRole: "Pragmatic engineering assistant",
       responseDetail: "normal",
@@ -518,6 +520,30 @@ describe("Workbench components", () => {
     fireEvent.click(screen.getByLabelText("界面与回复语言"));
     fireEvent.click(screen.getByRole("option", { name: "English" }));
     expect(onPreference).toHaveBeenCalledWith(expect.objectContaining({ language: "en-US" }));
+    fireEvent.click(screen.getByLabelText("外观主题"));
+    fireEvent.click(screen.getByRole("option", { name: "白色" }));
+    expect(onPreference).toHaveBeenCalledWith(expect.objectContaining({ theme: "light" }));
+  });
+
+  it("shows default reflection automation as non-deletable", () => {
+    const onDelete = vi.fn();
+    const task: ScheduledTask = {
+      id: "schedule_agent_reflection",
+      type: "reflection",
+      title: "Agent self-reflection",
+      prompt: "Review recent task memories.",
+      permissionPreset: "ask",
+      schedule: { kind: "calendar", frequency: "daily", timeOfDay: "02:00" },
+      status: "active",
+      nextRunAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    render(<ScheduledTasksPanel folders={[]} language="en-US" scheduledTasks={[task]} onCreate={vi.fn()} onDelete={onDelete} onUpdate={vi.fn()} />);
+
+    expect(screen.getByText("System default")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete scheduled task" })).not.toBeInTheDocument();
   });
 
   it("manages model providers through a compact modal", async () => {
@@ -802,6 +828,7 @@ describe("Workbench components", () => {
             autoApprove: "none",
             showThinking: true,
             language: "en-US",
+            theme: "dark",
             agentTone: "balanced",
             agentRole: "Pragmatic engineering assistant",
             responseDetail: "normal",
@@ -892,6 +919,7 @@ describe("Workbench components", () => {
             autoApprove: "none",
             showThinking: true,
             language: "en-US",
+            theme: "dark",
             agentTone: "balanced",
             agentRole: "Pragmatic engineering assistant",
             responseDetail: "normal",

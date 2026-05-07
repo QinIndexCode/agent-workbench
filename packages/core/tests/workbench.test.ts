@@ -635,6 +635,19 @@ describe("AgentWorkbench", () => {
     expect(await workbench.listTasks()).toHaveLength(0);
   });
 
+  it("keeps the default reflection automation present and prevents deletion", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store, model: new StreamingFinalModel() });
+
+    const tasks = await workbench.listScheduledTasks();
+    const reflection = tasks.find((task) => task.id === "schedule_agent_reflection");
+
+    expect(reflection?.type).toBe("reflection");
+    await expect(workbench.deleteScheduledTask("schedule_agent_reflection")).rejects.toThrow(/default automation/i);
+    await workbench.updateScheduledTask("schedule_agent_reflection", { status: "paused" });
+    expect((await workbench.listScheduledTasks()).find((task) => task.id === "schedule_agent_reflection")?.status).toBe("paused");
+  });
+
   it("records integration messages as normal task events", async () => {
     const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
     const integration = await workbench.createIntegrationProvider({

@@ -14,9 +14,11 @@
     "@scc/shared": "0.1.0",
     "lucide-react": "^0.508.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "react-file-icon": "^1.6.0"
   },
   "devDependencies": {
+    "@types/react-file-icon": "^1.0.5",
     "@vitejs/plugin-react": "^4.4.1",
     "vite": "^6.3.4"
   }

@@ -841,6 +841,7 @@ export class AgentWorkbench {
   }
 
   async listScheduledTasks(): Promise<ScheduledTask[]> {
+    await this.ensureDefaultScheduledTasks();
     return this.store.listScheduledTasks();
   }
 
@@ -921,6 +922,11 @@ export class AgentWorkbench {
   }
 
   async deleteScheduledTask(taskId: string): Promise<void> {
+    const current = await this.store.getScheduledTask(taskId);
+    if (!current) return;
+    if (isDefaultReflectionSchedule(current)) {
+      throw new Error("Agent self-reflection is a default automation and can only be paused, not deleted.");
+    }
     await this.store.deleteScheduledTask(taskId);
   }
 
@@ -2268,6 +2274,10 @@ function advanceScheduledTask(task: ScheduledTask, lastTaskId: string | undefine
     nextRunAt: now.toISOString(),
     updatedAt
   };
+}
+
+function isDefaultReflectionSchedule(task: ScheduledTask): boolean {
+  return task.id === "schedule_agent_reflection" || task.type === "reflection";
 }
 
 function cleanTags(tags: string[]): string[] {

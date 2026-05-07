@@ -143,7 +143,7 @@
 .errorLine {
   margin: 22px auto;
   width: min(900px, calc(100% - 48px));
-  color: #aeb6b2;
+  color: var(--muted);
 }
 
 .newTaskThread .empty {
@@ -219,21 +219,6 @@
   word-break: keep-all;
 }
 
-.typeCursor {
-  display: inline-block;
-  width: 3px;
-  height: 1em;
-  margin-left: 3px;
-  vertical-align: text-bottom;
-  background: var(--accent);
-  animation: cursorBlink 1s step-end infinite;
-}
-
-@keyframes cursorBlink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
-}
-
 .newTaskHero p {
   max-width: 640px;
   margin: 16px 0 0;
@@ -294,8 +279,8 @@
 .event.guidance_pending,
 .event.attachment_added {
   margin-left: auto;
-  color: #eef3ff;
-  background: #172238;
+  color: var(--text);
+  background: var(--surface-selected);
   border-color: var(--accent-border);
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
 }
@@ -316,7 +301,7 @@
 .event.thinking_delta {
   max-width: min(720px, 82%);
   color: var(--muted-strong);
-  background: #0f1416;
+  background: var(--surface-container-low);
   border-color: var(--border);
 }
 
@@ -401,8 +386,8 @@
 
 .markdownText code {
   padding: 1px 5px;
-  color: #d9e5dd;
-  background: #0b1012;
+  color: var(--muted-strong);
+  background: var(--surface-container-low);
   border: 1px solid var(--border);
   border-radius: 5px;
 }
@@ -435,8 +420,8 @@
   margin: 9px 0 0;
   padding: 10px;
   overflow: auto;
-  color: #dbe8df;
-  background: #070a0c;
+  color: var(--text);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
@@ -473,7 +458,7 @@
 .markdownText th {
   color: var(--muted-strong);
   font-weight: 600;
-  background: #0c1013;
+  background: var(--surface-container);
 }
 
 .markdownText tr:last-child td {
@@ -493,7 +478,7 @@
   padding: 14px;
   overflow: hidden;
   background: var(--warning-bg);
-  border: 1px solid #4c3d1e;
+  border: 1px solid color-mix(in srgb, var(--warning) 38%, var(--border));
   border-radius: var(--radius);
   box-shadow: var(--shadow-soft);
 }
@@ -514,9 +499,9 @@
   place-items: center;
   width: 34px;
   height: 34px;
-  color: #cdd8cf;
-  background: #20251f;
-  border: 1px solid #414733;
+  color: var(--muted-strong);
+  background: var(--surface-selected);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
 }
 
@@ -548,7 +533,7 @@
 .approvalMeta div {
   min-width: 0;
   padding: 7px 8px;
-  background: #101417;
+  background: var(--surface-container-low);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
@@ -601,7 +586,7 @@
   display: block;
   margin-top: 8px;
   overflow: hidden;
-  color: #9ba6a0;
+  color: var(--muted);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -672,28 +657,29 @@
 .attachmentChip {
   display: inline-grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
   max-width: 280px;
-  min-height: 34px;
-  padding: 5px 8px;
+  min-height: 42px;
+  padding: 6px 9px;
   color: var(--muted-strong);
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
 
-.attachmentChip em {
+.fileTypeIcon {
   display: grid;
   place-items: center;
+  width: 28px;
   min-width: 28px;
-  height: 22px;
-  color: var(--accent);
-  font-style: normal;
-  font-size: 10px;
-  font-weight: 800;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border-radius: 6px;
+  height: 32px;
+  filter: drop-shadow(0 5px 8px rgb(0 0 0 / 0.18));
+}
+
+.fileTypeIcon svg {
+  width: 28px;
+  height: 32px;
 }
 
 .attachmentChip span {

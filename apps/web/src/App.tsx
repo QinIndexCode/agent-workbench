@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup, TaskAttachment } from "@scc/shared";
 import { api } from "./api.js";
 import { DocsView } from "./components/DocsView.js";
@@ -43,6 +43,7 @@ export function App() {
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const language = data.preferences?.language ?? "zh-CN";
+  const theme = data.preferences?.theme ?? "dark";
   const engineStatus = data.error ? "attention" : data.realtimeConnected ? "streaming" : "running";
   const activeProvider = data.modelProviders.find((provider) => provider.id === data.preferences?.activeModelProviderId) ?? data.modelProviders.find((provider) => provider.enabled);
   const modelLabel = activeProvider?.defaultModelId || data.preferences?.defaultModel || "not configured";
@@ -69,6 +70,20 @@ export function App() {
       }))
     : [{ label: language === "zh-CN" ? "默认文件夹" : "Default", value: "default" }];
   const composerFolderValue = activeTaskFolderId;
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const media = window.matchMedia?.("(prefers-color-scheme: light)");
+    const apply = () => {
+      const resolved = theme === "system" ? (media?.matches ? "light" : "dark") : theme;
+      root.dataset.theme = resolved;
+      root.style.colorScheme = resolved;
+    };
+    apply();
+    if (theme !== "system" || !media) return;
+    media.addEventListener?.("change", apply);
+    return () => media.removeEventListener?.("change", apply);
+  }, [theme]);
 
   return (
     <main className={activeView === "docs" ? "shell docsShell" : "shell"}>
