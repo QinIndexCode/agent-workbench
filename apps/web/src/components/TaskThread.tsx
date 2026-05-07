@@ -35,6 +35,7 @@ export function TaskThread({
   onOpenTasks,
   onSubmit,
   onStop,
+  onRollbackLatest,
   titleIssue,
   onRetryTitle,
   onUseLocalTitle,
@@ -68,6 +69,7 @@ export function TaskThread({
   onOpenTasks: () => void;
   onSubmit: (mode: ComposerMode, text: string) => void;
   onStop: () => void;
+  onRollbackLatest?: (() => void) | undefined;
   titleIssue?: { goal: string; error: string } | null;
   onRetryTitle: () => void;
   onUseLocalTitle: () => void;
@@ -110,7 +112,7 @@ export function TaskThread({
       {task ? (
         <div className="threadMain">
           <Timeline language={language ?? null} task={task} onApprovalDecision={onApprovalDecision} />
-          <TaskPlanPanel language={language ?? null} task={task} />
+          <TaskPlanPanel language={language ?? null} task={task} onRollbackLatest={onRollbackLatest} />
         </div>
       ) : (
         <NewTaskHero language={language ?? null} />
@@ -148,9 +150,10 @@ export function TaskThread({
   );
 }
 
-function TaskPlanPanel({ language, task }: { language?: string | null; task: TaskDetail }) {
+function TaskPlanPanel({ language, task, onRollbackLatest }: { language?: string | null; task: TaskDetail; onRollbackLatest?: (() => void) | undefined }) {
   const zh = language === "zh-CN";
   const steps = derivePlanSteps(task);
+  const checkpointCount = task.events.filter((event) => event.type === "task_checkpoint_created").length;
   if (steps.length === 0) return null;
   return (
     <aside className="taskPlanPanel" aria-label={zh ? "计划与进度" : "Plan and progress"}>
@@ -169,6 +172,11 @@ function TaskPlanPanel({ language, task }: { language?: string | null; task: Tas
           </li>
         ))}
       </ol>
+      {checkpointCount > 0 && onRollbackLatest ? (
+        <button className="rollbackButton" type="button" onClick={onRollbackLatest}>
+          {zh ? "回滚最近改动" : "Rollback latest changes"}
+        </button>
+      ) : null}
     </aside>
   );
 }
@@ -230,49 +238,80 @@ function NewTaskHero({
   const text = getUiCopy(language).thread;
   const [displayTitle, setDisplayTitle] = useState("");
   const [displaySubtitle, setDisplaySubtitle] = useState("");
-  const [isTypingTitle, setIsTypingTitle] = useState(true);
   const [showCursor, setShowCursor] = useState(true);
 
   useEffect(() => {
-    const title = text.heroTitle;
+    const heroTitleVariants = (text as unknown as { heroTitleVariants?: readonly string[] }).heroTitleVariants;
+    const titlePool = Array.isArray(heroTitleVariants) && heroTitleVariants.length > 0 ? [...heroTitleVariants] : [text.heroTitle];
     const subtitleVariants = (text as unknown as { heroSubtitleVariants?: readonly string[] }).heroSubtitleVariants;
-    const variants = Array.isArray(subtitleVariants) && subtitleVariants.length > 0 ? [...subtitleVariants] : [text.heroSubtitle];
-    const subtitle = variants[Math.floor(Math.random() * variants.length)] ?? text.heroSubtitle;
-    let titleIndex = 0;
-    let subtitleIndex = 0;
+    const subtitlePool = Array.isArray(subtitleVariants) && subtitleVariants.length > 0 ? [...subtitleVariants] : [text.heroSubtitle];
 
-    const titleInterval = setInterval(() => {
-      if (titleIndex < title.length) {
-        titleIndex++;
-        setDisplayTitle(title.slice(0, titleIndex));
-      } else {
-        clearInterval(titleInterval);
-        setIsTypingTitle(false);
-      }
-    }, 60);
+    let cancelled = false;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const schedule = (fn: () => void, ms: number) => {
+      if (!cancelled) timers.push(setTimeout(fn, ms));
+    };
+    const delay = (ms: number) => new Promise<void>((resolve) => {
+      schedule(resolve, ms);
+    });
 
-    const subtitleInterval = setInterval(() => {
-      if (subtitleIndex < subtitle.length) {
-        subtitleIndex++;
-        setDisplaySubtitle(subtitle.slice(0, subtitleIndex));
-      } else {
-        clearInterval(subtitleInterval);
+    const pickRandom = (arr: readonly string[]) => arr[Math.floor(Math.random() * arr.length)]!;
+
+    const runCycle = async () => {
+      while (!cancelled) {
+        const title = pickRandom(titlePool);
+        const subtitle = pickRandom(subtitlePool);
+
+        setDisplayTitle("");
+        setDisplaySubtitle("");
+        setShowCursor(true);
+
+        for (let i = 1; i <= title.length; i++) {
+          if (cancelled) return;
+          setDisplayTitle(title.slice(0, i));
+          await delay(60);
+        }
+
+        for (let i = 1; i <= subtitle.length; i++) {
+          if (cancelled) return;
+          setDisplaySubtitle(subtitle.slice(0, i));
+          await delay(30);
+        }
+
+        await delay(18000);
+        if (cancelled) return;
+
         setShowCursor(false);
+        const maxLen = Math.max(title.length, subtitle.length);
+
+        for (let i = maxLen; i >= 0; i--) {
+          if (cancelled) return;
+          setDisplayTitle(title.slice(0, i));
+          setDisplaySubtitle(subtitle.slice(0, i));
+          await delay(30);
+        }
       }
-    }, 30);
+    };
+
+    runCycle();
 
     return () => {
-      clearInterval(titleInterval);
-      clearInterval(subtitleInterval);
+      cancelled = true;
+      timers.forEach(clearTimeout);
     };
   }, [text.heroTitle, text.heroSubtitle]);
 
+  const cursorInTitle = showCursor && displaySubtitle.length === 0;
+
   return (
     <div className="newTaskHero">
-      <h2>{displayTitle}</h2>
+      <h2>
+        {displayTitle}
+        {cursorInTitle && <span className="typeCursor" />}
+      </h2>
       <p>
         {displaySubtitle}
-        {showCursor && <span className="typeCursor" />}
+        {showCursor && !cursorInTitle && <span className="typeCursor" />}
       </p>
     </div>
   );

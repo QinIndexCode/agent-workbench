@@ -1,9 +1,16 @@
 import type { TaskDetail, ToolCall } from "@scc/shared";
 import { createId } from "./ids.js";
 
+export interface ModelUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  raw?: Record<string, unknown>;
+}
+
 export type ModelTurn =
-  | { kind: "final"; message: string; streamId?: string }
-  | { kind: "tool_calls"; calls: ToolCall[]; streamId?: string };
+  | { kind: "final"; message: string; streamId?: string; usage?: ModelUsage }
+  | { kind: "tool_calls"; calls: ToolCall[]; streamId?: string; usage?: ModelUsage };
 
 export interface ModelStreamHandlers {
   streamId: string;

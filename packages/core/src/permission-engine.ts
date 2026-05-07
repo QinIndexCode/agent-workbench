@@ -24,6 +24,9 @@ export class PermissionEngine {
     if (toolName === "read_file" || toolName === "search_files" || toolName === "list_files") {
       return { category: "workspace_read", reason: `${toolName} reads local project state.` };
     }
+    if (toolName === "knowledge_search") {
+      return { category: "workspace_read", reason: "knowledge_search reads indexed local knowledge snippets." };
+    }
     if (toolName === "edit_file") {
       return { category: "workspace_write", reason: "edit_file changes local project files." };
     }

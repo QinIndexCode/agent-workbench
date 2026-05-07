@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   GlobalPermissionGrant,
+  IntegrationProviderConfig,
   KnowledgeItem,
   McpServerConfig,
   McpServerStatus,
@@ -22,6 +23,7 @@ import type {
   TaskPatchRequest,
   ToolApproval,
   UserPreferences,
+  PromptCacheStats,
   WebSearchProviderConfig
 } from "@scc/shared";
 import { api } from "./api.js";
@@ -41,6 +43,8 @@ export interface WorkbenchData {
   reflections: ReflectionSession[];
   projectMemories: ProjectMemory[];
   knowledgeItems: KnowledgeItem[];
+  promptCacheStats: PromptCacheStats[];
+  integrations: IntegrationProviderConfig[];
   modelProviders: ModelProviderRecord[];
   mcpServers: Array<McpServerConfig & { status: McpServerStatus }>;
   mcpTools: McpToolSummary[];
@@ -53,6 +57,7 @@ export interface WorkbenchData {
   selectTask: (taskId: string) => Promise<void>;
   clearSelection: () => void;
   patchTask: (taskId: string, input: TaskPatchRequest) => Promise<void>;
+  rollbackTask: (taskId: string) => Promise<void>;
   deleteTask: (taskId: string, options: TaskDeleteRequest) => Promise<void>;
   deleteTaskFolder: (folderId: string, options: TaskFolderDeleteRequest) => Promise<void>;
   runTaskAction: (action: () => Promise<TaskDetail>) => Promise<void>;
@@ -74,6 +79,8 @@ export function useWorkbenchData(): WorkbenchData {
   const [reflections, setReflections] = useState<ReflectionSession[]>([]);
   const [projectMemories, setProjectMemories] = useState<ProjectMemory[]>([]);
   const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeItem[]>([]);
+  const [promptCacheStats, setPromptCacheStats] = useState<PromptCacheStats[]>([]);
+  const [integrations, setIntegrations] = useState<IntegrationProviderConfig[]>([]);
   const [modelProviders, setModelProviders] = useState<ModelProviderRecord[]>([]);
   const [mcpServers, setMcpServers] = useState<Array<McpServerConfig & { status: McpServerStatus }>>([]);
   const [mcpTools, setMcpTools] = useState<McpToolSummary[]>([]);
@@ -99,6 +106,8 @@ export function useWorkbenchData(): WorkbenchData {
       nextReflections,
       nextProjectMemories,
       nextKnowledgeItems,
+      nextPromptCacheStats,
+      nextIntegrations,
       nextModelProviders,
       nextMcpServers,
       nextMcpTools,
@@ -117,6 +126,8 @@ export function useWorkbenchData(): WorkbenchData {
       api.listReflections(),
       api.listProjectMemories(),
       api.listKnowledgeItems(),
+      api.listPromptCacheStats(),
+      api.listIntegrations(),
       api.listModelProviders(),
       api.listMcpServers(),
       api.listMcpTools(),
@@ -142,6 +153,8 @@ export function useWorkbenchData(): WorkbenchData {
     setReflections(nextReflections);
     setProjectMemories(nextProjectMemories);
     setKnowledgeItems(nextKnowledgeItems);
+    setPromptCacheStats(nextPromptCacheStats);
+    setIntegrations(nextIntegrations);
     setModelProviders(nextModelProviders);
     setMcpServers(nextMcpServers);
     setMcpTools(nextMcpTools);
@@ -231,6 +244,13 @@ export function useWorkbenchData(): WorkbenchData {
     });
   }
 
+  async function rollbackTask(taskId: string) {
+    await run(async () => {
+      await api.rollbackTask(taskId);
+      await refresh(taskId);
+    });
+  }
+
   async function deleteTaskFolder(folderId: string, options: TaskFolderDeleteRequest) {
     await run(async () => {
       const affectsSelected = Boolean(selected && (selected.folderId || "default") === folderId);
@@ -290,6 +310,8 @@ export function useWorkbenchData(): WorkbenchData {
     reflections,
     projectMemories,
     knowledgeItems,
+    promptCacheStats,
+    integrations,
     modelProviders,
     mcpServers,
     mcpTools,
@@ -302,6 +324,7 @@ export function useWorkbenchData(): WorkbenchData {
     selectTask,
     clearSelection,
     patchTask,
+    rollbackTask,
     deleteTask,
     deleteTaskFolder,
     runTaskAction,

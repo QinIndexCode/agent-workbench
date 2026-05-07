@@ -25,6 +25,7 @@ export interface LoadedSkillSession {
 export class ContextAssembler {
   private readonly trackers = new Map<string, FileStateTracker>();
   private readonly skillSessions = new Map<string, LoadedSkillSession>();
+  private readonly pendingSummaries = new Map<string, ConversationSummary[]>();
 
   constructor(private readonly store: WorkbenchStore) {}
 
@@ -76,7 +77,12 @@ export class ContextAssembler {
       usedTokens += fileTokens;
     }
 
-    const summary = await this.ensureConversationSummary(task);
+    const forceSummary = task.events.some((event) => event.type === "context_overflow_recovered");
+    const summary = await this.ensureConversationSummary(task, {
+      force: forceSummary,
+      tokenBudget,
+      usedBefore: usedTokens
+    });
     if (summary) {
       const summaryLayer = `## Conversation Summary\n${summary.summary}`;
       layers.push(summaryLayer);
@@ -84,13 +90,17 @@ export class ContextAssembler {
     }
 
     const remaining = tokenBudget.maxTotal - usedTokens - tokenBudget.reservedForResponse;
-    layers.push(buildHistoryLayer(task, Math.max(1000, remaining), tracker, summary?.rangeEndEventId));
+    layers.push(buildHistoryLayer(task, Math.max(160, remaining), tracker, summary?.rangeEndEventId));
 
     const nonEmpty = layers.filter((layer) => layer.trim().length > 0);
+    const systemPrompt = nonEmpty.slice(0, 2).join("\n\n");
+    const rawInput = nonEmpty.slice(2).join("\n\n");
+    const inputBudget = Math.max(120, tokenBudget.maxTotal - tokenBudget.reservedForResponse - estimateTokens(systemPrompt));
+    const input = trimMiddleToTokenBudget(rawInput, inputBudget);
     return {
-      systemPrompt: nonEmpty.slice(0, 2).join("\n\n"),
-      input: nonEmpty.slice(2).join("\n\n"),
-      usedTokens: estimateTokens(nonEmpty.join("\n\n"))
+      systemPrompt,
+      input,
+      usedTokens: estimateTokens([systemPrompt, input].filter(Boolean).join("\n\n"))
     };
   }
 
@@ -105,6 +115,7 @@ export class ContextAssembler {
   cleanupTask(taskId: string): void {
     this.trackers.delete(taskId);
     this.skillSessions.delete(taskId);
+    this.pendingSummaries.delete(taskId);
   }
 
   async loadSkill(taskId: string, skillId: string): Promise<SkillRecord | undefined> {
@@ -134,6 +145,12 @@ export class ContextAssembler {
     const pending = [...session.pendingLoadedSkills];
     session.pendingLoadedSkills = [];
     return pending;
+  }
+
+  drainConversationSummaryEvents(taskId: string): ConversationSummary[] {
+    const summaries = this.pendingSummaries.get(taskId) ?? [];
+    this.pendingSummaries.delete(taskId);
+    return summaries;
   }
 
   loadedSkillPrompt(taskId: string): string {
@@ -172,7 +189,6 @@ export class ContextAssembler {
       `User preferred agent role: ${preferences.agentRole || "Pragmatic engineering assistant"}.`,
       `User preferred tone: ${preferences.agentTone || "balanced"}.`,
       `User preferred response detail: ${preferences.responseDetail || "normal"}.`,
-      `User emoji preference: ${preferences.emojiStyle || "auto"}.`,
       "Choose the next action yourself based on the user's goal, available tools, permissions, and evidence.",
       "Use tools when the environment must be observed. Do not invent host, file, network, or command results.",
       "Scripts, builds, tests, and command output are tool evidence for you to interpret; they are never task-completion judges.",
@@ -183,14 +199,11 @@ export class ContextAssembler {
       "When reporting a debug fix, base the root cause and final summary only on observed tool output and source code; do not speculate about code you did not see.",
       "After debugging or editing code, the final answer should include the observed failure, exact root cause expression or file location when known, changed files, and verification result.",
       "Keep normal answers concise, calm, and product-like.",
-      "Use emoji only when it fits the user's tone, preference, and task context; avoid emoji in serious debugging or incident-style work unless the user likes that style.",
+      "Match the user's tone and the task context; keep serious debugging and incident-style work plain unless the user asks for a warmer style.",
       "Avoid hype, decorative openings, and marketing-style introductions unless the user asks for that tone.",
       "Use Markdown for readable structure when helpful: short headings, bullets, tables, and code blocks are supported."
     ];
     if (preferences.language === "zh-CN") lines.push("Respond in Chinese unless the user asks otherwise.");
-    if (preferences.emojiStyle === "never") lines.push("Do not use emoji.");
-    if (preferences.emojiStyle === "minimal") lines.push("Use emoji rarely and only when they improve clarity or warmth.");
-    if (preferences.emojiStyle === "expressive") lines.push("Emoji are acceptable when they match the task and user's tone.");
     if (preferences.responseDetail === "brief") lines.push("Prefer concise answers unless the task requires detail.");
     if (preferences.responseDetail === "detailed") lines.push("Provide enough detail for a careful user to audit the reasoning and result.");
     lines.push(`User language preference: ${preferences.language}`);
@@ -226,19 +239,24 @@ export class ContextAssembler {
     ].join("\n");
   }
 
-  private async ensureConversationSummary(task: TaskDetail): Promise<ConversationSummary | undefined> {
+  private async ensureConversationSummary(
+    task: TaskDetail,
+    options: { force?: boolean; tokenBudget?: TokenBudget; usedBefore?: number } = {}
+  ): Promise<ConversationSummary | undefined> {
     const existing = await this.store.listConversationSummaries(task.id);
     const latest = existing.at(-1);
     const visibleEvents = task.events.filter((event) => !["assistant_delta", "thinking_delta"].includes(event.type));
-    if (visibleEvents.length < 28) return latest;
+    if (!options.force && visibleEvents.length < 28) return latest;
     const latestCoveredIndex = latest ? visibleEvents.findIndex((event) => event.id === latest.rangeEndEventId) : -1;
-    if (latest && visibleEvents.length - latestCoveredIndex < 18) return latest;
+    if (!options.force && latest && visibleEvents.length - latestCoveredIndex < 18) return latest;
     const startIndex = latestCoveredIndex >= 0 ? latestCoveredIndex + 1 : 0;
-    const endIndex = Math.max(startIndex, visibleEvents.length - 12);
+    const keepRecent = options.force ? 4 : 12;
+    const endIndex = Math.max(startIndex, visibleEvents.length - keepRecent);
     const slice = visibleEvents.slice(startIndex, endIndex);
-    if (slice.length < 8) return latest;
+    if (slice.length < (options.force ? 1 : 8)) return latest;
     const summaryText = buildExtractiveConversationSummary(slice);
     const now = nowIso();
+    const retainedFacts = buildRetainedFacts(task, slice);
     const summary: ConversationSummary = {
       id: createId("summary"),
       taskId: task.id,
@@ -246,10 +264,24 @@ export class ContextAssembler {
       rangeEndEventId: slice.at(-1)!.id,
       summary: latest ? `${latest.summary}\n\n${summaryText}` : summaryText,
       tokenEstimate: estimateTokens(summaryText),
+      reason: options.force ? "context_overflow_retry" : "event_window",
+      retainedFacts,
+      droppedRanges: [{ startEventId: slice[0]!.id, endEventId: slice.at(-1)!.id, eventCount: slice.length }],
+      ...(options.tokenBudget
+        ? {
+            tokenBudget: {
+              maxTotal: options.tokenBudget.maxTotal,
+              reservedForResponse: options.tokenBudget.reservedForResponse,
+              ...(options.usedBefore !== undefined ? { usedBefore: options.usedBefore } : {}),
+              usedAfter: estimateTokens(summaryText)
+            }
+          }
+        : {}),
       createdAt: now,
       updatedAt: now
     };
     await this.store.saveConversationSummary(summary);
+    this.pendingSummaries.set(task.id, [...(this.pendingSummaries.get(task.id) ?? []), summary]);
     return summary;
   }
 
@@ -349,6 +381,7 @@ export class FileStateTracker {
 }
 
 export function buildHistoryLayer(task: TaskDetail, maxTokens: number, tracker?: FileStateTracker, afterEventId?: string): string {
+  if (maxTokens <= 0) return "";
   const events = task.events.filter(
     (event) =>
       !["status_changed", "task_created", "task_memory_created", "pattern_discovered", "reflection_completed"].includes(event.type)
@@ -407,6 +440,8 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
       return `**Pending Guidance**: ${event.summary}`;
     case "conversation_summary_created":
       return "";
+    case "context_overflow_recovered":
+      return `**Context Compaction**: ${event.summary}`;
     case "plan_created":
     case "plan_step_started":
     case "plan_step_completed":
@@ -439,6 +474,27 @@ function buildExtractiveConversationSummary(events: TaskEvent[]): string {
   ].join("\n");
 }
 
+function buildRetainedFacts(task: TaskDetail, summarizedEvents: TaskEvent[]): string[] {
+  const facts = new Set<string>();
+  const firstUser = task.events.find((event) => event.type === "user_message");
+  if (firstUser) facts.add(`Original goal: ${truncate(firstUser.summary, 180)}`);
+  if (task.workRoot) facts.add(`Work root: ${task.workRoot}`);
+  const latestGuidance = [...task.events].reverse().find((event) => event.type === "guidance_pending" || event.type === "guidance_consumed");
+  if (latestGuidance) facts.add(`Latest guidance: ${truncate(latestGuidance.summary, 160)}`);
+  const tools = summarizedEvents
+    .filter((event) => event.type === "tool_result")
+    .map((event) => String(event.payload["toolName"] ?? "tool"))
+    .filter(Boolean);
+  if (tools.length > 0) facts.add(`Earlier tools: ${[...new Set(tools)].slice(0, 8).join(", ")}`);
+  const blocked = [...task.events].reverse().find((event) => event.type === "plan_step_blocked");
+  if (blocked) facts.add(`Latest blocked step: ${truncate(blocked.summary, 160)}`);
+  return [...facts];
+}
+
+function truncate(text: string, maxChars: number): string {
+  return text.length <= maxChars ? text : `${text.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
 export function estimateTokens(text: string): number {
   let tokens = 0;
   for (const char of text) {
@@ -467,6 +523,45 @@ function truncateToTokenBudget(text: string, maxTokens: number): string {
   }
   if (index >= text.length) return text;
   return `${text.slice(0, index)}\n... (latest event truncated to fit context)`;
+}
+
+function trimMiddleToTokenBudget(text: string, maxTokens: number): string {
+  if (!text || estimateTokens(text) <= maxTokens) return text;
+  const notice = [
+    "## Context Budget Notice",
+    "Older context was compacted or trimmed to fit the active model window. Prefer fresh tool evidence when exact details matter.",
+    ""
+  ].join("\n");
+  const contentBudget = Math.max(20, maxTokens - estimateTokens(notice));
+  const headBudget = Math.max(10, Math.floor(contentBudget * 0.58));
+  const tailBudget = Math.max(10, contentBudget - headBudget);
+  const head = trimHeadToTokenBudget(text, headBudget);
+  const tail = trimTailToTokenBudget(text, tailBudget);
+  return `${notice}${head}\n\n... (middle context compacted to fit model budget) ...\n\n${tail}`;
+}
+
+function trimHeadToTokenBudget(text: string, maxTokens: number): string {
+  const budget = Math.max(1, maxTokens);
+  let used = 0;
+  let index = 0;
+  for (; index < text.length; index++) {
+    const token = estimateTokens(text[index] ?? "");
+    if (used + token > budget) break;
+    used += token;
+  }
+  return text.slice(0, index);
+}
+
+function trimTailToTokenBudget(text: string, maxTokens: number): string {
+  const budget = Math.max(1, maxTokens);
+  let used = 0;
+  let index = text.length - 1;
+  for (; index >= 0; index--) {
+    const token = estimateTokens(text[index] ?? "");
+    if (used + token > budget) break;
+    used += token;
+  }
+  return text.slice(index + 1);
 }
 
 function isFileContentInTracker(event: TaskEvent, tracker: FileStateTracker): boolean {

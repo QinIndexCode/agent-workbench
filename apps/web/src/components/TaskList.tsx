@@ -1,5 +1,5 @@
 import type { TaskDeleteRequest, TaskDetail, TaskFolderDeleteRequest, TaskFolderRecord, TaskPatchRequest } from "@scc/shared";
-import { BookOpen, ChevronRight, Clock3, Edit3, FileText, Folder, FolderPlus, HelpCircle, PanelLeft, PanelLeftClose, Plus, Search, Settings, Terminal, Trash2 } from "lucide-react";
+import { BookOpen, ChevronRight, Clock3, Edit3, FileText, Folder, FolderPlus, HelpCircle, PanelLeft, Plus, Search, Settings, Terminal, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getUiCopy } from "../i18n.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -66,8 +66,7 @@ export function TaskList({
   const [deleteDerivedSkills, setDeleteDerivedSkills] = useState(false);
   const [utilityOpen, setUtilityOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
-  const [collapsedIconSpin, setCollapsedIconSpin] = useState(false);
-  const [contentHidden, setContentHidden] = useState(false);
+  const [contentVisible, setContentVisible] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(300);
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number; visible: boolean }>({ text: "", x: 0, y: 0, visible: false });
   const draggingRef = useRef(false);
@@ -100,12 +99,12 @@ export function TaskList({
   const folderItems = useMemo(() => {
     return editorFolders.map((folder) => ({
         id: folder.id,
-        name: folder.name,
+        name: displayFolderName(folder, text.defaultFolder),
         rootPath: folder.rootPath,
         system: folder.id === "default" || folder.isDefault,
         browseOnly: false
       }));
-  }, [editorFolders]);
+  }, [editorFolders, text.defaultFolder]);
   const deletingFolder = deletingFolderId ? folderItems.find((folder) => folder.id === deletingFolderId) ?? null : null;
   const folderCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -132,24 +131,21 @@ export function TaskList({
   }, [sidebarWidth]);
 
   useEffect(() => {
+    if (open && collapsed) setCollapsed(false);
+  }, [collapsed, open]);
+
+  useEffect(() => {
     if (collapsed) {
       preCollapseWidthRef.current = sidebarWidth;
-      setContentHidden(true);
-      const t = setTimeout(() => setSidebarWidth(52), 150);
+      setContentVisible(false);
+      const t = setTimeout(() => setSidebarWidth(52), 120);
       return () => clearTimeout(t);
     } else {
       setSidebarWidth(preCollapseWidthRef.current);
-      const t = setTimeout(() => setContentHidden(false), 350);
+      const t = setTimeout(() => setContentVisible(true), 180);
       return () => clearTimeout(t);
     }
   }, [collapsed]);
-
-  useEffect(() => {
-    if (collapsedIconSpin) {
-      const t = setTimeout(() => setCollapsedIconSpin(false), 300);
-      return () => clearTimeout(t);
-    }
-  }, [collapsedIconSpin]);
 
   useEffect(() => {
     const onMouseMove = (event: MouseEvent) => {
@@ -196,14 +192,18 @@ export function TaskList({
         type="button"
       />
       <aside ref={sidebarRef} className={collapsed ? "sidebar collapsed" : open ? "sidebar open" : "sidebar"}>
+        <button
+          aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
+          className="sidebarToggleButton"
+          title={collapsed ? "展开侧边栏" : "收起侧边栏"}
+          type="button"
+          onClick={() => {
+            setCollapsed(!collapsed);
+          }}
+        >
+          <PanelLeft size={16} />
+        </button>
         <div className="sidebarCollapsedRail">
-          <button
-            className="sidebarCollapsedIcon"
-            onClick={() => setCollapsed(false)}
-            type="button"
-          >
-            <PanelLeft size={18} />
-          </button>
           <button
             className="sidebarCollapsedIcon"
             onClick={() => {
@@ -215,7 +215,7 @@ export function TaskList({
             <Plus size={18} />
           </button>
         </div>
-        <div className={contentHidden ? "sidebarExpandedContent contentHidden" : "sidebarExpandedContent"}>
+        <div className={contentVisible ? "sidebarExpandedContent" : "sidebarExpandedContent contentHidden"}>
           <div className="brand">
             <span className="brandIcon">
               <Terminal size={17} />
@@ -226,18 +226,6 @@ export function TaskList({
             </span>
             <button className="closeDrawerButton" onClick={onClose} type="button">
               {text.close}
-            </button>
-            <button
-              aria-label="收起侧边栏"
-              className="sidebarCollapseButton"
-              onClick={() => {
-                setCollapsedIconSpin(true);
-                setCollapsed(true);
-              }}
-              title="收起侧边栏"
-              type="button"
-            >
-              <PanelLeftClose className={collapsedIconSpin ? "spin" : ""} size={16} />
             </button>
           </div>
           <div className="sidebarNav" aria-label={text.navigation}>
@@ -616,4 +604,9 @@ export function TaskList({
       </ConfirmDialog>
     </>
   );
+}
+
+function displayFolderName(folder: TaskFolderRecord, defaultLabel: string): string {
+  if (folder.id === "default" || folder.isDefault) return defaultLabel;
+  return folder.name;
 }

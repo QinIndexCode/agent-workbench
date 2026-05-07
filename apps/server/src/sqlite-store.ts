@@ -5,6 +5,11 @@ import type {
   ConversationSummary,
   ExperienceRecord,
   GlobalPermissionGrant,
+  IntegrationMessage,
+  IntegrationProviderConfig,
+  IntegrationTaskLink,
+  KnowledgeChunk,
+  KnowledgeEmbedding,
   KnowledgeItem,
   McpServerConfig,
   ModelProviderRecord,
@@ -16,17 +21,20 @@ import type {
   SkillConflict,
   SkillRecord,
   TaskAttachment,
+  TaskCheckpoint,
   TaskDetail,
   TaskFolderRecord,
   TaskMemory,
   UserPreferences,
+  PromptCacheStats,
   WebSearchProviderConfig
 } from "@scc/shared";
-import { defaultPreferences, normalizeSkillRecord, normalizeTaskDetail, normalizeTaskFolderRecord, type EncryptedSecretValue, type WorkbenchStore } from "@scc/core";
+import { defaultPreferences, normalizeKnowledgeItem, normalizeSkillRecord, normalizeTaskDetail, normalizeTaskFolderRecord, type EncryptedSecretValue, type WorkbenchStore } from "@scc/core";
 
 type Namespace =
   | "tasks"
   | "task_attachments"
+  | "task_checkpoints"
   | "conversation_summaries"
   | "task_folders"
   | "experiences"
@@ -44,7 +52,14 @@ type Namespace =
   | "preferences"
   | "reflection_sessions"
   | "project_memories"
-  | "knowledge_items";
+  | "knowledge_items"
+  | "knowledge_chunks"
+  | "knowledge_embeddings"
+  | "prompt_cache_stats"
+  | "integration_providers"
+  | "integration_secrets"
+  | "integration_messages"
+  | "integration_task_links";
 type Row = { key: string; value: string };
 
 export class SqliteWorkbenchStore implements WorkbenchStore {
@@ -94,6 +109,24 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
 
   async deleteTaskAttachment(attachmentId: string): Promise<void> {
     this.delete("task_attachments", attachmentId);
+  }
+
+  async saveTaskCheckpoint(record: TaskCheckpoint): Promise<void> {
+    this.upsert("task_checkpoints", record.id, record);
+  }
+
+  async getTaskCheckpoint(checkpointId: string): Promise<TaskCheckpoint | undefined> {
+    return this.get<TaskCheckpoint>("task_checkpoints", checkpointId);
+  }
+
+  async listTaskCheckpoints(taskId?: string): Promise<TaskCheckpoint[]> {
+    return this.list<TaskCheckpoint>("task_checkpoints")
+      .filter((record) => !taskId || record.taskId === taskId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async deleteTaskCheckpoint(checkpointId: string): Promise<void> {
+    this.delete("task_checkpoints", checkpointId);
   }
 
   async saveConversationSummary(record: ConversationSummary): Promise<void> {
@@ -217,7 +250,14 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
 
   async getPreferences(): Promise<UserPreferences> {
     const stored = this.get<UserPreferences>("preferences", "default");
-    if (stored) return { ...defaultPreferences(), ...stored };
+    if (stored) {
+      const { reflectionEnabled: _reflectionEnabled, reflectionSchedule: _reflectionSchedule, emojiStyle: _emojiStyle, ...rest } = stored as UserPreferences & {
+        reflectionEnabled?: boolean;
+        reflectionSchedule?: string;
+        emojiStyle?: string;
+      };
+      return { ...defaultPreferences(), ...rest };
+    }
     const created = defaultPreferences();
     await this.savePreferences(created);
     return created;
@@ -320,21 +360,117 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   }
 
   async saveKnowledgeItem(record: KnowledgeItem): Promise<void> {
-    this.upsert("knowledge_items", record.id, record);
+    this.upsert("knowledge_items", record.id, normalizeKnowledgeItem(record));
   }
 
   async getKnowledgeItem(id: string): Promise<KnowledgeItem | undefined> {
-    return this.get<KnowledgeItem>("knowledge_items", id);
+    const item = this.get<KnowledgeItem>("knowledge_items", id);
+    return item ? normalizeKnowledgeItem(item) : undefined;
   }
 
   async listKnowledgeItems(projectId?: string): Promise<KnowledgeItem[]> {
     return this.list<KnowledgeItem>("knowledge_items")
       .filter((record) => !projectId || record.projectId === projectId)
+      .map((record) => normalizeKnowledgeItem(record))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   async deleteKnowledgeItem(id: string): Promise<void> {
     this.delete("knowledge_items", id);
+    await this.deleteKnowledgeChunks(id);
+  }
+
+  async saveKnowledgeChunk(record: KnowledgeChunk): Promise<void> {
+    this.upsert("knowledge_chunks", record.id, record);
+  }
+
+  async listKnowledgeChunks(knowledgeId?: string): Promise<KnowledgeChunk[]> {
+    return this.list<KnowledgeChunk>("knowledge_chunks")
+      .filter((record) => !knowledgeId || record.knowledgeId === knowledgeId)
+      .sort((a, b) => a.ordinal - b.ordinal);
+  }
+
+  async deleteKnowledgeChunks(knowledgeId: string): Promise<void> {
+    const chunkIds = this.list<KnowledgeChunk>("knowledge_chunks")
+      .filter((record) => record.knowledgeId === knowledgeId)
+      .map((record) => record.id);
+    for (const chunkId of chunkIds) this.delete("knowledge_chunks", chunkId);
+    await this.deleteKnowledgeEmbeddings(chunkIds);
+  }
+
+  async saveKnowledgeEmbedding(record: KnowledgeEmbedding): Promise<void> {
+    this.upsert("knowledge_embeddings", record.id, record);
+  }
+
+  async listKnowledgeEmbeddings(chunkIds?: string[]): Promise<KnowledgeEmbedding[]> {
+    const ids = chunkIds ? new Set(chunkIds) : null;
+    return this.list<KnowledgeEmbedding>("knowledge_embeddings").filter((record) => !ids || ids.has(record.chunkId));
+  }
+
+  async deleteKnowledgeEmbeddings(chunkIds: string[]): Promise<void> {
+    const ids = new Set(chunkIds);
+    for (const record of this.list<KnowledgeEmbedding>("knowledge_embeddings")) {
+      if (ids.has(record.chunkId)) this.delete("knowledge_embeddings", record.id);
+    }
+  }
+
+  async savePromptCacheStats(record: PromptCacheStats): Promise<void> {
+    this.upsert("prompt_cache_stats", record.id, record);
+  }
+
+  async listPromptCacheStats(taskId?: string): Promise<PromptCacheStats[]> {
+    return this.list<PromptCacheStats>("prompt_cache_stats")
+      .filter((record) => !taskId || record.taskId === taskId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async saveIntegrationProvider(record: IntegrationProviderConfig): Promise<void> {
+    this.upsert("integration_providers", record.id, record);
+  }
+
+  async getIntegrationProvider(integrationId: string): Promise<IntegrationProviderConfig | undefined> {
+    return this.get<IntegrationProviderConfig>("integration_providers", integrationId);
+  }
+
+  async listIntegrationProviders(): Promise<IntegrationProviderConfig[]> {
+    return this.list<IntegrationProviderConfig>("integration_providers").sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  async deleteIntegrationProvider(integrationId: string): Promise<void> {
+    this.delete("integration_providers", integrationId);
+    for (const row of this.db.prepare("SELECT key FROM records WHERE namespace = ? AND key LIKE ?").all("integration_secrets", `${integrationId}:%`) as Array<{ key: string }>) {
+      this.delete("integration_secrets", row.key);
+    }
+  }
+
+  async saveIntegrationSecret(integrationId: string, name: string, secret: EncryptedSecretValue): Promise<void> {
+    this.upsert("integration_secrets", `${integrationId}:${name}`, secret);
+  }
+
+  async getIntegrationSecret(integrationId: string, name: string): Promise<EncryptedSecretValue | undefined> {
+    return this.get<EncryptedSecretValue>("integration_secrets", `${integrationId}:${name}`);
+  }
+
+  async deleteIntegrationSecret(integrationId: string, name: string): Promise<void> {
+    this.delete("integration_secrets", `${integrationId}:${name}`);
+  }
+
+  async saveIntegrationMessage(record: IntegrationMessage): Promise<void> {
+    this.upsert("integration_messages", record.id, record);
+  }
+
+  async listIntegrationMessages(integrationId?: string): Promise<IntegrationMessage[]> {
+    return this.list<IntegrationMessage>("integration_messages")
+      .filter((record) => !integrationId || record.integrationId === integrationId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async saveIntegrationTaskLink(record: IntegrationTaskLink): Promise<void> {
+    this.upsert("integration_task_links", record.id, record);
+  }
+
+  async listIntegrationTaskLinks(taskId?: string): Promise<IntegrationTaskLink[]> {
+    return this.list<IntegrationTaskLink>("integration_task_links").filter((record) => !taskId || record.taskId === taskId);
   }
 
   close(): void {

@@ -3,6 +3,7 @@ import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGr
 import { api } from "./api.js";
 import { DocsView } from "./components/DocsView.js";
 import { HistoryPage } from "./components/HistoryPage.js";
+import { IntegrationsPanel } from "./components/IntegrationsPanel.js";
 import { KnowledgePanel } from "./components/KnowledgePanel.js";
 import { LibraryView, type LibrarySection } from "./components/LibraryView.js";
 import { McpPanel } from "./components/McpPanel.js";
@@ -53,7 +54,7 @@ export function App() {
     modelProvider.models.map((model) => ({ label: model.id, value: model.id }));
   const taskFolderOptions = data.taskFolders.length > 0
     ? data.taskFolders.map((folder) => ({
-        label: folder.name,
+        label: folder.id === "default" || folder.isDefault ? getDefaultFolderLabel(language) : folder.name,
         value: folder.id,
         ...(folder.rootPath ? { description: folder.rootPath } : {})
       }))
@@ -153,6 +154,7 @@ export function App() {
           onOpenTasks={() => setTaskDrawerOpen(true)}
           onSubmit={(mode, text) => submitComposer(mode, text)}
           onStop={() => data.selected && void data.runTaskAction(() => api.control(data.selected!.id, "pause"))}
+          onRollbackLatest={() => data.selected && void data.rollbackTask(data.selected.id)}
           titleIssue={titleIssue}
           onRetryTitle={() => titleIssue && submitNewTask(titleIssue.goal, false)}
           onUseLocalTitle={() => titleIssue && submitNewTask(titleIssue.goal, true)}
@@ -205,6 +207,8 @@ export function App() {
                 onDelete={(id) => data.runSideAction(() => api.deleteKnowledgeItem(id))}
                 onUpdate={(id, input) => data.runSideAction(() => api.patchKnowledgeItem(id, input))}
                 onUpload={(input) => data.runSideAction(() => api.uploadKnowledgeFile(input))}
+                onReindex={(id) => data.runSideAction(() => api.reindexKnowledgeItem(id))}
+                onSearch={(input) => api.searchKnowledge(input)}
               />
             ),
             reflections: (
@@ -262,6 +266,18 @@ export function App() {
                 onConnect={(serverId) => data.runSideAction(() => api.connectMcpServer(serverId))}
                 onDisconnect={(serverId) => data.runSideAction(() => api.disconnectMcpServer(serverId))}
                 onDelete={(serverId) => data.runSideAction(() => api.deleteMcpServer(serverId))}
+              />
+            ),
+            integrations: (
+              <IntegrationsPanel
+                folders={data.taskFolders}
+                integrations={data.integrations}
+                language={language}
+                onConnect={(id) => data.runSideAction(() => api.connectIntegration(id))}
+                onCreate={(input) => data.runSideAction(() => api.createIntegration(input))}
+                onDelete={(id) => data.runSideAction(() => api.deleteIntegration(id))}
+                onDisconnect={(id) => data.runSideAction(() => api.disconnectIntegration(id))}
+                onUpdate={(id, input) => data.runSideAction(() => api.patchIntegration(id, input))}
               />
             ),
             scheduled: (
@@ -367,7 +383,7 @@ export function App() {
 
       if (permissionPreset === "custom") {
         const snapshot = allRiskCategories.filter((risk) => granted.has(risk));
-        await api.updatePreferences(normalizeContextPatch(data.preferences, { customPermissionSnapshot: snapshot }));
+        await api.updatePreferences(normalizeContextPatch(data.preferences ?? {}, { customPermissionSnapshot: snapshot }));
       }
 
       const target = new Set<RiskCategory>(
@@ -405,7 +421,7 @@ export function App() {
       if (activeProvider) {
         const model = activeProvider.models.find((item) => item.id === modelId);
         await api.patchModelProvider(activeProvider.id, { defaultModelId: modelId, makeActive: true });
-        await api.updatePreferences(normalizeContextPatch(data.preferences, {
+        await api.updatePreferences(normalizeContextPatch(data.preferences ?? {}, {
           activeModelProviderId: activeProvider.id,
           defaultModel: modelId,
           providerBaseUrl: activeProvider.baseUrl,
@@ -413,7 +429,7 @@ export function App() {
         }));
         return;
       }
-      await api.updatePreferences(normalizeContextPatch(data.preferences, { defaultModel: modelId }));
+      await api.updatePreferences(normalizeContextPatch(data.preferences ?? {}, { defaultModel: modelId }));
     });
   }
 
@@ -464,6 +480,10 @@ export function App() {
       api.mergeSkills(group.canonicalSkillId, { targetSkillId: group.canonicalSkillId, sourceSkillIds, deleteSources: true })
     );
   }
+}
+
+function getDefaultFolderLabel(language: string | null | undefined): string {
+  return language === "zh-CN" ? "默认文件夹" : "Default";
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {

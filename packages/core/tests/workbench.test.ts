@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -15,6 +15,7 @@ import {
   ConfiguredToolModelClient,
   ContextAssembler,
   InMemoryWorkbenchStore,
+  KnowledgeSearchToolExecutor,
   McpRegistry,
   WebSearchToolExecutor,
   type ModelClient,
@@ -130,6 +131,36 @@ describe("ContextAssembler", () => {
     expect(context.input).toContain("Conversation Summary");
     expect(context.input).toContain("LATEST_DECISION_MARKER");
   });
+
+  it("keeps assembled context inside a strict low token budget", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const preferences = await store.getPreferences();
+    await store.savePreferences({ ...preferences, maxTokensPerRequest: 900, updatedAt: nowIso() });
+    const assembler = new ContextAssembler(store);
+    const task: TaskDetail = {
+      id: "task_budget",
+      title: "Budget task",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: Array.from({ length: 48 }, (_, index) => ({
+        id: `event_budget_${index}`,
+        taskId: "task_budget",
+        type: (index % 2 === 0 ? "tool_result" : "assistant_message") as const,
+        createdAt: nowIso(),
+        summary: index === 47 ? "LATEST_BUDGET_MARKER" : `large event ${index} ${"payload ".repeat(220)}`,
+        payload: index % 2 === 0 ? { toolName: "read_file", ok: true, output: "file content ".repeat(300) } : {}
+      }))
+    };
+
+    const context = await assembler.assemble(task);
+
+    expect(context.usedTokens).toBeLessThanOrEqual(900);
+    expect(context.input).toContain("Context Budget Notice");
+    expect(context.input).toContain("LATEST_BUDGET_MARKER");
+  });
 });
 
 class StubToolExecutor {
@@ -199,6 +230,21 @@ class StreamingFinalModel implements ModelClient {
   }
 }
 
+class UsageModel implements ModelClient {
+  async next(): Promise<ModelTurn> {
+    return {
+      kind: "final",
+      message: "Provider usage recorded.",
+      usage: {
+        inputTokens: 1000,
+        outputTokens: 80,
+        cachedTokens: 400,
+        raw: { prompt_tokens: 1000, completion_tokens: 80, prompt_tokens_details: { cached_tokens: 400 } }
+      }
+    };
+  }
+}
+
 class CancellableStreamingModel implements ModelClient {
   aborted = false;
 
@@ -219,6 +265,16 @@ class CancellableStreamingModel implements ModelClient {
     if (stream?.signal?.aborted) return { kind: "final", message: "This final message should not be recorded." };
     await stream?.onAssistantDelta("late");
     return { kind: "final", message: "late final" };
+  }
+}
+
+class OverflowOnceModel implements ModelClient {
+  calls = 0;
+
+  async next(): Promise<ModelTurn> {
+    this.calls += 1;
+    if (this.calls === 1) throw new Error("400 context length exceeded: too many tokens in the prompt");
+    return { kind: "final", message: "Recovered after compaction." };
   }
 }
 
@@ -294,6 +350,18 @@ describe("AgentWorkbench", () => {
     expect(final?.payload["streamId"]).toBe(deltas[0]?.payload["streamId"]);
   });
 
+  it("compacts and retries once after a model context overflow", async () => {
+    const model = new OverflowOnceModel();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model });
+
+    const completed = await workbench.createTask("continue a very long conversation");
+
+    expect(model.calls).toBe(2);
+    expect(completed.status).toBe("completed");
+    expect(completed.events.some((event) => event.type === "context_overflow_recovered")).toBe(true);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("Recovered"))).toBe(true);
+  });
+
   it("pauses an in-flight model stream without recording a final answer", async () => {
     const model = new CancellableStreamingModel();
     const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model });
@@ -335,20 +403,24 @@ describe("AgentWorkbench", () => {
   });
 
   it("runs due scheduled tasks through the normal task pipeline", async () => {
-    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store, model: new StreamingFinalModel() });
     const scheduled = await workbench.createScheduledTask({
       title: "Daily note",
       prompt: "summarize today's project state",
       folderId: "default",
-      permissionPreset: "ask",
-      runAt: new Date(Date.now() - 60_000).toISOString()
+      scheduleKind: "interval",
+      intervalHours: 0,
+      intervalMinutes: 1
     });
+    await store.saveScheduledTask({ ...scheduled, nextRunAt: new Date(Date.now() - 60_000).toISOString() });
 
     const changed = await workbench.runDueScheduledTasks(new Date());
     const tasks = await workbench.listTasks();
 
     expect(changed[0]?.id).toBe(scheduled.id);
-    expect(changed[0]?.status).toBe("completed");
+    expect(changed[0]?.status).toBe("active");
+    expect(new Date(changed[0]?.nextRunAt ?? 0).getTime()).toBeGreaterThan(Date.now());
     expect(tasks.some((task) => task.title === "Daily note")).toBe(true);
     expect(tasks.find((task) => task.title === "Daily note")?.events.some((event) => event.type === "scheduled_task_created")).toBe(true);
   });
@@ -392,6 +464,127 @@ describe("AgentWorkbench", () => {
     } finally {
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }
+  });
+
+  it("indexes knowledge locally and exposes knowledge_search as workspace-read evidence", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({
+      store,
+      tools: new CompositeToolExecutor(new StubToolExecutor(), [new KnowledgeSearchToolExecutor(store)]),
+      model: new SingleToolModel("knowledge_search", { query: "approval policy", limit: 2 })
+    });
+    const item = await workbench.createKnowledgeItem({
+      kind: "memory",
+      title: "Approval notes",
+      content: "SCC should ask before risky tools and reuse task grants after approval.",
+      tags: ["permissions"]
+    });
+    const search = await workbench.searchKnowledge({ query: "risky approval grants", projectId: "default", limit: 2 });
+    await workbench.grantGlobalPermission("workspace_read", "knowledge search smoke");
+    const completed = await workbench.createTask("search stored approval policy");
+
+    expect(item.indexStatus).toBe("indexed");
+    expect(item.chunkCount).toBeGreaterThan(0);
+    expect(search[0]?.item.id).toBe(item.id);
+    expect(completed.status).toBe("completed");
+    expect(completed.events.some((event) => event.type === "tool_result" && String(event.payload["output"] ?? "").includes("Approval notes"))).toBe(true);
+    expect(search[0]?.citation?.title).toBe("Approval notes");
+    expect(search[0]?.citation?.excerpt).toContain("ask before risky tools");
+  });
+
+  it("creates checkpoints before edits and can roll back task file changes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-checkpoint-"));
+    try {
+      mkdirSync(join(root, "src"), { recursive: true });
+      const filePath = join(root, "src", "note.txt");
+      writeFileSync(filePath, "before\n", "utf8");
+      const workbench = new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        model: new SingleToolModel("edit_file", {
+          path: "src/note.txt",
+          expectedHash: "9160d4be34c8695b",
+          edits: [{ startLine: 1, endLine: 1, newText: "after" }]
+        }),
+        tools: new ShellToolExecutor()
+      });
+      const folder = await workbench.createTaskFolder({ name: "Checkpoint root", rootPath: root });
+      await workbench.grantGlobalPermission("workspace_write", "checkpoint test");
+
+      const completed = await workbench.createTask("edit note", "Edit note", folder.id);
+      const checkpoints = await workbench.listTaskCheckpoints(completed.id);
+
+      expect(completed.events.some((event) => event.type === "task_checkpoint_created")).toBe(true);
+      expect(checkpoints).toHaveLength(1);
+      expect(readFileSync(filePath, "utf8")).toBe("after\n");
+
+      const rolledBack = await workbench.rollbackTask(completed.id);
+      expect(rolledBack.restoredFiles).toBe(1);
+      expect(readFileSync(filePath, "utf8")).toBe("before\n");
+      expect((await workbench.getTask(completed.id))?.events.some((event) => event.type === "task_rollback_completed")).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs scheduled reflection and records the result without creating a normal task", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store, model: new StreamingFinalModel() });
+    await workbench.ensureDefaultScheduledTasks();
+    const reflection = (await workbench.listScheduledTasks()).find((task) => task.type === "reflection");
+    if (!reflection) throw new Error("expected default reflection schedule");
+    await store.saveScheduledTask({ ...reflection, nextRunAt: new Date(Date.now() - 60_000).toISOString() });
+
+    const changed = await workbench.runDueScheduledTasks(new Date());
+
+    expect(changed[0]?.type).toBe("reflection");
+    expect(changed[0]?.lastRunSummary).toContain("Reflection");
+    expect(await workbench.listReflectionSessions()).toHaveLength(1);
+    expect(await workbench.listTasks()).toHaveLength(0);
+  });
+
+  it("records integration messages as normal task events", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+    const integration = await workbench.createIntegrationProvider({
+      kind: "discord",
+      label: "Discord Test",
+      defaultFolderId: "default",
+      defaultPermissionPreset: "ask",
+      enabled: true
+    });
+
+    const completed = await workbench.handleDiscordInteraction({
+      integrationId: integration.id,
+      channelId: "channel_1",
+      messageId: "message_1",
+      userId: "user_1",
+      text: "Summarize this from Discord"
+    });
+
+    expect(completed.status).toBe("completed");
+    expect(completed.events.some((event) => event.type === "integration_message_received")).toBe(true);
+    expect(await workbench.listIntegrationProviders()).toHaveLength(1);
+  });
+
+  it("records prompt cache statistics after model turns", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+    const first = await workbench.createTask("record cache baseline");
+    const second = await workbench.appendMessage(first.id, "continue with another turn");
+    const stats = await workbench.listPromptCacheStats(second.id);
+
+    expect(stats.length).toBeGreaterThanOrEqual(2);
+    expect(stats[0]?.inputTokens).toBeGreaterThan(0);
+    expect(second.events.some((event) => event.type === "prompt_cache_stats")).toBe(true);
+  });
+
+  it("records provider sourced prompt cache usage when the model returns token metadata", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new UsageModel() });
+    const task = await workbench.createTask("record provider cache usage");
+    const stats = await workbench.listPromptCacheStats(task.id);
+
+    expect(stats[0]?.source).toBe("provider");
+    expect(stats[0]?.inputTokens).toBe(1000);
+    expect(stats[0]?.cachedTokens).toBe(400);
+    expect(stats[0]?.cacheHitRatio).toBe(0.4);
   });
 
   it("snapshots the selected local folder root when a task is created", async () => {

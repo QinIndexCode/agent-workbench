@@ -6,8 +6,24 @@ import type {
   ContextPackSchema,
   ExperienceRecordSchema,
   GlobalPermissionGrantSchema,
+  DiscordInteractionRequestSchema,
+  EmbeddingProviderConfigSchema,
+  FeishuEventRequestSchema,
+  IntegrationChannelBindingSchema,
+  IntegrationMessageSchema,
+  IntegrationProviderConfigSchema,
+  IntegrationProviderCreateRequestSchema,
+  IntegrationProviderPatchRequestSchema,
+  IntegrationStatusSchema,
+  IntegrationKindSchema,
+  IntegrationTaskLinkSchema,
+  KnowledgeChunkSchema,
   KnowledgeCreateRequestSchema,
+  KnowledgeEmbeddingSchema,
   KnowledgeItemSchema,
+  KnowledgeReindexResultSchema,
+  KnowledgeSearchRequestSchema,
+  KnowledgeSearchResultSchema,
   KnowledgePatchRequestSchema,
   KnowledgeUploadRequestSchema,
   MessageRequestSchema,
@@ -27,6 +43,8 @@ import type {
   ProviderProtocolSchema,
   ProjectMemoryCreateRequestSchema,
   ProjectMemorySchema,
+  PromptCachePolicySchema,
+  PromptCacheStatsSchema,
   ReflectionSessionSchema,
   RiskCategorySchema,
   SkillCorrectionRequestSchema,
@@ -45,6 +63,9 @@ import type {
   TaskAttachmentKindSchema,
   TaskAttachmentSchema,
   TaskAttachmentUploadRequestSchema,
+  TaskCheckpointSchema,
+  TaskRollbackRequestSchema,
+  TaskRollbackResultSchema,
   TaskMemorySchema,
   TaskPlanSchema,
   TaskPlanStepSchema,
@@ -91,6 +112,9 @@ export type TaskEvent = z.infer<typeof TaskEventSchema>;
 export type TaskAttachmentKind = z.infer<typeof TaskAttachmentKindSchema>;
 export type TaskAttachment = z.infer<typeof TaskAttachmentSchema>;
 export type TaskAttachmentUploadRequest = z.infer<typeof TaskAttachmentUploadRequestSchema>;
+export type TaskCheckpoint = z.infer<typeof TaskCheckpointSchema>;
+export type TaskRollbackRequest = z.infer<typeof TaskRollbackRequestSchema>;
+export type TaskRollbackResult = z.infer<typeof TaskRollbackResultSchema>;
 export type ConversationSummary = z.infer<typeof ConversationSummarySchema>;
 export type ContextPack = z.infer<typeof ContextPackSchema>;
 export type TaskPlanStep = z.infer<typeof TaskPlanStepSchema>;
@@ -114,15 +138,33 @@ export type ExperienceRecord = z.infer<typeof ExperienceRecordSchema>;
 export type GlobalPermissionGrant = z.infer<typeof GlobalPermissionGrantSchema>;
 export type UserPreferences = z.infer<typeof UserPreferencesSchema>;
 export type PreferencesPatch = z.infer<typeof PreferencesPatchSchema>;
+export type PromptCachePolicy = z.infer<typeof PromptCachePolicySchema>;
+export type PromptCacheStats = z.infer<typeof PromptCacheStatsSchema>;
 export type ProviderProtocol = z.infer<typeof ProviderProtocolSchema>;
 export type ModelPreset = z.infer<typeof ModelPresetSchema>;
 export type ModelProviderRecord = z.infer<typeof ModelProviderRecordSchema>;
 export type ModelProviderCreateRequest = z.infer<typeof ModelProviderCreateRequestSchema>;
 export type ModelProviderPatchRequest = z.infer<typeof ModelProviderPatchRequestSchema>;
+export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderConfigSchema>;
 export type KnowledgeItem = z.infer<typeof KnowledgeItemSchema>;
+export type KnowledgeChunk = z.infer<typeof KnowledgeChunkSchema>;
+export type KnowledgeEmbedding = z.infer<typeof KnowledgeEmbeddingSchema>;
 export type KnowledgeCreateRequest = z.infer<typeof KnowledgeCreateRequestSchema>;
 export type KnowledgePatchRequest = z.infer<typeof KnowledgePatchRequestSchema>;
 export type KnowledgeUploadRequest = z.infer<typeof KnowledgeUploadRequestSchema>;
+export type KnowledgeSearchRequest = z.infer<typeof KnowledgeSearchRequestSchema>;
+export type KnowledgeSearchResult = z.infer<typeof KnowledgeSearchResultSchema>;
+export type KnowledgeReindexResult = z.infer<typeof KnowledgeReindexResultSchema>;
+export type IntegrationKind = z.infer<typeof IntegrationKindSchema>;
+export type IntegrationStatus = z.infer<typeof IntegrationStatusSchema>;
+export type IntegrationProviderConfig = z.infer<typeof IntegrationProviderConfigSchema>;
+export type IntegrationProviderCreateRequest = z.infer<typeof IntegrationProviderCreateRequestSchema>;
+export type IntegrationProviderPatchRequest = z.infer<typeof IntegrationProviderPatchRequestSchema>;
+export type IntegrationChannelBinding = z.infer<typeof IntegrationChannelBindingSchema>;
+export type IntegrationMessage = z.infer<typeof IntegrationMessageSchema>;
+export type IntegrationTaskLink = z.infer<typeof IntegrationTaskLinkSchema>;
+export type DiscordInteractionRequest = z.infer<typeof DiscordInteractionRequestSchema>;
+export type FeishuEventRequest = z.infer<typeof FeishuEventRequestSchema>;
 export type TaskMemory = z.infer<typeof TaskMemorySchema>;
 export type PatternRecord = z.infer<typeof PatternRecordSchema>;
 export type SkillRecord = z.infer<typeof SkillRecordSchema>;

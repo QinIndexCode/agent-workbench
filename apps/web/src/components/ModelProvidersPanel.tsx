@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ModelPreset, ModelProviderCreateRequest, ModelProviderPatchRequest, ModelProviderRecord, ProviderProtocol } from "@scc/shared";
-import { CheckCircle2, Edit3, Plus, SlidersHorizontal, Trash2, X, type LucideIcon } from "lucide-react";
-import { MODEL_PROVIDER_PRESETS, type ModelProviderPreset } from "../llm-presets.js";
+import { CheckCircle2, Edit3, Plus, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { CONTEXT_QUICK_PRESETS, MODEL_PROVIDER_PRESETS, formatTokenAmount, parseTokenAmount, type ModelProviderPreset } from "../llm-presets.js";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 
@@ -41,11 +41,20 @@ export function ModelProvidersPanel({
   const [deleteTarget, setDeleteTarget] = useState<ModelProviderRecord | null>(null);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<ProviderDraft>(() => draftFromPreset(MODEL_PROVIDER_PRESETS[0]!));
+  const [formError, setFormError] = useState<string | null>(null);
   const activeProvider = providers.find((provider) => provider.id === activeProviderId) ?? providers.find((provider) => provider.enabled) ?? null;
   const selectedPreset = useMemo(() => MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor === draft.vendor) ?? MODEL_PROVIDER_PRESETS[0]!, [draft.vendor]);
   const modelPresets = selectedPreset.models;
   const selectedModel = modelPresets.find((model) => model.id === draft.modelId) ?? modelPresets[0] ?? null;
-  const contextLimit = draft.modelMode === "custom" ? Number(draft.customContextWindow) || 0 : selectedModel?.contextWindow ?? 0;
+  const customContextResult = useMemo(() => {
+    if (draft.modelMode !== "custom" || !draft.customContextWindow.trim()) return null;
+    try {
+      return { ok: true as const, value: parseTokenAmount(draft.customContextWindow) };
+    } catch {
+      return { ok: false as const, value: 0 };
+    }
+  }, [draft.customContextWindow, draft.modelMode]);
+  const contextLimit = draft.modelMode === "custom" ? customContextResult?.value ?? 0 : selectedModel?.contextWindow ?? 0;
 
   useEffect(() => {
     if (!open) return;
@@ -93,10 +102,21 @@ export function ModelProvidersPanel({
                   {text.active}
                 </span>
               ) : (
-                <span>{provider.enabled ? text.enabled : text.disabled}</span>
+                <span className={provider.enabled ? "statusPill" : "statusPill muted"}>{provider.enabled ? text.available : text.paused}</span>
               )}
             </div>
             <div className="rowIconActions">
+              {provider.id !== activeProviderId ? (
+                <button
+                  aria-label={text.makeCurrent(provider.defaultModelId)}
+                  className="iconButton"
+                  title={text.makeCurrent(provider.defaultModelId)}
+                  type="button"
+                  onClick={() => void onUpdate(provider.id, { enabled: true, makeActive: true })}
+                >
+                  <CheckCircle2 size={15} />
+                </button>
+              ) : null}
               <button aria-label={text.edit} className="iconButton" type="button" onClick={() => startEdit(provider)}>
                 <Edit3 size={15} />
               </button>
@@ -109,106 +129,170 @@ export function ModelProvidersPanel({
       </div>
 
       {open ? (
-        <div className="modalOverlay" role="presentation">
+        <div className="modalBackdrop stdBackdrop" role="presentation" onClick={(e) => { if (e.target === e.currentTarget) setOpen(false); }}>
           <form
             aria-label={editing ? text.edit : text.add}
-            className="providerDialog"
+            className="stdModal stdModalXWide"
             onSubmit={(event) => {
               event.preventDefault();
               void save();
             }}
           >
-            <div className="dialogHeader">
-              <div>
-                <h3>{editing ? text.edit : text.add}</h3>
-                <p>{text.dialogHelp}</p>
+            <div className="stdHeader">
+              <h3>{editing ? text.edit : text.add}</h3>
+              <button className="stdClose" type="button" onClick={() => setOpen(false)}>×</button>
+            </div>
+            <div className="stdBody">
+              <p className="stdDialogHelp">{text.dialogHelp}</p>
+              <div className="stdFormGrid cols2">
+                <div className="stdField">
+                  <span className="stdFieldLabel">{text.vendor}</span>
+                  <AccordionSelect
+                    ariaLabel={text.vendor}
+                    value={draft.vendor}
+                    options={MODEL_PROVIDER_PRESETS.map((preset) => ({ value: preset.vendor, label: preset.label }))}
+                    onChange={applyPreset}
+                  />
+                </div>
+                <div className="stdField">
+                  <span className="stdFieldLabel">{text.protocol}</span>
+                  <AccordionSelect
+                    ariaLabel={text.protocol}
+                    value={draft.protocol}
+                    options={[
+                      { value: "openai_compatible", label: "OpenAI-compatible" },
+                      { value: "anthropic_messages", label: "Anthropic Messages" },
+                      { value: "gemini", label: "Gemini" }
+                    ]}
+                    onChange={(value) => setDraft({ ...draft, protocol: value as ProviderProtocol })}
+                  />
+                </div>
+                <div className="stdField wide">
+                  <span className="stdFieldLabel">{text.label}</span>
+                  <input className="stdInput" aria-label={text.label} value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} />
+                </div>
+                <div className="stdField wide">
+                  <span className="stdFieldLabel">{text.baseUrl}</span>
+                  <input className="stdInput" aria-label={text.baseUrl} value={draft.baseUrl} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} />
+                </div>
+                <div className="stdField modelField">
+                  <span className="stdFieldLabel">{text.model}</span>
+                  {draft.modelMode === "custom" ? (
+                    <div className="inlineEdit">
+                      <input
+                        className="stdInput"
+                        aria-label={text.customModel}
+                        placeholder={text.customModelPlaceholder}
+                        value={draft.customModelId}
+                        onChange={(event) => setDraft({ ...draft, customModelId: event.target.value })}
+                      />
+                      <button
+                        className="inlineEditToggle"
+                        title={text.backToPreset}
+                        type="button"
+                        onClick={() => {
+                          const firstModel = modelPresets[0];
+                          setDraft({
+                            ...draft,
+                            modelMode: "preset",
+                            modelId: firstModel?.id ?? "",
+                            customModelId: ""
+                          });
+                        }}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ) : (
+                    <AccordionSelect
+                      ariaLabel={text.model}
+                      value={draft.modelId}
+                      options={[
+                        ...modelPresets.map((m) => ({ value: m.id, label: m.id })),
+                        { value: "__custom__", label: text.customModel }
+                      ]}
+                      onChange={selectModel}
+                    />
+                  )}
+                </div>
+                <div className="stdField">
+                  <span className="stdFieldLabel">{text.contextWindow}</span>
+                  {draft.modelMode === "custom" ? (
+                    <>
+                      <input
+                        className="stdInput"
+                        aria-label={text.contextWindow}
+                        aria-invalid={customContextResult?.ok === false}
+                        placeholder="128K / 1M"
+                        value={draft.customContextWindow}
+                        onChange={(event) => {
+                          setFormError(null);
+                          setDraft({ ...draft, customContextWindow: event.target.value });
+                        }}
+                      />
+                      <div className="contextQuickChips" aria-label={text.contextQuickPresets}>
+                        {CONTEXT_QUICK_PRESETS.map((value) => (
+                          <button key={value} type="button" onClick={() => setDraft({ ...draft, customContextWindow: value })}>
+                            {value}
+                          </button>
+                        ))}
+                      </div>
+                      {customContextResult?.ok === false ? <small className="fieldError">{text.invalidContext}</small> : null}
+                    </>
+                  ) : (
+                    <>
+                      <input className="stdInput" disabled value={contextLimit ? formatTokenAmount(contextLimit) : ""} />
+                      {selectedModel ? (
+                        <small className="fieldHint">
+                          {selectedModel.contextWindowKind === "input" ? text.inputWindow : text.totalWindow}
+                          {selectedModel.maxOutputTokens ? ` · ${text.maxOutput}: ${formatTokenAmount(selectedModel.maxOutputTokens)}` : ""}
+                          {selectedModel.docsUrl ? (
+                            <>
+                              {" · "}
+                              <a href={selectedModel.docsUrl} rel="noreferrer" target="_blank">
+                                {text.source}
+                              </a>
+                            </>
+                          ) : null}
+                        </small>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+                <div className="stdField wide">
+                  <span className="stdFieldLabel">{text.apiKey}</span>
+                  <input
+                    className="stdInput"
+                    aria-label={text.apiKey}
+                    autoComplete="off"
+                    placeholder={editing?.apiKeyRef?.last4 ? `•••• ${editing.apiKeyRef.last4}` : ""}
+                    type="password"
+                    value={draft.apiKey}
+                    onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })}
+                  />
+                </div>
               </div>
-              <button className="iconButton" type="button" onClick={() => setOpen(false)}>
-                <X size={16} />
-              </button>
+              {formError ? <p className="formError">{formError}</p> : null}
+              <div className="stdOptionRows">
+                <ToggleSettingRow
+                  label={text.availableForTasks}
+                  description={text.availableForTasksHint}
+                  value={draft.enabled}
+                  onChange={(enabled) => setDraft({ ...draft, enabled })}
+                />
+                <ToggleSettingRow
+                  label={text.makeActive}
+                  description={text.makeActiveHint}
+                  value={draft.makeActive}
+                  onChange={(makeActive) => setDraft({ ...draft, makeActive })}
+                />
+              </div>
             </div>
-            <div className="providerFormGrid">
-              <label className="fieldStack">
-                <span>{text.vendor}</span>
-                <AccordionSelect
-                  ariaLabel={text.vendor}
-                  value={draft.vendor}
-                  options={MODEL_PROVIDER_PRESETS.map((preset) => ({ value: preset.vendor, label: preset.label }))}
-                  onChange={applyPreset}
-                />
-              </label>
-              <label className="fieldStack">
-                <span>{text.protocol}</span>
-                <AccordionSelect
-                  ariaLabel={text.protocol}
-                  value={draft.protocol}
-                  options={[
-                    { value: "openai_compatible", label: "OpenAI-compatible" },
-                    { value: "anthropic_messages", label: "Anthropic Messages" },
-                    { value: "gemini", label: "Gemini" }
-                  ]}
-                  onChange={(value) => setDraft({ ...draft, protocol: value as ProviderProtocol })}
-                />
-              </label>
-              <label className="fieldStack">
-                <span>{text.label}</span>
-                <input value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} />
-              </label>
-              <label className="fieldStack">
-                <span>{text.baseUrl}</span>
-                <input value={draft.baseUrl} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} />
-              </label>
-              <label className="fieldStack">
-                <span>{text.model}</span>
-                <AccordionSelect
-                  ariaLabel={text.model}
-                  value={draft.modelMode === "custom" ? "__custom__" : draft.modelId}
-                  options={[
-                    ...modelPresets.map((model) => ({ value: model.id, label: model.id })),
-                    { value: "__custom__", label: text.customModel }
-                  ]}
-                  onChange={selectModel}
-                />
-              </label>
-              {draft.modelMode === "custom" ? (
-                <>
-                  <label className="fieldStack">
-                    <span>{text.customModel}</span>
-                    <input value={draft.customModelId} onChange={(event) => setDraft({ ...draft, customModelId: event.target.value })} />
-                  </label>
-                  <label className="fieldStack">
-                    <span>{text.contextWindow}</span>
-                    <input min={1} type="number" value={draft.customContextWindow} onChange={(event) => setDraft({ ...draft, customContextWindow: event.target.value })} />
-                  </label>
-                </>
-              ) : (
-                <label className="fieldStack">
-                  <span>{text.contextWindow}</span>
-                  <input disabled value={contextLimit ? String(contextLimit) : ""} />
-                </label>
-              )}
-              <label className="fieldStack">
-                <span>{text.apiKey}</span>
-                <input autoComplete="off" placeholder={editing?.apiKeyRef?.last4 ? `•••• ${editing.apiKeyRef.last4}` : ""} type="password" value={draft.apiKey} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} />
-              </label>
-              <label className={draft.enabled ? "toggleField enabled" : "toggleField"}>
-                <span>{text.enabled}</span>
-                <button className="switchControl" type="button" onClick={() => setDraft({ ...draft, enabled: !draft.enabled })} aria-pressed={draft.enabled} aria-label={text.enabled}>
-                  <span aria-hidden="true" />
-                </button>
-              </label>
-              <label className={draft.makeActive ? "toggleField enabled" : "toggleField"}>
-                <span>{text.makeActive}</span>
-                <button className="switchControl" type="button" onClick={() => setDraft({ ...draft, makeActive: !draft.makeActive })} aria-pressed={draft.makeActive} aria-label={text.makeActive}>
-                  <span aria-hidden="true" />
-                </button>
-              </label>
-            </div>
-            <div className="dialogActions">
-              <button className="textButton" type="button" onClick={() => setOpen(false)}>
+            <div className="stdFooter">
+              <button className="stdCancelBtn" type="button" onClick={() => setOpen(false)}>
                 {text.cancel}
               </button>
-              <button className="subtleButton" type="submit">
+              <button className="primaryInlineButton" type="submit">
                 {text.save}
               </button>
             </div>
@@ -237,21 +321,25 @@ export function ModelProvidersPanel({
   function startCreate() {
     setEditing(null);
     setDraft(draftFromPreset(MODEL_PROVIDER_PRESETS[0]!));
+    setFormError(null);
     setOpen(true);
   }
 
   function startEdit(provider: ModelProviderRecord) {
     setEditing(provider);
     setDraft(draftFromProvider(provider));
+    setFormError(null);
     setOpen(true);
   }
 
   function applyPreset(vendor: string) {
     const preset = MODEL_PROVIDER_PRESETS.find((item) => item.vendor === vendor) ?? MODEL_PROVIDER_PRESETS[0]!;
+    setFormError(null);
     setDraft(draftFromPreset(preset));
   }
 
   function selectModel(value: string) {
+    setFormError(null);
     if (value === "__custom__") {
       setDraft({ ...draft, modelMode: "custom", modelId: "", customModelId: "", customContextWindow: "" });
       return;
@@ -260,7 +348,17 @@ export function ModelProvidersPanel({
   }
 
   async function save() {
-    const model = buildModel(draft);
+    let model: ModelPreset;
+    try {
+      model = buildModel(draft);
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (!model.id) {
+      setFormError(text.modelRequired);
+      return;
+    }
     const models = draft.modelMode === "preset" ? selectedPreset.models : [model];
     const payload = {
       vendor: draft.vendor,
@@ -279,18 +377,56 @@ export function ModelProvidersPanel({
   }
 }
 
-type ProviderIconMeta = { label: string; mark?: string; Icon?: LucideIcon };
+function ToggleSettingRow({
+  description,
+  label,
+  value,
+  onChange
+}: {
+  description: string;
+  label: string;
+  value: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <div className={value ? "stdToggleRow enabled settingToggleRow" : "stdToggleRow settingToggleRow"}>
+      <span>
+        <strong>{label}</strong>
+        <small>{description}</small>
+      </span>
+      <button className="switchControl" type="button" onClick={() => onChange(!value)} aria-label={label} aria-pressed={value}>
+        <span aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
+type ProviderIconMeta = {
+  label: string;
+  initial: string;
+};
 
 const providerIconMeta = {
-  mimo: { label: "Mimo", mark: "M" },
-  openai: { label: "OpenAI", mark: "AI" },
-  anthropic: { label: "Anthropic", mark: "A" },
-  gemini: { label: "Gemini", mark: "G" },
-  deepseek: { label: "DeepSeek", mark: "DS" },
-  qwen: { label: "Qwen", mark: "Q" },
-  kimi: { label: "Kimi", mark: "K" },
-  openrouter: { label: "OpenRouter", mark: "OR" },
-  custom: { label: "Custom model", Icon: SlidersHorizontal }
+  openai: { label: "OpenAI", initial: "AI" },
+  anthropic: { label: "Anthropic", initial: "A" },
+  gemini: { label: "Gemini", initial: "G" },
+  deepseek: { label: "DeepSeek", initial: "DS" },
+  qwen: { label: "Qwen", initial: "Q" },
+  kimi: { label: "Kimi", initial: "K" },
+  mistral: { label: "Mistral", initial: "M" },
+  openrouter: { label: "OpenRouter", initial: "OR" },
+  mimo: { label: "Mimo", initial: "MI" },
+  xai: { label: "xAI", initial: "X" },
+  zhipu: { label: "Zhipu AI", initial: "Z" },
+  doubao: { label: "Doubao", initial: "DB" },
+  baidu: { label: "Baidu", initial: "B" },
+  meta: { label: "Meta", initial: "ME" },
+  nvidia: { label: "NVIDIA", initial: "N" },
+  minimax: { label: "MiniMax", initial: "MM" },
+  cohere: { label: "Cohere", initial: "C" },
+  stepfun: { label: "Stepfun", initial: "S" },
+  spark: { label: "iFlytek Spark", initial: "SP" },
+  custom: { label: "自定义模型", initial: "" }
 } satisfies Record<string, ProviderIconMeta>;
 
 type ProviderIconKind = keyof typeof providerIconMeta;
@@ -298,10 +434,9 @@ type ProviderIconKind = keyof typeof providerIconMeta;
 function ProviderIcon({ vendor, modelId }: { vendor: string | null | undefined; modelId: string | null | undefined }) {
   const kind = resolveProviderIconKind(vendor, modelId);
   const meta: ProviderIconMeta = providerIconMeta[kind];
-  const Icon = meta.Icon;
   return (
     <span aria-label={meta.label} className={`providerBadge providerLogo-${kind}`} role="img" title={meta.label}>
-      {Icon ? <Icon size={16} aria-hidden="true" /> : <span className="providerLogoText">{meta.mark ?? ""}</span>}
+      {kind === "custom" ? <SlidersHorizontal size={15} /> : <span className="providerBadgeText">{meta.initial}</span>}
     </span>
   );
 }
@@ -311,10 +446,7 @@ function resolveProviderIconKind(vendor?: string | null, modelId?: string | null
   const normalizedModel = modelId?.trim();
   const vendorPreset = normalizedVendor ? MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor === normalizedVendor) : null;
   if (vendorPreset?.vendor && vendorPreset.vendor !== "custom") {
-    if (!normalizedModel || vendorPreset.models.some((model) => model.id === normalizedModel)) {
-      return asProviderIconKind(vendorPreset.vendor);
-    }
-    return "custom";
+    return asProviderIconKind(vendorPreset.vendor);
   }
   if (normalizedModel) {
     const inferredPreset = MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor !== "custom" && preset.models.some((model) => model.id === normalizedModel));
@@ -372,7 +504,7 @@ function buildModel(draft: ProviderDraft): ModelPreset {
   return {
     id: draft.customModelId.trim(),
     label: draft.customModelId.trim(),
-    contextWindow: Math.max(1, Number(draft.customContextWindow) || 1),
+    contextWindow: parseTokenAmount(draft.customContextWindow),
     supportsTools: true,
     supportsThinking: false
   };
@@ -397,8 +529,8 @@ function getProviderCopy(language?: string | null) {
     addFirst: zh ? "添加一个模型后即可运行 Agent。" : "Add a model before running the agent.",
     fromPreferences: zh ? "来自当前偏好；添加模型配置后可管理密钥、上下文和预设。" : "From current preferences; add a model configuration to manage keys, context, and presets.",
     active: zh ? "当前使用" : "Active",
-    enabled: zh ? "启用" : "Enabled",
-    disabled: zh ? "停用" : "Disabled",
+    available: zh ? "可用" : "Available",
+    paused: zh ? "暂停" : "Paused",
     noKey: zh ? "未保存密钥" : "No key",
     dialogHelp: zh ? "选择预设模型厂商，或选择 Custom 手动填写接口与上下文窗口。" : "Choose a preset vendor, or choose Custom and enter the endpoint and context window manually.",
     vendor: zh ? "预设厂商" : "Preset vendor",
@@ -407,11 +539,22 @@ function getProviderCopy(language?: string | null) {
     baseUrl: "Base URL",
     model: zh ? "模型" : "Model",
     customModel: zh ? "自定义模型" : "Custom model",
+    customModelPlaceholder: zh ? "输入模型 ID" : "Enter model ID",
+    backToPreset: zh ? "切换回预设模型" : "Switch back to preset",
     contextWindow: zh ? "上下文窗口" : "Context window",
+    contextQuickPresets: zh ? "上下文快捷选项" : "Context quick presets",
+    invalidContext: zh ? "请输入类似 128K、1M 或 1048576 的上下文大小。" : "Enter a context size like 128K, 1M, or 1048576.",
+    modelRequired: zh ? "请填写模型名称。" : "Enter a model name.",
+    totalWindow: zh ? "总窗口" : "Total window",
+    inputWindow: zh ? "输入窗口" : "Input window",
+    maxOutput: zh ? "最大输出" : "Max output",
+    source: zh ? "来源" : "Source",
     apiKey: "API Key",
     makeActive: zh ? "设为当前模型" : "Make active",
-    on: zh ? "开启" : "On",
-    off: zh ? "关闭" : "Off",
+    makeActiveHint: zh ? "保存后立即切换到这个模型配置。" : "Use this model configuration immediately after saving.",
+    makeCurrent: (modelId: string) => zh ? `切换到 ${modelId}` : `Switch to ${modelId}`,
+    availableForTasks: zh ? "允许任务使用" : "Available to tasks",
+    availableForTasksHint: zh ? "关闭后保留配置和密钥，但不会被任务选择。" : "Keep this configuration and key, but exclude it from task selection.",
     cancel: zh ? "取消" : "Cancel",
     save: zh ? "保存" : "Save"
   };

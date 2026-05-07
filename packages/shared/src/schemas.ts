@@ -113,12 +113,19 @@ export const TaskEventSchema = z.object({
     "status_changed",
     "task_memory_created",
     "conversation_summary_created",
+    "context_overflow_recovered",
+    "task_checkpoint_created",
+    "task_rollback_completed",
+    "task_rollback_failed",
+    "prompt_cache_stats",
     "plan_created",
     "plan_step_started",
     "plan_step_completed",
     "plan_step_blocked",
     "plan_revised",
     "web_search_result",
+    "knowledge_indexed",
+    "integration_message_received",
     "scheduled_task_created",
     "pattern_discovered",
     "reflection_started",
@@ -163,6 +170,17 @@ export const ConversationSummarySchema = z.object({
   rangeEndEventId: z.string(),
   summary: z.string(),
   tokenEstimate: z.number().int().nonnegative(),
+  reason: z.string().default("event_window"),
+  retainedFacts: z.array(z.string()).default([]),
+  droppedRanges: z.array(z.object({ startEventId: z.string(), endEventId: z.string(), eventCount: z.number().int().nonnegative() })).default([]),
+  tokenBudget: z
+    .object({
+      maxTotal: z.number().int().positive(),
+      reservedForResponse: z.number().int().nonnegative(),
+      usedBefore: z.number().int().nonnegative().optional(),
+      usedAfter: z.number().int().nonnegative().optional()
+    })
+    .optional(),
   createdAt: z.string(),
   updatedAt: z.string()
 });
@@ -171,6 +189,46 @@ export const ContextPackSchema = z.object({
   id: z.string(),
   taskId: z.string(),
   layers: z.array(z.object({ name: z.string(), summary: z.string(), tokenEstimate: z.number().int().nonnegative() })),
+  retainedFacts: z.array(z.string()).default([]),
+  droppedRanges: z.array(z.object({ startEventId: z.string(), endEventId: z.string(), eventCount: z.number().int().nonnegative() })).default([]),
+  tokenBudget: z.object({ maxTotal: z.number().int().positive(), reservedForResponse: z.number().int().nonnegative() }).optional(),
+  reason: z.string().default("assembly"),
+  createdAt: z.string()
+});
+
+export const TaskCheckpointFileSchema = z.object({
+  path: z.string(),
+  relativePath: z.string(),
+  existed: z.boolean(),
+  beforeHash: z.string().optional(),
+  size: z.number().int().nonnegative().default(0),
+  snapshotPath: z.string().optional()
+});
+
+export const TaskCheckpointSchema = z.object({
+  id: z.string(),
+  taskId: z.string(),
+  workRoot: z.string(),
+  toolCallId: z.string().optional(),
+  toolName: z.string().optional(),
+  reason: z.string(),
+  files: z.array(TaskCheckpointFileSchema),
+  truncated: z.boolean().default(false),
+  createdAt: z.string()
+});
+
+export const TaskRollbackRequestSchema = z
+  .object({
+    checkpointId: z.string().optional()
+  })
+  .strict();
+
+export const TaskRollbackResultSchema = z.object({
+  taskId: z.string(),
+  checkpointId: z.string(),
+  restoredFiles: z.number().int().nonnegative(),
+  deletedFiles: z.number().int().nonnegative(),
+  skippedFiles: z.number().int().nonnegative(),
   createdAt: z.string()
 });
 
@@ -332,16 +390,13 @@ export const UserPreferencesSchema = z.object({
   providerBaseUrl: z.string().default(""),
   contextMode: z.enum(["auto", "manual"]).default("auto"),
   customModelContextWindow: z.number().int().positive().optional(),
-  maxTokensPerRequest: z.number().int().positive().default(128000),
+  maxTokensPerRequest: z.number().int().positive().default(1048576),
   autoApprove: z.enum(["none", "low", "medium", "all"]).default("none"),
   showThinking: z.boolean().default(true),
   language: z.string().default("zh-CN"),
   agentTone: z.enum(["concise", "balanced", "warm", "formal"]).default("balanced"),
-  emojiStyle: z.enum(["auto", "minimal", "expressive", "never"]).default("auto"),
   agentRole: z.string().default("Pragmatic engineering assistant"),
   responseDetail: z.enum(["brief", "normal", "detailed"]).default("normal"),
-  reflectionEnabled: z.boolean().default(true),
-  reflectionSchedule: z.string().default("02:00"),
   skillAutoInject: z.boolean().default(true),
   maxInjectedSkills: z.number().int().positive().default(3),
   mcpApprovalMode: z.enum(["confirm_each", "confirm_dangerous", "auto"]).default("confirm_dangerous"),
@@ -351,13 +406,33 @@ export const UserPreferencesSchema = z.object({
   updatedAt: z.string()
 });
 
+export const PromptCachePolicySchema = z.enum(["auto_savings", "off"]);
+
+export const PromptCacheStatsSchema = z.object({
+  id: z.string(),
+  taskId: z.string().optional(),
+  providerId: z.string().optional(),
+  model: z.string(),
+  policy: PromptCachePolicySchema.default("auto_savings"),
+  source: z.enum(["provider", "estimated"]).default("estimated"),
+  inputTokens: z.number().int().nonnegative(),
+  cachedTokens: z.number().int().nonnegative(),
+  cacheHitRatio: z.number().min(0).max(1),
+  estimatedSavings: z.number().nonnegative(),
+  providerUsage: z.record(z.unknown()).optional(),
+  createdAt: z.string()
+});
+
 export const ProviderProtocolSchema = z.enum(["openai_compatible", "anthropic_messages", "gemini"]);
 
 export const ModelPresetSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   contextWindow: z.number().int().positive(),
+  contextWindowKind: z.enum(["total", "input"]).optional(),
   maxOutputTokens: z.number().int().positive().optional(),
+  docsUrl: z.string().url().optional(),
+  verifiedAt: z.string().optional(),
   supportsTools: z.boolean().default(true),
   supportsThinking: z.boolean().default(false)
 });
@@ -370,13 +445,16 @@ export const EncryptedSecretRefSchema = z.object({
 
 export const ScheduledTaskSchema = z.object({
   id: z.string(),
+  type: z.enum(["prompt", "reflection", "knowledge_reindex", "integration_digest", "skill_review"]).default("prompt"),
   title: z.string(),
   prompt: z.string(),
-  folderId: z.string().default("default"),
+  folderId: z.string().optional(),
   modelProviderId: z.string().optional(),
   permissionPreset: z.enum(["ask", "read_only", "custom", "all"]).default("ask"),
   schedule: z.object({
-    kind: z.enum(["once", "interval"]),
+    kind: z.enum(["once", "interval", "calendar"]),
+    frequency: z.enum(["daily", "weekly", "monthly"]).optional(),
+    timeOfDay: z.string().optional(),
     runAt: z.string().optional(),
     intervalMinutes: z.number().int().positive().optional()
   }),
@@ -384,27 +462,55 @@ export const ScheduledTaskSchema = z.object({
   nextRunAt: z.string(),
   lastRunAt: z.string().optional(),
   lastTaskId: z.string().optional(),
+  lastRunSummary: z.string().optional(),
+  lastError: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string()
 });
 
-export const ScheduledTaskCreateRequestSchema = z
+const ScheduledTaskRequestBaseSchema = z
   .object({
     title: z.string().min(1),
     prompt: z.string().min(1),
-    folderId: z.string().default("default"),
-    modelProviderId: z.string().optional(),
-    permissionPreset: z.enum(["ask", "read_only", "custom", "all"]).default("ask"),
-    runAt: z.string().optional(),
-    intervalMinutes: z.number().int().positive().optional()
+    folderId: z.string().optional(),
+    scheduleKind: z.enum(["calendar", "interval"]).default("calendar"),
+    frequency: z.enum(["daily", "weekly", "monthly"]).default("daily"),
+    timeOfDay: z
+      .string()
+      .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+      .default("09:00"),
+    intervalHours: z.number().int().min(0).max(12).optional(),
+    intervalMinutes: z.number().int().min(0).max(59).optional()
   })
   .strict();
 
-export const ScheduledTaskPatchRequestSchema = ScheduledTaskCreateRequestSchema.partial()
+function validateScheduledTaskInterval(
+  value: {
+    scheduleKind?: "calendar" | "interval" | undefined;
+    intervalHours?: number | undefined;
+    intervalMinutes?: number | undefined;
+  },
+  context: z.RefinementCtx
+) {
+  if (value.scheduleKind !== "interval") return;
+  const totalMinutes = (value.intervalHours ?? 0) * 60 + (value.intervalMinutes ?? 0);
+  if (totalMinutes <= 0 || totalMinutes > 720) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Interval must be greater than 0 and no more than 12 hours.",
+      path: ["intervalMinutes"]
+    });
+  }
+}
+
+export const ScheduledTaskCreateRequestSchema = ScheduledTaskRequestBaseSchema.superRefine(validateScheduledTaskInterval);
+
+export const ScheduledTaskPatchRequestSchema = ScheduledTaskRequestBaseSchema.partial()
   .extend({
     status: z.enum(["active", "paused", "completed"]).optional()
   })
-  .strict();
+  .strict()
+  .superRefine(validateScheduledTaskInterval);
 
 export const WebSearchProviderKindSchema = z.enum(["brave", "serpapi", "duckduckgo", "custom"]);
 
@@ -498,6 +604,8 @@ export const ModelProviderPatchRequestSchema = z
 
 export const KnowledgeKindSchema = z.enum(["memory", "file"]);
 
+export const KnowledgeIndexStatusSchema = z.enum(["pending", "indexed", "failed", "metadata_only"]);
+
 export const KnowledgeItemSchema = z.object({
   id: z.string(),
   projectId: z.string(),
@@ -509,8 +617,82 @@ export const KnowledgeItemSchema = z.object({
   mimeType: z.string().optional(),
   size: z.number().int().nonnegative().optional(),
   sourceUri: z.string().optional(),
+  indexStatus: KnowledgeIndexStatusSchema.default("pending"),
+  chunkCount: z.number().int().nonnegative().default(0),
+  lastIndexedAt: z.string().optional(),
+  indexError: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string()
+});
+
+export const EmbeddingProviderConfigSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  kind: z.enum(["local_hash", "openai_compatible", "custom"]).default("local_hash"),
+  model: z.string().default("local-hash-v1"),
+  dimensions: z.number().int().positive().default(128),
+  enabled: z.boolean().default(true),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const KnowledgeChunkSchema = z.object({
+  id: z.string(),
+  knowledgeId: z.string(),
+  projectId: z.string(),
+  ordinal: z.number().int().nonnegative(),
+  title: z.string(),
+  content: z.string(),
+  tokenEstimate: z.number().int().nonnegative(),
+  tags: z.array(z.string()).default([]),
+  heading: z.string().optional(),
+  startOffset: z.number().int().nonnegative().optional(),
+  endOffset: z.number().int().nonnegative().optional(),
+  sourceUri: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const KnowledgeEmbeddingSchema = z.object({
+  id: z.string(),
+  chunkId: z.string(),
+  providerId: z.string().default("local_hash"),
+  model: z.string().default("local-hash-v1"),
+  dimensions: z.number().int().positive(),
+  vector: z.array(z.number()),
+  createdAt: z.string()
+});
+
+export const KnowledgeSearchRequestSchema = z
+  .object({
+    query: z.string().min(1),
+    projectId: z.string().default("default"),
+    limit: z.number().int().positive().max(12).default(5)
+  })
+  .strict();
+
+export const KnowledgeSearchResultSchema = z.object({
+  item: KnowledgeItemSchema,
+  chunk: KnowledgeChunkSchema,
+  score: z.number().min(0).max(1),
+  citation: z
+    .object({
+      knowledgeId: z.string(),
+      chunkId: z.string(),
+      title: z.string(),
+      sourceUri: z.string().optional(),
+      heading: z.string().optional(),
+      excerpt: z.string(),
+      score: z.number().min(0).max(1)
+    })
+    .optional()
+});
+
+export const KnowledgeReindexResultSchema = z.object({
+  knowledgeId: z.string(),
+  status: KnowledgeIndexStatusSchema,
+  chunks: z.number().int().nonnegative(),
+  error: z.string().optional()
 });
 
 export const KnowledgeCreateRequestSchema = z
@@ -547,6 +729,112 @@ export const KnowledgeUploadRequestSchema = z
     tags: z.array(z.string()).default([])
   })
   .strict();
+
+export const IntegrationKindSchema = z.enum(["discord", "feishu"]);
+
+export const IntegrationStatusSchema = z.enum(["disabled", "setup_pending", "connecting", "connected", "error"]);
+
+export const IntegrationProviderConfigSchema = z.object({
+  id: z.string(),
+  kind: IntegrationKindSchema,
+  label: z.string(),
+  status: IntegrationStatusSchema.default("disabled"),
+  enabled: z.boolean().default(false),
+  botTokenRef: EncryptedSecretRefSchema.optional(),
+  signingSecretRef: EncryptedSecretRefSchema.optional(),
+  appId: z.string().optional(),
+  appSecretRef: EncryptedSecretRefSchema.optional(),
+  callbackUrl: z.string().optional(),
+  defaultFolderId: z.string().default("default"),
+  defaultPermissionPreset: z.enum(["ask", "read_only", "custom", "all"]).default("ask"),
+  lastError: z.string().optional(),
+  connectedAt: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const IntegrationProviderCreateRequestSchema = z
+  .object({
+    kind: IntegrationKindSchema,
+    label: z.string().min(1),
+    botToken: z.string().optional(),
+    signingSecret: z.string().optional(),
+    appId: z.string().optional(),
+    appSecret: z.string().optional(),
+    callbackUrl: z.string().optional(),
+    defaultFolderId: z.string().default("default"),
+    defaultPermissionPreset: z.enum(["ask", "read_only", "custom", "all"]).default("ask"),
+    enabled: z.boolean().default(false)
+  })
+  .strict();
+
+export const IntegrationProviderPatchRequestSchema = IntegrationProviderCreateRequestSchema.partial()
+  .extend({
+    clearBotToken: z.boolean().optional(),
+    clearSigningSecret: z.boolean().optional(),
+    clearAppSecret: z.boolean().optional()
+  })
+  .strict();
+
+export const IntegrationChannelBindingSchema = z.object({
+  id: z.string(),
+  integrationId: z.string(),
+  externalChannelId: z.string(),
+  label: z.string(),
+  folderId: z.string().default("default"),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const IntegrationMessageSchema = z.object({
+  id: z.string(),
+  integrationId: z.string(),
+  externalMessageId: z.string(),
+  externalChannelId: z.string(),
+  senderId: z.string().optional(),
+  text: z.string(),
+  taskId: z.string().optional(),
+  createdAt: z.string()
+});
+
+export const IntegrationTaskLinkSchema = z.object({
+  id: z.string(),
+  integrationId: z.string(),
+  taskId: z.string(),
+  externalChannelId: z.string(),
+  externalThreadId: z.string().optional(),
+  createdAt: z.string()
+});
+
+export const DiscordInteractionRequestSchema = z
+  .object({
+    integrationId: z.string().optional(),
+    channelId: z.string().min(1),
+    messageId: z.string().min(1),
+    userId: z.string().optional(),
+    text: z.string().min(1)
+  })
+  .strict();
+
+export const FeishuEventRequestSchema = z
+  .object({
+    integrationId: z.string().optional(),
+    challenge: z.string().optional(),
+    event: z
+      .object({
+        message: z
+          .object({
+            message_id: z.string().optional(),
+            chat_id: z.string().optional(),
+            content: z.string().optional()
+          })
+          .optional(),
+        sender: z.record(z.unknown()).optional()
+      })
+      .passthrough()
+      .optional()
+  })
+  .passthrough();
 
 export const ToolTraceSchema = z.object({
   toolName: z.string(),

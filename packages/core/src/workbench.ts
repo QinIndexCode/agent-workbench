@@ -3,15 +3,27 @@ import type {
   ConversationSummary,
   ExperienceRecord,
   GlobalPermissionGrant,
+  DiscordInteractionRequest,
+  FeishuEventRequest,
+  IntegrationKind,
+  IntegrationMessage,
+  IntegrationProviderConfig,
+  IntegrationProviderCreateRequest,
+  IntegrationProviderPatchRequest,
+  IntegrationTaskLink,
   KnowledgeCreateRequest,
   KnowledgeItem,
   KnowledgePatchRequest,
+  KnowledgeReindexResult,
+  KnowledgeSearchRequest,
+  KnowledgeSearchResult,
   KnowledgeUploadRequest,
   ModelProviderCreateRequest,
   ModelProviderPatchRequest,
   ModelProviderRecord,
   PatternRecord,
   PreferencesPatch,
+  PromptCacheStats,
   ProjectMemory,
   ProjectMemoryCreateRequest,
   ReflectionSession,
@@ -27,6 +39,9 @@ import type {
   TaskFolderPatchRequest,
   TaskFolderRecord,
   TaskPatchRequest,
+  TaskCheckpoint,
+  TaskRollbackRequest,
+  TaskRollbackResult,
   TaskTitleRequest,
   TaskTitleResponse,
   TaskAttachment,
@@ -49,9 +64,8 @@ import type {
   WebSearchProviderPatchRequest
 } from "@scc/shared";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, resolve } from "node:path";
-import { stat } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { ContextAssembler } from "./context-assembler.js";
 import {
   createExperience,
@@ -64,8 +78,9 @@ import {
   normalizeSkillRecord,
   reflectMemories
 } from "./experience.js";
-import { FallbackModelClient, type ModelClient } from "./fallback-model.js";
+import { FallbackModelClient, type ModelClient, type ModelUsage } from "./fallback-model.js";
 import { createId, nowIso } from "./ids.js";
+import { indexKnowledgeItem, searchKnowledge } from "./knowledge-rag.js";
 import type { ResolvedModelProviderConfig } from "./openai-model.js";
 import { PermissionEngine, type PermissionState, type RiskAssessment } from "./permission-engine.js";
 import { LocalSecretBox, maskSecret } from "./secrets.js";
@@ -154,6 +169,10 @@ export class AgentWorkbench {
     if (!provider) throw new Error("No model provider is configured for title generation.");
     const title = normalizeGeneratedTaskTitle(await generateTaskTitleWithProvider(provider, input.goal, input.language), input.goal, input.language);
     return { title, source: "model" };
+  }
+
+  async listPromptCacheStats(taskId?: string): Promise<PromptCacheStats[]> {
+    return this.store.listPromptCacheStats(taskId);
   }
 
   async listTaskFolders(): Promise<TaskFolderRecord[]> {
@@ -295,6 +314,10 @@ export class AgentWorkbench {
       for (const attachment of await this.store.listTaskAttachments(taskId)) {
         await this.deleteTaskAttachment(attachment.id);
       }
+      for (const checkpoint of await this.store.listTaskCheckpoints(taskId)) {
+        await this.deleteTaskCheckpointArtifacts(checkpoint);
+        await this.store.deleteTaskCheckpoint(checkpoint.id);
+      }
       for (const summary of await this.store.listConversationSummaries(taskId)) {
         await this.store.deleteConversationSummary(summary.id);
       }
@@ -331,6 +354,37 @@ export class AgentWorkbench {
       }
 
       return result;
+    });
+  }
+
+  async listTaskCheckpoints(taskId?: string): Promise<TaskCheckpoint[]> {
+    return this.store.listTaskCheckpoints(taskId);
+  }
+
+  async rollbackTask(taskId: string, input: TaskRollbackRequest = {}): Promise<TaskRollbackResult> {
+    return this.runTaskExclusive(taskId, async () => {
+      const task = await this.requiredTask(taskId);
+      const checkpoint = input.checkpointId
+        ? await this.store.getTaskCheckpoint(input.checkpointId)
+        : (await this.store.listTaskCheckpoints(taskId))[0];
+      if (!checkpoint || checkpoint.taskId !== taskId) throw new Error("No checkpoint is available for this task.");
+      try {
+        const result = await this.restoreCheckpointFiles(task, checkpoint);
+        this.addEvent(task, "task_rollback_completed", `Rolled back ${result.restoredFiles + result.deletedFiles} file changes.`, {
+          checkpointId: checkpoint.id,
+          restoredFiles: result.restoredFiles,
+          deletedFiles: result.deletedFiles,
+          skippedFiles: result.skippedFiles,
+          workRoot: checkpoint.workRoot
+        });
+        await this.store.saveTask(task);
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.addEvent(task, "task_rollback_failed", message, { checkpointId: checkpoint.id, workRoot: checkpoint.workRoot });
+        await this.store.saveTask(task);
+        throw error;
+      }
     });
   }
 
@@ -449,6 +503,10 @@ export class AgentWorkbench {
       }
 
       this.setStatus(task, "running");
+      await this.createCheckpointForTool(task, approval.toolCall, {
+        category: approval.riskCategory,
+        reason: approval.reason
+      });
       await this.store.saveTask(task);
       const result = await this.executeTool(task.id, approval.toolCall);
       const latest = await this.requiredTask(task.id);
@@ -685,6 +743,7 @@ export class AgentWorkbench {
     for (const [key, value] of Object.entries(patch)) {
       if (value !== undefined) (next as Record<string, unknown>)[key] = value;
     }
+    await this.normalizeModelContextPreferences(next);
     await this.store.savePreferences(next);
     return next;
   }
@@ -746,7 +805,8 @@ export class AgentWorkbench {
     };
     if (!apiKeyRef) delete updated.apiKeyRef;
     await this.store.saveModelProvider(updated);
-    if (input.makeActive) await this.setActiveProvider(updated);
+    const preferences = await this.store.getPreferences();
+    if (input.makeActive || preferences.activeModelProviderId === providerId) await this.setActiveProvider(updated);
     return updated;
   }
 
@@ -763,24 +823,46 @@ export class AgentWorkbench {
     return this.store.listScheduledTasks();
   }
 
-  async createScheduledTask(input: ScheduledTaskCreateRequest): Promise<ScheduledTask> {
-    await this.resolveTaskFolder(input.folderId);
+  async ensureDefaultScheduledTasks(): Promise<ScheduledTask[]> {
+    const existing = await this.store.listScheduledTasks();
+    const hasReflection = existing.some((task) => task.id === "schedule_agent_reflection" || task.type === "reflection");
+    if (hasReflection) return existing;
     const now = nowIso();
-    const nextRunAt = computeNextRunAt(input.runAt, input.intervalMinutes);
+    const schedule: ScheduledTask["schedule"] = {
+      kind: "calendar",
+      frequency: "daily",
+      timeOfDay: "02:00"
+    };
+    const reflection: ScheduledTask = {
+      id: "schedule_agent_reflection",
+      type: "reflection",
+      title: "Agent self-reflection",
+      prompt: "Review recent task memories and extract reusable patterns, candidate skills, and risks that need user review.",
+      permissionPreset: "ask",
+      schedule,
+      status: "active",
+      nextRunAt: computeNextRunAt(schedule),
+      createdAt: now,
+      updatedAt: now
+    };
+    await this.store.saveScheduledTask(reflection);
+    return this.store.listScheduledTasks();
+  }
+
+  async createScheduledTask(input: ScheduledTaskCreateRequest): Promise<ScheduledTask> {
+    if (input.folderId) await this.resolveTaskFolder(input.folderId);
+    const now = nowIso();
+    const schedule = createScheduleFromInput(input);
     const scheduled: ScheduledTask = {
       id: createId("schedule"),
+      type: "prompt",
       title: input.title,
       prompt: input.prompt,
-      folderId: input.folderId,
-      ...(input.modelProviderId ? { modelProviderId: input.modelProviderId } : {}),
-      permissionPreset: input.permissionPreset,
-      schedule: {
-        kind: input.intervalMinutes ? "interval" : "once",
-        ...(input.runAt ? { runAt: input.runAt } : {}),
-        ...(input.intervalMinutes ? { intervalMinutes: input.intervalMinutes } : {})
-      },
+      ...(input.folderId ? { folderId: input.folderId } : {}),
+      permissionPreset: "ask",
+      schedule,
       status: "active",
-      nextRunAt,
+      nextRunAt: computeNextRunAt(schedule),
       createdAt: now,
       updatedAt: now
     };
@@ -792,25 +874,23 @@ export class AgentWorkbench {
     const current = await this.store.getScheduledTask(taskId);
     if (!current) throw new Error(`Scheduled task not found: ${taskId}`);
     if (input.folderId) await this.resolveTaskFolder(input.folderId);
-    const nextInterval = input.intervalMinutes ?? current.schedule.intervalMinutes;
-    const nextRunAtInput = input.runAt ?? current.schedule.runAt;
-    const scheduleChanged = input.runAt !== undefined || input.intervalMinutes !== undefined;
+    const scheduleChanged =
+      input.scheduleKind !== undefined ||
+      input.frequency !== undefined ||
+      input.timeOfDay !== undefined ||
+      input.intervalHours !== undefined ||
+      input.intervalMinutes !== undefined;
+    const schedule = scheduleChanged ? createScheduleFromInput(input, current.schedule) : current.schedule;
     const updated: ScheduledTask = {
       ...current,
       ...(input.title ? { title: input.title } : {}),
       ...(input.prompt ? { prompt: input.prompt } : {}),
-      ...(input.folderId ? { folderId: input.folderId } : {}),
-      ...(input.modelProviderId !== undefined ? { modelProviderId: input.modelProviderId } : {}),
-      ...(input.permissionPreset ? { permissionPreset: input.permissionPreset } : {}),
+      ...(input.folderId !== undefined ? (input.folderId ? { folderId: input.folderId } : { folderId: undefined }) : {}),
       ...(input.status ? { status: input.status } : {}),
       ...(scheduleChanged
         ? {
-            schedule: {
-              kind: nextInterval ? "interval" : "once",
-              ...(nextRunAtInput ? { runAt: nextRunAtInput } : {}),
-              ...(nextInterval ? { intervalMinutes: nextInterval } : {})
-            },
-            nextRunAt: computeNextRunAt(nextRunAtInput, nextInterval)
+            schedule,
+            nextRunAt: computeNextRunAt(schedule)
           }
         : {}),
       updatedAt: nowIso()
@@ -827,13 +907,35 @@ export class AgentWorkbench {
     const changed: ScheduledTask[] = [];
     for (const scheduled of await this.store.listScheduledTasks()) {
       if (scheduled.status !== "active" || new Date(scheduled.nextRunAt).getTime() > now.getTime()) continue;
-      const task = await this.initializeTask(scheduled.prompt, scheduled.title, scheduled.folderId);
-      this.addEvent(task, "scheduled_task_created", scheduled.title, { scheduledTaskId: scheduled.id });
-      await this.store.saveTask(task);
-      void this.runTaskExclusive(task.id, () => this.step(task.id)).catch((error) => {
-        void this.failBackgroundRun(task.id, error);
-      });
-      const next = advanceScheduledTask(scheduled, task.id, now);
+      let next: ScheduledTask;
+      try {
+        if (scheduled.type === "reflection") {
+          const session = await this.runReflection();
+          next = advanceScheduledTask(scheduled, undefined, now, `Reflection ${session.status}: ${session.progress.phase}`);
+        } else if (scheduled.type === "knowledge_reindex") {
+          const items = await this.store.listKnowledgeItems();
+          const results = await Promise.all(items.map((item) => this.reindexKnowledgeItem(item.id)));
+          next = advanceScheduledTask(scheduled, undefined, now, `Reindexed ${results.reduce((sum, item) => sum + item.chunks, 0)} chunks from ${results.length} items.`);
+        } else {
+          const scheduledPrompt = scheduled.folderId
+            ? scheduled.prompt
+            : `${scheduled.prompt}\n\nNo work folder was selected for this automation. Do not write files unless the user explicitly assigns a work folder.`;
+          const task = await this.initializeTask(scheduledPrompt, scheduled.title, scheduled.folderId ?? "default");
+          this.addEvent(task, "scheduled_task_created", scheduled.title, { scheduledTaskId: scheduled.id });
+          await this.store.saveTask(task);
+          void this.runTaskExclusive(task.id, () => this.step(task.id)).catch((error) => {
+            void this.failBackgroundRun(task.id, error);
+          });
+          next = advanceScheduledTask(scheduled, task.id, now, `Created task ${task.id}`);
+        }
+      } catch (error) {
+        next = {
+          ...scheduled,
+          lastRunAt: now.toISOString(),
+          lastError: error instanceof Error ? error.message : String(error),
+          updatedAt: nowIso()
+        };
+      }
       await this.store.saveScheduledTask(next);
       changed.push(next);
     }
@@ -895,6 +997,185 @@ export class AgentWorkbench {
     await this.store.deleteWebSearchProviderSecret(providerId);
   }
 
+  async listIntegrationProviders(): Promise<IntegrationProviderConfig[]> {
+    return this.store.listIntegrationProviders();
+  }
+
+  async createIntegrationProvider(input: IntegrationProviderCreateRequest): Promise<IntegrationProviderConfig> {
+    await this.resolveTaskFolder(input.defaultFolderId);
+    const now = nowIso();
+    const id = createId("integration");
+    const provider: IntegrationProviderConfig = {
+      id,
+      kind: input.kind,
+      label: input.label,
+      status: input.enabled ? initialIntegrationStatus(input.kind, input.callbackUrl) : "disabled",
+      enabled: input.enabled,
+      ...(input.botToken ? { botTokenRef: await this.saveIntegrationSecretRef(id, "botToken", input.botToken) } : {}),
+      ...(input.signingSecret ? { signingSecretRef: await this.saveIntegrationSecretRef(id, "signingSecret", input.signingSecret) } : {}),
+      ...(input.appId ? { appId: input.appId } : {}),
+      ...(input.appSecret ? { appSecretRef: await this.saveIntegrationSecretRef(id, "appSecret", input.appSecret) } : {}),
+      ...(input.callbackUrl ? { callbackUrl: input.callbackUrl } : {}),
+      defaultFolderId: input.defaultFolderId,
+      defaultPermissionPreset: input.defaultPermissionPreset,
+      createdAt: now,
+      updatedAt: now
+    };
+    await this.store.saveIntegrationProvider(provider);
+    return provider;
+  }
+
+  async updateIntegrationProvider(integrationId: string, input: IntegrationProviderPatchRequest): Promise<IntegrationProviderConfig> {
+    const current = await this.store.getIntegrationProvider(integrationId);
+    if (!current) throw new Error(`Integration provider not found: ${integrationId}`);
+    if (input.defaultFolderId) await this.resolveTaskFolder(input.defaultFolderId);
+    let botTokenRef = current.botTokenRef;
+    let signingSecretRef = current.signingSecretRef;
+    let appSecretRef = current.appSecretRef;
+    if (input.clearBotToken) {
+      await this.store.deleteIntegrationSecret(integrationId, "botToken");
+      botTokenRef = undefined;
+    }
+    if (input.clearSigningSecret) {
+      await this.store.deleteIntegrationSecret(integrationId, "signingSecret");
+      signingSecretRef = undefined;
+    }
+    if (input.clearAppSecret) {
+      await this.store.deleteIntegrationSecret(integrationId, "appSecret");
+      appSecretRef = undefined;
+    }
+    if (input.botToken) botTokenRef = await this.saveIntegrationSecretRef(integrationId, "botToken", input.botToken);
+    if (input.signingSecret) signingSecretRef = await this.saveIntegrationSecretRef(integrationId, "signingSecret", input.signingSecret);
+    if (input.appSecret) appSecretRef = await this.saveIntegrationSecretRef(integrationId, "appSecret", input.appSecret);
+    const enabled = input.enabled ?? current.enabled;
+    const callbackUrl = input.callbackUrl !== undefined ? input.callbackUrl : current.callbackUrl;
+    const kind = input.kind ?? current.kind;
+    const updated: IntegrationProviderConfig = {
+      ...current,
+      ...(input.kind ? { kind: input.kind } : {}),
+      ...(input.label ? { label: input.label } : {}),
+      ...(botTokenRef ? { botTokenRef } : {}),
+      ...(signingSecretRef ? { signingSecretRef } : {}),
+      ...(input.appId !== undefined ? { appId: input.appId } : {}),
+      ...(appSecretRef ? { appSecretRef } : {}),
+      ...(callbackUrl ? { callbackUrl } : {}),
+      ...(input.defaultFolderId ? { defaultFolderId: input.defaultFolderId } : {}),
+      ...(input.defaultPermissionPreset ? { defaultPermissionPreset: input.defaultPermissionPreset } : {}),
+      enabled,
+      status: enabled ? initialIntegrationStatus(kind, callbackUrl) : "disabled",
+      updatedAt: nowIso()
+    };
+    if (!botTokenRef) delete updated.botTokenRef;
+    if (!signingSecretRef) delete updated.signingSecretRef;
+    if (!appSecretRef) delete updated.appSecretRef;
+    if (!callbackUrl) delete updated.callbackUrl;
+    await this.store.saveIntegrationProvider(updated);
+    return updated;
+  }
+
+  async deleteIntegrationProvider(integrationId: string): Promise<void> {
+    await this.store.deleteIntegrationProvider(integrationId);
+  }
+
+  async connectIntegrationProvider(integrationId: string): Promise<IntegrationProviderConfig> {
+    const current = await this.store.getIntegrationProvider(integrationId);
+    if (!current) throw new Error(`Integration provider not found: ${integrationId}`);
+    const updated: IntegrationProviderConfig = {
+      ...current,
+      enabled: true,
+      status: initialIntegrationStatus(current.kind, current.callbackUrl) === "setup_pending" ? "setup_pending" : "connected",
+      connectedAt: nowIso(),
+      lastError: undefined,
+      updatedAt: nowIso()
+    };
+    await this.store.saveIntegrationProvider(updated);
+    return updated;
+  }
+
+  async disconnectIntegrationProvider(integrationId: string): Promise<IntegrationProviderConfig> {
+    const current = await this.store.getIntegrationProvider(integrationId);
+    if (!current) throw new Error(`Integration provider not found: ${integrationId}`);
+    const updated: IntegrationProviderConfig = { ...current, enabled: false, status: "disabled", updatedAt: nowIso() };
+    await this.store.saveIntegrationProvider(updated);
+    return updated;
+  }
+
+  async handleDiscordInteraction(input: DiscordInteractionRequest): Promise<TaskDetail> {
+    const provider = await this.resolveIntegrationForMessage("discord", input.integrationId);
+    return this.createTaskFromIntegration(provider, input.text, input.channelId, input.messageId, input.userId);
+  }
+
+  async handleFeishuEvent(input: FeishuEventRequest): Promise<TaskDetail | null> {
+    const message = input.event?.message;
+    const text = parseFeishuMessageText(message?.content);
+    const channelId = message?.chat_id ?? "";
+    if (!text || !channelId) return null;
+    const provider = await this.resolveIntegrationForMessage("feishu", input.integrationId);
+    return this.createTaskFromIntegration(provider, text, channelId, message?.message_id ?? createId("feishu_message"));
+  }
+
+  private async saveIntegrationSecretRef(integrationId: string, name: string, value: string) {
+    const secret = this.secretBox.encrypt(value);
+    await this.store.saveIntegrationSecret(integrationId, name, secret);
+    return {
+      secretId: `${integrationId}:${name}`,
+      ...maskSecret(value),
+      updatedAt: secret.updatedAt
+    };
+  }
+
+  private async resolveIntegrationForMessage(kind: IntegrationKind, preferredId?: string): Promise<IntegrationProviderConfig> {
+    const providers = await this.store.listIntegrationProviders();
+    const provider = preferredId
+      ? providers.find((item) => item.id === preferredId && item.kind === kind)
+      : providers.find((item) => item.kind === kind && item.enabled);
+    if (!provider) throw new Error(`No ${kind} integration is configured.`);
+    if (!provider.enabled || provider.status === "disabled") throw new Error(`${provider.label} is disabled.`);
+    if (provider.status === "setup_pending") throw new Error(`${provider.label} needs callback setup before it can receive messages.`);
+    return provider;
+  }
+
+  private async createTaskFromIntegration(
+    provider: IntegrationProviderConfig,
+    text: string,
+    channelId: string,
+    externalMessageId: string,
+    senderId?: string
+  ): Promise<TaskDetail> {
+    const now = nowIso();
+    const message: IntegrationMessage = {
+      id: createId("integration_message"),
+      integrationId: provider.id,
+      externalMessageId,
+      externalChannelId: channelId,
+      ...(senderId ? { senderId } : {}),
+      text,
+      createdAt: now
+    };
+    await this.store.saveIntegrationMessage(message);
+    const task = await this.initializeTask(text, createLocalTaskTitle(text), provider.defaultFolderId || "default");
+    const linkedMessage: IntegrationMessage = { ...message, taskId: task.id };
+    await this.store.saveIntegrationMessage(linkedMessage);
+    const link: IntegrationTaskLink = {
+      id: createId("integration_task_link"),
+      integrationId: provider.id,
+      taskId: task.id,
+      externalChannelId: channelId,
+      externalThreadId: externalMessageId,
+      createdAt: now
+    };
+    await this.store.saveIntegrationTaskLink(link);
+    this.addEvent(task, "integration_message_received", `${provider.label}: ${channelId}`, {
+      integrationId: provider.id,
+      provider: provider.kind,
+      channelId,
+      externalMessageId,
+      senderId
+    });
+    await this.store.saveTask(task);
+    return this.runTaskExclusive(task.id, () => this.step(task.id));
+  }
+
   async runReflection(): Promise<ReflectionSession> {
     const result = reflectMemories(await this.store.listTaskMemories(), await this.store.listPatterns());
     await this.store.saveReflectionSession(result.session);
@@ -939,7 +1220,7 @@ export class AgentWorkbench {
     const now = nowIso();
     const item: KnowledgeItem = {
       id: createId("knowledge"),
-      projectId: input.projectId,
+      projectId: input.projectId ?? "default",
       kind: input.kind,
       title: input.title,
       content: input.content,
@@ -948,11 +1229,14 @@ export class AgentWorkbench {
       ...(input.mimeType ? { mimeType: input.mimeType } : {}),
       ...(input.size !== undefined ? { size: input.size } : {}),
       ...(input.sourceUri ? { sourceUri: input.sourceUri } : {}),
+      indexStatus: "pending",
+      chunkCount: 0,
       createdAt: now,
       updatedAt: now
     };
     await this.store.saveKnowledgeItem(item);
-    return item;
+    await this.reindexKnowledgeItem(item.id);
+    return (await this.store.getKnowledgeItem(item.id)) ?? item;
   }
 
   async uploadKnowledgeFile(input: KnowledgeUploadRequest): Promise<KnowledgeItem> {
@@ -977,14 +1261,26 @@ export class AgentWorkbench {
       ...(input.content ? { content: input.content } : {}),
       ...(input.tags ? { tags: cleanTags(input.tags) } : {}),
       ...(input.sourceUri !== undefined ? { sourceUri: input.sourceUri } : {}),
+      indexStatus: "pending",
       updatedAt: nowIso()
     };
     await this.store.saveKnowledgeItem(updated);
-    return updated;
+    await this.reindexKnowledgeItem(id);
+    return (await this.store.getKnowledgeItem(id)) ?? updated;
   }
 
   async deleteKnowledgeItem(id: string): Promise<void> {
     await this.store.deleteKnowledgeItem(id);
+  }
+
+  async reindexKnowledgeItem(id: string): Promise<KnowledgeReindexResult> {
+    const item = await this.store.getKnowledgeItem(id);
+    if (!item) throw new Error(`Knowledge item not found: ${id}`);
+    return indexKnowledgeItem(this.store, item);
+  }
+
+  async searchKnowledge(input: KnowledgeSearchRequest): Promise<KnowledgeSearchResult[]> {
+    return searchKnowledge(this.store, input);
   }
 
   private async setActiveProvider(provider: ModelProviderRecord): Promise<void> {
@@ -994,6 +1290,20 @@ export class AgentWorkbench {
       providerBaseUrl: provider.baseUrl,
       maxTokensPerRequest: provider.models.find((model) => model.id === provider.defaultModelId)?.contextWindow
     });
+  }
+
+  private async normalizeModelContextPreferences(preferences: PreferencesPatch & Record<string, unknown>): Promise<void> {
+    const providers = await this.store.listModelProviders();
+    const provider = providers.find((item) => item.id === preferences["activeModelProviderId"]);
+    const model = provider?.models.find((item) => item.id === preferences["defaultModel"]) ?? provider?.models[0];
+    const contextWindow = model?.contextWindow;
+    if (!contextWindow) return;
+    if (preferences["contextMode"] === "auto") {
+      preferences["maxTokensPerRequest"] = contextWindow;
+      return;
+    }
+    const requested = Number(preferences["maxTokensPerRequest"] ?? contextWindow);
+    preferences["maxTokensPerRequest"] = Math.min(Math.max(1, Number.isFinite(requested) ? Math.round(requested) : contextWindow), contextWindow);
   }
 
   async recoverInterruptedTasks(): Promise<void> {
@@ -1062,6 +1372,7 @@ export class AgentWorkbench {
         return task;
       }
 
+      await this.createCheckpointForTool(task, call, assessment);
       await this.store.saveTask(task);
       const result = await this.executeTool(task.id, call);
       const latest = await this.requiredTask(task.id);
@@ -1087,48 +1398,95 @@ export class AgentWorkbench {
     await this.store.saveExperience(experience);
     await this.store.saveTaskMemory(memory);
     this.addEvent(task, "task_memory_created", memory.title, { memoryId: memory.id });
-    if ((await this.store.getPreferences()).reflectionEnabled) {
-      const reflection = reflectMemories(await this.store.listTaskMemories(), await this.store.listPatterns());
-      await this.store.saveReflectionSession(reflection.session);
-      for (const pattern of reflection.patterns) {
-        await this.store.savePattern(pattern);
-        this.addEvent(task, "pattern_discovered", pattern.title, { patternId: pattern.id, status: pattern.status });
-      }
-      for (const promoted of reflection.promotedSkills) {
-        const skill = await this.saveSkillWithConflicts(promoted);
-        this.addEvent(task, "skill_promoted", skill.title, { skillId: skill.id, status: skill.status });
-      }
-      this.addEvent(task, "reflection_completed", reflection.session.progress.phase, { sessionId: reflection.session.id });
-    }
     this.contextAssembler.cleanupTask(task.id);
   }
 
+  private async recordPromptCacheStats(task: TaskDetail, usage?: ModelUsage): Promise<void> {
+    const preferences = await this.store.getPreferences();
+    const provider = await this.resolveModelProviderConfig();
+    const previous = await this.store.listPromptCacheStats(task.id);
+    const transcript = task.events
+      .filter((event) => event.type !== "assistant_delta" && event.type !== "thinking_delta")
+      .map((event) => `${event.type}: ${event.summary}`)
+      .join("\n");
+    const estimatedInputTokens = Math.max(1, approximateTokenCount(transcript) + 600);
+    const inputTokens = usage?.inputTokens ?? estimatedInputTokens;
+    const stablePrefixTokens = Math.min(inputTokens, approximateTokenCount([
+      preferences.agentRole,
+      preferences.agentTone,
+      preferences.responseDetail,
+      preferences.language,
+      task.workRoot,
+      task.folderId
+    ].filter(Boolean).join("\n")) + 450);
+    const cachedTokens = usage?.cachedTokens ?? (previous.length > 0 ? Math.min(stablePrefixTokens, inputTokens) : 0);
+    const stats: PromptCacheStats = {
+      id: createId("prompt_cache_stats"),
+      taskId: task.id,
+      providerId: provider?.providerId,
+      model: provider?.model ?? "local-fallback",
+      policy: "auto_savings",
+      source: usage?.raw ? "provider" : "estimated",
+      inputTokens,
+      cachedTokens,
+      cacheHitRatio: cachedTokens / Math.max(1, inputTokens),
+      estimatedSavings: cachedTokens * 0.00000025,
+      ...(usage?.raw ? { providerUsage: usage.raw } : {}),
+      createdAt: nowIso()
+    };
+    await this.store.savePromptCacheStats(stats);
+    this.addEvent(task, "prompt_cache_stats", cachedTokens > 0 ? `Prompt cache estimated ${Math.round(stats.cacheHitRatio * 100)}% reusable prefix.` : "Prompt cache baseline recorded.", {
+      statsId: stats.id,
+      providerId: stats.providerId,
+      model: stats.model,
+      inputTokens: stats.inputTokens,
+      cachedTokens: stats.cachedTokens,
+      cacheHitRatio: stats.cacheHitRatio,
+      estimatedSavings: stats.estimatedSavings
+    });
+  }
+
   private async safeModelNext(task: TaskDetail): Promise<Awaited<ReturnType<ModelClient["next"]>> | null> {
-    const streamId = createId("model_stream");
-    const controller = new AbortController();
-    this.runningModelControllers.set(task.id, controller);
-    try {
-      return await this.model.next(task, {
-        streamId,
-        signal: controller.signal,
-        onAssistantDelta: async (delta) => {
-          await this.addStreamingDelta(task, "assistant_delta", delta, streamId, controller.signal);
-        },
-        onThinkingDelta: async (delta) => {
-          await this.addStreamingDelta(task, "thinking_delta", delta, streamId, controller.signal);
+    let retriedAfterOverflow = false;
+    while (true) {
+      const streamId = createId("model_stream");
+      const controller = new AbortController();
+      this.runningModelControllers.set(task.id, controller);
+      try {
+        const turn = await this.model.next(task, {
+          streamId,
+          signal: controller.signal,
+          onAssistantDelta: async (delta) => {
+            await this.addStreamingDelta(task, "assistant_delta", delta, streamId, controller.signal);
+          },
+          onThinkingDelta: async (delta) => {
+            await this.addStreamingDelta(task, "thinking_delta", delta, streamId, controller.signal);
+          }
+        });
+        await this.recordPromptCacheStats(task, turn.usage);
+        this.addConversationSummaryEvents(task);
+        return turn;
+      } catch (error) {
+        if (controller.signal.aborted) return null;
+        const message = sanitizeProviderError(error instanceof Error ? error.message : String(error));
+        if (!retriedAfterOverflow && isContextOverflowError(message)) {
+          retriedAfterOverflow = true;
+          this.addEvent(task, "context_overflow_recovered", "Context exceeded the active model window; older context was compacted and the request was retried once.", {
+            reason: message
+          });
+          await this.store.saveTask(task);
+          continue;
         }
-      });
-    } catch (error) {
-      if (controller.signal.aborted) return null;
-      const message = sanitizeProviderError(error instanceof Error ? error.message : String(error));
-      this.addEvent(task, "assistant_message", `Model provider failed: ${message}`);
-      this.setStatus(task, "failed");
-      await this.updateLoadedSkillStats(task, false);
-      await this.store.saveTask(task);
-      return null;
-    } finally {
-      if (this.runningModelControllers.get(task.id) === controller) {
-        this.runningModelControllers.delete(task.id);
+        this.addConversationSummaryEvents(task);
+        this.addEvent(task, "assistant_message", `Model provider failed: ${message}`);
+        this.setStatus(task, "failed");
+        await this.updateLoadedSkillStats(task, false);
+        await this.store.saveTask(task);
+        return null;
+      } finally {
+        if (this.runningModelControllers.get(task.id) === controller) {
+          this.runningModelControllers.delete(task.id);
+        }
       }
     }
   }
@@ -1216,6 +1574,112 @@ export class AgentWorkbench {
         this.runningToolControllers.delete(taskId);
       }
     }
+  }
+
+  private async createCheckpointForTool(task: TaskDetail, call: ToolCall, assessment: RiskAssessment): Promise<TaskCheckpoint | undefined> {
+    if (assessment.category !== "workspace_write" && assessment.category !== "destructive") return undefined;
+    const now = nowIso();
+    const checkpointId = createId("checkpoint");
+    const files =
+      call.toolName === "edit_file"
+        ? await this.snapshotExplicitToolFile(checkpointId, task, String(call.args["path"] ?? ""))
+        : await this.snapshotWorkRootTextFiles(checkpointId, task);
+    const checkpoint: TaskCheckpoint = {
+      id: checkpointId,
+      taskId: task.id,
+      workRoot: task.workRoot || findWorkspaceRoot(),
+      toolCallId: call.id,
+      toolName: call.toolName,
+      reason: `${assessment.category}: ${call.toolName}`,
+      files: files.files,
+      truncated: files.truncated,
+      createdAt: now
+    };
+    await this.store.saveTaskCheckpoint(checkpoint);
+    this.addEvent(task, "task_checkpoint_created", `Checkpoint created before ${call.toolName}.`, {
+      checkpointId,
+      toolCallId: call.id,
+      toolName: call.toolName,
+      workRoot: checkpoint.workRoot,
+      fileCount: checkpoint.files.length,
+      truncated: checkpoint.truncated
+    });
+    return checkpoint;
+  }
+
+  private async snapshotExplicitToolFile(
+    checkpointId: string,
+    task: TaskDetail,
+    inputPath: string
+  ): Promise<{ files: TaskCheckpoint["files"]; truncated: boolean }> {
+    if (!inputPath.trim()) return { files: [], truncated: false };
+    const fullPath = resolveTaskPath(task.workRoot || findWorkspaceRoot(), inputPath);
+    return { files: [await this.snapshotPath(checkpointId, task.workRoot || findWorkspaceRoot(), fullPath, 0)], truncated: false };
+  }
+
+  private async snapshotWorkRootTextFiles(
+    checkpointId: string,
+    task: TaskDetail
+  ): Promise<{ files: TaskCheckpoint["files"]; truncated: boolean }> {
+    const root = resolve(task.workRoot || findWorkspaceRoot());
+    const candidates = await collectCheckpointCandidates(root, 80, 2_000_000);
+    const files = [];
+    for (let index = 0; index < candidates.files.length; index += 1) {
+      files.push(await this.snapshotPath(checkpointId, root, candidates.files[index]!, index));
+    }
+    return { files, truncated: candidates.truncated };
+  }
+
+  private async snapshotPath(checkpointId: string, workRoot: string, fullPath: string, index: number): Promise<TaskCheckpoint["files"][number]> {
+    const root = resolve(workRoot || findWorkspaceRoot());
+    const normalized = resolveTaskPath(root, fullPath);
+    const relativePath = relative(root, normalized) || basename(normalized);
+    const info = await stat(normalized).catch(() => null);
+    if (!info?.isFile()) {
+      return { path: normalized, relativePath, existed: false, size: 0 };
+    }
+    const before = await readFile(normalized);
+    const snapshotPath = resolve(findWorkspaceRoot(), "data", "checkpoints", checkpointId, `${String(index).padStart(3, "0")}-${sanitizeFileName(relativePath)}`);
+    await mkdir(dirname(snapshotPath), { recursive: true });
+    await writeFile(snapshotPath, before);
+    return {
+      path: normalized,
+      relativePath,
+      existed: true,
+      beforeHash: createHash("sha256").update(before).digest("hex").slice(0, 16),
+      size: before.byteLength,
+      snapshotPath
+    };
+  }
+
+  private async restoreCheckpointFiles(task: TaskDetail, checkpoint: TaskCheckpoint): Promise<TaskRollbackResult> {
+    let restoredFiles = 0;
+    let deletedFiles = 0;
+    let skippedFiles = 0;
+    for (const file of checkpoint.files) {
+      const target = resolveTaskPath(checkpoint.workRoot || task.workRoot || findWorkspaceRoot(), file.path);
+      if (file.existed && file.snapshotPath) {
+        await mkdir(dirname(target), { recursive: true });
+        await copyFile(file.snapshotPath, target);
+        restoredFiles += 1;
+      } else if (!file.existed) {
+        const exists = await stat(target).catch(() => null);
+        if (exists?.isFile()) {
+          await unlink(target);
+          deletedFiles += 1;
+        } else {
+          skippedFiles += 1;
+        }
+      } else {
+        skippedFiles += 1;
+      }
+    }
+    return { taskId: task.id, checkpointId: checkpoint.id, restoredFiles, deletedFiles, skippedFiles, createdAt: nowIso() };
+  }
+
+  private async deleteTaskCheckpointArtifacts(checkpoint: TaskCheckpoint): Promise<void> {
+    const root = resolve(findWorkspaceRoot(), "data", "checkpoints", checkpoint.id);
+    await rm(root, { recursive: true, force: true }).catch(() => undefined);
   }
 
   private cancelRunningTool(taskId: string): void {
@@ -1314,6 +1778,21 @@ export class AgentWorkbench {
   private addLoadedSkillEvents(task: TaskDetail): void {
     for (const skill of this.contextAssembler.drainLoadedSkillEvents(task.id)) {
       this.addEvent(task, "skill_loaded", skill.title, { skillId: skill.id });
+    }
+  }
+
+  private addConversationSummaryEvents(task: TaskDetail): void {
+    for (const summary of this.contextAssembler.drainConversationSummaryEvents(task.id)) {
+      this.addEvent(task, "conversation_summary_created", "Earlier context was compacted into an auditable summary.", {
+        summaryId: summary.id,
+        rangeStartEventId: summary.rangeStartEventId,
+        rangeEndEventId: summary.rangeEndEventId,
+        tokenEstimate: summary.tokenEstimate,
+        reason: summary.reason,
+        retainedFacts: summary.retainedFacts,
+        droppedRanges: summary.droppedRanges,
+        tokenBudget: summary.tokenBudget
+      });
     }
   }
 
@@ -1426,10 +1905,36 @@ export class AgentWorkbench {
   }
 }
 
+function initialIntegrationStatus(kind: IntegrationKind, callbackUrl?: string): IntegrationProviderConfig["status"] {
+  if (kind === "feishu" && !callbackUrl) return "setup_pending";
+  return "connected";
+}
+
+function parseFeishuMessageText(content: string | undefined): string {
+  if (!content) return "";
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    const text = parsed["text"] ?? parsed["content"];
+    return typeof text === "string" ? text.trim() : content.trim();
+  } catch {
+    return content.trim();
+  }
+}
+
+function approximateTokenCount(text: string): number {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return 0;
+  return Math.ceil(normalized.length / 4);
+}
+
 function sanitizeProviderError(input: string): string {
   return input
     .replace(/\bsk-[A-Za-z0-9_\-*]{8,}/g, "[redacted-api-key]")
     .replace(/\btp-[A-Za-z0-9_\-*]{8,}/g, "[redacted-api-key]");
+}
+
+function isContextOverflowError(input: string): boolean {
+  return /context( window| length)?|maximum context|too many tokens|token limit|exceed(?:ed|s)?[^.]{0,80}token|prompt[^.]{0,40}too long|reduce[^.]{0,40}tokens/i.test(input);
 }
 
 async function fetchWithTimeout(input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1], timeoutMs = 8_000): Promise<Response> {
@@ -1599,6 +2104,58 @@ function sanitizeFileName(fileName: string): string {
   return basename(fileName).replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").slice(0, 180) || "attachment.bin";
 }
 
+function resolveTaskPath(workRoot: string, input: string): string {
+  if (!input.trim()) throw new Error("Missing path.");
+  const resolvedRoot = resolve(workRoot || findWorkspaceRoot());
+  const full = resolve(resolvedRoot, input);
+  const compareRoot = process.platform === "win32" ? resolvedRoot.toLowerCase() : resolvedRoot;
+  const compareFull = process.platform === "win32" ? full.toLowerCase() : full;
+  if (compareFull !== compareRoot && !compareFull.startsWith(compareRoot + sep)) {
+    throw new Error(`Path is outside the workspace: ${input}`);
+  }
+  return full;
+}
+
+async function collectCheckpointCandidates(
+  workRoot: string,
+  maxFiles: number,
+  maxBytes: number
+): Promise<{ files: string[]; truncated: boolean }> {
+  const files: string[] = [];
+  let totalBytes = 0;
+  let truncated = false;
+  async function visit(dir: string): Promise<void> {
+    if (files.length >= maxFiles || totalBytes >= maxBytes) {
+      truncated = true;
+      return;
+    }
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (files.length >= maxFiles || totalBytes >= maxBytes) {
+        truncated = true;
+        return;
+      }
+      if (entry.name === "node_modules" || entry.name === "dist" || entry.name === "coverage" || entry.name === "data" || entry.name.startsWith(".")) continue;
+      const full = resolve(dir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(full);
+        continue;
+      }
+      if (!entry.isFile() || !isCheckpointTextFile(full)) continue;
+      const info = await stat(full).catch(() => null);
+      if (!info?.isFile() || info.size > 256_000) continue;
+      totalBytes += info.size;
+      files.push(full);
+    }
+  }
+  await visit(resolve(workRoot));
+  return { files, truncated };
+}
+
+function isCheckpointTextFile(path: string): boolean {
+  return /\.(cjs|css|html|js|json|jsx|md|mjs|ts|tsx|txt|yml|yaml|xml|csv)$/i.test(path);
+}
+
 async function buildAttachmentTextPreview(storagePath: string, kind: TaskAttachmentKind, mimeType: string): Promise<string | undefined> {
   if (!["text", "markdown", "code", "data"].includes(kind) && !mimeType.startsWith("text/")) return undefined;
   const content = await readFile(storagePath, "utf8").catch(() => "");
@@ -1606,28 +2163,87 @@ async function buildAttachmentTextPreview(storagePath: string, kind: TaskAttachm
   return content.slice(0, 6000);
 }
 
-function computeNextRunAt(runAt?: string, intervalMinutes?: number): string {
-  if (runAt) return new Date(runAt).toISOString();
-  const minutes = intervalMinutes ?? 60;
-  return new Date(Date.now() + minutes * 60_000).toISOString();
+function createScheduleFromInput(
+  input: {
+    scheduleKind?: "calendar" | "interval" | undefined;
+    frequency?: "daily" | "weekly" | "monthly" | undefined;
+    timeOfDay?: string | undefined;
+    intervalHours?: number | undefined;
+    intervalMinutes?: number | undefined;
+  },
+  fallback?: ScheduledTask["schedule"]
+): ScheduledTask["schedule"] {
+  const kind = input.scheduleKind ?? (fallback?.kind === "interval" ? "interval" : "calendar");
+  if (kind === "interval") {
+    const intervalMinutes =
+      input.intervalMinutes !== undefined || input.intervalHours !== undefined
+        ? (input.intervalHours ?? 0) * 60 + (input.intervalMinutes ?? 0)
+        : fallback?.intervalMinutes ?? 60;
+    return {
+      kind: "interval",
+      intervalMinutes: Math.min(720, Math.max(1, intervalMinutes))
+    };
+  }
+  return {
+    kind: "calendar",
+    frequency: input.frequency ?? fallback?.frequency ?? "daily",
+    timeOfDay: input.timeOfDay ?? fallback?.timeOfDay ?? "09:00"
+  };
 }
 
-function advanceScheduledTask(task: ScheduledTask, lastTaskId: string, now: Date): ScheduledTask {
+function computeNextRunAt(schedule: ScheduledTask["schedule"], from = new Date()): string {
+  if (schedule.kind === "once" && schedule.runAt) return new Date(schedule.runAt).toISOString();
+  if (schedule.kind === "interval" && schedule.intervalMinutes) {
+    return new Date(from.getTime() + schedule.intervalMinutes * 60_000).toISOString();
+  }
+  const [hour, minute] = parseTimeOfDay(schedule.timeOfDay ?? "09:00");
+  const next = new Date(from);
+  next.setHours(hour, minute, 0, 0);
+  if (next.getTime() <= from.getTime()) {
+    if (schedule.frequency === "monthly") next.setMonth(next.getMonth() + 1);
+    else if (schedule.frequency === "weekly") next.setDate(next.getDate() + 7);
+    else next.setDate(next.getDate() + 1);
+  }
+  return next.toISOString();
+}
+
+function parseTimeOfDay(value: string): [number, number] {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
+  if (!match) return [9, 0];
+  return [Number(match[1]), Number(match[2])];
+}
+
+function advanceScheduledTask(task: ScheduledTask, lastTaskId: string | undefined, now: Date, lastRunSummary?: string): ScheduledTask {
   const updatedAt = nowIso();
   if (task.schedule.kind === "interval" && task.schedule.intervalMinutes) {
     return {
       ...task,
-      lastTaskId,
+      ...(lastTaskId ? { lastTaskId } : {}),
       lastRunAt: now.toISOString(),
+      ...(lastRunSummary ? { lastRunSummary } : {}),
+      lastError: undefined,
       nextRunAt: new Date(now.getTime() + task.schedule.intervalMinutes * 60_000).toISOString(),
+      updatedAt
+    };
+  }
+  if (task.schedule.kind === "calendar") {
+    return {
+      ...task,
+      ...(lastTaskId ? { lastTaskId } : {}),
+      lastRunAt: now.toISOString(),
+      ...(lastRunSummary ? { lastRunSummary } : {}),
+      lastError: undefined,
+      nextRunAt: computeNextRunAt(task.schedule, now),
       updatedAt
     };
   }
   return {
     ...task,
     status: "completed",
-    lastTaskId,
+    ...(lastTaskId ? { lastTaskId } : {}),
     lastRunAt: now.toISOString(),
+    ...(lastRunSummary ? { lastRunSummary } : {}),
+    lastError: undefined,
     nextRunAt: now.toISOString(),
     updatedAt
   };

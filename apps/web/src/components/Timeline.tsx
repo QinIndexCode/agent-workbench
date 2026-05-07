@@ -17,6 +17,10 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
   "approval_auto_granted",
   "tool_result",
   "conversation_summary_created",
+  "context_overflow_recovered",
+  "task_checkpoint_created",
+  "task_rollback_completed",
+  "task_rollback_failed",
   "plan_created",
   "plan_step_started",
   "plan_step_completed",
@@ -144,10 +148,20 @@ function TimelineEvent({
     );
   }
 
-  if (event.type === "conversation_summary_created") {
+  if (event.type === "conversation_summary_created" || event.type === "context_overflow_recovered") {
+    const retained = Array.isArray(event.payload["retainedFacts"]) ? event.payload["retainedFacts"].map(String).slice(0, 4) : [];
     return (
-      <article className="event note conversation_summary_created">
-        <span>{zh ? "已压缩较早上下文" : "Earlier context compacted"}</span>
+      <article className={`event note ${event.type}`}>
+        <span>{event.type === "context_overflow_recovered" ? (zh ? "上下文超限，已压缩并重试" : "Context limit recovered with compaction") : (zh ? "已压缩较早上下文" : "Earlier context compacted")}</span>
+        {retained.length > 0 ? <small>{retained.join(" · ")}</small> : null}
+      </article>
+    );
+  }
+
+  if (event.type === "task_checkpoint_created" || event.type === "task_rollback_completed" || event.type === "task_rollback_failed") {
+    return (
+      <article className={`event note ${event.type}`}>
+        <span>{event.summary}</span>
       </article>
     );
   }
@@ -180,6 +194,15 @@ function TimelineEvent({
       <article className="event tool_result">
         <small>{ok ? (zh ? "工具结果" : "tool result") : (zh ? "工具错误" : "tool error")} · {toolName}</small>
         <MarkdownText content={parsed.summary || event.summary} />
+        {parsed.citations.length > 0 ? (
+          <div className="citationList">
+            {parsed.citations.map((citation) => (
+              <span className="citationChip" key={citation.key} title={citation.source ?? citation.excerpt}>
+                {citation.title}{citation.heading ? ` · ${citation.heading}` : ""}
+              </span>
+            ))}
+          </div>
+        ) : null}
         {parsed.rawOutputRef ? <code className="rawRef">{parsed.rawOutputRef}</code> : null}
         <details className="toolOutput">
           <summary>{zh ? "查看原始输出" : "View raw output"}</summary>
@@ -241,23 +264,48 @@ function appendStreamDelta(current: string, delta: string, type: "assistant_delt
   return `${current}\n${delta}`;
 }
 
-function parseToolOutput(output: string): { summary: string; display: string; rawOutputRef?: string } {
+function parseToolOutput(output: string): { summary: string; display: string; rawOutputRef?: string; citations: Array<{ key: string; title: string; heading?: string; source?: string; excerpt: string }> } {
   try {
     const parsed = JSON.parse(output) as Record<string, unknown>;
     const summary = typeof parsed["summary"] === "string" ? parsed["summary"] : "";
     const rawOutputRef = typeof parsed["rawOutputRef"] === "string" ? parsed["rawOutputRef"] : undefined;
+    const citations = extractCitations(parsed);
     const compact = summary || JSON.stringify(parsed, null, 2);
     return {
       summary: summary ? firstUsefulLine(summary) : "Tool evidence returned.",
       display: compact,
+      citations,
       ...(rawOutputRef ? { rawOutputRef } : {})
     };
   } catch {
     return {
       summary: firstUsefulLine(output),
-      display: output
+      display: output,
+      citations: []
     };
   }
+}
+
+function extractCitations(parsed: Record<string, unknown>): Array<{ key: string; title: string; heading?: string; source?: string; excerpt: string }> {
+  const results = Array.isArray(parsed["results"]) ? parsed["results"] : [];
+  return results
+    .flatMap((item, index) => {
+      if (!item || typeof item !== "object") return [];
+      const record = item as Record<string, unknown>;
+      const citation = record["citation"] && typeof record["citation"] === "object" ? (record["citation"] as Record<string, unknown>) : record;
+      const title = String(citation["title"] ?? record["title"] ?? "");
+      const chunkId = String(citation["chunkId"] ?? record["chunkId"] ?? index);
+      const excerpt = String(citation["excerpt"] ?? record["excerpt"] ?? "");
+      if (!title && !excerpt) return [];
+      return [{
+        key: chunkId,
+        title: title || "Knowledge",
+        ...(typeof citation["heading"] === "string" ? { heading: citation["heading"] } : {}),
+        ...(typeof citation["sourceUri"] === "string" ? { source: citation["sourceUri"] } : {}),
+        excerpt
+      }];
+    })
+    .slice(0, 6);
 }
 
 function firstUsefulLine(output: string): string {

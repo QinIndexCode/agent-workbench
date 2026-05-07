@@ -2,6 +2,11 @@ import type {
   ConversationSummary,
   ExperienceRecord,
   GlobalPermissionGrant,
+  IntegrationMessage,
+  IntegrationProviderConfig,
+  IntegrationTaskLink,
+  KnowledgeChunk,
+  KnowledgeEmbedding,
   KnowledgeItem,
   McpServerConfig,
   ModelProviderRecord,
@@ -13,11 +18,13 @@ import type {
   SkillConflict,
   SkillRecord,
   TaskAttachment,
+  TaskCheckpoint,
   TaskDetail,
   TaskFolderRecord,
   TaskMemory,
   ToolApproval,
   UserPreferences,
+  PromptCacheStats,
   WebSearchProviderConfig
 } from "@scc/shared";
 import { normalizeSkillRecord } from "./experience.js";
@@ -36,6 +43,10 @@ export interface WorkbenchStore {
   getTaskAttachment(attachmentId: string): Promise<TaskAttachment | undefined>;
   listTaskAttachments(taskId?: string): Promise<TaskAttachment[]>;
   deleteTaskAttachment(attachmentId: string): Promise<void>;
+  saveTaskCheckpoint(record: TaskCheckpoint): Promise<void>;
+  getTaskCheckpoint(checkpointId: string): Promise<TaskCheckpoint | undefined>;
+  listTaskCheckpoints(taskId?: string): Promise<TaskCheckpoint[]>;
+  deleteTaskCheckpoint(checkpointId: string): Promise<void>;
   saveConversationSummary(record: ConversationSummary): Promise<void>;
   listConversationSummaries(taskId?: string): Promise<ConversationSummary[]>;
   deleteConversationSummary(summaryId: string): Promise<void>;
@@ -93,6 +104,25 @@ export interface WorkbenchStore {
   getKnowledgeItem(id: string): Promise<KnowledgeItem | undefined>;
   listKnowledgeItems(projectId?: string): Promise<KnowledgeItem[]>;
   deleteKnowledgeItem(id: string): Promise<void>;
+  saveKnowledgeChunk(record: KnowledgeChunk): Promise<void>;
+  listKnowledgeChunks(knowledgeId?: string): Promise<KnowledgeChunk[]>;
+  deleteKnowledgeChunks(knowledgeId: string): Promise<void>;
+  saveKnowledgeEmbedding(record: KnowledgeEmbedding): Promise<void>;
+  listKnowledgeEmbeddings(chunkIds?: string[]): Promise<KnowledgeEmbedding[]>;
+  deleteKnowledgeEmbeddings(chunkIds: string[]): Promise<void>;
+  savePromptCacheStats(record: PromptCacheStats): Promise<void>;
+  listPromptCacheStats(taskId?: string): Promise<PromptCacheStats[]>;
+  saveIntegrationProvider(record: IntegrationProviderConfig): Promise<void>;
+  getIntegrationProvider(integrationId: string): Promise<IntegrationProviderConfig | undefined>;
+  listIntegrationProviders(): Promise<IntegrationProviderConfig[]>;
+  deleteIntegrationProvider(integrationId: string): Promise<void>;
+  saveIntegrationSecret(integrationId: string, name: string, secret: EncryptedSecretValue): Promise<void>;
+  getIntegrationSecret(integrationId: string, name: string): Promise<EncryptedSecretValue | undefined>;
+  deleteIntegrationSecret(integrationId: string, name: string): Promise<void>;
+  saveIntegrationMessage(record: IntegrationMessage): Promise<void>;
+  listIntegrationMessages(integrationId?: string): Promise<IntegrationMessage[]>;
+  saveIntegrationTaskLink(record: IntegrationTaskLink): Promise<void>;
+  listIntegrationTaskLinks(taskId?: string): Promise<IntegrationTaskLink[]>;
 }
 
 export interface EncryptedSecretValue {
@@ -106,6 +136,7 @@ export interface EncryptedSecretValue {
 export class InMemoryWorkbenchStore implements WorkbenchStore {
   private readonly tasks = new Map<string, TaskDetail>();
   private readonly taskAttachments = new Map<string, TaskAttachment>();
+  private readonly taskCheckpoints = new Map<string, TaskCheckpoint>();
   private readonly conversationSummaries = new Map<string, ConversationSummary>();
   private readonly taskFolders = new Map<string, TaskFolderRecord>();
   private readonly experiences = new Map<string, ExperienceRecord>();
@@ -123,6 +154,13 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
   private readonly reflectionSessions = new Map<string, ReflectionSession>();
   private readonly projectMemories = new Map<string, ProjectMemory>();
   private readonly knowledgeItems = new Map<string, KnowledgeItem>();
+  private readonly knowledgeChunks = new Map<string, KnowledgeChunk>();
+  private readonly knowledgeEmbeddings = new Map<string, KnowledgeEmbedding>();
+  private readonly promptCacheStats = new Map<string, PromptCacheStats>();
+  private readonly integrationProviders = new Map<string, IntegrationProviderConfig>();
+  private readonly integrationSecrets = new Map<string, EncryptedSecretValue>();
+  private readonly integrationMessages = new Map<string, IntegrationMessage>();
+  private readonly integrationTaskLinks = new Map<string, IntegrationTaskLink>();
   private preferences: UserPreferences | null = null;
 
   async saveTask(task: TaskDetail): Promise<void> {
@@ -162,6 +200,26 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
 
   async deleteTaskAttachment(attachmentId: string): Promise<void> {
     this.taskAttachments.delete(attachmentId);
+  }
+
+  async saveTaskCheckpoint(record: TaskCheckpoint): Promise<void> {
+    this.taskCheckpoints.set(record.id, clone(record));
+  }
+
+  async getTaskCheckpoint(checkpointId: string): Promise<TaskCheckpoint | undefined> {
+    const record = this.taskCheckpoints.get(checkpointId);
+    return record ? clone(record) : undefined;
+  }
+
+  async listTaskCheckpoints(taskId?: string): Promise<TaskCheckpoint[]> {
+    return [...this.taskCheckpoints.values()]
+      .filter((record) => !taskId || record.taskId === taskId)
+      .map((record) => clone(record))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async deleteTaskCheckpoint(checkpointId: string): Promise<void> {
+    this.taskCheckpoints.delete(checkpointId);
   }
 
   async saveConversationSummary(record: ConversationSummary): Promise<void> {
@@ -392,23 +450,122 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
   }
 
   async saveKnowledgeItem(record: KnowledgeItem): Promise<void> {
-    this.knowledgeItems.set(record.id, clone(record));
+    this.knowledgeItems.set(record.id, normalizeKnowledgeItem(clone(record)));
   }
 
   async getKnowledgeItem(id: string): Promise<KnowledgeItem | undefined> {
     const item = this.knowledgeItems.get(id);
-    return item ? clone(item) : undefined;
+    return item ? normalizeKnowledgeItem(clone(item)) : undefined;
   }
 
   async listKnowledgeItems(projectId?: string): Promise<KnowledgeItem[]> {
     return [...this.knowledgeItems.values()]
       .filter((record) => !projectId || record.projectId === projectId)
-      .map((record) => clone(record))
+      .map((record) => normalizeKnowledgeItem(clone(record)))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   async deleteKnowledgeItem(id: string): Promise<void> {
     this.knowledgeItems.delete(id);
+    await this.deleteKnowledgeChunks(id);
+  }
+
+  async saveKnowledgeChunk(record: KnowledgeChunk): Promise<void> {
+    this.knowledgeChunks.set(record.id, clone(record));
+  }
+
+  async listKnowledgeChunks(knowledgeId?: string): Promise<KnowledgeChunk[]> {
+    return [...this.knowledgeChunks.values()]
+      .filter((record) => !knowledgeId || record.knowledgeId === knowledgeId)
+      .map((record) => clone(record))
+      .sort((a, b) => a.ordinal - b.ordinal);
+  }
+
+  async deleteKnowledgeChunks(knowledgeId: string): Promise<void> {
+    const chunkIds = [...this.knowledgeChunks.values()].filter((chunk) => chunk.knowledgeId === knowledgeId).map((chunk) => chunk.id);
+    for (const chunkId of chunkIds) this.knowledgeChunks.delete(chunkId);
+    await this.deleteKnowledgeEmbeddings(chunkIds);
+  }
+
+  async saveKnowledgeEmbedding(record: KnowledgeEmbedding): Promise<void> {
+    this.knowledgeEmbeddings.set(record.id, clone(record));
+  }
+
+  async listKnowledgeEmbeddings(chunkIds?: string[]): Promise<KnowledgeEmbedding[]> {
+    const ids = chunkIds ? new Set(chunkIds) : null;
+    return [...this.knowledgeEmbeddings.values()].filter((record) => !ids || ids.has(record.chunkId)).map((record) => clone(record));
+  }
+
+  async deleteKnowledgeEmbeddings(chunkIds: string[]): Promise<void> {
+    const ids = new Set(chunkIds);
+    for (const [id, record] of this.knowledgeEmbeddings) {
+      if (ids.has(record.chunkId)) this.knowledgeEmbeddings.delete(id);
+    }
+  }
+
+  async savePromptCacheStats(record: PromptCacheStats): Promise<void> {
+    this.promptCacheStats.set(record.id, clone(record));
+  }
+
+  async listPromptCacheStats(taskId?: string): Promise<PromptCacheStats[]> {
+    return [...this.promptCacheStats.values()]
+      .filter((record) => !taskId || record.taskId === taskId)
+      .map((record) => clone(record))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async saveIntegrationProvider(record: IntegrationProviderConfig): Promise<void> {
+    this.integrationProviders.set(record.id, clone(record));
+  }
+
+  async getIntegrationProvider(integrationId: string): Promise<IntegrationProviderConfig | undefined> {
+    const record = this.integrationProviders.get(integrationId);
+    return record ? clone(record) : undefined;
+  }
+
+  async listIntegrationProviders(): Promise<IntegrationProviderConfig[]> {
+    return [...this.integrationProviders.values()].map((record) => clone(record)).sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  async deleteIntegrationProvider(integrationId: string): Promise<void> {
+    this.integrationProviders.delete(integrationId);
+    for (const key of [...this.integrationSecrets.keys()]) {
+      if (key.startsWith(`${integrationId}:`)) this.integrationSecrets.delete(key);
+    }
+  }
+
+  async saveIntegrationSecret(integrationId: string, name: string, secret: EncryptedSecretValue): Promise<void> {
+    this.integrationSecrets.set(`${integrationId}:${name}`, clone(secret));
+  }
+
+  async getIntegrationSecret(integrationId: string, name: string): Promise<EncryptedSecretValue | undefined> {
+    const secret = this.integrationSecrets.get(`${integrationId}:${name}`);
+    return secret ? clone(secret) : undefined;
+  }
+
+  async deleteIntegrationSecret(integrationId: string, name: string): Promise<void> {
+    this.integrationSecrets.delete(`${integrationId}:${name}`);
+  }
+
+  async saveIntegrationMessage(record: IntegrationMessage): Promise<void> {
+    this.integrationMessages.set(record.id, clone(record));
+  }
+
+  async listIntegrationMessages(integrationId?: string): Promise<IntegrationMessage[]> {
+    return [...this.integrationMessages.values()]
+      .filter((record) => !integrationId || record.integrationId === integrationId)
+      .map((record) => clone(record))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async saveIntegrationTaskLink(record: IntegrationTaskLink): Promise<void> {
+    this.integrationTaskLinks.set(record.id, clone(record));
+  }
+
+  async listIntegrationTaskLinks(taskId?: string): Promise<IntegrationTaskLink[]> {
+    return [...this.integrationTaskLinks.values()]
+      .filter((record) => !taskId || record.taskId === taskId)
+      .map((record) => clone(record));
   }
 }
 
@@ -446,21 +603,26 @@ export function defaultPreferences(): UserPreferences {
     providerBaseUrl: "",
     contextMode: "auto",
     customModelContextWindow: 128000,
-    maxTokensPerRequest: 128000,
+    maxTokensPerRequest: 1048576,
     autoApprove: "none",
     showThinking: true,
     language: "zh-CN",
     agentTone: "balanced",
-    emojiStyle: "auto",
     agentRole: "Pragmatic engineering assistant",
     responseDetail: "normal",
-    reflectionEnabled: true,
-    reflectionSchedule: "02:00",
     skillAutoInject: true,
     maxInjectedSkills: 3,
     mcpApprovalMode: "confirm_dangerous",
     sanitizeSensitiveData: true,
     encryptStorage: false,
     updatedAt: new Date().toISOString()
+  };
+}
+
+export function normalizeKnowledgeItem(record: KnowledgeItem): KnowledgeItem {
+  return {
+    ...record,
+    indexStatus: record.indexStatus ?? "pending",
+    chunkCount: record.chunkCount ?? 0
   };
 }

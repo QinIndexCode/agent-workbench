@@ -10,9 +10,11 @@ if (process.env.SCC_LIVE_MODEL_SMOKE !== "1") {
 
 const {
   AgentWorkbench,
+  CompositeToolExecutor,
   ContextAssembler,
   createModelClientFromEnvironment,
   InMemoryWorkbenchStore,
+  KnowledgeSearchToolExecutor,
   loadOpenAiConfig,
   nowIso,
   ShellToolExecutor
@@ -94,9 +96,11 @@ await runCase("debug failing fixture", async () => {
     const source = readFileSync(join(fixture.root, "src", "math.mjs"), "utf8");
     const toolOutput = toolOutputs(task).join("\n");
     const assistant = assistantText(task);
+    const checkpoints = await workbench.listTaskCheckpoints(task.id);
     const debugEvidence = evidence(task, {
       fixed: source.includes("reduce"),
       testsPassed: toolOutput.includes("math tests passed"),
+      checkpoints: checkpoints.length,
       assistant: excerpt(assistant),
       sourceExcerpt: excerpt(source)
     }).evidence;
@@ -104,6 +108,17 @@ await runCase("debug failing fixture", async () => {
     assertWithEvidence(source.includes("reduce") || toolOutput.includes("math tests passed"), "fixture was not fixed or tests did not pass", debugEvidence);
     assertWithEvidence(/numbers\.length|数组长度|length/i.test(assistant), "debug summary did not mention the observed length-based bug", debugEvidence);
     assertWithEvidence(!/乘法|multiply|multiplication/i.test(assistant), "debug summary speculated about multiplication instead of observed evidence", debugEvidence);
+    assertWithEvidence(checkpoints.length > 0, "edit did not create a task checkpoint", debugEvidence);
+    const rollback = await workbench.rollbackTask(task.id);
+    const restored = readFileSync(join(fixture.root, "src", "math.mjs"), "utf8");
+    assertWithEvidence(restored.includes("return numbers.length;"), "rollback did not restore the original source", {
+      ...debugEvidence,
+      rollback
+    });
+    debugEvidence.rollback = {
+      restoredFiles: rollback.restoredFiles,
+      skippedFiles: rollback.skippedFiles
+    };
     return { status: "passed", evidence: debugEvidence };
   } finally {
     fixture.cleanup();
@@ -230,6 +245,62 @@ await runCase("memory without direct skill promotion", async () => {
   return { status: "passed", evidence: { memories: memories.length, skills: skills.length } };
 });
 
+await runCase("knowledge rag citation", async () => {
+  const { workbench } = await createLiveWorkbench(undefined, { knowledge: true });
+  await workbench.createKnowledgeItem({
+    kind: "memory",
+    title: "SCC Golden RAG Note",
+    sourceUri: "scc://live-smoke/golden-rag-note.md",
+    tags: ["live-smoke", "rag"],
+    content: [
+      "# SCC Golden RAG Note",
+      "",
+      "The live RAG marker is SCC-GOLDEN-RAG.",
+      "When asked about the golden marker, answer with the exact marker and cite this knowledge source."
+    ].join("\n")
+  });
+  const directMatches = await workbench.searchKnowledge({ query: "SCC-GOLDEN-RAG golden marker", projectId: "default", limit: 3 });
+  const directEvidence = directMatches.map((match) => ({
+    title: match.item.title,
+    score: Number(match.score.toFixed(4)),
+    excerpt: excerpt(match.chunk.content),
+    citation: match.citation
+  }));
+  assertWithEvidence(
+    directMatches.some((match) => match.chunk.content.includes("SCC-GOLDEN-RAG")),
+    "direct knowledge search did not retrieve the golden marker",
+    { directMatches: directEvidence }
+  );
+  let task = await workbench.createTask(
+    [
+      "必须调用 knowledge_search 工具查询资料库中的 golden marker；不要在未调用工具时回答。",
+      "回答必须包含精确文本 SCC-GOLDEN-RAG，并说明引用了哪个知识来源。",
+      "不要使用文件工具或命令。"
+    ].join("\n"),
+    "Live RAG citation"
+  );
+  task = await settleApprovals(workbench, task, () => "allow_for_task", 6);
+  const outputs = toolOutputs(task).join("\n");
+  const assistant = assistantText(task);
+  const citations = outputs.match(/"citation"/g)?.length ?? 0;
+  const ragEvidence = evidence(task, {
+    citations,
+    directMatches: directEvidence,
+    assistant: excerpt(assistant),
+    knowledgeEvidence: excerpt(outputs, 900)
+  }).evidence;
+  assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, ragEvidence);
+  assertWithEvidence(outputs.includes("SCC-GOLDEN-RAG"), "knowledge_search did not return the golden marker", ragEvidence);
+  assertWithEvidence(assistant.includes("SCC-GOLDEN-RAG"), "assistant did not use the retrieved marker", ragEvidence);
+  assertWithEvidence(citations > 0, "knowledge_search output did not include citation metadata", ragEvidence);
+  return evidence(task, {
+    citations,
+    directMatches: directEvidence,
+    assistant: excerpt(assistant),
+    knowledgeEvidence: excerpt(outputs, 900)
+  });
+});
+
 const failed = report.cases.filter((item) => item.status === "failed");
 const outDir = resolve("data", "test-reports", "live-model-smoke");
 await mkdir(outDir, { recursive: true });
@@ -243,14 +314,13 @@ if (failed.length > 0) {
 
 console.log(`Live Mimo smoke passed ${report.cases.length}/${report.cases.length}. Report: ${resolve(outDir, "report.md")}`);
 
-async function createLiveWorkbench(rootPath) {
+async function createLiveWorkbench(rootPath, options = {}) {
   const store = new InMemoryWorkbenchStore();
   const preferences = await store.getPreferences();
   await store.savePreferences({
     ...preferences,
     defaultModel: config.model ?? "mimo-v2.5",
     providerBaseUrl: config.baseURL ?? "",
-    reflectionEnabled: false,
     showThinking: true,
     updatedAt: nowIso()
   });
@@ -259,7 +329,11 @@ async function createLiveWorkbench(rootPath) {
     contextAssembler,
     preferenceProvider: () => store.getPreferences()
   });
-  const workbench = new AgentWorkbench({ store, contextAssembler, model, tools: new ShellToolExecutor() });
+  const fallbackTools = new ShellToolExecutor();
+  const tools = options.knowledge
+    ? new CompositeToolExecutor(fallbackTools, [new KnowledgeSearchToolExecutor(store)])
+    : fallbackTools;
+  const workbench = new AgentWorkbench({ store, contextAssembler, model, tools });
   if (!rootPath) return { workbench, store, folderId: "default" };
   const folder = await workbench.createTaskFolder({ name: "Live fixture", rootPath });
   return { workbench, store, folderId: folder.id };

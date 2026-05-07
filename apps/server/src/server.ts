@@ -5,6 +5,7 @@ import {
   AgentWorkbench,
   CompositeToolExecutor,
   ContextAssembler,
+  KnowledgeSearchToolExecutor,
   LocalSecretBox,
   McpRegistry,
   ShellToolExecutor,
@@ -19,8 +20,13 @@ import {
   ControlRequestSchema,
   CreateTaskRequestSchema,
   GlobalPermissionRequestSchema,
+  DiscordInteractionRequestSchema,
+  FeishuEventRequestSchema,
+  IntegrationProviderCreateRequestSchema,
+  IntegrationProviderPatchRequestSchema,
   KnowledgeCreateRequestSchema,
   KnowledgePatchRequestSchema,
+  KnowledgeSearchRequestSchema,
   KnowledgeUploadRequestSchema,
   MessageRequestSchema,
   McpServerCreateRequestSchema,
@@ -42,6 +48,7 @@ import {
   TaskFolderCreateRequestSchema,
   TaskFolderPatchRequestSchema,
   TaskPatchRequestSchema,
+  TaskRollbackRequestSchema,
   TaskTitleRequestSchema,
   TaskDeleteRequestSchema,
   TaskAttachmentUploadRequestSchema,
@@ -93,6 +100,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   const closeRuntime = "close" in runtime ? runtime.close : undefined;
   app.addHook("onClose", async () => closeRuntime?.());
   if (!options.workbench) await bootstrapMimoProviderFromApiKeyDoc(workbench);
+  await workbench.ensureDefaultScheduledTasks();
   await workbench.recoverInterruptedTasks();
   const scheduler = options.workbench
     ? undefined
@@ -212,6 +220,23 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const task = await workbench.getTask(id);
     return task ? workbench.listConversationSummaries(id) : reply.code(404).send({ error: "Task not found" });
+  });
+
+  app.get("/api/tasks/:id/checkpoints", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const task = await workbench.getTask(id);
+    return task ? workbench.listTaskCheckpoints(id) : reply.code(404).send({ error: "Task not found" });
+  });
+
+  app.post("/api/tasks/:id/rollback", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = TaskRollbackRequestSchema.parse(request.body ?? {});
+    try {
+      return await workbench.rollbackTask(id, input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") || message.includes("No checkpoint") ? 404 : 400).send({ error: message });
+    }
   });
 
   app.post("/api/task-attachments", async (request, reply) => {
@@ -526,6 +551,20 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     return reply.code(201).send(await workbench.uploadKnowledgeFile(input));
   });
 
+  app.post("/api/knowledge/search", async (request) => {
+    const input = KnowledgeSearchRequestSchema.parse(request.body);
+    return workbench.searchKnowledge(input);
+  });
+
+  app.post("/api/knowledge/:id/reindex", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    try {
+      return await workbench.reindexKnowledgeItem(id);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.patch("/api/knowledge/:id", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = KnowledgePatchRequestSchema.parse(request.body);
@@ -540,6 +579,76 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id } = z.object({ id: z.string() }).parse(request.params);
     await workbench.deleteKnowledgeItem(id);
     return reply.code(204).send();
+  });
+
+  app.get("/api/prompt-cache-stats", async (request) => {
+    const query = z.object({ taskId: z.string().optional() }).parse(request.query);
+    return workbench.listPromptCacheStats(query.taskId);
+  });
+
+  app.get("/api/integrations", async () => workbench.listIntegrationProviders());
+
+  app.post("/api/integrations", async (request, reply) => {
+    const input = IntegrationProviderCreateRequestSchema.parse(request.body);
+    try {
+      return reply.code(201).send(await workbench.createIntegrationProvider(input));
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.patch("/api/integrations/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = IntegrationProviderPatchRequestSchema.parse(request.body);
+    try {
+      return await workbench.updateIntegrationProvider(id, input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") ? 404 : 400).send({ error: message });
+    }
+  });
+
+  app.delete("/api/integrations/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    await workbench.deleteIntegrationProvider(id);
+    return reply.code(204).send();
+  });
+
+  app.post("/api/integrations/:id/connect", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    try {
+      return await workbench.connectIntegrationProvider(id);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/api/integrations/:id/disconnect", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    try {
+      return await workbench.disconnectIntegrationProvider(id);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/api/integrations/discord/interactions", async (request, reply) => {
+    const input = DiscordInteractionRequestSchema.parse(request.body);
+    try {
+      return await workbench.handleDiscordInteraction(input);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/api/integrations/feishu/events", async (request, reply) => {
+    const input = FeishuEventRequestSchema.parse(request.body);
+    if (input.challenge) return { challenge: input.challenge };
+    try {
+      return (await workbench.handleFeishuEvent(input)) ?? { ok: true, ignored: true };
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   return app;
@@ -581,9 +690,16 @@ function toBootstrapModelPreset(model: string): ModelPreset {
 
 function contextWindowForModel(model: string): number {
   const normalized = model.toLowerCase();
-  if (normalized.includes("2.5-pro") || normalized.includes("200k")) return 200000;
-  if (normalized.includes("1m")) return 1000000;
-  return 128000;
+  if (normalized.includes("mimo-v2.5")) return 1_048_576;
+  if (normalized.includes("gpt-5.4")) return 1_050_000;
+  if (normalized.includes("gpt-5.5")) return 1_000_000;
+  if (normalized.includes("1m")) return 1_000_000;
+  if (normalized.includes("400k")) return 400_000;
+  if (normalized.includes("256k")) return 256_000;
+  if (normalized.includes("200k")) return 200_000;
+  if (normalized.includes("128k")) return 128_000;
+  if (normalized.includes("64k")) return 64_000;
+  return 1_048_576;
 }
 
 function createDefaultRuntime(onEvent: (event: TaskEvent) => void): { workbench: AgentWorkbench; mcpRegistry: McpRegistry; close: () => void } {
@@ -591,7 +707,7 @@ function createDefaultRuntime(onEvent: (event: TaskEvent) => void): { workbench:
   const contextAssembler = new ContextAssembler(store);
   const mcpRegistry = new McpRegistry(store);
   const secretBox = new LocalSecretBox();
-  const tools = new CompositeToolExecutor(new ShellToolExecutor(), [mcpRegistry, new WebSearchToolExecutor(store)]);
+  const tools = new CompositeToolExecutor(new ShellToolExecutor(), [mcpRegistry, new WebSearchToolExecutor(store), new KnowledgeSearchToolExecutor(store)]);
   const workbench = new AgentWorkbench({
     store,
     contextAssembler,

@@ -1,9 +1,15 @@
 import type {
   ApprovalDecision,
   GlobalPermissionGrant,
+  IntegrationProviderConfig,
+  IntegrationProviderCreateRequest,
+  IntegrationProviderPatchRequest,
   KnowledgeCreateRequest,
   KnowledgeItem,
   KnowledgePatchRequest,
+  KnowledgeReindexResult,
+  KnowledgeSearchRequest,
+  KnowledgeSearchResult,
   KnowledgeUploadRequest,
   McpServerConfig,
   McpServerCreateRequest,
@@ -36,6 +42,7 @@ import type {
   TaskDetail,
   TaskAttachment,
   TaskAttachmentUploadRequest,
+  TaskCheckpoint,
   TaskFolderClearRequest,
   TaskFolderClearResult,
   TaskFolderDeleteRequest,
@@ -44,10 +51,13 @@ import type {
   TaskFolderPatchRequest,
   TaskFolderRecord,
   TaskPatchRequest,
+  TaskRollbackRequest,
+  TaskRollbackResult,
   TaskTitleResponse,
   TaskMemory,
   UserPreferences,
   ConversationSummary,
+  PromptCacheStats,
   WebSearchProviderConfig,
   WebSearchProviderCreateRequest,
   WebSearchProviderPatchRequest
@@ -123,6 +133,12 @@ export const api = {
   },
   listConversationSummaries(taskId: string): Promise<ConversationSummary[]> {
     return request(`/api/tasks/${taskId}/summaries`);
+  },
+  listTaskCheckpoints(taskId: string): Promise<TaskCheckpoint[]> {
+    return request(`/api/tasks/${taskId}/checkpoints`);
+  },
+  rollbackTask(taskId: string, input: TaskRollbackRequest = {}): Promise<TaskRollbackResult> {
+    return request(`/api/tasks/${taskId}/rollback`, { method: "POST", body: JSON.stringify(input) });
   },
   control(taskId: string, action: "pause" | "resume" | "cancel"): Promise<TaskDetail> {
     return request(`/api/tasks/${taskId}/control`, { method: "POST", body: JSON.stringify({ action }) });
@@ -276,5 +292,33 @@ export const api = {
   },
   deleteKnowledgeItem(id: string): Promise<void> {
     return request(`/api/knowledge/${id}`, { method: "DELETE" });
+  },
+  reindexKnowledgeItem(id: string): Promise<KnowledgeReindexResult> {
+    return request(`/api/knowledge/${id}/reindex`, { method: "POST" });
+  },
+  searchKnowledge(input: KnowledgeSearchRequest): Promise<KnowledgeSearchResult[]> {
+    return request("/api/knowledge/search", { method: "POST", body: JSON.stringify(input) });
+  },
+  listPromptCacheStats(taskId?: string): Promise<PromptCacheStats[]> {
+    const suffix = taskId ? `?taskId=${encodeURIComponent(taskId)}` : "";
+    return request(`/api/prompt-cache-stats${suffix}`);
+  },
+  listIntegrations(): Promise<IntegrationProviderConfig[]> {
+    return request("/api/integrations");
+  },
+  createIntegration(input: IntegrationProviderCreateRequest): Promise<IntegrationProviderConfig> {
+    return request("/api/integrations", { method: "POST", body: JSON.stringify(input) });
+  },
+  patchIntegration(integrationId: string, input: IntegrationProviderPatchRequest): Promise<IntegrationProviderConfig> {
+    return request(`/api/integrations/${integrationId}`, { method: "PATCH", body: JSON.stringify(input) });
+  },
+  deleteIntegration(integrationId: string): Promise<void> {
+    return request(`/api/integrations/${integrationId}`, { method: "DELETE" });
+  },
+  connectIntegration(integrationId: string): Promise<IntegrationProviderConfig> {
+    return request(`/api/integrations/${integrationId}/connect`, { method: "POST" });
+  },
+  disconnectIntegration(integrationId: string): Promise<IntegrationProviderConfig> {
+    return request(`/api/integrations/${integrationId}/disconnect`, { method: "POST" });
   }
 };

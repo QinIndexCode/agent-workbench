@@ -4,7 +4,7 @@ import OpenAI from "openai";
 import type { TaskDetail, ToolCall, UserPreferences } from "@scc/shared";
 import type { ContextAssembler } from "./context-assembler.js";
 import { createId } from "./ids.js";
-import type { ModelClient, ModelStreamHandlers, ModelTurn } from "./fallback-model.js";
+import type { ModelClient, ModelStreamHandlers, ModelTurn, ModelUsage } from "./fallback-model.js";
 import { ConfiguredToolModelClient, FallbackModelClient } from "./fallback-model.js";
 
 export interface OpenAIModelClientOptions {
@@ -89,6 +89,7 @@ export class OpenAIModelClient implements ModelClient {
           { role: "user", content: context?.input ?? buildInput(task) }
         ],
         stream: true,
+        stream_options: { include_usage: true },
         tool_choice: "auto" as const,
         tools: [...toolDefinitions(), ...dynamicTools] as OpenAI.Chat.Completions.ChatCompletionTool[]
       },
@@ -109,7 +110,8 @@ export class OpenAIModelClient implements ModelClient {
       return {
         kind: "tool_calls",
         calls: executableCalls,
-        ...(stream?.streamId ? { streamId: stream.streamId } : {})
+        ...(stream?.streamId ? { streamId: stream.streamId } : {}),
+        ...(streamed.usage ? { usage: streamed.usage } : {})
       };
     }
 
@@ -117,7 +119,8 @@ export class OpenAIModelClient implements ModelClient {
     return {
       kind: "final",
       message: content || "I could not produce a result from the model response.",
-      ...(stream?.streamId ? { streamId: stream.streamId } : {})
+      ...(stream?.streamId ? { streamId: stream.streamId } : {}),
+      ...(streamed.usage ? { usage: streamed.usage } : {})
     };
   }
 
@@ -150,7 +153,10 @@ export class OpenAIModelClient implements ModelClient {
     const text = parts.map(extractText).filter(Boolean).join("\n").trim();
     if (text) await stream?.onAssistantDelta(text);
     const calls = parts.map(toAnthropicToolCall).filter((call): call is ToolCall => Boolean(call));
-    return calls.length > 0 ? { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}) } : { kind: "final", message: text || "No response returned.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+    const usage = anthropicUsage(payload);
+    return calls.length > 0
+      ? { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) }
+      : { kind: "final", message: text || "No response returned.", ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) };
   }
 
   private async nextGemini(
@@ -177,7 +183,10 @@ export class OpenAIModelClient implements ModelClient {
     const text = parts.map(extractText).filter(Boolean).join("\n").trim();
     if (text) await stream?.onAssistantDelta(text);
     const calls = parts.map(toGeminiToolCall).filter((call): call is ToolCall => Boolean(call));
-    return calls.length > 0 ? { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}) } : { kind: "final", message: text || "No response returned.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+    const usage = geminiUsage(payload);
+    return calls.length > 0
+      ? { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) }
+      : { kind: "final", message: text || "No response returned.", ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) };
   }
 
   private clientFor(baseURL: string | undefined, apiKey: string): OpenAI {
@@ -202,13 +211,16 @@ interface StreamToolCallPart {
 async function consumeChatCompletionStream(
   stream: AsyncIterable<unknown>,
   handlers?: ModelStreamHandlers
-): Promise<{ content: string; calls: ToolCall[] }> {
+): Promise<{ content: string; calls: ToolCall[]; usage?: ModelUsage }> {
   let content = "";
   const toolParts = new Map<number, StreamToolCallPart>();
+  let usage: ModelUsage | undefined;
 
   for await (const chunk of stream) {
     if (handlers?.signal?.aborted) throw new Error("Model request cancelled by user.");
     const delta = readStreamDelta(chunk);
+    const chunkUsage = extractOpenAIUsage(chunk);
+    if (chunkUsage) usage = chunkUsage;
     if (!delta) continue;
 
     const thinking = extractReasoningDelta(delta);
@@ -243,7 +255,7 @@ async function consumeChatCompletionStream(
       toolName: part.name ?? "unknown_tool",
       args: parseArgs(part.arguments || "{}")
     }));
-  return { content, calls };
+  return { content, calls, ...(usage ? { usage } : {}) };
 }
 
 export function createModelClientFromEnvironment(
@@ -283,7 +295,7 @@ function fallbackInstructions(): string {
     "When reporting a debug fix, base the root cause and final summary only on observed tool output and source code; do not speculate about code you did not see.",
     "After debugging or editing code, the final answer should include the observed failure, exact root cause expression or file location when known, changed files, and verification result.",
     "Keep normal answers concise, calm, and product-like.",
-    "Use emoji only when it fits the user's tone, preference, and task context; avoid emoji in serious debugging or incident-style work unless the user likes that style.",
+    "Match the user's tone and the task context; keep serious debugging and incident-style work plain unless the user asks for a warmer style.",
     "Avoid hype, decorative openings, and marketing-style introductions unless the user asks for that tone.",
     "Use Markdown for readable structure when helpful: short headings, bullets, tables, and code blocks are supported."
   ].join("\n");
@@ -456,6 +468,47 @@ function readStreamDelta(chunk: unknown): Record<string, unknown> | null {
   return choice["delta"];
 }
 
+function extractOpenAIUsage(chunk: unknown): ModelUsage | undefined {
+  if (!isRecord(chunk) || !isRecord(chunk["usage"])) return undefined;
+  const usage = chunk["usage"];
+  const promptDetails = isRecord(usage["prompt_tokens_details"]) ? usage["prompt_tokens_details"] : {};
+  const cachedTokens = Number(promptDetails["cached_tokens"] ?? 0);
+  return {
+    ...optionalNumber("inputTokens", usage["prompt_tokens"]),
+    ...optionalNumber("outputTokens", usage["completion_tokens"]),
+    ...(Number.isFinite(cachedTokens) && cachedTokens > 0 ? { cachedTokens } : {}),
+    raw: usage
+  };
+}
+
+function anthropicUsage(payload: Record<string, unknown>): ModelUsage | undefined {
+  if (!isRecord(payload["usage"])) return undefined;
+  const usage = payload["usage"];
+  const cachedTokens = Number(usage["cache_read_input_tokens"] ?? 0) + Number(usage["cache_creation_input_tokens"] ?? 0);
+  return {
+    ...optionalNumber("inputTokens", usage["input_tokens"]),
+    ...optionalNumber("outputTokens", usage["output_tokens"]),
+    ...(Number.isFinite(cachedTokens) && cachedTokens > 0 ? { cachedTokens } : {}),
+    raw: usage
+  };
+}
+
+function geminiUsage(payload: Record<string, unknown>): ModelUsage | undefined {
+  if (!isRecord(payload["usageMetadata"])) return undefined;
+  const usage = payload["usageMetadata"];
+  return {
+    ...optionalNumber("inputTokens", usage["promptTokenCount"]),
+    ...optionalNumber("outputTokens", usage["candidatesTokenCount"]),
+    ...optionalNumber("cachedTokens", usage["cachedContentTokenCount"]),
+    raw: usage
+  };
+}
+
+function optionalNumber(key: "inputTokens" | "outputTokens" | "cachedTokens", value: unknown): Partial<ModelUsage> {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? { [key]: number } : {};
+}
+
 function extractReasoningDelta(delta: Record<string, unknown>): string {
   const candidates = [
     delta["reasoning_content"],
@@ -590,6 +643,18 @@ function toolDefinitions(): ModelToolDefinition[] {
         parameters: strictObject({
           query: { type: "string", description: "Focused search query." },
           limit: { type: "number", description: "Number of results, default 5, max 10." }
+        }, ["query"])
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "knowledge_search",
+        description: "Search the user's indexed local Knowledge library for reusable facts, notes, files, and references. Use this when stored knowledge may answer the task.",
+        parameters: strictObject({
+          query: { type: "string", description: "Focused semantic search query." },
+          projectId: { type: "string", description: "Knowledge project id, default default." },
+          limit: { type: "number", description: "Number of chunks, default 5, max 12." }
         }, ["query"])
       }
     }

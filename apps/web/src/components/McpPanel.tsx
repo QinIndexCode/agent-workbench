@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { McpServerConfig, McpServerCreateRequest, McpServerPatchRequest, McpServerStatus, McpToolSummary, McpTransportKind, RiskCategory } from "@scc/shared";
-import { Edit3, Plug, Plus, Search, Server, Trash2, Unplug, Wrench, X } from "lucide-react";
+import { Edit3, Plug, Plus, Search, Server, Trash2, Unplug, Wrench } from "lucide-react";
 import { AccordionSelect } from "./AccordionSelect.js";
+import { ConfirmDialog } from "./ConfirmDialog.js";
 
 const riskCategories: RiskCategory[] = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
 
@@ -43,6 +44,7 @@ export function McpPanel({
   const [editing, setEditing] = useState<McpServerWithStatus | null>(null);
   const [draft, setDraft] = useState<McpDraft>(() => emptyDraft());
   const [toolFilter, setToolFilter] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const safeServers = Array.isArray(servers) ? servers : [];
   const safeTools = Array.isArray(tools) ? tools : [];
   const visibleTools = safeTools.filter((tool) =>
@@ -51,6 +53,7 @@ export function McpPanel({
   const canSubmit = Boolean(draft.label.trim() && (draft.transport === "stdio" ? draft.command.trim() : draft.url.trim()));
 
   return (
+    <>
     <section className="mcpPanel">
       <header className="panelHero">
         <div>
@@ -104,7 +107,7 @@ export function McpPanel({
                 <button aria-label={text.editServer(server.label ?? server.id)} className="iconButton" type="button" onClick={() => startEdit(server)}>
                   <Edit3 size={15} aria-hidden="true" />
                 </button>
-                <button aria-label={text.deleteServer(server.label ?? server.id)} className="iconButton dangerIcon" type="button" onClick={() => onDelete(server.id)}>
+                <button aria-label={text.deleteServer(server.label ?? server.id)} className="iconButton dangerIcon" type="button" onClick={() => setConfirmDeleteId(server.id)}>
                   <Trash2 size={15} aria-hidden="true" />
                 </button>
               </div>
@@ -147,83 +150,84 @@ export function McpPanel({
       </section>
 
       {dialogOpen ? (
-        <div className="modalOverlay" role="presentation">
-          <form aria-label={editing ? text.edit : text.add} className="providerDialog mcpDialog" onSubmit={(event) => {
+        <div className="modalBackdrop stdBackdrop" role="presentation" onClick={(e) => { if (e.target === e.currentTarget) setDialogOpen(false); }}>
+          <form aria-label={editing ? text.edit : text.add} className="stdModal" onSubmit={(event) => {
             event.preventDefault();
             if (canSubmit) save();
           }}>
-            <div className="dialogHeader">
-              <div>
-                <h3>{editing ? text.edit : text.add}</h3>
-                <p>{text.dialogHelp}</p>
-              </div>
-              <button className="iconButton" type="button" onClick={() => setDialogOpen(false)}>
-                <X size={16} aria-hidden="true" />
-              </button>
+            <div className="stdHeader">
+              <h3>{editing ? text.edit : text.add}</h3>
+              <button className="stdClose" type="button" onClick={() => setDialogOpen(false)}>×</button>
             </div>
-            <div className="providerFormGrid">
-              <label className="fieldStack">
-                <span>{text.label}</span>
-                <input aria-label={text.label} value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} />
-              </label>
-              <label className="fieldStack">
-                <span>{text.transport}</span>
-                <AccordionSelect
-                  ariaLabel={text.transport}
-                  value={draft.transport}
-                  options={[
-                    { value: "stdio", label: "stdio" },
-                    { value: "streamable_http", label: "streamable http" }
-                  ]}
-                  onChange={(value) => setDraft({ ...draft, transport: value as McpTransportKind })}
-                />
-              </label>
-              {draft.transport === "stdio" ? (
-                <>
-                  <label className="fieldStack">
-                    <span>{text.command}</span>
-                    <input aria-label={text.command} value={draft.command} onChange={(event) => setDraft({ ...draft, command: event.target.value })} />
-                  </label>
-                  <label className="fieldStack">
-                    <span>{text.args}</span>
-                    <input aria-label={text.args} value={draft.argsText} onChange={(event) => setDraft({ ...draft, argsText: event.target.value })} />
-                  </label>
-                  <label className="fieldStack">
-                    <span>{text.cwd}</span>
-                    <input aria-label={text.cwd} value={draft.cwd} onChange={(event) => setDraft({ ...draft, cwd: event.target.value })} />
-                  </label>
-                </>
-              ) : (
-                <label className="fieldStack wideField">
-                  <span>{text.url}</span>
-                  <input aria-label={text.url} value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} />
-                </label>
-              )}
-              <label className="fieldStack">
-                <span>{text.overrideTool}</span>
-                <input aria-label={text.overrideTool} value={draft.overrideTool} onChange={(event) => setDraft({ ...draft, overrideTool: event.target.value })} />
-              </label>
-              <label className="fieldStack">
-                <span>{text.overrideRisk}</span>
-                <AccordionSelect
-                  ariaLabel={text.overrideRisk}
-                  value={draft.overrideRisk}
-                  options={riskCategories.map((risk) => ({ value: risk, label: formatRisk(risk) }))}
-                  onChange={(value) => setDraft({ ...draft, overrideRisk: value as RiskCategory })}
-                />
-              </label>
-              <label className={draft.enabled ? "toggleField enabled" : "toggleField"}>
-                <span>{text.enabled}</span>
+            <div className="stdBody">
+              <p className="stdDialogHelp">{text.dialogHelp}</p>
+              <div className="stdFormGrid cols2">
+                <div className="stdField">
+                  <span className="stdFieldLabel">{text.label}</span>
+                  <input className="stdInput" aria-label={text.label} value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} />
+                </div>
+                <div className="stdField">
+                  <span className="stdFieldLabel">{text.transport}</span>
+                  <AccordionSelect
+                    ariaLabel={text.transport}
+                    value={draft.transport}
+                    options={[
+                      { value: "stdio", label: "stdio" },
+                      { value: "streamable_http", label: "streamable http" }
+                    ]}
+                    onChange={(value) => setDraft({ ...draft, transport: value as McpTransportKind })}
+                  />
+                </div>
+                {draft.transport === "stdio" ? (
+                  <>
+                    <div className="stdField wide">
+                      <span className="stdFieldLabel">{text.command}</span>
+                      <input className="stdInput" aria-label={text.command} value={draft.command} onChange={(event) => setDraft({ ...draft, command: event.target.value })} />
+                    </div>
+                    <div className="stdField">
+                      <span className="stdFieldLabel">{text.args}</span>
+                      <input className="stdInput" aria-label={text.args} value={draft.argsText} onChange={(event) => setDraft({ ...draft, argsText: event.target.value })} />
+                    </div>
+                    <div className="stdField">
+                      <span className="stdFieldLabel">{text.cwd}</span>
+                      <input className="stdInput" aria-label={text.cwd} value={draft.cwd} onChange={(event) => setDraft({ ...draft, cwd: event.target.value })} />
+                    </div>
+                  </>
+                ) : (
+                  <div className="stdField wide">
+                    <span className="stdFieldLabel">{text.url}</span>
+                    <input className="stdInput" aria-label={text.url} value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} />
+                  </div>
+                )}
+                <div className="stdField">
+                  <span className="stdFieldLabel">{text.overrideTool}</span>
+                  <input className="stdInput" aria-label={text.overrideTool} value={draft.overrideTool} onChange={(event) => setDraft({ ...draft, overrideTool: event.target.value })} />
+                </div>
+                <div className="stdField">
+                  <span className="stdFieldLabel">{text.overrideRisk}</span>
+                  <AccordionSelect
+                    ariaLabel={text.overrideRisk}
+                    value={draft.overrideRisk}
+                    options={riskCategories.map((risk) => ({ value: risk, label: formatRisk(risk) }))}
+                    onChange={(value) => setDraft({ ...draft, overrideRisk: value as RiskCategory })}
+                  />
+                </div>
+              </div>
+              <div className={draft.enabled ? "stdToggleRow enabled" : "stdToggleRow"}>
+                <span>
+                  <strong>{text.enabled}</strong>
+                  <small>{text.enabledHint}</small>
+                </span>
                 <button className="switchControl" type="button" aria-label={text.enabled} aria-pressed={draft.enabled} onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}>
                   <span aria-hidden="true" />
                 </button>
-              </label>
+              </div>
             </div>
-            <div className="dialogActions">
-              <button className="textButton" type="button" onClick={() => setDialogOpen(false)}>
+            <div className="stdFooter">
+              <button className="stdCancelBtn" type="button" onClick={() => setDialogOpen(false)}>
                 {text.cancel}
               </button>
-              <button className="subtleButton" type="submit" disabled={!canSubmit}>
+              <button className="primaryInlineButton" type="submit" disabled={!canSubmit}>
                 {text.save}
               </button>
             </div>
@@ -231,6 +235,20 @@ export function McpPanel({
         </div>
       ) : null}
     </section>
+    <ConfirmDialog
+      open={confirmDeleteId !== null}
+      title={text.deleteTitle}
+      confirmLabel={text.deleteAction}
+      cancelLabel={text.cancel}
+      onCancel={() => setConfirmDeleteId(null)}
+      onConfirm={() => {
+        if (confirmDeleteId) onDelete(confirmDeleteId);
+        setConfirmDeleteId(null);
+      }}
+    >
+      <p>{text.deleteWarning}</p>
+    </ConfirmDialog>
+    </>
   );
 
   function startCreate() {
@@ -341,8 +359,12 @@ function getMcpCopy(language?: string | null) {
     url: "URL",
     overrideTool: zh ? "工具风险覆盖（可选）" : "Tool risk override (optional)",
     overrideRisk: zh ? "覆盖风险" : "Override risk",
-    enabled: zh ? "启用" : "Enabled",
+    enabled: zh ? "可供 Agent 使用" : "Available to agent",
+    enabledHint: zh ? "暂停后保留配置，但 Agent 不会发现或调用该服务器。" : "When paused, the configuration is kept but the agent will not discover or call this server.",
     cancel: zh ? "取消" : "Cancel",
-    save: zh ? "保存" : "Save"
+    save: zh ? "保存" : "Save",
+    deleteTitle: zh ? "删除服务器" : "Delete server",
+    deleteAction: zh ? "删除" : "Delete",
+    deleteWarning: zh ? "删除后该服务器的连接状态和自定义风险覆盖将一并清除。" : "Deleting removes the server connection state and any custom risk overrides."
   };
 }

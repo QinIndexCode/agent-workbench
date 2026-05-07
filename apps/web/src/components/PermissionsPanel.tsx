@@ -179,11 +179,17 @@ export function PermissionsPanel({
 
       {preferencesOnly ? (
         <>
-          <section className="preferencesMatrix">
-            <div className="panelHeader">
-              <h3>{text.preferencesTitle}</h3>
+          <div className="prefSection">
+            <div className="prefSectionHeader">
+              <span className="prefSectionIcon">
+                <SlidersHorizontal size={16} aria-hidden="true" />
+              </span>
+              <div>
+                <h3>{text.personalizeTitle}</h3>
+                <p>{text.personalizeSubtitle}</p>
+              </div>
             </div>
-            <div className="preferenceGrid">
+            <div className="settingRows cols2">
               <PreferenceSelect
                 label={text.language}
                 value={preferences?.language ?? "zh-CN"}
@@ -205,17 +211,6 @@ export function PermissionsPanel({
                 ]}
               />
               <PreferenceSelect
-                label={text.emojiStyle}
-                value={preferences?.emojiStyle ?? "auto"}
-                onChange={(value) => emitPreference({ emojiStyle: value as UserPreferences["emojiStyle"] })}
-                options={[
-                  ["auto", text.emojiStyleOptions.auto],
-                  ["minimal", text.emojiStyleOptions.minimal],
-                  ["expressive", text.emojiStyleOptions.expressive],
-                  ["never", text.emojiStyleOptions.never]
-                ]}
-              />
-              <PreferenceSelect
                 label={text.responseDetail}
                 value={preferences?.responseDetail ?? "normal"}
                 onChange={(value) => emitPreference({ responseDetail: value as UserPreferences["responseDetail"] })}
@@ -230,6 +225,30 @@ export function PermissionsPanel({
                 value={preferences?.agentRole ?? ""}
                 onChange={(value) => emitPreference({ agentRole: value })}
               />
+              <PreferenceInput
+                label={text.maxInjectedSkills}
+                type="number"
+                value={String(preferences?.maxInjectedSkills ?? 3)}
+                onChange={(value) => emitPreference({ maxInjectedSkills: Math.max(1, Number(value) || 1) })}
+              />
+              <div className="prefTogglesCell">
+                <PreferenceToggle label={text.showThinking} value={preferences?.showThinking ?? true} onChange={(value) => emitPreference({ showThinking: value })} />
+                <PreferenceToggle label={text.skillAutoInject} value={preferences?.skillAutoInject ?? true} onChange={(value) => emitPreference({ skillAutoInject: value })} />
+              </div>
+            </div>
+          </div>
+
+          <div className="prefSection">
+            <div className="prefSectionHeader">
+              <span className="prefSectionIcon warning">
+                <ShieldAlert size={16} aria-hidden="true" />
+              </span>
+              <div>
+                <h3>{text.behaviorTitle}</h3>
+                <p>{text.modeSubtitle}</p>
+              </div>
+            </div>
+            <div className="prefBehaviorList">
               <PreferenceSelect
                 label={text.autoApprove}
                 value={preferences?.autoApprove ?? "none"}
@@ -251,32 +270,10 @@ export function PermissionsPanel({
                   ["auto", text.mcpApprovalOptions.auto]
                 ]}
               />
-              <PreferenceInput
-                label={text.reflectionSchedule}
-                value={preferences?.reflectionSchedule ?? "02:00"}
-                onChange={(value) => emitPreference({ reflectionSchedule: value })}
-              />
-              <PreferenceInput
-                label={text.maxInjectedSkills}
-                type="number"
-                value={String(preferences?.maxInjectedSkills ?? 3)}
-                onChange={(value) => emitPreference({ maxInjectedSkills: Math.max(1, Number(value) || 1) })}
-              />
-            </div>
-          </section>
-
-          <section className="preferencesMatrix">
-            <div className="panelHeader">
-              <h3>{text.behaviorTitle}</h3>
-            </div>
-            <div className="toggleGrid">
-              <PreferenceToggle label={text.showThinking} value={preferences?.showThinking ?? true} onChange={(value) => emitPreference({ showThinking: value })} />
-              <PreferenceToggle label={text.reflectionEnabled} value={preferences?.reflectionEnabled ?? true} onChange={(value) => emitPreference({ reflectionEnabled: value })} />
-              <PreferenceToggle label={text.skillAutoInject} value={preferences?.skillAutoInject ?? true} onChange={(value) => emitPreference({ skillAutoInject: value })} />
               <PreferenceToggle label={text.sanitizeSensitiveData} value={preferences?.sanitizeSensitiveData ?? true} onChange={(value) => emitPreference({ sanitizeSensitiveData: value })} />
               <PreferenceToggle label={text.encryptStorage} value={preferences?.encryptStorage ?? false} onChange={(value) => emitPreference({ encryptStorage: value })} />
             </div>
-          </section>
+          </div>
         </>
       ) : null}
     </section>

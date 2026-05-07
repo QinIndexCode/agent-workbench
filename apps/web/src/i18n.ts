@@ -65,9 +65,10 @@ const copy = {
         providers: ["模型配置", "添加模型、管理本地密钥、预设厂商和当前使用模型"],
         permissions: ["权限", "全局风险授权、审批策略和 Agent 偏好"],
         mcp: ["MCP", "连接的工具服务器和已发现工具"],
+        integrations: ["集成", "Discord、飞书和外部消息入口"],
         scheduled: ["定时任务", "一次性或周期性触发 Agent 任务"],
         search: ["网络搜索", "配置 Agent 可选择使用的搜索 Provider"],
-        preferences: ["偏好", "语言、思考展示、反思和敏感数据处理"]
+        preferences: ["偏好", "语言、展示方式和 Agent 行为"]
       }
     },
     thread: {
@@ -77,13 +78,37 @@ const copy = {
       connect: "Connect",
       configureModel: "配置模型",
       heroTitle: "开启新任务",
+      heroTitleVariants: [
+        "开启新任务",
+        "你好，需要帮忙吗？",
+        "今天想做些什么？",
+        "让想法变成现实",
+        "开始创造，从这里出发",
+        "有什么可以帮你的？",
+        "一起搞定它吧",
+        "你的下一个任务是？",
+        "准备好开工了吗？",
+        "想法很多，从一个开始",
+        "说出你的需求",
+        "让 AI 为你工作",
+        "从想法到行动",
+        "今天打算完成什么？"
+      ],
       heroSubtitle: "描述你想解决的问题。SCC 会组装上下文、请求必要权限，并把执行证据清晰展示给你。",
       heroSubtitleVariants: [
         "描述你想解决的问题。SCC 会组装上下文、请求必要权限，并把执行证据清晰展示给你。",
         "写下你的目标，让 SCC 为你分析、规划、执行。",
         "从一句话开始，SCC 会帮你拆解任务并逐步完成。",
         "告诉 SCC 你想做什么，它会把复杂的事情变简单。",
-        "输入你的需求，SCC 将自动规划最佳执行路径。"
+        "输入你的需求，SCC 将自动规划最佳执行路径。",
+        "描述你遇到的问题，SCC 会找到最优解法。",
+        "一句话描述你的目标，其余的交给 SCC。",
+        "SCC 会理解你的意图，自动拆解并执行复杂任务。",
+        "用自然语言告诉它你要做什么，剩下的不用操心。",
+        "SCC 将读取上下文、分析依赖，为你生成完整方案。",
+        "从模糊的想法到精确的执行，只需一句话。",
+        "无论多复杂的任务，SCC 都能帮你分步完成。",
+        "说出你想实现的效果，SCC 来搞定技术细节。"
       ],
       suggestions: [
         {
@@ -172,14 +197,15 @@ const copy = {
       reason: "原因",
       noReason: "未记录原因",
       riskNote: "该授权会跨任务生效，可以随时撤销。",
-      destructiveNote: "高风险授权。开启后 destructive 工具不会再弹出审批，请只在完全信任当前环境时使用。",
+      destructiveNote: "高风险授权。授予后 destructive 工具不会再弹出审批，请只在完全信任当前环境时使用。",
       behaviorTitle: "审批策略",
       preferencesTitle: "Agent 偏好",
-      preferencesSubtitle: "这些设置影响界面语言、运行展示和学习策略。",
+      preferencesSubtitle: "这些设置影响语言、回答风格和 Agent 可见行为。",
+      personalizeTitle: "个性化设置",
+      personalizeSubtitle: "配置界面语言、回复风格和技能注入行为。",
       providerTitle: "模型 Provider",
       language: "界面与回复语言",
       agentTone: "Agent 语气",
-      emojiStyle: "Emoji 使用",
       agentRole: "Agent 角色",
       responseDetail: "回答详略",
       llmProvider: "LLM Provider",
@@ -192,15 +218,11 @@ const copy = {
       maxTokens: "最大上下文 token",
       autoApprove: "自动审批级别",
       showThinking: "展示思考内容",
-      reflectionEnabled: "启用自动反思",
-      reflectionSchedule: "反思时间",
       skillAutoInject: "自动注入 Skill 元数据",
       maxInjectedSkills: "最多注入 Skill 数",
       mcpApprovalMode: "MCP 审批模式",
       sanitizeSensitiveData: "清理敏感数据",
       encryptStorage: "加密本地存储",
-      on: "开启",
-      off: "关闭",
       autoApproveOptions: {
         none: "不自动审批",
         low: "低风险",
@@ -239,12 +261,6 @@ const copy = {
         balanced: "均衡",
         warm: "温和",
         formal: "正式"
-      },
-      emojiStyleOptions: {
-        auto: "自动",
-        minimal: "少量",
-        expressive: "更活泼",
-        never: "不用"
       },
       responseDetailOptions: {
         brief: "简短",
@@ -315,9 +331,10 @@ const copy = {
         providers: ["Model configuration", "Add models, manage local keys, presets, and the active model"],
         permissions: ["Permissions", "Global risk grants, approval policy, and agent preferences"],
         mcp: ["MCP", "Connected tool servers and discovered tools"],
+        integrations: ["Integrations", "Discord, Feishu, and external message entrypoints"],
         scheduled: ["Scheduled tasks", "One-shot or recurring agent tasks"],
         search: ["Web search", "Configure search providers the agent can choose"],
-        preferences: ["Preferences", "Language, thinking display, reflection, and sensitive data handling"]
+        preferences: ["Preferences", "Language, display, and agent behavior"]
       }
     },
     thread: {
@@ -327,13 +344,36 @@ const copy = {
       connect: "Connect",
       configureModel: "Configure model",
       heroTitle: "Start a new task",
+      heroTitleVariants: [
+        "Start a new task",
+        "What can I help you build?",
+        "Ready to bring ideas to life?",
+        "Let's make something great",
+        "What would you like to accomplish?",
+        "What's on your mind?",
+        "Let's get things done",
+        "What's the next mission?",
+        "Ready to roll up your sleeves?",
+        "So many ideas, pick one",
+        "Tell me what you need",
+        "Let AI do the heavy lifting",
+        "From idea to reality",
+        "What shall we build today?"
+      ],
       heroSubtitle: "Describe the problem you want solved. SCC assembles context, asks for the right permissions, and keeps evidence visible.",
       heroSubtitleVariants: [
         "Describe the problem you want solved. SCC assembles context, asks for the right permissions, and keeps evidence visible.",
         "Write your goal and let SCC analyze, plan, and execute for you.",
         "Start with one sentence — SCC will break it down and handle the rest.",
         "Tell SCC what you need. It makes complex tasks simple.",
-        "Type your request and SCC will find the best path to get it done."
+        "Type your request and SCC will find the best path to get it done.",
+        "Describe what's bothering you. SCC will find the best solution.",
+        "One sentence about your goal — SCC takes care of the rest.",
+        "SCC will read your context, analyze dependencies, and generate a complete plan.",
+        "Just say it in plain language. SCC handles the technical details.",
+        "From a vague idea to precise execution, it all starts with one sentence.",
+        "No matter how complex, SCC breaks it down and tackles it step by step.",
+        "Tell it what you want to achieve — SCC will figure out how."
       ],
       suggestions: [
         {
@@ -425,11 +465,12 @@ const copy = {
       destructiveNote: "High-risk grant. Destructive tools will stop prompting while it is active.",
       behaviorTitle: "Approval policy",
       preferencesTitle: "Agent preferences",
-      preferencesSubtitle: "These settings control language, runtime display, and learning behavior.",
+      preferencesSubtitle: "These settings control language, response style, and visible agent behavior.",
+      personalizeTitle: "Personalization",
+      personalizeSubtitle: "Configure UI language, reply style, and skill injection behavior.",
       providerTitle: "Model provider",
       language: "UI and response language",
       agentTone: "Agent tone",
-      emojiStyle: "Emoji use",
       agentRole: "Agent role",
       responseDetail: "Response detail",
       llmProvider: "LLM provider",
@@ -442,15 +483,11 @@ const copy = {
       maxTokens: "Max context tokens",
       autoApprove: "Auto approval level",
       showThinking: "Show thinking",
-      reflectionEnabled: "Enable reflection",
-      reflectionSchedule: "Reflection time",
       skillAutoInject: "Auto-inject skill metadata",
       maxInjectedSkills: "Max injected skills",
       mcpApprovalMode: "MCP approval mode",
       sanitizeSensitiveData: "Sanitize sensitive data",
       encryptStorage: "Encrypt local storage",
-      on: "On",
-      off: "Off",
       autoApproveOptions: {
         none: "None",
         low: "Low risk",
@@ -489,12 +526,6 @@ const copy = {
         balanced: "Balanced",
         warm: "Warm",
         formal: "Formal"
-      },
-      emojiStyleOptions: {
-        auto: "Auto",
-        minimal: "Minimal",
-        expressive: "Expressive",
-        never: "Never"
       },
       responseDetailOptions: {
         brief: "Brief",

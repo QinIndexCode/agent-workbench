@@ -95,13 +95,13 @@ test("manages model providers and MCP servers from settings", async ({ page }, t
   await providerDialog.getByRole("button", { name: "Save" }).click();
   const mimoRow = page.locator(".providerRow").filter({ hasText: "Mimo" }).first();
   await expect(mimoRow).toBeVisible();
-  await expect(mimoRow).toContainText("mimo");
+  await expect(mimoRow).toContainText(/mimo/i);
   await expect(mimoRow).toContainText("••••");
 
   await mimoRow.getByLabel("Edit model").click();
   const editDialog = page.locator('form[aria-label="Edit model"]');
   await expect(editDialog).toBeVisible();
-  await expect(editDialog.getByLabel("Display name")).toHaveValue("Mimo");
+  await expect(editDialog.getByLabel("Display name")).toHaveValue("Xiaomi MiMo");
   await editDialog.getByRole("button", { name: "Cancel" }).click();
 
   await page.getByRole("button", { name: "MCP" }).click();
@@ -119,6 +119,7 @@ test("manages model providers and MCP servers from settings", async ({ page }, t
   await expect(mcpRow).toContainText("streamable http");
 
   await mcpRow.getByLabel(`Delete E2E MCP ${suffix}`).click();
+  await page.locator(".confirmDialog").getByRole("button", { name: "Delete" }).click();
   await expect(mcpRow).toHaveCount(0);
 
   await page.getByRole("button", { name: "Model configuration" }).click();

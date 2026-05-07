@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { KnowledgeCreateRequest, KnowledgeItem, KnowledgePatchRequest, KnowledgeUploadRequest } from "@scc/shared";
-import { Edit3, FileText, FileUp, Plus, Save, Search, Trash2, X } from "lucide-react";
+import type { KnowledgeCreateRequest, KnowledgeItem, KnowledgePatchRequest, KnowledgeSearchRequest, KnowledgeSearchResult, KnowledgeUploadRequest } from "@scc/shared";
+import { Edit3, FileText, FileUp, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { MarkdownText } from "./MarkdownText.js";
 
@@ -18,6 +18,8 @@ export function KnowledgePanel({
   query = "",
   onCreate,
   onDelete,
+  onReindex,
+  onSearch,
   onUpdate,
   onUpload
 }: {
@@ -26,6 +28,8 @@ export function KnowledgePanel({
   query?: string;
   onCreate: (input: KnowledgeCreateRequest) => Promise<void> | void;
   onDelete: (id: string) => Promise<void> | void;
+  onReindex?: (id: string) => Promise<void> | void;
+  onSearch?: (input: KnowledgeSearchRequest) => Promise<KnowledgeSearchResult[]>;
   onUpdate: (id: string, input: KnowledgePatchRequest) => Promise<void> | void;
   onUpload: (input: KnowledgeUploadRequest) => Promise<void> | void;
 }) {
@@ -36,6 +40,8 @@ export function KnowledgePanel({
   const [page, setPage] = useState(0);
   const [modalMode, setModalMode] = useState<"create" | "edit" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<KnowledgeItem | null>(null);
+  const [searchResults, setSearchResults] = useState<KnowledgeSearchResult[]>([]);
+  const [searchBusy, setSearchBusy] = useState(false);
   const selected = selectedId ? items.find((item) => item.id === selectedId) ?? null : null;
   const [draft, setDraft] = useState<KnowledgeDraft>(selected ? draftFromItem(selected) : emptyDraft());
   const searchText = `${query} ${localQuery}`.trim().toLowerCase();
@@ -99,7 +105,7 @@ export function KnowledgePanel({
                 <button className="knowledgeRowMain" type="button" onClick={() => setSelectedId(item.id)}>
                   <strong>{item.title}</strong>
                   <span>{item.kind === "file" ? item.fileName ?? text.file : text.memory}</span>
-                  <small>{item.tags.slice(0, 4).join(", ") || text.noTags}</small>
+                  <small>{item.indexStatus} · {item.chunkCount} chunks · {item.tags.slice(0, 3).join(", ") || text.noTags}</small>
                 </button>
                 <div className="rowIconActions">
                   <button aria-label={`${text.edit} ${item.title}`} className="iconButton" type="button" onClick={() => openEdit(item)}>
@@ -124,6 +130,11 @@ export function KnowledgePanel({
                   <p>{selected.kind === "file" ? selected.fileName ?? text.file : text.memory}</p>
                 </div>
                 <div className="rowIconActions">
+                  {onReindex ? (
+                    <button aria-label={`${text.reindex} ${selected.title}`} className="iconButton" type="button" onClick={() => void onReindex(selected.id)}>
+                      <RefreshCw size={15} />
+                    </button>
+                  ) : null}
                   <button aria-label={`${text.edit} ${selected.title}`} className="iconButton" type="button" onClick={() => openEdit(selected)}>
                     <Edit3 size={15} />
                   </button>
@@ -137,7 +148,38 @@ export function KnowledgePanel({
                 <div><dt>{text.tags}</dt><dd>{selected.tags.join(", ") || text.noTags}</dd></div>
                 <div><dt>{text.updated}</dt><dd>{new Date(selected.updatedAt).toLocaleString()}</dd></div>
                 <div><dt>{text.size}</dt><dd>{selected.size ? `${selected.size} B` : text.none}</dd></div>
+                <div><dt>{text.index}</dt><dd>{selected.indexStatus} · {selected.chunkCount}</dd></div>
               </dl>
+              {onSearch ? (
+                <section className="skillPreview">
+                  <h3>{text.searchTest}</h3>
+                  <form
+                    className="inlineSearchForm"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void runKnowledgeSearch();
+                    }}
+                  >
+                    <input aria-label={text.searchTest} value={localQuery} onChange={(event) => setLocalQuery(event.target.value)} placeholder={text.searchPlaceholder} />
+                    <button className="subtleButton" disabled={searchBusy || !localQuery.trim()} type="submit">
+                      <Search size={14} /> {text.searchAction}
+                    </button>
+                  </form>
+                  {searchResults.length > 0 ? (
+                    <div className="compactList">
+                      {searchResults.map((result) => (
+                        <article className="providerRow" key={result.chunk.id}>
+                          <span className="providerIcon"><FileText size={15} /></span>
+                          <div>
+                            <strong>{result.item.title}</strong>
+                            <small>{Math.round(result.score * 100)}% · {result.chunk.content.slice(0, 160)}</small>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
               <section className="skillPreview">
                 <h3>{text.preview}</h3>
                 <MarkdownText content={selected.content || text.noPreview} />
@@ -240,6 +282,16 @@ export function KnowledgePanel({
     }
     if (fileRef.current) fileRef.current.value = "";
   }
+
+  async function runKnowledgeSearch() {
+    if (!onSearch || !localQuery.trim()) return;
+    setSearchBusy(true);
+    try {
+      setSearchResults(await onSearch({ query: localQuery.trim(), projectId: "default", limit: 5 }));
+    } finally {
+      setSearchBusy(false);
+    }
+  }
 }
 
 function LibraryEmpty({ text }: { text: string }) {
@@ -325,6 +377,11 @@ function getKnowledgeCopy(language?: string | null) {
     preview: zh ? "预览" : "Preview",
     noPreview: zh ? "还没有内容。" : "No content yet.",
     updated: zh ? "更新时间" : "Updated",
+    index: zh ? "索引" : "Index",
+    reindex: zh ? "重建索引" : "Reindex",
+    searchTest: zh ? "检索测试" : "Search test",
+    searchPlaceholder: zh ? "输入要查找的知识..." : "Search stored knowledge...",
+    searchAction: zh ? "检索" : "Search",
     size: zh ? "大小" : "Size",
     none: zh ? "无" : "None",
     pageLabel: (page: number, total: number) => zh ? `第 ${page} / ${total} 页` : `Page ${page} / ${total}`

@@ -1021,33 +1021,61 @@
   pointer-events: none;
 }
 
-.sidebarCollapsedRail {
+.sidebarToggleButton {
   position: absolute;
   top: 20px;
-  right: 0;
+  right: 20px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease, top 350ms ease-in-out, right 350ms ease-in-out, transform 350ms ease-in-out;
+}
+
+.sidebarToggleButton:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.sidebar.collapsed .sidebarToggleButton {
+  top: 50%;
+  right: 50%;
+  transform: translate(50%, -50%);
+}
+
+.sidebarCollapsedRail {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
-  padding: 0 10px 0 0;
-  width: 52px;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 0;
   opacity: 0;
   pointer-events: none;
   visibility: hidden;
   z-index: 2;
+  transition: opacity 180ms ease, visibility 0ms 180ms;
 }
 
 .sidebar.collapsed .sidebarCollapsedRail {
-  position: relative;
-  top: auto;
-  right: auto;
-  width: 100%;
-  padding: 10px 0;
-  align-items: center;
   opacity: 1;
   pointer-events: auto;
   visibility: visible;
-  transition: opacity 180ms ease;
+  transition: opacity 180ms ease 150ms, visibility 0ms 150ms;
 }
 
 .sidebarCollapsedIcon {
@@ -1071,45 +1099,7 @@
   border-color: var(--border);
 }
 
-.sidebarCollapseButton {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  margin-left: auto;
-  color: var(--muted);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
-}
 
-.sidebarCollapseButton > svg {
-  transition: transform 260ms ease;
-}
-
-.sidebar.collapsed .sidebarCollapseButton > svg {
-  transform: rotate(180deg);
-}
-
-.sidebarCollapseButton:hover {
-  color: var(--text);
-  background: var(--surface-2);
-  border-color: var(--border);
-}
-
-@keyframes sidebarIconSpin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(180deg); }
-}
-
-.sidebarCollapseButton > svg.spin {
-  animation: sidebarIconSpin 260ms ease forwards;
-}
 
 .sidebar.collapsed {
   width: 52px;
