@@ -1,7 +1,11 @@
 import type { ConversationSummary, SkillRecord, TaskAttachment, TaskDetail, TaskEvent, ToolCall, UserPreferences } from "@scc/shared";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { findRelevantSkills } from "./experience.js";
 import { createId, nowIso } from "./ids.js";
 import type { WorkbenchStore } from "./store.js";
+import { findWorkspaceRoot } from "./workspace-root.js";
 
 export interface TokenBudget {
   maxTotal: number;
@@ -40,6 +44,12 @@ export class ContextAssembler {
     const systemLayer = this.buildSystemLayer(preferences);
     layers.push(systemLayer);
     usedTokens += estimateTokens(systemLayer);
+
+    const memoryFileLayer = await this.buildMemoryFileLayer(task);
+    if (memoryFileLayer) {
+      layers.push(memoryFileLayer);
+      usedTokens += estimateTokens(memoryFileLayer);
+    }
 
     const loadedSkills = this.loadedSkillPrompt(task.id);
     if (loadedSkills) {
@@ -93,10 +103,18 @@ export class ContextAssembler {
     layers.push(buildHistoryLayer(task, Math.max(160, remaining), tracker, summary?.rangeEndEventId));
 
     const nonEmpty = layers.filter((layer) => layer.trim().length > 0);
-    const systemPrompt = nonEmpty.slice(0, 2).join("\n\n");
-    const rawInput = nonEmpty.slice(2).join("\n\n");
+    const systemPrompt = nonEmpty[0] ?? "";
+    const rawInput = nonEmpty.slice(1).join("\n\n");
     const inputBudget = Math.max(120, tokenBudget.maxTotal - tokenBudget.reservedForResponse - estimateTokens(systemPrompt));
-    const input = trimMiddleToTokenBudget(rawInput, inputBudget);
+    const protectedLayers = [
+      [
+        "## Current Working Folder",
+        `Tool root: ${task.workRoot || "(default workbench root)"}`,
+        `Task folder ID: ${task.folderId || "default"}`
+      ].join("\n"),
+      ...(summary ? [`## Conversation Summary\n${summary.summary}`] : [])
+    ];
+    const input = trimMiddleToTokenBudget(rawInput, inputBudget, protectedLayers);
     return {
       systemPrompt,
       input,
@@ -211,11 +229,26 @@ export class ContextAssembler {
     return lines.join("\n");
   }
 
+  private async buildMemoryFileLayer(task: TaskDetail): Promise<string> {
+    const baseDir = memoryBaseDir();
+    const user = await readMemoryFile(resolve(baseDir, "USER.md"), 6000);
+    const project = task.workRoot
+      ? await readMemoryFile(resolve(baseDir, "projects", memoryPathHash(task.workRoot), "MEMORY.md"), 12000)
+      : "";
+    if (!user && !project) return "";
+    return [
+      "## Stable Memory Files",
+      "These are durable, user-managed memory notes. Treat them as preferences and project context, not proof of current file contents.",
+      user ? `### USER.md\n${user}` : "",
+      project ? `### MEMORY.md\n${project}` : ""
+    ].filter(Boolean).join("\n\n");
+  }
+
   private buildWorkingFolderLayer(task: TaskDetail): string {
     return [
       "## Current Working Folder",
-      `Task folder ID: ${task.folderId || "default"}`,
       `Tool root: ${task.workRoot || "(default workbench root)"}`,
+      `Task folder ID: ${task.folderId || "default"}`,
       "Relative file paths and command cwd values are resolved inside this root. Do not assume files outside it are visible."
     ].join("\n");
   }
@@ -525,19 +558,38 @@ function truncateToTokenBudget(text: string, maxTokens: number): string {
   return `${text.slice(0, index)}\n... (latest event truncated to fit context)`;
 }
 
-function trimMiddleToTokenBudget(text: string, maxTokens: number): string {
+function trimMiddleToTokenBudget(text: string, maxTokens: number, protectedBlocks: string[] = []): string {
   if (!text || estimateTokens(text) <= maxTokens) return text;
   const notice = [
     "## Context Budget Notice",
     "Older context was compacted or trimmed to fit the active model window. Prefer fresh tool evidence when exact details matter.",
     ""
   ].join("\n");
-  const contentBudget = Math.max(20, maxTokens - estimateTokens(notice));
+  const usefulProtected = protectedBlocks
+    .map((block) => block.trim())
+    .filter((block, index, all) => block && text.includes(block) && all.indexOf(block) === index);
+  let remainingText = text;
+  for (const block of usefulProtected) {
+    remainingText = remainingText.replace(block, "");
+  }
+  const protectedBudget = usefulProtected.length > 0 ? Math.max(48, Math.floor(maxTokens * 0.34)) : 0;
+  const protectedBlockBudget = usefulProtected.length > 0 ? Math.max(24, Math.floor(protectedBudget / usefulProtected.length)) : 0;
+  const protectedText = usefulProtected.map((block) => {
+    if (block.includes("Tool root:")) return block;
+    return truncateToTokenBudget(block, protectedBlockBudget);
+  }).join("\n\n");
+  const contentBudget = Math.max(20, maxTokens - estimateTokens(notice) - estimateTokens(protectedText));
   const headBudget = Math.max(10, Math.floor(contentBudget * 0.58));
   const tailBudget = Math.max(10, contentBudget - headBudget);
-  const head = trimHeadToTokenBudget(text, headBudget);
-  const tail = trimTailToTokenBudget(text, tailBudget);
-  return `${notice}${head}\n\n... (middle context compacted to fit model budget) ...\n\n${tail}`;
+  const head = trimHeadToTokenBudget(remainingText.trim(), headBudget);
+  const tail = trimTailToTokenBudget(remainingText.trim(), tailBudget);
+  return [
+    notice,
+    head,
+    protectedText,
+    "... (middle context compacted to fit model budget) ...",
+    tail
+  ].filter((part) => part.trim().length > 0).join("\n\n");
 }
 
 function trimHeadToTokenBudget(text: string, maxTokens: number): string {
@@ -652,4 +704,17 @@ function hash(content: string): string {
     value |= 0;
   }
   return value.toString(16);
+}
+
+async function readMemoryFile(path: string, maxChars: number): Promise<string> {
+  const content = await readFile(path, "utf8").catch(() => "");
+  return content.trim().slice(0, maxChars);
+}
+
+function memoryPathHash(path: string): string {
+  return createHash("sha256").update(resolve(path)).digest("hex").slice(0, 20);
+}
+
+function memoryBaseDir(): string {
+  return resolve(process.env["SCC_MEMORY_DIR"]?.trim() || resolve(findWorkspaceRoot(), "data", "memory"));
 }

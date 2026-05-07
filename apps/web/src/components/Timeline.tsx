@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ApprovalDecision, TaskDetail, TaskEvent, ToolApproval } from "@scc/shared";
+import { ArrowDown, BookOpen, ChevronDown, Copy, Eye, FileText, Globe2, List as ListIcon, PencilLine, Plug, Search, Terminal, Wrench } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import { MarkdownText } from "./MarkdownText.js";
@@ -11,35 +12,37 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
   "assistant_message",
   "thinking_delta",
   "guidance_pending",
-  "guidance_consumed",
   "approval_pending",
-  "approval_resolved",
-  "approval_auto_granted",
   "tool_result",
   "conversation_summary_created",
   "context_overflow_recovered",
   "task_checkpoint_created",
   "task_rollback_completed",
   "task_rollback_failed",
-  "plan_created",
-  "plan_step_started",
-  "plan_step_completed",
   "plan_step_blocked",
   "plan_revised",
   "web_search_result"
 ]);
 
+const FOLLOW_BOTTOM_DISTANCE = 120;
+
 export function Timeline({
   language,
   task,
-  onApprovalDecision
+  onApprovalDecision,
+  onRevertLatestTurn
 }: {
   language?: string | null;
   task: TaskDetail | null;
   onApprovalDecision: (approvalId: string, decision: ApprovalDecision) => void;
+  onRevertLatestTurn?: (() => Promise<void> | void) | undefined;
 }) {
   const timelineRef = useRef<HTMLDivElement>(null);
+  const followBottomRef = useRef(true);
+  const scrollFrameRef = useRef<number | null>(null);
+  const taskIdRef = useRef<string | null>(null);
   const [atBottom, setAtBottom] = useState(true);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const items = useMemo(
     () =>
       buildTimelineItems(
@@ -53,21 +56,82 @@ export function Timeline({
     [task]
   );
   const lastEventId = task?.events[task.events.length - 1]?.id ?? "empty";
+  const timelineVersion = useMemo(() => getTimelineVersion(items), [items]);
+  const latestUserEventId = useMemo(() => {
+    const latest = [...(task?.events ?? [])].reverse().find((event) => event.type === "user_message" && !event.reverted);
+    return latest?.id ?? null;
+  }, [task?.events]);
+  const latestAgentItemKey = useMemo(() => {
+    const latest = [...items].reverse().find(isAgentMessageItem);
+    return latest?.key ?? null;
+  }, [items]);
 
   useEffect(() => {
+    followBottomRef.current = true;
     setAtBottom(true);
   }, [task?.id]);
+
+  const updateBottomState = useCallback((node: HTMLDivElement) => {
+    const isAtBottom = getDistanceFromBottom(node) <= FOLLOW_BOTTOM_DISTANCE;
+    if (!isAtBottom && scrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollFrameRef.current);
+      scrollFrameRef.current = null;
+    }
+    followBottomRef.current = isAtBottom;
+    setAtBottom(isAtBottom);
+    return isAtBottom;
+  }, []);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    const node = timelineRef.current;
+    if (!node) return;
+    if (scrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollFrameRef.current);
+      scrollFrameRef.current = null;
+    }
+    const apply = () => {
+      scrollElementTo(node, node.scrollHeight, behavior);
+      if (behavior === "auto") node.scrollTop = node.scrollHeight;
+      setAtBottom(true);
+    };
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      apply();
+      scrollFrameRef.current = window.requestAnimationFrame(() => {
+        node.scrollTop = node.scrollHeight;
+        scrollFrameRef.current = null;
+      });
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    const node = timelineRef.current;
+    if (!node) return;
+    const currentTaskId = task?.id ?? null;
+    const taskChanged = taskIdRef.current !== currentTaskId;
+    if (taskChanged) {
+      taskIdRef.current = currentTaskId;
+      followBottomRef.current = true;
+    }
+    if (followBottomRef.current) {
+      scrollToBottom("auto");
+    }
+  }, [task?.id, lastEventId, timelineVersion, scrollToBottom]);
 
   useEffect(() => {
     const node = timelineRef.current;
     if (!node) return;
-    if (!atBottom && task?.id === node.dataset["taskId"]) return;
-    if (typeof node.scrollTo === "function") {
-      node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
-    } else {
-      node.scrollTop = node.scrollHeight;
-    }
-  }, [task?.id, lastEventId, items.length]);
+    const observer = new MutationObserver(() => {
+      if (followBottomRef.current) scrollToBottom("auto");
+    });
+    observer.observe(node, { characterData: true, childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [task?.id, scrollToBottom]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+    };
+  }, []);
 
   if (!task) return <div className="empty">{getUiCopy(language).thread.startGoal}</div>;
 
@@ -78,17 +142,40 @@ export function Timeline({
         data-task-id={task.id}
         ref={timelineRef}
         onScroll={(event) => {
-          const node = event.currentTarget;
-          setAtBottom(node.scrollHeight - node.scrollTop - node.clientHeight < 120);
+          updateBottomState(event.currentTarget);
         }}
       >
         {items.map((item) => (
-          <TimelineEvent item={item} key={item.key} approvals={task.approvals} language={language ?? null} onApprovalDecision={onApprovalDecision} />
+          <TimelineEvent
+            item={item}
+            key={item.key}
+            approvals={task.approvals}
+            copied={copiedKey === item.key}
+            alwaysShowActions={item.key === latestAgentItemKey}
+            language={language ?? null}
+            canRevert={item.kind === "event" && item.event.id === latestUserEventId && Boolean(onRevertLatestTurn)}
+            onApprovalDecision={onApprovalDecision}
+            onCopy={(text) => {
+              void copyText(text);
+              setCopiedKey(item.key);
+              window.setTimeout(() => setCopiedKey((current) => (current === item.key ? null : current)), 1400);
+            }}
+            onRevertLatestTurn={onRevertLatestTurn}
+          />
         ))}
       </div>
       {!atBottom ? (
-        <button className="jumpToBottom" type="button" onClick={() => timelineRef.current?.scrollTo({ top: timelineRef.current.scrollHeight, behavior: "smooth" })}>
-          {language === "zh-CN" ? "跳到底部" : "Jump to latest"}
+        <button
+          className="jumpToBottom"
+          type="button"
+          aria-label={language === "zh-CN" ? "跳到底部" : "Jump to latest"}
+          onClick={() => {
+            followBottomRef.current = true;
+            setAtBottom(true);
+            scrollToBottom("smooth");
+          }}
+        >
+          <ArrowDown size={20} />
         </button>
       ) : null}
     </div>
@@ -99,49 +186,114 @@ type TimelineItem =
   | { key: string; kind: "event"; event: TaskEvent }
   | { key: string; kind: "stream"; type: "assistant_delta" | "thinking_delta"; streamId: string; summary: string };
 
+function isAgentMessageItem(item: TimelineItem): boolean {
+  if (item.kind === "stream") return item.type === "assistant_delta";
+  return item.event.type === "assistant_message";
+}
+
+function getDistanceFromBottom(node: HTMLDivElement): number {
+  return Math.max(0, node.scrollHeight - node.scrollTop - node.clientHeight);
+}
+
+function scrollElementTo(node: HTMLDivElement, top: number, behavior: ScrollBehavior): void {
+  if (typeof node.scrollTo === "function") {
+    node.scrollTo({ top, behavior });
+    return;
+  }
+  node.scrollTop = top;
+}
+
+function getTimelineVersion(items: TimelineItem[]): string {
+  return items
+    .slice(-8)
+    .map((item) => {
+      if (item.kind === "stream") return `${item.key}:${item.summary.length}`;
+      const output = typeof item.event.payload["output"] === "string" ? String(item.event.payload["output"]).length : 0;
+      return `${item.key}:${item.event.reverted ? "r" : "a"}:${item.event.summary.length}:${output}`;
+    })
+    .join("|");
+}
+
 function TimelineEvent({
   item,
   approvals,
+  alwaysShowActions,
+  canRevert,
+  copied,
   language,
-  onApprovalDecision
+  onApprovalDecision,
+  onCopy,
+  onRevertLatestTurn
 }: {
   item: TimelineItem;
   approvals: ToolApproval[];
-  language?: string | null;
+  alwaysShowActions: boolean;
+  canRevert: boolean;
+  copied: boolean;
+  language?: string | null | undefined;
   onApprovalDecision: (approvalId: string, decision: ApprovalDecision) => void;
+  onCopy: (text: string) => void;
+  onRevertLatestTurn?: (() => Promise<void> | void) | undefined;
 }) {
+  const [thinkingOpen, setThinkingOpen] = useState(false);
+  const [toolOpen, setToolOpen] = useState(false);
   const zh = language === "zh-CN";
   if (item.kind === "stream") {
     if (item.type === "thinking_delta") {
       return (
         <article className="event thinking_delta">
-          <details>
-            <summary>{zh ? "思考" : "Thinking"}</summary>
-            <MarkdownText content={item.summary} />
-          </details>
+          <div className={thinkingOpen ? "thinkingDetails open" : "thinkingDetails"}>
+            <button
+              aria-expanded={thinkingOpen}
+              className="thinkingSummary"
+              onClick={() => setThinkingOpen((open) => !open)}
+              type="button"
+            >
+              <span className="thinkingLabel">{zh ? "思考" : "Thinking"}</span>
+              <span className="thinkingPreview">{compactInline(item.summary)}</span>
+              <ChevronDown className="thinkingChevron" size={13} />
+            </button>
+            <div className="thinkingExpandedActions" aria-hidden={!thinkingOpen}>
+              <button
+                aria-label={zh ? "复制思考内容" : "Copy thinking"}
+                disabled={!thinkingOpen}
+                title={zh ? "复制思考内容" : "Copy thinking"}
+                type="button"
+                onClick={() => onCopy(item.summary)}
+              >
+                <Copy size={14} />
+              </button>
+              {copied ? <span>{zh ? "已复制" : "Copied"}</span> : null}
+            </div>
+            <div className="thinkingBodyShell">
+              <div className="thinkingBody">
+                <MarkdownText content={item.summary} />
+              </div>
+            </div>
+          </div>
         </article>
       );
     }
     return (
       <article className="event assistant_delta" aria-live="polite">
-        <small>{zh ? "assistant 流式输出" : "assistant streaming"}</small>
+        <MessageActions alwaysShow={alwaysShowActions} copied={copied} language={language} onCopy={() => onCopy(item.summary)} />
         <MarkdownText content={item.summary} />
       </article>
     );
   }
 
   const event = item.event;
-  if (event.type === "approval_resolved" || event.type === "guidance_consumed" || event.type === "approval_auto_granted") {
+  if (event.reverted) {
     return (
-      <article className={`event note ${event.type}`}>
-        <span>{event.summary}</span>
+      <article className={`event note reverted ${event.type}`}>
+        <span>{zh ? "此轮已撤回" : "This turn was reverted"}</span>
       </article>
     );
   }
-
   if (event.type === "attachment_added") {
     return (
       <article className="event attachment_added">
+        <MessageActions alwaysShow={alwaysShowActions} copied={copied} language={language} onCopy={() => onCopy(event.summary)} />
         <small>{zh ? "附件" : "attachment"}</small>
         <MarkdownText content={`${event.summary}\n\n${formatBytes(Number(event.payload["size"] ?? 0))} · ${String(event.payload["kind"] ?? "file")}`} />
       </article>
@@ -190,36 +342,142 @@ function TimelineEvent({
     const parsed = parseToolOutput(output);
     const toolName = String(event.payload["toolName"] ?? "tool");
     const ok = Boolean(event.payload["ok"] ?? false);
+    const visibleOutput = parsed.display.trim() || parsed.summary || parsed.preview || (zh ? "没有可展示的工具返回内容。" : "No visible tool output.");
     return (
       <article className="event tool_result">
-        <small>{ok ? (zh ? "工具结果" : "tool result") : (zh ? "工具错误" : "tool error")} · {toolName}</small>
-        <MarkdownText content={parsed.summary || event.summary} />
-        {parsed.citations.length > 0 ? (
-          <div className="citationList">
-            {parsed.citations.map((citation) => (
-              <span className="citationChip" key={citation.key} title={citation.source ?? citation.excerpt}>
-                {citation.title}{citation.heading ? ` · ${citation.heading}` : ""}
-              </span>
-            ))}
-          </div>
-        ) : null}
-        {parsed.rawOutputRef ? <code className="rawRef">{parsed.rawOutputRef}</code> : null}
-        <details className="toolOutput">
-          <summary>{zh ? "查看原始输出" : "View raw output"}</summary>
-          <button className="copyOutputButton" onClick={() => void navigator.clipboard?.writeText(output)} type="button">
-            {zh ? "复制原始输出" : "Copy raw"}
+        <div className={`${ok ? "toolResultDetails" : "toolResultDetails failed"}${toolOpen ? " open" : ""}`}>
+          <button
+            aria-expanded={toolOpen}
+            className="toolResultSummary"
+            onClick={() => setToolOpen((open) => !open)}
+            title={toolName}
+            type="button"
+          >
+            {renderToolIcon(toolName)}
+            <span>{formatToolLabel(toolName, event.payload)}</span>
+            <ChevronDown className="toolResultChevron" size={13} />
           </button>
-          <pre>{parsed.display.slice(0, 8000)}</pre>
-        </details>
+          <div className="toolResultBodyShell">
+            <div className="toolResultBody">
+              <button
+                aria-label={zh ? "复制工具返回" : "Copy tool output"}
+                className="toolResultCopyButton"
+                onClick={() => onCopy(visibleOutput)}
+                title={zh ? "复制工具返回" : "Copy tool output"}
+                type="button"
+              >
+                <Copy size={14} />
+              </button>
+              {parsed.summary ? <MarkdownText content={parsed.summary} /> : parsed.preview ? <pre className="toolInlineOutput">{parsed.preview}</pre> : null}
+              {parsed.citations.length > 0 ? (
+                <div className="citationList">
+                  {parsed.citations.map((citation) => (
+                    <span className="citationChip" key={citation.key} title={citation.source ?? citation.excerpt}>
+                      {citation.title}{citation.heading ? ` · ${citation.heading}` : ""}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {parsed.rawOutputRef ? <code className="rawRef">{parsed.rawOutputRef}</code> : null}
+              <pre className="toolResultRaw">{visibleOutput.slice(0, 8000)}</pre>
+              {copied ? <span className="toolCopiedHint">{zh ? "已复制" : "Copied"}</span> : null}
+            </div>
+          </div>
+        </div>
       </article>
     );
   }
 
   return (
     <article className={`event ${event.type}`}>
-      <small>{event.type.replaceAll("_", " ")}</small>
-      <MarkdownText content={event.summary} />
+      <MessageActions
+        alwaysShow={alwaysShowActions}
+        copied={copied}
+        language={language}
+        onCopy={() => onCopy(formatVisibleEventSummary(event, language))}
+        onRevert={canRevert ? () => void onRevertLatestTurn?.() : undefined}
+      />
+      <MarkdownText content={formatVisibleEventSummary(event, language)} />
     </article>
+  );
+}
+
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Browser automation and some embedded contexts can deny clipboard writes.
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
+}
+
+function formatVisibleEventSummary(event: TaskEvent, language?: string | null | undefined): string {
+  const zh = language === "zh-CN";
+  const summary = stripPlaceholderToolEvidence(event.summary).trim();
+  if (event.type === "assistant_message" && /^Model provider failed:\s*Connection error\.?$/i.test(summary)) {
+    return zh
+      ? "模型服务连接失败。请检查模型配置、Base URL、API Key 或网络状态，然后重试。"
+      : "The model service could not be reached. Check the model configuration, Base URL, API key, or network, then retry.";
+  }
+  if (event.type === "assistant_message" && /^Model provider failed:/i.test(summary)) {
+    return zh
+      ? summary.replace(/^Model provider failed:\s*/i, "模型服务请求失败：")
+      : summary;
+  }
+  return summary;
+}
+
+function stripPlaceholderToolEvidence(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .filter((line) => !isPlaceholderToolSummary(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function compactInline(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function MessageActions({
+  alwaysShow,
+  copied,
+  language,
+  onCopy,
+  onRevert
+}: {
+  alwaysShow: boolean;
+  copied: boolean;
+  language?: string | null | undefined;
+  onCopy: () => void;
+  onRevert?: (() => void) | undefined;
+}) {
+  const zh = language === "zh-CN";
+  return (
+    <div className={alwaysShow ? "messageActions alwaysVisible" : "messageActions"}>
+      <button aria-label={zh ? "复制" : "Copy"} title={zh ? "复制" : "Copy"} type="button" onClick={onCopy}>
+        <Copy size={14} />
+      </button>
+      {onRevert ? (
+        <button aria-label={zh ? "撤回并编辑最近一轮" : "Revert and edit latest turn"} title={zh ? "撤回并编辑最近一轮" : "Revert and edit latest turn"} type="button" onClick={onRevert}>
+          <PencilLine size={14} />
+        </button>
+      ) : null}
+      {copied ? <span>{zh ? "已复制" : "Copied"}</span> : null}
+    </div>
   );
 }
 
@@ -264,26 +522,107 @@ function appendStreamDelta(current: string, delta: string, type: "assistant_delt
   return `${current}\n${delta}`;
 }
 
-function parseToolOutput(output: string): { summary: string; display: string; rawOutputRef?: string; citations: Array<{ key: string; title: string; heading?: string; source?: string; excerpt: string }> } {
+function formatToolLabel(toolName: string, payload: Record<string, unknown>): string {
+  const args = payload["args"] && typeof payload["args"] === "object" ? (payload["args"] as Record<string, unknown>) : {};
+  const candidate = firstStringArg(args, ["path", "file", "targetPath", "cwd", "query", "command", "url"]);
+  if (candidate) return compactToolTarget(candidate);
+  const normalized = toolName.replace(/^mcp__/, "mcp/").replaceAll("__", "/");
+  return normalized.includes("/") ? `.../${normalized.split("/").filter(Boolean).slice(-2).join("/")}` : `.../${normalized}`;
+}
+
+function firstStringArg(args: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function compactToolTarget(value: string): string {
+  const normalized = value.replaceAll("\\", "/").replace(/\s+/g, " ").trim();
+  if (/^(https?:|file:)/i.test(normalized)) {
+    try {
+      const url = new URL(normalized);
+      return `${url.hostname}${url.pathname.length > 1 ? compactPath(url.pathname) : ""}`;
+    } catch {
+      return normalized.length > 48 ? `${normalized.slice(0, 45)}...` : normalized;
+    }
+  }
+  if (normalized.includes("/")) return compactPath(normalized);
+  return normalized.length > 48 ? `${normalized.slice(0, 45)}...` : normalized;
+}
+
+function compactPath(value: string): string {
+  const parts = value.split("/").filter(Boolean);
+  if (parts.length === 0) return value;
+  return `.../${parts.slice(-2).join("/")}`;
+}
+
+function renderToolIcon(toolName: string): ReactNode {
+  const name = toolName.toLowerCase();
+  if (name.includes("run_command") || name.includes("shell") || name.includes("command") || name.includes("terminal")) return <Terminal size={14} />;
+  if (name.includes("edit") || name.includes("write") || name.includes("patch")) return <PencilLine size={14} />;
+  if (name.includes("search")) return <Search size={14} />;
+  if (name.includes("list")) return <ListIcon size={14} />;
+  if (name.includes("read") || name.includes("file")) return <Eye size={14} />;
+  if (name.includes("web") || name.includes("network") || name.includes("browser")) return <Globe2 size={14} />;
+  if (name.includes("knowledge") || name.includes("rag") || name.includes("skill")) return <BookOpen size={14} />;
+  if (name.includes("mcp")) return <Plug size={14} />;
+  if (name.includes("attachment") || name.includes("document")) return <FileText size={14} />;
+  return <Wrench size={14} />;
+}
+
+function parseToolOutput(output: string): { summary: string; preview: string; display: string; rawOutputRef?: string; citations: Array<{ key: string; title: string; heading?: string; source?: string; excerpt: string }> } {
   try {
     const parsed = JSON.parse(output) as Record<string, unknown>;
-    const summary = typeof parsed["summary"] === "string" ? parsed["summary"] : "";
+    const rawSummary = typeof parsed["summary"] === "string" ? parsed["summary"] : "";
+    const summary = isPlaceholderToolSummary(rawSummary) ? "" : rawSummary;
     const rawOutputRef = typeof parsed["rawOutputRef"] === "string" ? parsed["rawOutputRef"] : undefined;
     const citations = extractCitations(parsed);
-    const compact = summary || JSON.stringify(parsed, null, 2);
+    const compact = stringifyToolDisplay(parsed, summary);
     return {
-      summary: summary ? firstUsefulLine(summary) : "Tool evidence returned.",
+      summary: summary ? firstUsefulLine(summary) : "",
+      preview: summary ? "" : firstUsefulToolPreview(parsed),
       display: compact,
       citations,
       ...(rawOutputRef ? { rawOutputRef } : {})
     };
   } catch {
+    const placeholder = isPlaceholderToolSummary(output);
+    const summary = placeholder ? "" : firstUsefulLine(output);
     return {
-      summary: firstUsefulLine(output),
-      display: output,
+      summary,
+      preview: summary || placeholder ? "" : output.trim().slice(0, 1200),
+      display: placeholder ? "" : output,
       citations: []
     };
   }
+}
+
+function isPlaceholderToolSummary(value: string): boolean {
+  return /^(tool evidence returned\.?|工具证据已返回。?)$/i.test(value.trim());
+}
+
+function stringifyToolDisplay(parsed: Record<string, unknown>, summary: string): string {
+  if (summary) return summary;
+  const { summary: _summary, ...rest } = parsed;
+  return JSON.stringify(rest, null, 2);
+}
+
+function firstUsefulToolPreview(parsed: Record<string, unknown>): string {
+  const rows = Array.isArray(parsed["entries"]) ? parsed["entries"] : Array.isArray(parsed["results"]) ? parsed["results"] : null;
+  if (rows && rows.length > 0) {
+    return rows
+      .slice(0, 6)
+      .map((item) => {
+        if (!item || typeof item !== "object") return String(item);
+        const record = item as Record<string, unknown>;
+        return String(record["name"] ?? record["title"] ?? record["path"] ?? record["sourceUri"] ?? JSON.stringify(record));
+      })
+      .join("\n");
+  }
+  const path = typeof parsed["path"] === "string" ? parsed["path"] : typeof parsed["cwd"] === "string" ? parsed["cwd"] : "";
+  return path;
 }
 
 function extractCitations(parsed: Record<string, unknown>): Array<{ key: string; title: string; heading?: string; source?: string; excerpt: string }> {
@@ -313,6 +652,6 @@ function firstUsefulLine(output: string): string {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find(Boolean);
-  if (!first) return "Tool evidence returned.";
+  if (!first) return "";
   return first.length > 220 ? `${first.slice(0, 220)}...` : first;
 }

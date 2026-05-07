@@ -17,6 +17,7 @@ export interface ModelStreamHandlers {
   signal?: AbortSignal;
   onAssistantDelta: (delta: string) => Promise<void>;
   onThinkingDelta: (delta: string) => Promise<void>;
+  onProviderFallback?: (event: { fromProviderId?: string; toProviderId?: string; fromModel?: string; toModel?: string; category: string; reason: string }) => Promise<void>;
 }
 
 export interface ModelClient {

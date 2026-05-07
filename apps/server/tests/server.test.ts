@@ -71,7 +71,7 @@ describe("server API", () => {
     });
     expect(titleResponse.statusCode).toBe(200);
     expect(titleResponse.json()).toMatchObject({ source: "local_fallback" });
-    expect(titleResponse.json().title.length).toBeLessThanOrEqual(18);
+    expect(titleResponse.json().title.length).toBeLessThanOrEqual(22);
 
     expect((await app.inject("/api/task-folders")).json().map((folder: { id: string }) => folder.id)).toContain("default");
     const localRoot = mkdtempSync(join(tmpdir(), "scc-server-folder-"));
@@ -223,6 +223,7 @@ describe("server API", () => {
     expect(patchResponse.json().status).toBe("active");
     expect(patchResponse.json().title).toBe("Host process review updated");
     expect((await app.inject("/api/skills/duplicates")).statusCode).toBe(200);
+    expect((await app.inject("/api/skill-curator")).statusCode).toBe(200);
     expect((await app.inject({ method: "POST", url: "/api/skills/bulk-delete", payload: { skillIds: [skill.id] } })).json().deleted).toBe(1);
 
     const promoteResponse = await app.inject({

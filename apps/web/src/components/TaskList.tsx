@@ -1,6 +1,8 @@
 import type { TaskDeleteRequest, TaskDetail, TaskFolderDeleteRequest, TaskFolderRecord, TaskPatchRequest } from "@scc/shared";
-import { BookOpen, ChevronRight, Clock3, Edit3, FileText, Folder, FolderPlus, HelpCircle, PanelLeft, Plus, Search, Settings, Terminal, Trash2 } from "lucide-react";
+import { BookOpen, ChevronRight, Clock3, Edit3, FileText, Folder, FolderPlus, HelpCircle, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import logoBlackTheme from "../assets/logo/logo-blackTheme.png";
+import logoWhiteTheme from "../assets/logo/logo-whiteTheme.png";
 import { getUiCopy } from "../i18n.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { FolderPickerDialog } from "./FolderPickerDialog.js";
@@ -10,6 +12,7 @@ export type EngineStatus = "running" | "streaming" | "attention";
 
 export function TaskList({
   language,
+  resolvedTheme = "dark",
   open,
   tasks,
   folders,
@@ -33,6 +36,7 @@ export function TaskList({
   onOpenSupport
 }: {
   language?: string | null;
+  resolvedTheme?: "dark" | "light";
   open: boolean;
   tasks: TaskDetail[];
   folders: TaskFolderRecord[];
@@ -138,8 +142,8 @@ export function TaskList({
     if (collapsed) {
       preCollapseWidthRef.current = sidebarWidth;
       setContentVisible(false);
-      const t = setTimeout(() => setSidebarWidth(52), 120);
-      return () => clearTimeout(t);
+      setSidebarWidth(52);
+      return;
     } else {
       setSidebarWidth(preCollapseWidthRef.current);
       const t = setTimeout(() => setContentVisible(true), 180);
@@ -193,14 +197,14 @@ export function TaskList({
       />
       <button
         aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
-        className="sidebarToggleButton"
+        className={collapsed ? "sidebarToggleButton collapsed" : "sidebarToggleButton"}
         title={collapsed ? "展开侧边栏" : "收起侧边栏"}
         type="button"
         onClick={() => {
           setCollapsed(!collapsed);
         }}
       >
-        <PanelLeft size={16} />
+        {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
       </button>
       <aside ref={sidebarRef} className={collapsed ? "sidebar collapsed" : open ? "sidebar open" : "sidebar"}>
         <div className="sidebarCollapsedRail">
@@ -218,7 +222,7 @@ export function TaskList({
         <div className={contentVisible ? "sidebarExpandedContent" : "sidebarExpandedContent contentHidden"}>
           <div className="brand">
             <span className="brandIcon">
-              <Terminal size={17} />
+              <img alt="" className="brandLogo" src={resolvedTheme === "light" ? logoWhiteTheme : logoBlackTheme} />
             </span>
             <span className="brandCopy">
               <strong>SCC</strong>

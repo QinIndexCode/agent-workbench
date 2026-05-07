@@ -12,8 +12,12 @@ import type {
   ReflectionSession,
   ScheduledTask,
   SkillConflict,
+  SkillCuratorItem,
   SkillDuplicateGroup,
   SkillRecord,
+  TaskRollbackPreview,
+  TaskRollbackRequest,
+  TaskRollbackResult,
   TaskDeleteRequest,
   TaskDetail,
   TaskFolderDeleteRequest,
@@ -37,6 +41,7 @@ export interface WorkbenchData {
   patterns: PatternRecord[];
   skills: SkillRecord[];
   skillConflicts: SkillConflict[];
+  skillCurator: SkillCuratorItem[];
   skillDuplicates: SkillDuplicateGroup[];
   permissions: GlobalPermissionGrant[];
   preferences: UserPreferences | null;
@@ -52,16 +57,22 @@ export interface WorkbenchData {
   webSearchProviders: WebSearchProviderConfig[];
   realtimeConnected: boolean;
   busy: boolean;
+  busySince: number | null;
   error: string | null;
+  backendHealthy: boolean | null;
+  abortController: AbortController | null;
   refresh: (nextId?: string | null) => Promise<void>;
   selectTask: (taskId: string) => Promise<void>;
   clearSelection: () => void;
   patchTask: (taskId: string, input: TaskPatchRequest) => Promise<void>;
-  rollbackTask: (taskId: string) => Promise<void>;
+  previewRollbackTask: (taskId: string, input?: TaskRollbackRequest) => Promise<TaskRollbackPreview>;
+  rollbackTask: (taskId: string, input?: TaskRollbackRequest) => Promise<TaskRollbackResult>;
+  revertLatestTurn: (taskId: string) => Promise<string>;
   deleteTask: (taskId: string, options: TaskDeleteRequest) => Promise<void>;
   deleteTaskFolder: (folderId: string, options: TaskFolderDeleteRequest) => Promise<void>;
   runTaskAction: (action: () => Promise<TaskDetail>) => Promise<void>;
   runSideAction: (action: () => Promise<unknown>) => Promise<void>;
+  cancelBusy: () => void;
 }
 
 export function useWorkbenchData(): WorkbenchData {
@@ -73,6 +84,7 @@ export function useWorkbenchData(): WorkbenchData {
   const [patterns, setPatterns] = useState<PatternRecord[]>([]);
   const [skills, setSkills] = useState<SkillRecord[]>([]);
   const [skillConflicts, setSkillConflicts] = useState<SkillConflict[]>([]);
+  const [skillCurator, setSkillCurator] = useState<SkillCuratorItem[]>([]);
   const [skillDuplicates, setSkillDuplicates] = useState<SkillDuplicateGroup[]>([]);
   const [permissions, setPermissions] = useState<GlobalPermissionGrant[]>([]);
   const [preferences, setPreferences] = useState<UserPreferences | null>(null);
@@ -88,9 +100,15 @@ export function useWorkbenchData(): WorkbenchData {
   const [webSearchProviders, setWebSearchProviders] = useState<WebSearchProviderConfig[]>([]);
   const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [busySince, setBusySince] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [backendHealthy, setBackendHealthy] = useState<boolean | null>(null);
   const newTaskModeRef = useRef(false);
   const selectedIdRef = useRef<string | null>(null);
+  const refreshTimerRef = useRef<number | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsCancelRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   async function refresh(nextId?: string | null) {
     const [
@@ -100,6 +118,7 @@ export function useWorkbenchData(): WorkbenchData {
       nextPatterns,
       nextSkills,
       nextSkillConflicts,
+      nextSkillCurator,
       nextSkillDuplicates,
       nextPermissions,
       nextPreferences,
@@ -120,6 +139,7 @@ export function useWorkbenchData(): WorkbenchData {
       api.listPatterns(),
       api.listSkills(),
       api.listSkillConflicts(),
+      api.listSkillCurator(),
       api.listSkillDuplicates(),
       api.listGlobalPermissions(),
       api.getPreferences(),
@@ -147,6 +167,7 @@ export function useWorkbenchData(): WorkbenchData {
     setPatterns(nextPatterns);
     setSkills(nextSkills);
     setSkillConflicts(nextSkillConflicts);
+    setSkillCurator(nextSkillCurator);
     setSkillDuplicates(nextSkillDuplicates);
     setPermissions(nextPermissions);
     setPreferences(nextPreferences);
@@ -164,31 +185,54 @@ export function useWorkbenchData(): WorkbenchData {
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => void refresh(), realtimeConnected ? 6000 : 2000);
-    return () => window.clearInterval(timer);
+    if (refreshTimerRef.current !== null) {
+      window.clearInterval(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = window.setInterval(() => void refresh(), realtimeConnected ? 6000 : 2000);
+    return () => {
+      if (refreshTimerRef.current !== null) {
+        window.clearInterval(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
   }, [realtimeConnected]);
 
   useEffect(() => {
+    async function checkHealth() {
+      try {
+        await api.healthCheck();
+        setBackendHealthy(true);
+      } catch {
+        setBackendHealthy(false);
+      }
+    }
+    void checkHealth();
+    const timer = window.setInterval(() => void checkHealth(), 15000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     if (!selectedId) return;
-    let ws: WebSocket | null = null;
-    let cancelled = false;
+    wsCancelRef.current = false;
     const connectTimer = window.setTimeout(() => {
-      ws = new WebSocket(api.taskEventsWebSocketUrl(selectedId));
+      if (wsCancelRef.current) return;
+      const ws = new WebSocket(api.taskEventsWebSocketUrl(selectedId));
+      wsRef.current = ws;
       ws.onopen = () => {
-        if (cancelled) {
-          ws?.close();
+        if (wsCancelRef.current) {
+          ws.close();
           return;
         }
         setRealtimeConnected(true);
       };
       ws.onclose = () => {
-        if (!cancelled) setRealtimeConnected(false);
+        if (!wsCancelRef.current) setRealtimeConnected(false);
       };
       ws.onerror = () => {
-        if (!cancelled) setRealtimeConnected(false);
+        if (!wsCancelRef.current) setRealtimeConnected(false);
       };
       ws.onmessage = (message) => {
-        if (cancelled) return;
+        if (wsCancelRef.current) return;
         const parsed = parseRealtimeMessage(message.data);
         if (!parsed) return;
         setSelected((current) => {
@@ -201,9 +245,12 @@ export function useWorkbenchData(): WorkbenchData {
       };
     }, 50);
     return () => {
-      cancelled = true;
+      wsCancelRef.current = true;
       window.clearTimeout(connectTimer);
-      if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
+      if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+        wsRef.current.close();
+      }
+      wsRef.current = null;
     };
   }, [selectedId]);
 
@@ -244,11 +291,31 @@ export function useWorkbenchData(): WorkbenchData {
     });
   }
 
-  async function rollbackTask(taskId: string) {
+  async function previewRollbackTask(taskId: string, input: TaskRollbackRequest = {}) {
+    return api.previewTaskRollback(taskId, input);
+  }
+
+  async function rollbackTask(taskId: string, input: TaskRollbackRequest = {}): Promise<TaskRollbackResult> {
+    let result!: TaskRollbackResult;
     await run(async () => {
-      await api.rollbackTask(taskId);
+      result = await api.rollbackTask(taskId, input);
       await refresh(taskId);
     });
+    return result;
+  }
+
+  async function revertLatestTurn(taskId: string): Promise<string> {
+    let draft = "";
+    await run(async () => {
+      const turns = await api.listTaskTurns(taskId);
+      const latest = [...turns].reverse().find((turn) => turn.status === "active");
+      if (!latest) throw new Error("No active user turn is available to revert.");
+      const result = await api.revertTaskTurn(taskId, latest.id);
+      draft = result.draft;
+      setSelected(result.task);
+      await refresh(taskId);
+    });
+    return draft;
   }
 
   async function deleteTaskFolder(folderId: string, options: TaskFolderDeleteRequest) {
@@ -284,15 +351,30 @@ export function useWorkbenchData(): WorkbenchData {
   }
 
   async function run(action: () => Promise<void>) {
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     setBusy(true);
+    setBusySince(performance.now());
     setError(null);
     try {
       await action();
     } catch (err) {
+      if (controller.signal.aborted) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (!controller.signal.aborted) {
+        setBusy(false);
+        setBusySince(null);
+        abortControllerRef.current = null;
+      }
     }
+  }
+
+  function cancelBusy() {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setBusy(false);
+    setBusySince(null);
   }
 
   return {
@@ -304,6 +386,7 @@ export function useWorkbenchData(): WorkbenchData {
     patterns,
     skills,
     skillConflicts,
+    skillCurator,
     skillDuplicates,
     permissions,
     preferences,
@@ -319,16 +402,22 @@ export function useWorkbenchData(): WorkbenchData {
     webSearchProviders,
     realtimeConnected,
     busy,
+    busySince,
     error,
+    backendHealthy,
+    abortController: abortControllerRef.current,
     refresh,
     selectTask,
     clearSelection,
     patchTask,
+    previewRollbackTask,
     rollbackTask,
+    revertLatestTurn,
     deleteTask,
     deleteTaskFolder,
     runTaskAction,
-    runSideAction
+    runSideAction,
+    cancelBusy
   };
 }
 

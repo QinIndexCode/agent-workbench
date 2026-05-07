@@ -12,6 +12,7 @@ const {
   AgentWorkbench,
   CompositeToolExecutor,
   ContextAssembler,
+  createId,
   createModelClientFromEnvironment,
   InMemoryWorkbenchStore,
   KnowledgeSearchToolExecutor,
@@ -24,9 +25,11 @@ const config = loadOpenAiConfig();
 if (!config.apiKey || !config.baseURL) {
   throw new Error("Live model smoke requires a configured local Mimo/OpenAI-compatible provider.");
 }
+const stressLevel = Math.max(1, Number(process.env.SCC_STRESS_LEVEL ?? "1") || 1);
 
 const report = {
   generatedAt: nowIso(),
+  stressLevel,
   provider: {
     baseURL: redactUrl(config.baseURL),
     model: config.model ?? "mimo-v2.5",
@@ -189,6 +192,109 @@ await runCase("same task follow-up", async () => {
   assert(second.events.filter((event) => event.type === "user_message").length === 2, "follow-up was not appended to same thread");
   return evidence(second, { taskCount: tasks.length, assistant: excerpt(assistantText(second)) });
 });
+
+if (stressLevel >= 2) {
+  await runCase("latest turn revert and edit", async () => {
+    const { workbench } = await createLiveWorkbench();
+    const first = await workbench.createTask("用一句话回答：第一轮。不要使用工具。", "Live turn revert");
+    const second = await workbench.appendMessage(first.id, "第二轮：请补充一个简短注意事项，也不要使用工具。");
+    const turns = await workbench.listTaskTurns(second.id);
+    const latest = turns.at(-1);
+    assert(latest, "expected at least one task turn");
+    const reverted = await workbench.revertTaskTurn(second.id, latest.id);
+    assert(reverted.draft.includes("第二轮"), "revert did not return the latest user draft");
+    const edited = await workbench.editTaskTurn(second.id, latest.id, { content: "第二轮编辑后：只保留一个注意事项，不要使用工具。" });
+    const tasks = await workbench.listTasks();
+    assert(edited.id === first.id, "edited turn changed task id");
+    assert(tasks.length === 1, `expected one task after edit, got ${tasks.length}`);
+    assert(edited.events.some((event) => event.type === "turn_reverted"), "missing turn_reverted evidence");
+    assert(edited.events.some((event) => event.type === "turn_edit_submitted"), "missing turn_edit_submitted evidence");
+    return evidence(edited, { taskCount: tasks.length, draft: excerpt(reverted.draft), assistant: excerpt(assistantText(edited)) });
+  });
+}
+
+if (stressLevel >= 3) {
+  await runCase("long context compaction under low budget", async () => {
+    const { workbench, store } = await createLiveWorkbench();
+    let task = await workbench.createTask(
+      "用一句话记住这个上下文标记：CTX-MARKER-77。不要使用工具。",
+      "Live context compaction"
+    );
+    task = await seedLongConversationHistory(store, task, "CTX-MARKER-77");
+    await workbench.updatePreferences({ maxTokensPerRequest: 2200 });
+    const continued = await workbench.appendMessage(
+      task.id,
+      "继续这个任务：请说明你是否仍能看到上下文标记，并用一句话回答。不要使用工具。"
+    );
+    const summaries = await workbench.listConversationSummaries(continued.id);
+    const tasks = await workbench.listTasks();
+    const summaryEvents = continued.events.filter((event) => event.type === "conversation_summary_created");
+    assert(continued.id === task.id, "long context follow-up changed task id");
+    assert(tasks.length === 1, `expected one task after long context follow-up, got ${tasks.length}`);
+    assert(summaries.length > 0 || summaryEvents.length > 0, "long context did not create an auditable summary");
+    return evidence(continued, {
+      taskCount: tasks.length,
+      summaries: summaries.length,
+      summaryEvents: summaryEvents.length,
+      assistant: excerpt(assistantText(continued))
+    });
+  });
+}
+
+if (stressLevel >= 4) {
+  await runCase("multi-file debug with rollback", async () => {
+    const fixture = createFixtureProject("multi-debug");
+    try {
+      writeFixture(fixture.root, "package.json", JSON.stringify({ type: "module", scripts: { test: "node tests/math.test.mjs && node tests/totals.test.mjs" } }, null, 2));
+      writeFixture(
+        fixture.root,
+        "src/totals.mjs",
+        "export function renderTotal(items) {\n  return '$0.00';\n}\n"
+      );
+      const { workbench, folderId } = await createLiveWorkbench(fixture.root);
+      let task = await workbench.createTask(
+        [
+          "这是一个更复杂的多文件 Debug 压测。请运行 npm test，定位所有失败测试，读取相关源码，然后只修改必要源文件。",
+          "你必须让 math 和 totals 两组测试都通过，最后重新运行 npm test。",
+          "最终总结必须列出修改过的文件、每个失败的真实根因和验证命令结果。"
+        ].join("\n"),
+        "Live multi-file debug",
+        folderId
+      );
+      task = await settleApprovals(workbench, task, () => "allow_for_task", 16);
+      const mathSource = readFileSync(join(fixture.root, "src", "math.mjs"), "utf8");
+      const totalsSource = readFileSync(join(fixture.root, "src", "totals.mjs"), "utf8");
+      const toolOutput = toolOutputs(task).join("\n");
+      const checkpoints = await workbench.listTaskCheckpoints(task.id);
+      const multiEvidence = evidence(task, {
+        mathFixed: mathSource.includes("reduce"),
+        totalsFixed: totalsSource.includes("reduce") && totalsSource.includes("toFixed"),
+        testsPassed: toolOutput.includes("math tests passed") && toolOutput.includes("totals tests passed"),
+        checkpoints: checkpoints.length,
+        mathExcerpt: excerpt(mathSource),
+        totalsExcerpt: excerpt(totalsSource),
+        assistant: excerpt(assistantText(task))
+      }).evidence;
+      assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, multiEvidence);
+      assertWithEvidence(multiEvidence.mathFixed, "math source was not fixed", multiEvidence);
+      assertWithEvidence(multiEvidence.totalsFixed, "totals source was not fixed", multiEvidence);
+      assertWithEvidence(multiEvidence.testsPassed, "npm test did not show both fixture suites passing", multiEvidence);
+      assertWithEvidence(checkpoints.length >= 2, "multi-file edit did not create checkpoints for both files", multiEvidence);
+      const rollback = await workbench.rollbackTask(task.id);
+      const restoredMath = readFileSync(join(fixture.root, "src", "math.mjs"), "utf8");
+      const restoredTotals = readFileSync(join(fixture.root, "src", "totals.mjs"), "utf8");
+      assertWithEvidence(restoredMath.includes("return numbers.length;"), "rollback did not restore math source", { ...multiEvidence, rollback });
+      assertWithEvidence(restoredTotals.includes("return '$0.00';"), "rollback did not restore totals source", { ...multiEvidence, rollback });
+      multiEvidence.rollback = {
+        restoredFiles: rollback.restoredFiles,
+        skippedFiles: rollback.skippedFiles
+      };
+      return { status: "passed", evidence: multiEvidence };
+    } finally {
+      fixture.cleanup();
+    }
+  });
+}
 
 await runCase("pending guidance consumption", async () => {
   const fixture = createFixtureProject("guidance");
@@ -419,6 +525,28 @@ function createFixtureProject(name) {
     "import assert from 'node:assert/strict';\nimport { renderTotal } from '../src/totals.mjs';\nassert.equal(renderTotal([{ price: 2 }, { price: 5.5 }]), '$7.50');\nconsole.log('totals tests passed');\n"
   );
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+async function seedLongConversationHistory(store, task, marker) {
+  const seeded = { ...task, events: [...task.events] };
+  for (let index = 0; index < 34; index++) {
+    const content = [
+      `Synthetic long-context note ${index + 1}.`,
+      index === 2 ? `Important stable marker: ${marker}.` : "Routine maintenance detail.",
+      "This row exists only to stress context compaction and should be summarized before the next model call.",
+      "Keep the latest user instruction and do not create a new task."
+    ].join(" ");
+    seeded.events.push({
+      id: createId("event"),
+      taskId: seeded.id,
+      type: index % 2 === 0 ? "user_message" : "assistant_message",
+      summary: content,
+      payload: { synthetic: true, index },
+      createdAt: nowIso()
+    });
+  }
+  await store.saveTask(seeded);
+  return seeded;
 }
 
 function writeFixture(root, path, content) {

@@ -131,7 +131,14 @@ const copy = {
       continueTask: (status: string) => `${status} · 输入会继续当前任务`,
       titleGenerationFailed: "短标题生成失败。",
       retryTitle: "重试",
-      useLocalTitle: "使用本地标题继续"
+      useLocalTitle: "使用本地标题继续",
+      errorBoundaryTitle: "出错了",
+      errorBoundaryDescription: "应用遇到了意外错误。你可以尝试刷新页面恢复。",
+      errorBoundaryRefresh: "刷新页面",
+      requestTimeout: "请求超时，请检查网络连接后重试。",
+      requestBackendTimeout: "后端响应超时。模型处理时间较长，请稍后重试或检查后端服务状态。",
+      requestCancelled: "请求被取消。",
+      requestFailed: (status: number) => `请求失败 (${status})。`
     },
     composer: {
       modes: {
@@ -402,7 +409,14 @@ const copy = {
       continueTask: (status: string) => `${status} · input continues this task`,
       titleGenerationFailed: "Short title generation failed.",
       retryTitle: "Retry",
-      useLocalTitle: "Use local title"
+      useLocalTitle: "Use local title",
+      errorBoundaryTitle: "Something went wrong",
+      errorBoundaryDescription: "The application encountered an unexpected error. You can try refreshing the page to recover.",
+      errorBoundaryRefresh: "Refresh Page",
+      requestTimeout: "Request timed out. Please check your network connection and try again.",
+      requestBackendTimeout: "Backend response timed out. The model is taking too long. Please try again later or check the backend service status.",
+      requestCancelled: "Request was cancelled.",
+      requestFailed: (status: number) => `Request failed (${status}).`
     },
     composer: {
       modes: {

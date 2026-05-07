@@ -23,6 +23,7 @@ export interface ResolvedModelProviderConfig {
   apiKey: string;
   baseURL?: string;
   model: string;
+  fallbacks?: ResolvedModelProviderConfig[];
 }
 
 export interface ModelToolDefinition {
@@ -66,7 +67,65 @@ export class OpenAIModelClient implements ModelClient {
     const context = this.contextAssembler ? await this.contextAssembler.assemble(task) : null;
     const preferences = await this.preferenceProvider?.();
     const dynamicTools = (await this.toolProvider?.listModelTools()) ?? [];
-    const provider = await this.providerResolver?.();
+    const turn = await this.nextWithProviderFallbacks(task, context, preferences, dynamicTools, stream);
+    if (turn.kind !== "tool_calls") return turn;
+
+    const skillCall = turn.calls.find((call) => call.toolName === "use_skill");
+    if (skillCall && this.contextAssembler) {
+      const skillId = String(skillCall.args["skillId"] ?? "");
+      const skill = await this.contextAssembler.loadSkill(task.id, skillId);
+      if ((skill || skillRetryCount < 2) && skillRetryCount < 3) return this.nextWithSkillRetries(task, skillRetryCount + 1, stream);
+    }
+
+    const executableCalls = turn.calls.filter((call) => call.toolName !== "use_skill");
+    if (executableCalls.length > 0) return { ...turn, calls: executableCalls };
+    return {
+      kind: "final",
+      message: "I loaded the requested skill and need another model turn to continue.",
+      ...(stream?.streamId ? { streamId: stream.streamId } : {}),
+      ...(turn.usage ? { usage: turn.usage } : {})
+    };
+  }
+
+  private async nextWithProviderFallbacks(
+    task: TaskDetail,
+    context: Awaited<ReturnType<ContextAssembler["assemble"]>> | null,
+    preferences: UserPreferences | undefined,
+    dynamicTools: ModelToolDefinition[],
+    stream?: ModelStreamHandlers
+  ): Promise<ModelTurn> {
+    const resolved = await this.providerResolver?.();
+    const providers = resolved ? [resolved, ...(resolved.fallbacks ?? [])] : [undefined];
+    let lastError: unknown;
+    for (let index = 0; index < providers.length; index++) {
+      const provider = providers[index];
+      try {
+        return await this.nextSingleProvider(task, context, preferences, dynamicTools, provider, stream);
+      } catch (error) {
+        lastError = error;
+        const nextProvider = providers[index + 1];
+        if (!nextProvider || !isFallbackableModelError(error)) throw error;
+        await stream?.onProviderFallback?.({
+          ...(provider?.providerId ? { fromProviderId: provider.providerId } : {}),
+          ...(provider?.model ? { fromModel: provider.model } : {}),
+          ...(nextProvider.providerId ? { toProviderId: nextProvider.providerId } : {}),
+          toModel: nextProvider.model,
+          category: classifyModelError(error),
+          reason: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "Model provider failed."));
+  }
+
+  private async nextSingleProvider(
+    task: TaskDetail,
+    context: Awaited<ReturnType<ContextAssembler["assemble"]>> | null,
+    preferences: UserPreferences | undefined,
+    dynamicTools: ModelToolDefinition[],
+    provider: ResolvedModelProviderConfig | undefined,
+    stream?: ModelStreamHandlers
+  ): Promise<ModelTurn> {
     if (provider?.protocol === "anthropic_messages") return this.nextAnthropic(task, context, provider, dynamicTools, stream);
     if (provider?.protocol === "gemini") return this.nextGemini(task, context, provider, dynamicTools, stream);
 
@@ -98,18 +157,10 @@ export class OpenAIModelClient implements ModelClient {
 
     const streamed = await consumeChatCompletionStream(response, stream);
     const calls = streamed.calls;
-    const skillCall = calls.find((call) => call.toolName === "use_skill");
-    if (skillCall && this.contextAssembler) {
-      const skillId = String(skillCall.args["skillId"] ?? "");
-      const skill = await this.contextAssembler.loadSkill(task.id, skillId);
-      if ((skill || skillRetryCount < 2) && skillRetryCount < 3) return this.nextWithSkillRetries(task, skillRetryCount + 1, stream);
-    }
-
-    const executableCalls = calls.filter((call) => call.toolName !== "use_skill");
-    if (executableCalls.length > 0) {
+    if (calls.length > 0) {
       return {
         kind: "tool_calls",
-        calls: executableCalls,
+        calls,
         ...(stream?.streamId ? { streamId: stream.streamId } : {}),
         ...(streamed.usage ? { usage: streamed.usage } : {})
       };
@@ -428,6 +479,20 @@ function normalizeBaseURL(value?: string): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   return trimmed.replace(/\/chat\/completions\/?$/i, "");
+}
+
+function classifyModelError(error: unknown): string {
+  const text = error instanceof Error ? `${error.name} ${error.message}` : String(error);
+  if (/context|token|maximum context|too long|length/i.test(text)) return "context_overflow";
+  if (/rate.?limit|429|too many requests/i.test(text)) return "rate_limit";
+  if (/timeout|timed out|aborted|ECONNRESET|ETIMEDOUT/i.test(text)) return "timeout";
+  if (/empty response|no response|invalid response/i.test(text)) return "empty_response";
+  if (/unauthorized|invalid api key|forbidden|401|403|auth/i.test(text)) return "auth_failure";
+  return "provider_unavailable";
+}
+
+function isFallbackableModelError(error: unknown): boolean {
+  return !["auth_failure"].includes(classifyModelError(error));
 }
 
 function normalizeProviderName(value: string): string {

@@ -24,6 +24,7 @@ import type {
   TaskCheckpoint,
   TaskDetail,
   TaskFolderRecord,
+  TaskTurn,
   TaskMemory,
   UserPreferences,
   PromptCacheStats,
@@ -33,6 +34,7 @@ import { defaultPreferences, normalizeKnowledgeItem, normalizeSkillRecord, norma
 
 type Namespace =
   | "tasks"
+  | "task_turns"
   | "task_attachments"
   | "task_checkpoints"
   | "conversation_summaries"
@@ -91,6 +93,24 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
 
   async deleteTask(taskId: string): Promise<void> {
     this.delete("tasks", taskId);
+  }
+
+  async saveTaskTurn(record: TaskTurn): Promise<void> {
+    this.upsert("task_turns", record.id, record);
+  }
+
+  async getTaskTurn(turnId: string): Promise<TaskTurn | undefined> {
+    return this.get<TaskTurn>("task_turns", turnId);
+  }
+
+  async listTaskTurns(taskId?: string): Promise<TaskTurn[]> {
+    return this.list<TaskTurn>("task_turns")
+      .filter((record) => !taskId || record.taskId === taskId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async deleteTaskTurn(turnId: string): Promise<void> {
+    this.delete("task_turns", turnId);
   }
 
   async saveTaskAttachment(record: TaskAttachment): Promise<void> {

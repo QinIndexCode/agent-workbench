@@ -38,8 +38,13 @@ import type {
   TaskFolderCreateRequest,
   TaskFolderPatchRequest,
   TaskFolderRecord,
+  TaskTurn,
+  TaskTurnRevertResult,
+  TaskTurnEditRequest,
   TaskPatchRequest,
   TaskCheckpoint,
+  TaskRollbackFileChange,
+  TaskRollbackPreview,
   TaskRollbackRequest,
   TaskRollbackResult,
   TaskTitleRequest,
@@ -48,6 +53,7 @@ import type {
   TaskAttachmentKind,
   TaskAttachmentUploadRequest,
   SkillCreateRequest,
+  SkillCuratorItem,
   SkillDuplicateGroup,
   SkillMergeRequest,
   SkillRecord,
@@ -56,9 +62,13 @@ import type {
   TaskDeleteResult,
   TaskDetail,
   TaskEvent,
+  MemoryDocument,
+  MemoryDocumentPatch,
+  MemoryDocumentCompactResult,
   ToolApproval,
   ToolCall,
   ToolResult,
+  UserPreferences,
   WebSearchProviderConfig,
   WebSearchProviderCreateRequest,
   WebSearchProviderPatchRequest
@@ -145,7 +155,7 @@ export class AgentWorkbench {
     task.folderId = folder.id;
     task.workRoot = folder.rootPath;
     this.addEvent(task, "task_created", "Task created");
-    this.addEvent(task, "user_message", goal);
+    await this.beginTaskTurn(task, goal, "user_message");
     this.addEvent(task, "plan_created", "Initial plan created", {
       steps: [
         { id: createId("plan_step"), title: "Understand the request", status: "completed" },
@@ -282,6 +292,42 @@ export class AgentWorkbench {
     };
   }
 
+  private async readMemoryDocument(scope: "user", folder?: TaskFolderRecord): Promise<MemoryDocument>;
+  private async readMemoryDocument(scope: "project", folder: TaskFolderRecord): Promise<MemoryDocument>;
+  private async readMemoryDocument(scope: "user" | "project", folder?: TaskFolderRecord): Promise<MemoryDocument> {
+    const descriptor = memoryDescriptor(scope, folder);
+    const content = await readFile(descriptor.path, "utf8").catch(() => defaultMemoryContent(scope, folder));
+    return {
+      scope,
+      ...(folder ? { folderId: folder.id, workRoot: folder.rootPath } : {}),
+      path: descriptor.path,
+      fileName: descriptor.fileName,
+      content: limitMemoryContent(content, descriptor.charLimit, descriptor.entryCharLimit),
+      charLimit: descriptor.charLimit,
+      entryCharLimit: descriptor.entryCharLimit,
+      updatedAt: nowIso()
+    };
+  }
+
+  private async writeMemoryDocument(scope: "user", content: string, folder?: TaskFolderRecord): Promise<MemoryDocument>;
+  private async writeMemoryDocument(scope: "project", content: string, folder: TaskFolderRecord): Promise<MemoryDocument>;
+  private async writeMemoryDocument(scope: "user" | "project", content: string, folder?: TaskFolderRecord): Promise<MemoryDocument> {
+    const descriptor = memoryDescriptor(scope, folder);
+    const limited = limitMemoryContent(content, descriptor.charLimit, descriptor.entryCharLimit);
+    await mkdir(dirname(descriptor.path), { recursive: true });
+    await writeFile(descriptor.path, limited, "utf8");
+    return {
+      scope,
+      ...(folder ? { folderId: folder.id, workRoot: folder.rootPath } : {}),
+      path: descriptor.path,
+      fileName: descriptor.fileName,
+      content: limited,
+      charLimit: descriptor.charLimit,
+      entryCharLimit: descriptor.entryCharLimit,
+      updatedAt: nowIso()
+    };
+  }
+
   async getTask(taskId: string): Promise<TaskDetail | undefined> {
     return this.store.getTask(taskId);
   }
@@ -311,6 +357,9 @@ export class AgentWorkbench {
     return this.runTaskExclusive(taskId, async () => {
       const task = await this.requiredTask(taskId);
       await this.store.deleteTask(taskId);
+      for (const turn of await this.store.listTaskTurns(taskId)) {
+        await this.store.deleteTaskTurn(turn.id);
+      }
       for (const attachment of await this.store.listTaskAttachments(taskId)) {
         await this.deleteTaskAttachment(attachment.id);
       }
@@ -361,21 +410,35 @@ export class AgentWorkbench {
     return this.store.listTaskCheckpoints(taskId);
   }
 
+  async previewTaskRollback(taskId: string, input: TaskRollbackRequest = {}): Promise<TaskRollbackPreview> {
+    const task = await this.requiredTask(taskId);
+    const checkpoint = await this.resolveRollbackCheckpoint(task, input.checkpointId);
+    const files = await this.previewCheckpointFiles(task, checkpoint, input.filePaths);
+    return {
+      taskId,
+      checkpointId: checkpoint.id,
+      workRoot: checkpoint.workRoot,
+      files,
+      restorableFiles: files.filter((file) => file.canRollback && (file.status === "modified" || file.status === "deleted")).length,
+      deletableFiles: files.filter((file) => file.canRollback && file.status === "created").length,
+      skippedFiles: files.filter((file) => !file.canRollback || file.status === "unchanged" || file.status === "skipped").length,
+      createdAt: nowIso()
+    };
+  }
+
   async rollbackTask(taskId: string, input: TaskRollbackRequest = {}): Promise<TaskRollbackResult> {
     return this.runTaskExclusive(taskId, async () => {
       const task = await this.requiredTask(taskId);
-      const checkpoint = input.checkpointId
-        ? await this.store.getTaskCheckpoint(input.checkpointId)
-        : this.buildTaskRollbackCheckpoint(task, await this.store.listTaskCheckpoints(taskId));
-      if (!checkpoint || checkpoint.taskId !== taskId) throw new Error("No checkpoint is available for this task.");
+      const checkpoint = await this.resolveRollbackCheckpoint(task, input.checkpointId);
       try {
-        const result = await this.restoreCheckpointFiles(task, checkpoint);
+        const result = await this.restoreCheckpointFiles(task, checkpoint, input.filePaths);
         this.addEvent(task, "task_rollback_completed", `Rolled back ${result.restoredFiles + result.deletedFiles} file changes.`, {
           checkpointId: checkpoint.id,
           restoredFiles: result.restoredFiles,
           deletedFiles: result.deletedFiles,
           skippedFiles: result.skippedFiles,
-          workRoot: checkpoint.workRoot
+          workRoot: checkpoint.workRoot,
+          files: result.files
         });
         await this.store.saveTask(task);
         return result;
@@ -386,6 +449,14 @@ export class AgentWorkbench {
         throw error;
       }
     });
+  }
+
+  private async resolveRollbackCheckpoint(task: TaskDetail, checkpointId?: string): Promise<TaskCheckpoint> {
+    const checkpoint = checkpointId
+      ? await this.store.getTaskCheckpoint(checkpointId)
+      : this.buildTaskRollbackCheckpoint(task, await this.store.listTaskCheckpoints(task.id));
+    if (!checkpoint || checkpoint.taskId !== task.id) throw new Error("No checkpoint is available for this task.");
+    return checkpoint;
   }
 
   private buildTaskRollbackCheckpoint(task: TaskDetail, checkpoints: TaskCheckpoint[]): TaskCheckpoint | undefined {
@@ -453,20 +524,198 @@ export class AgentWorkbench {
     return this.store.listConversationSummaries(taskId);
   }
 
+  async getUserProfileDocument(): Promise<MemoryDocument> {
+    return this.readMemoryDocument("user");
+  }
+
+  async updateUserProfileDocument(input: MemoryDocumentPatch): Promise<MemoryDocument> {
+    return this.writeMemoryDocument("user", input.content);
+  }
+
+  async getProjectMemoryDocument(folderId = "default"): Promise<MemoryDocument> {
+    const folder = await this.resolveTaskFolder(folderId);
+    return this.readMemoryDocument("project", folder);
+  }
+
+  async updateProjectMemoryDocument(folderId: string, input: MemoryDocumentPatch): Promise<MemoryDocument> {
+    const folder = await this.resolveTaskFolder(folderId);
+    return this.writeMemoryDocument("project", input.content, folder);
+  }
+
+  async compactProjectMemoryDocument(folderId = "default"): Promise<MemoryDocumentCompactResult> {
+    const folder = await this.resolveTaskFolder(folderId);
+    const before = await this.readMemoryDocument("project", folder);
+    const compacted = compactMemoryMarkdown(before.content, before.charLimit, before.entryCharLimit);
+    const after = await this.writeMemoryDocument("project", compacted.content, folder);
+    return {
+      document: after,
+      beforeChars: before.content.length,
+      afterChars: after.content.length,
+      removedLines: compacted.removedLines
+    };
+  }
+
+  async listTaskTurns(taskId: string): Promise<TaskTurn[]> {
+    const task = await this.requiredTask(taskId);
+    return this.withComputedTurnEnds(task, await this.store.listTaskTurns(taskId));
+  }
+
   async appendMessage(taskId: string, content: string, attachmentIds: string[] = []): Promise<TaskDetail> {
     return this.runTaskExclusive(taskId, async () => {
       const task = await this.requiredTask(taskId);
       await this.attachUploadedFiles(task, attachmentIds);
       if (task.status === "running" || task.status === "waiting_approval") {
-        this.addEvent(task, "guidance_pending", content, { status: "pending" });
+        await this.beginTaskTurn(task, content, "guidance_pending", { status: "pending" });
         await this.store.saveTask(task);
         return task;
       }
-      this.addEvent(task, "user_message", content);
+      await this.beginTaskTurn(task, content, "user_message");
       this.setStatus(task, "running");
       await this.store.saveTask(task);
       return this.step(task.id);
     });
+  }
+
+  async revertTaskTurn(taskId: string, turnId: string): Promise<TaskTurnRevertResult> {
+    return this.runTaskExclusive(taskId, async () => this.revertTaskTurnUnlocked(taskId, turnId));
+  }
+
+  async editTaskTurn(taskId: string, turnId: string, input: TaskTurnEditRequest): Promise<TaskDetail> {
+    return this.runTaskExclusive(taskId, async () => {
+      await this.revertTaskTurnUnlocked(taskId, turnId);
+      const task = await this.requiredTask(taskId);
+      await this.attachUploadedFiles(task, input.attachmentIds ?? []);
+      await this.beginTaskTurn(task, input.content, "user_message");
+      this.addEvent(task, "turn_edit_submitted", "Edited user turn submitted", { previousTurnId: turnId });
+      this.setStatus(task, "running");
+      await this.store.saveTask(task);
+      return this.step(task.id);
+    });
+  }
+
+  private async beginTaskTurn(
+    task: TaskDetail,
+    content: string,
+    eventType: "user_message" | "guidance_pending",
+    payload: Record<string, unknown> = {}
+  ): Promise<TaskTurn> {
+    const now = nowIso();
+    const turnId = createId("turn");
+    const startEvent = this.addEvent(task, "turn_started", "User turn started", { turnId });
+    const userEvent = this.addEvent(task, eventType, content, { ...payload, turnId });
+    const turn: TaskTurn = {
+      id: turnId,
+      taskId: task.id,
+      startEventId: startEvent.id,
+      userEventId: userEvent.id,
+      originalContent: content,
+      status: "active",
+      createdAt: now,
+      updatedAt: now
+    };
+    await this.store.saveTaskTurn(turn);
+    return turn;
+  }
+
+  private async revertTaskTurnUnlocked(taskId: string, turnId: string): Promise<TaskTurnRevertResult> {
+    const task = await this.requiredTask(taskId);
+    const turns = this.withComputedTurnEnds(task, await this.store.listTaskTurns(taskId));
+    const turn = turns.find((item) => item.id === turnId);
+    if (!turn) throw new Error(`Task turn not found: ${turnId}`);
+    if (turn.status === "reverted") {
+      const hasLaterActiveTurn = turns.some((item) => item.status === "active" && item.createdAt.localeCompare(turn.createdAt) > 0);
+      if (hasLaterActiveTurn) throw new Error("Only the latest active user turn can be reverted.");
+      return {
+        task,
+        turn,
+        draft: turn.originalContent,
+        revertedEventCount: 0,
+        irreversibleEventCount: 0
+      };
+    }
+    const latestActive = [...turns].reverse().find((item) => item.status === "active");
+    if (latestActive?.id !== turn.id) throw new Error("Only the latest active user turn can be reverted.");
+
+    if (task.status === "running" || task.status === "waiting_approval") {
+      this.cancelRunningTask(task.id);
+      this.setStatus(task, "paused");
+    }
+
+    const range = this.turnEventRange(task, turn);
+    const checkpointIds = new Set(
+      range
+        .filter((event) => event.type === "task_checkpoint_created")
+        .map((event) => String(event.payload["checkpointId"] ?? ""))
+        .filter(Boolean)
+    );
+    const rollback = await this.rollbackTurnCheckpoints(task, [...checkpointIds]);
+    const irreversibleEventCount = range.filter(isIrreversibleTurnEvent).length;
+    const now = nowIso();
+    const revertedTurn: TaskTurn = {
+      ...turn,
+      status: "reverted",
+      revertedAt: now,
+      updatedAt: now
+    };
+    for (const event of range) event.reverted = true;
+    this.addEvent(task, "turn_reverted", "Latest user turn was reverted for editing.", {
+      turnId: turn.id,
+      revertedEventCount: range.length,
+      irreversibleEventCount,
+      ...(rollback ? { rollback } : {})
+    });
+    if (rollback && rollback.skippedFiles > 0) {
+      this.addEvent(task, "rollback_partial", "Some files or side effects could not be fully reverted.", {
+        turnId: turn.id,
+        skippedFiles: rollback.skippedFiles,
+        irreversibleEventCount
+      });
+    }
+    await this.store.saveTaskTurn(revertedTurn);
+    await this.store.saveTask(task);
+    return {
+      task,
+      turn: revertedTurn,
+      draft: turn.originalContent,
+      revertedEventCount: range.length,
+      irreversibleEventCount,
+      ...(rollback ? { rollback } : {})
+    };
+  }
+
+  private withComputedTurnEnds(task: TaskDetail, turns: TaskTurn[]): TaskTurn[] {
+    const ordered = [...turns].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return ordered.map((turn, index) => {
+      const next = ordered[index + 1];
+      if (!next) return { ...turn, endEventId: task.events.at(-1)?.id ?? turn.userEventId };
+      const nextStartIndex = task.events.findIndex((event) => event.id === next.startEventId);
+      const endEvent = nextStartIndex > 0 ? task.events[nextStartIndex - 1] : undefined;
+      return { ...turn, endEventId: endEvent?.id ?? turn.userEventId };
+    });
+  }
+
+  private turnEventRange(task: TaskDetail, turn: TaskTurn): TaskEvent[] {
+    const startIndex = task.events.findIndex((event) => event.id === turn.startEventId);
+    if (startIndex < 0) return [];
+    const endIndex = turn.endEventId ? task.events.findIndex((event) => event.id === turn.endEventId) : task.events.length - 1;
+    return task.events.slice(startIndex, endIndex >= startIndex ? endIndex + 1 : task.events.length);
+  }
+
+  private async rollbackTurnCheckpoints(task: TaskDetail, checkpointIds: string[]): Promise<TaskRollbackResult | undefined> {
+    const checkpoints = (await Promise.all(checkpointIds.map((id) => this.store.getTaskCheckpoint(id)))).filter((item): item is TaskCheckpoint => Boolean(item));
+    if (checkpoints.length === 0) return undefined;
+    const checkpoint = this.buildTaskRollbackCheckpoint(task, checkpoints);
+    if (!checkpoint) return undefined;
+    const result = await this.restoreCheckpointFiles(task, checkpoint);
+    this.addEvent(task, "task_rollback_completed", `Rolled back ${result.restoredFiles + result.deletedFiles} file changes for reverted turn.`, {
+      checkpointId: checkpoint.id,
+      restoredFiles: result.restoredFiles,
+      deletedFiles: result.deletedFiles,
+      skippedFiles: result.skippedFiles,
+      workRoot: checkpoint.workRoot,
+      files: result.files
+    });
+    return result;
   }
 
   async control(taskId: string, action: "pause" | "resume" | "cancel"): Promise<TaskDetail> {
@@ -565,6 +814,100 @@ export class AgentWorkbench {
 
   async listSkillDuplicates(): Promise<SkillDuplicateGroup[]> {
     return listSkillDuplicateGroups(await this.listSkills());
+  }
+
+  async listSkillCuratorItems(): Promise<SkillCuratorItem[]> {
+    const now = nowIso();
+    const [skills, duplicates, conflicts, memories] = await Promise.all([
+      this.listSkills(),
+      this.listSkillDuplicates(),
+      this.listSkillConflicts(),
+      this.listTaskMemories()
+    ]);
+    const items: SkillCuratorItem[] = [];
+
+    for (const skill of skills) {
+      const oneOffSignals = /current machine|当前机器|single run|one-off|一次性|prior task result/i.test(skill.body);
+      const reason =
+        skill.status === "candidate"
+          ? "Candidate skills require user review before they influence future tasks."
+          : skill.status === "active"
+            ? "Active skills are available for matching when relevant."
+            : skill.status === "suspended"
+              ? "Suspended skills are retained but not injected."
+              : "Retired skills are kept for audit only.";
+      items.push({
+        id: `skill_${skill.id}`,
+        kind: skill.status === "active" ? "active" : "candidate",
+        title: skill.title,
+        status: oneOffSignals ? "needs_review" : skill.status,
+        reason: oneOffSignals ? "The body looks like it may contain one-off task output or machine state." : reason,
+        recommendation:
+          skill.status === "candidate"
+            ? "Review applicability, remove one-off result text, then activate if it describes a reusable method."
+            : oneOffSignals
+              ? "Edit the body into reusable steps before keeping this skill active."
+              : "Keep monitoring success rate and consecutive failures.",
+        skillIds: [skill.id],
+        memoryIds: skill.sourceMemoryIds,
+        confidence: skill.applicability.minConfidence,
+        createdAt: skill.createdAt || now
+      });
+    }
+
+    for (const group of duplicates) {
+      items.push({
+        id: `duplicate_${group.fingerprint}`,
+        kind: "duplicate",
+        title: group.skills[0]?.title ?? "Duplicate skill group",
+        status: "needs_review",
+        reason: group.reason,
+        recommendation: "Merge duplicate skills into the canonical record so future matching stays predictable.",
+        skillIds: group.skills.map((skill) => skill.id),
+        memoryIds: [],
+        createdAt: now
+      });
+    }
+
+    for (const conflict of conflicts.filter((item) => item.status === "open")) {
+      items.push({
+        id: `conflict_${conflict.id}`,
+        kind: "conflict",
+        title: "Skill conflict",
+        status: "needs_review",
+        reason: conflict.reason,
+        recommendation: "Resolve by editing, suspending, or merging the conflicting skills. SCC will not auto-merge conflicts.",
+        skillIds: conflict.skillIds,
+        memoryIds: [],
+        createdAt: conflict.createdAt
+      });
+    }
+
+    for (const memory of memories.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 16)) {
+      const reusable =
+        memory.assessment.goalAchieved &&
+        memory.assessment.confidence >= 0.75 &&
+        memory.toolsUsed.length > 0 &&
+        memory.meta.complexity !== "simple" &&
+        memory.meta.outcome === "success";
+      if (reusable) continue;
+      items.push({
+        id: `memory_${memory.id}`,
+        kind: "low_value_memory",
+        title: memory.title,
+        status: "not_promoted",
+        reason: memory.assessment.goalAchieved
+          ? "This memory is useful as history, but it is too simple or too task-specific to become a skill."
+          : "The task did not complete cleanly, so it is kept as memory rather than promoted.",
+        recommendation: "Keep as task memory unless the pattern repeats across several successful tasks.",
+        skillIds: [],
+        memoryIds: [memory.id],
+        confidence: memory.assessment.confidence,
+        createdAt: memory.createdAt
+      });
+    }
+
+    return items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   async getSkill(skillId: string): Promise<SkillRecord | undefined> {
@@ -1488,6 +1831,15 @@ export class AgentWorkbench {
           },
           onThinkingDelta: async (delta) => {
             await this.addStreamingDelta(task, "thinking_delta", delta, streamId, controller.signal);
+          },
+          onProviderFallback: async (event) => {
+            const current = (await this.store.getTask(task.id)) ?? task;
+            this.addEvent(current, "provider_fallback", `Fallback to ${event.toModel}`, {
+              streamId,
+              ...event
+            });
+            await this.store.saveTask(current);
+            Object.assign(task, current);
           }
         });
         await this.recordPromptCacheStats(task, turn.usage);
@@ -1505,7 +1857,10 @@ export class AgentWorkbench {
           continue;
         }
         this.addConversationSummaryEvents(task);
-        this.addEvent(task, "assistant_message", `Model provider failed: ${message}`);
+        this.addEvent(task, "assistant_message", formatProviderFailureMessage(message, await this.store.getPreferences()), {
+          errorKind: "model_provider_failed",
+          rawMessage: message
+        });
         this.setStatus(task, "failed");
         await this.updateLoadedSkillStats(task, false);
         await this.store.saveTask(task);
@@ -1679,11 +2034,13 @@ export class AgentWorkbench {
     };
   }
 
-  private async restoreCheckpointFiles(task: TaskDetail, checkpoint: TaskCheckpoint): Promise<TaskRollbackResult> {
+  private async restoreCheckpointFiles(task: TaskDetail, checkpoint: TaskCheckpoint, filePaths?: string[]): Promise<TaskRollbackResult> {
     let restoredFiles = 0;
     let deletedFiles = 0;
     let skippedFiles = 0;
-    for (const file of checkpoint.files) {
+    const files = await this.previewCheckpointFiles(task, checkpoint, filePaths);
+    const selected = this.filterCheckpointFiles(task, checkpoint, filePaths);
+    for (const file of selected) {
       const target = resolveTaskPath(checkpoint.workRoot || task.workRoot || findWorkspaceRoot(), file.path);
       if (file.existed && file.snapshotPath) {
         await mkdir(dirname(target), { recursive: true });
@@ -1701,7 +2058,87 @@ export class AgentWorkbench {
         skippedFiles += 1;
       }
     }
-    return { taskId: task.id, checkpointId: checkpoint.id, restoredFiles, deletedFiles, skippedFiles, createdAt: nowIso() };
+    return {
+      taskId: task.id,
+      checkpointId: checkpoint.id,
+      workRoot: checkpoint.workRoot,
+      files,
+      restoredFiles,
+      deletedFiles,
+      skippedFiles,
+      createdAt: nowIso()
+    };
+  }
+
+  private filterCheckpointFiles(task: TaskDetail, checkpoint: TaskCheckpoint, filePaths?: string[]): TaskCheckpoint["files"] {
+    if (!filePaths || filePaths.length === 0) return checkpoint.files;
+    const root = resolve(checkpoint.workRoot || task.workRoot || findWorkspaceRoot());
+    const requested = new Set(
+      filePaths.map((filePath) => {
+        const normalized = resolveTaskPath(root, filePath);
+        return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+      })
+    );
+    return checkpoint.files.filter((file) => {
+      const target = resolveTaskPath(root, file.path);
+      const key = process.platform === "win32" ? target.toLowerCase() : target;
+      return requested.has(key);
+    });
+  }
+
+  private async previewCheckpointFiles(task: TaskDetail, checkpoint: TaskCheckpoint, filePaths?: string[]): Promise<TaskRollbackFileChange[]> {
+    const root = resolve(checkpoint.workRoot || task.workRoot || findWorkspaceRoot());
+    const selected = this.filterCheckpointFiles(task, checkpoint, filePaths);
+    const changes: TaskRollbackFileChange[] = [];
+    for (const file of selected) {
+      const target = resolveTaskPath(root, file.path);
+      const relativePath = relative(root, target) || basename(target);
+      const info = await stat(target).catch(() => null);
+      const existsNow = Boolean(info?.isFile());
+      const current = existsNow ? await readFile(target).catch(() => null) : null;
+      const currentHash = current ? createHash("sha256").update(current).digest("hex").slice(0, 16) : undefined;
+      const sizeNow = current?.byteLength ?? 0;
+      let status: TaskRollbackFileChange["status"] = "skipped";
+      let canRollback = false;
+      let reason: string | undefined;
+
+      if (file.existed) {
+        if (!file.snapshotPath) {
+          status = "skipped";
+          reason = "The checkpoint does not have a snapshot for this file.";
+        } else if (!existsNow) {
+          status = "deleted";
+          canRollback = true;
+        } else if (file.beforeHash && currentHash === file.beforeHash) {
+          status = "unchanged";
+          reason = "The current file already matches the checkpoint snapshot.";
+        } else {
+          status = "modified";
+          canRollback = true;
+        }
+      } else if (existsNow) {
+        status = "created";
+        canRollback = true;
+      } else {
+        status = "unchanged";
+        reason = "The file did not exist at checkpoint time and does not exist now.";
+      }
+
+      changes.push({
+        path: target,
+        relativePath,
+        status,
+        existedBefore: file.existed,
+        existsNow,
+        canRollback,
+        ...(file.beforeHash ? { beforeHash: file.beforeHash } : {}),
+        ...(currentHash ? { currentHash } : {}),
+        sizeBefore: file.size,
+        sizeNow,
+        ...(reason ? { reason } : {})
+      });
+    }
+    return changes;
   }
 
   private async deleteTaskCheckpointArtifacts(checkpoint: TaskCheckpoint): Promise<void> {
@@ -1785,7 +2222,7 @@ export class AgentWorkbench {
     type: TaskEvent["type"],
     summary: string,
     payload: Record<string, unknown> = {}
-  ): void {
+  ): TaskEvent {
     const event: TaskEvent = {
       id: createId("event"),
       taskId: task.id,
@@ -1800,6 +2237,7 @@ export class AgentWorkbench {
       (event) => event.type === "guidance_pending" && event.payload["status"] === "pending"
     );
     this.onEvent?.(event);
+    return event;
   }
 
   private addLoadedSkillEvents(task: TaskDetail): void {
@@ -1879,11 +2317,29 @@ export class AgentWorkbench {
   private async resolveModelProviderConfig(): Promise<ResolvedModelProviderConfig | null> {
     const preferences = await this.store.getPreferences();
     const providers = (await this.store.listModelProviders()).filter((provider) => provider.enabled);
-    const provider =
+    const route = preferences.modelRoute;
+    const main =
+      providers.find((item) => item.id === route.mainProviderId) ??
       providers.find((item) => item.id === preferences.activeModelProviderId) ??
       providers.find((item) => item.apiKeyRef) ??
       null;
-    if (!provider?.apiKeyRef) return null;
+    if (!main) return null;
+    const resolved = main ? await this.resolveStoredProvider(main) : null;
+    if (!resolved) return null;
+    const fallbackIds = [...new Set(route.fallbackProviderIds.filter((id) => id !== main.id))];
+    const fallbacks = (
+      await Promise.all(
+        fallbackIds
+          .map((id) => providers.find((provider) => provider.id === id))
+          .filter((provider): provider is ModelProviderRecord => Boolean(provider))
+          .map((provider) => this.resolveStoredProvider(provider))
+      )
+    ).filter((provider): provider is ResolvedModelProviderConfig => Boolean(provider));
+    return fallbacks.length > 0 ? { ...resolved, fallbacks } : resolved;
+  }
+
+  private async resolveStoredProvider(provider: ModelProviderRecord): Promise<ResolvedModelProviderConfig | null> {
+    if (!provider.apiKeyRef) return null;
     const encrypted = await this.store.getModelProviderSecret(provider.id);
     if (!encrypted) return null;
     return {
@@ -1960,6 +2416,23 @@ function sanitizeProviderError(input: string): string {
     .replace(/\btp-[A-Za-z0-9_\-*]{8,}/g, "[redacted-api-key]");
 }
 
+function formatProviderFailureMessage(message: string, preferences: UserPreferences): string {
+  const zh = preferences.language === "zh-CN";
+  if (/connection error|failed to fetch|network|fetch failed|ECONN|ETIMEDOUT|ENOTFOUND/i.test(message)) {
+    return zh
+      ? `模型服务连接失败（Model provider failed: ${message}）。请检查模型配置、Base URL、API Key 或网络状态，然后重试。`
+      : `Model service connection failed (Model provider failed: ${message}). Check the model configuration, Base URL, API key, or network, then retry.`;
+  }
+  if (/no model provider|no provider|not configured/i.test(message)) {
+    return zh
+      ? `尚未配置可用模型（Model provider failed: ${message}）。请先添加或连接模型配置。`
+      : `No usable model is configured (Model provider failed: ${message}). Add or connect a model configuration first.`;
+  }
+  return zh
+    ? `模型服务请求失败（Model provider failed: ${message}）。请检查模型配置或稍后重试。`
+    : `Model provider failed: ${message}`;
+}
+
 function isContextOverflowError(input: string): boolean {
   return /context( window| length)?|maximum context|too many tokens|token limit|exceed(?:ed|s)?[^.]{0,80}token|prompt[^.]{0,40}too long|reduce[^.]{0,40}tokens/i.test(input);
 }
@@ -1975,10 +2448,8 @@ async function fetchWithTimeout(input: Parameters<typeof fetch>[0], init: Parame
 }
 
 async function generateTaskTitleWithProvider(provider: ResolvedModelProviderConfig, goal: string, language?: string): Promise<string> {
-  const isChinese = prefersChinese(language, goal);
-  const instruction = isChinese
-    ? "为用户任务生成一个简短中文标题。只输出标题，8到18个汉字，不要引号、编号、Markdown 或解释。"
-    : "Generate a short task title. Output only the title, 3 to 6 words, no quotes, numbering, Markdown, or explanation.";
+  const style = resolveTitleStyle(language, goal);
+  const instruction = titleInstruction(style);
   if (provider.protocol === "anthropic_messages") {
     const response = await fetchWithTimeout(`${provider.baseURL || "https://api.anthropic.com"}/v1/messages`, {
       method: "POST",
@@ -2044,15 +2515,25 @@ async function generateTaskTitleWithProvider(provider: ResolvedModelProviderConf
 
 export function createLocalTaskTitle(goal: string, language?: string): string {
   const compact = goal.replace(/```[\s\S]*?```/g, " ").replace(/\s+/g, " ").trim();
-  if (prefersChinese(language, compact)) {
-    const cleaned = compact.replace(/[，。！？；：、,.!?;:()[\]{}"'“”‘’`~@#$%^&*_+=|\\/<>-]/g, "").trim();
-    return cleaned.slice(0, 18) || "新任务";
+  const style = resolveTitleStyle(language, compact);
+  if (style.kind === "zh") {
+    const cleaned = cleanCjkTitle(firstTitleClause(compact));
+    return truncateCjkTitle(cleaned, 22) || "新任务";
   }
-  const words = compact.replace(/[^\p{L}\p{N}\s-]/gu, " ").trim().split(/\s+/).filter(Boolean).slice(0, 6);
+  if (style.kind === "ja") {
+    const cleaned = cleanCjkTitle(firstTitleClause(compact));
+    return truncateCjkTitle(cleaned, 26) || "新しいタスク";
+  }
+  if (style.kind === "ko") {
+    const cleaned = cleanCjkTitle(firstTitleClause(compact));
+    return truncateCjkTitle(cleaned, 28) || "새 작업";
+  }
+  const words = compact.replace(/[^\p{L}\p{N}\s-]/gu, " ").trim().split(/\s+/).filter(Boolean).slice(0, 7);
   return words.length > 0 ? words.map((word) => word[0]?.toUpperCase() + word.slice(1)).join(" ") : "New Task";
 }
 
 function normalizeGeneratedTaskTitle(raw: string, goal: string, language?: string): string {
+  const style = resolveTitleStyle(language, goal);
   const candidate = raw
     .replace(/```[\s\S]*?```/g, " ")
     .split(/\r?\n/)
@@ -2060,15 +2541,68 @@ function normalizeGeneratedTaskTitle(raw: string, goal: string, language?: strin
     .find(Boolean) ?? "";
   const stripped = candidate.replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, "").trim();
   if (!stripped) return createLocalTaskTitle(goal, language);
-  if (prefersChinese(language, `${stripped} ${goal}`)) {
-    const cleaned = stripped.replace(/[，。！？；：、,.!?;:()[\]{}"'“”‘’`~@#$%^&*_+=|\\/<>-]/g, "").replace(/\s+/g, "");
-    return (cleaned || createLocalTaskTitle(goal, language)).slice(0, 18);
+  if (style.kind === "zh") {
+    const cleaned = cleanCjkTitle(stripped);
+    return truncateCjkTitle(cleaned || createLocalTaskTitle(goal, language), 22);
   }
-  return stripped.split(/\s+/).slice(0, 6).join(" ") || createLocalTaskTitle(goal, language);
+  if (style.kind === "ja") {
+    const cleaned = cleanCjkTitle(stripped);
+    return truncateCjkTitle(cleaned || createLocalTaskTitle(goal, language), 26);
+  }
+  if (style.kind === "ko") {
+    const cleaned = cleanCjkTitle(stripped);
+    return truncateCjkTitle(cleaned || createLocalTaskTitle(goal, language), 28);
+  }
+  return stripped.split(/\s+/).slice(0, 7).join(" ") || createLocalTaskTitle(goal, language);
 }
 
-function prefersChinese(language: string | undefined, text: string): boolean {
-  return language?.toLowerCase().startsWith("zh") || /[\u4e00-\u9fa5]/.test(text);
+type TitleStyle = { kind: "zh" | "ja" | "ko" | "latin"; languageName: string };
+
+function resolveTitleStyle(language: string | undefined, text: string): TitleStyle {
+  const normalized = language?.toLowerCase() ?? "";
+  if (normalized.startsWith("zh")) return { kind: "zh", languageName: "Chinese" };
+  if (normalized.startsWith("ja")) return { kind: "ja", languageName: "Japanese" };
+  if (normalized.startsWith("ko")) return { kind: "ko", languageName: "Korean" };
+  if (normalized && !normalized.startsWith("und")) return { kind: "latin", languageName: normalized };
+
+  const kana = (text.match(/[\u3040-\u30ff]/g) ?? []).length;
+  const hangul = (text.match(/[\uac00-\ud7af]/g) ?? []).length;
+  const han = (text.match(/[\u4e00-\u9fff]/g) ?? []).length;
+  const latin = (text.match(/[A-Za-z][A-Za-z0-9-]*/g) ?? []).length;
+  if (kana > 0) return { kind: "ja", languageName: "Japanese" };
+  if (hangul > 0) return { kind: "ko", languageName: "Korean" };
+  if (han >= Math.max(2, latin)) return { kind: "zh", languageName: "Chinese" };
+  return { kind: "latin", languageName: "the user's language" };
+}
+
+function titleInstruction(style: TitleStyle): string {
+  switch (style.kind) {
+    case "zh":
+      return "为用户任务生成一个自然、简短的中文任务标题。只输出标题，通常 6 到 18 个汉字；保留必要英文技术名词如 API、MCP、RAG、MiMo；不要引号、编号、Markdown 或解释。";
+    case "ja":
+      return "ユーザーの依頼に合う自然で短い日本語のタスク名を作成してください。タイトルだけを出力し、通常 8〜24 文字程度にしてください。API、MCP、RAG など必要な技術語は保持し、引用符、番号、Markdown、説明は不要です。";
+    case "ko":
+      return "사용자 요청에 맞는 자연스럽고 짧은 한국어 작업 제목을 만드세요. 제목만 출력하고 보통 2~6어절로 작성하세요. API, MCP, RAG 같은 기술 용어는 유지하고 따옴표, 번호, Markdown, 설명은 쓰지 마세요.";
+    case "latin":
+      return `Generate a natural short task title in ${style.languageName}. Output only the title, usually 3 to 7 words. Preserve technical acronyms such as API, MCP, RAG, and MiMo. Do not use quotes, numbering, Markdown, or explanation.`;
+  }
+}
+
+function firstTitleClause(text: string): string {
+  return text.split(/[。！？；\n.!?;]/).map((part) => part.trim()).find(Boolean) ?? text;
+}
+
+function cleanCjkTitle(text: string): string {
+  return text
+    .replace(/[，。！？；：、,.!?;:()[\]{}"'“”‘’`~@#$%^&*_+=|\\/<>]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function truncateCjkTitle(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const chars = [...text];
+  return chars.slice(0, maxChars).join("").trim();
 }
 
 function defaultTaskFolder(): TaskFolderRecord {
@@ -2278,6 +2812,111 @@ function advanceScheduledTask(task: ScheduledTask, lastTaskId: string | undefine
 
 function isDefaultReflectionSchedule(task: ScheduledTask): boolean {
   return task.id === "schedule_agent_reflection" || task.type === "reflection";
+}
+
+function isIrreversibleTurnEvent(event: TaskEvent): boolean {
+  const risk = String(event.payload["riskCategory"] ?? "");
+  const toolName = String(event.payload["toolName"] ?? "");
+  return (
+    risk === "network" ||
+    risk === "destructive" ||
+    event.type === "integration_message_received" ||
+    toolName.startsWith("mcp__")
+  );
+}
+
+function memoryDescriptor(scope: "user" | "project", folder?: TaskFolderRecord): { path: string; fileName: string; charLimit: number; entryCharLimit: number } {
+  const baseDir = memoryBaseDir();
+  if (scope === "user") {
+    return {
+      path: resolve(baseDir, "USER.md"),
+      fileName: "USER.md",
+      charLimit: 6000,
+      entryCharLimit: 280
+    };
+  }
+  const root = folder?.rootPath || findWorkspaceRoot();
+  return {
+    path: resolve(baseDir, "projects", memoryPathHash(root), "MEMORY.md"),
+    fileName: "MEMORY.md",
+    charLimit: 12000,
+    entryCharLimit: 280
+  };
+}
+
+function memoryBaseDir(): string {
+  return resolve(process.env["SCC_MEMORY_DIR"]?.trim() || resolve(findWorkspaceRoot(), "data", "memory"));
+}
+
+function memoryPathHash(path: string): string {
+  return createHash("sha256").update(resolve(path)).digest("hex").slice(0, 20);
+}
+
+function defaultMemoryContent(scope: "user" | "project", folder?: TaskFolderRecord): string {
+  if (scope === "user") {
+    return [
+      "# USER.md",
+      "",
+      "Stable user preferences for SCC. Keep entries short, durable, and broadly useful.",
+      "",
+      "## Preferences",
+      "- Language: zh-CN unless the user asks otherwise.",
+      "- Style: direct, careful, evidence-backed.",
+      "",
+      "## Long-term Constraints",
+      "- Do not use scripted task quality gates or fixed report protocols to control ordinary agent work."
+    ].join("\n");
+  }
+  return [
+    "# MEMORY.md",
+    "",
+    `Project memory for ${folder?.name || "Default"}.`,
+    folder?.rootPath ? `Work root: ${folder.rootPath}` : "",
+    "",
+    "## Key Facts",
+    "- Keep only stable project facts, constraints, paths, and unresolved risks.",
+    "",
+    "## Open Risks",
+    "- Add risks only when they remain relevant across future tasks."
+  ].filter(Boolean).join("\n");
+}
+
+function limitMemoryContent(content: string, charLimit: number, entryCharLimit: number): string {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const limitedLines = lines.map((line) => {
+    if (!/^\s*[-*]\s+/.test(line)) return line;
+    return line.length <= entryCharLimit ? line : `${line.slice(0, Math.max(0, entryCharLimit - 3))}...`;
+  });
+  const limited = limitedLines.join("\n").trim();
+  if (limited.length <= charLimit) return `${limited}\n`;
+  return `${limited.slice(0, Math.max(0, charLimit - 80)).trim()}\n\n... (memory compacted to fit ${charLimit} characters)\n`;
+}
+
+function compactMemoryMarkdown(content: string, charLimit: number, entryCharLimit: number): { content: string; removedLines: number } {
+  const seen = new Set<string>();
+  let removedLines = 0;
+  const lines = content.replace(/\r\n/g, "\n").split("\n").flatMap((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return [line];
+    const normalized = trimmed.toLowerCase();
+    if (/^\s*[-*]\s+/.test(line)) {
+      const compacted = line.length <= entryCharLimit ? line : `${line.slice(0, Math.max(0, entryCharLimit - 3))}...`;
+      const key = compacted.replace(/\s+/g, " ").toLowerCase();
+      if (seen.has(key)) {
+        removedLines += 1;
+        return [];
+      }
+      seen.add(key);
+      return [compacted];
+    }
+    if (seen.has(normalized) && !trimmed.startsWith("#")) {
+      removedLines += 1;
+      return [];
+    }
+    seen.add(normalized);
+    return [line];
+  });
+  return { content: limitMemoryContent(lines.join("\n"), charLimit, entryCharLimit), removedLines };
 }
 
 function cleanTags(tags: string[]): string[] {

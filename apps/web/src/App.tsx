@@ -13,13 +13,14 @@ import { ProviderBrandIcon } from "./components/ProviderBrandIcon.js";
 import { ReflectionPanel } from "./components/ReflectionPanel.js";
 import { SettingsView, type SettingsSection } from "./components/SettingsView.js";
 import { ScheduledTasksPanel } from "./components/ScheduledTasksPanel.js";
+import { SkillCuratorPanel } from "./components/SkillCuratorPanel.js";
 import { SkillPanel } from "./components/SkillPanel.js";
 import { SupportDialog } from "./components/SupportDialog.js";
 import { TaskList } from "./components/TaskList.js";
 import { TaskThread } from "./components/TaskThread.js";
 import { WebSearchPanel } from "./components/WebSearchPanel.js";
 import type { ComposerMode, ComposerPermissionMode, PermissionPreset } from "./components/Composer.js";
-import { normalizeContextPatch, providerById } from "./llm-presets.js";
+import { providerById } from "./llm-presets.js";
 import { useWorkbenchData } from "./useWorkbenchData.js";
 
 type ActiveView = "tasks" | "history" | "library" | "docs" | "settings";
@@ -42,9 +43,10 @@ export function App() {
   const [pendingAttachments, setPendingAttachments] = useState<TaskAttachment[]>([]);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">("dark");
   const language = data.preferences?.language ?? "zh-CN";
   const theme = data.preferences?.theme ?? "dark";
-  const engineStatus = data.error ? "attention" : data.realtimeConnected ? "streaming" : "running";
+  const engineStatus = data.backendHealthy === false ? "attention" : data.error ? "attention" : data.realtimeConnected ? "streaming" : "running";
   const activeProvider = data.modelProviders.find((provider) => provider.id === data.preferences?.activeModelProviderId) ?? data.modelProviders.find((provider) => provider.enabled);
   const modelLabel = activeProvider?.defaultModelId || data.preferences?.defaultModel || "not configured";
   const permissionPreset = getPermissionPreset(data.permissions);
@@ -78,12 +80,19 @@ export function App() {
       const resolved = theme === "system" ? (media?.matches ? "light" : "dark") : theme;
       root.dataset.theme = resolved;
       root.style.colorScheme = resolved;
+      setResolvedTheme(resolved);
     };
     apply();
     if (theme !== "system" || !media) return;
     media.addEventListener?.("change", apply);
     return () => media.removeEventListener?.("change", apply);
   }, [theme]);
+
+  useEffect(() => {
+    const html = document.documentElement;
+    const lang = language === "zh-CN" ? "zh-CN" : "en";
+    if (html.lang !== lang) html.lang = lang;
+  }, [language]);
 
   return (
     <main className={activeView === "docs" ? "shell docsShell" : "shell"}>
@@ -92,6 +101,7 @@ export function App() {
           activeView={activeView}
           engineStatus={engineStatus}
           language={language}
+          resolvedTheme={resolvedTheme}
           open={taskDrawerOpen}
           tasks={data.tasks}
           folders={data.taskFolders}
@@ -142,6 +152,7 @@ export function App() {
         <TaskThread
           task={data.selected}
           busy={data.busy}
+          busySince={data.busySince}
           attachments={pendingAttachments}
           attachmentBusy={attachmentBusy}
           attachmentError={attachmentError}
@@ -178,7 +189,12 @@ export function App() {
           onOpenTasks={() => setTaskDrawerOpen(true)}
           onSubmit={(mode, text) => submitComposer(mode, text)}
           onStop={() => data.selected && void data.runTaskAction(() => api.control(data.selected!.id, "pause"))}
-          onRollbackLatest={() => data.selected && void data.rollbackTask(data.selected.id)}
+          onCancelBusy={() => data.cancelBusy()}
+          onPreviewRollback={(input) => data.selected ? data.previewRollbackTask(data.selected.id, input) : Promise.reject(new Error("No task selected"))}
+          onRollback={(input) => data.selected ? data.rollbackTask(data.selected.id, input) : Promise.reject(new Error("No task selected"))}
+          onRevertLatestTurn={() => data.selected ? data.revertLatestTurn(data.selected.id) : Promise.reject(new Error("No task selected"))}
+          onLoadContextSummaries={() => data.selected ? api.listConversationSummaries(data.selected.id) : Promise.resolve([])}
+          onLoadPromptCacheStats={() => data.selected ? api.listPromptCacheStats(data.selected.id) : Promise.resolve([])}
           titleIssue={titleIssue}
           onRetryTitle={() => titleIssue && submitNewTask(titleIssue.goal, false)}
           onUseLocalTitle={() => titleIssue && submitNewTask(titleIssue.goal, true)}
@@ -222,6 +238,16 @@ export function App() {
                 onExport={(skillId) => exportSkill(skillId)}
               />
             ),
+            curator: (
+              <SkillCuratorPanel
+                items={data.skillCurator}
+                language={language}
+                onRunReflection={() => void data.runSideAction(() => api.runReflection())}
+                onActivateSkill={(skillId) => data.runSideAction(() => api.patchSkill(skillId, { status: "active" }))}
+                onSuspendSkill={(skillId) => data.runSideAction(() => api.patchSkill(skillId, { status: "suspended" }))}
+                onMergeDuplicate={(skillIds) => mergeDuplicateIds(skillIds)}
+              />
+            ),
             knowledge: (
               <KnowledgePanel
                 query={libraryQuery}
@@ -261,9 +287,11 @@ export function App() {
                 activeProviderId={activeProvider?.id ?? null}
                 currentModelLabel={modelLabel === "not configured" ? null : modelLabel}
                 language={language}
+                preferences={data.preferences}
                 providers={data.modelProviders}
                 onCreate={(input) => data.runSideAction(() => api.createModelProvider(input))}
                 onDelete={(providerId) => data.runSideAction(() => api.deleteModelProvider(providerId))}
+                onPreference={(patch) => data.runSideAction(() => api.updatePreferences(patch))}
                 onUpdate={(providerId, input) => data.runSideAction(() => api.patchModelProvider(providerId, input))}
               />
             ),
@@ -407,7 +435,7 @@ export function App() {
 
       if (permissionPreset === "custom") {
         const snapshot = allRiskCategories.filter((risk) => granted.has(risk));
-        await api.updatePreferences(normalizeContextPatch(data.preferences ?? {}, { customPermissionSnapshot: snapshot }));
+        await api.updatePreferences({ customPermissionSnapshot: snapshot });
       }
 
       const target = new Set<RiskCategory>(
@@ -445,15 +473,15 @@ export function App() {
       if (activeProvider) {
         const model = activeProvider.models.find((item) => item.id === modelId);
         await api.patchModelProvider(activeProvider.id, { defaultModelId: modelId, makeActive: true });
-        await api.updatePreferences(normalizeContextPatch(data.preferences ?? {}, {
+        await api.updatePreferences({
           activeModelProviderId: activeProvider.id,
           defaultModel: modelId,
           providerBaseUrl: activeProvider.baseUrl,
           ...(model ? { maxTokensPerRequest: model.contextWindow } : {})
-        }));
+        });
         return;
       }
-      await api.updatePreferences(normalizeContextPatch(data.preferences ?? {}, { defaultModel: modelId }));
+      await api.updatePreferences({ defaultModel: modelId });
     });
   }
 
@@ -503,6 +531,12 @@ export function App() {
     return data.runSideAction(() =>
       api.mergeSkills(group.canonicalSkillId, { targetSkillId: group.canonicalSkillId, sourceSkillIds, deleteSources: true })
     );
+  }
+
+  function mergeDuplicateIds(skillIds: string[]) {
+    const [targetSkillId, ...sourceSkillIds] = [...new Set(skillIds)];
+    if (!targetSkillId || sourceSkillIds.length === 0) return Promise.resolve();
+    return data.runSideAction(() => api.mergeSkills(targetSkillId, { targetSkillId, sourceSkillIds, deleteSources: true }));
   }
 }
 

@@ -10,7 +10,7 @@ test.beforeEach(async ({ request }) => {
   await request.patch(`${apiBase}/api/preferences`, { data: { language: "en-US" } });
 });
 
-test("creates a host observation task and shows approval", async ({ page, request }) => {
+test("creates a host observation task and shows approval", async ({ page, request }, testInfo) => {
   await page.goto("/");
   await openNavItem(page, "New Task");
   await page.getByLabel("Task input").fill("帮我看一下当前桌面运行的软件有哪些，性能占用最高的是哪些");
@@ -25,18 +25,92 @@ test("creates a host observation task and shows approval", async ({ page, reques
   await expect(page.locator(".event.tool_result")).toHaveCount(0);
 
   await approval.getByText("Allow globally").click();
-  await expect(page.locator(".event.tool_result").filter({ hasText: "Tool evidence returned." }).first()).toBeVisible();
+  await expect(page.locator(".event.tool_result").first()).toBeVisible();
+  await expect(page.getByText("Tool evidence returned.")).toHaveCount(0);
+
+  const collapsedMetrics = await timelineMetrics(page);
+  expect(collapsedMetrics.horizontalOverflow).toBeLessThanOrEqual(1);
+  expect(collapsedMetrics.toolDetailsHeight).toBeLessThanOrEqual(36);
+  expect(collapsedMetrics.toolBodyHeight).toBeLessThanOrEqual(1);
+  expect(collapsedMetrics.closedToolBodyText).not.toContain("Tool evidence returned");
+  expect(collapsedMetrics.closedToolBodyText).not.toContain("WorkingSet64");
+
+  if ((await page.locator(".thinkingSummary").count()) > 0) {
+    await expect(page.locator(".thinkingSummary").first()).toBeVisible();
+    const collapsedThinking = await thinkingMetrics(page);
+    expect(collapsedThinking.shellHeight).toBeLessThanOrEqual(1);
+    expect(collapsedThinking.eventHeight).toBeLessThanOrEqual(38);
+    expect(collapsedThinking.actionsOpacity).toBe("0");
+    await page.locator(".thinkingSummary").first().click();
+    await expect(page.locator(".thinkingDetails.open").first()).toBeVisible();
+    const expandedThinking = await thinkingMetrics(page);
+    expect(expandedThinking.shellHeight).toBeGreaterThan(collapsedThinking.shellHeight);
+    expect(expandedThinking.actionsOpacity).toBe("1");
+    await page.locator(".thinkingSummary").first().click();
+    await expect.poll(async () => (await thinkingMetrics(page)).shellHeight).toBeLessThanOrEqual(1);
+    const reclapsedThinking = await thinkingMetrics(page);
+    expect(recollapsedThinking.eventHeight).toBeLessThanOrEqual(38);
+  }
+
+  await page.locator(".toolResultSummary").first().click();
+  await expect(page.locator(".toolResultDetails.open").first()).toBeVisible();
+  const expandedMetrics = await timelineMetrics(page);
+  expect(expandedMetrics.toolDetailsHeight).toBeGreaterThan(collapsedMetrics.toolDetailsHeight);
+  await testInfo.attach("timeline-tool-expanded", {
+    body: await page.screenshot({ fullPage: false }),
+    contentType: "image/png"
+  });
 
   await page.getByLabel("Task input").fill("再看一次当前运行的软件");
   await submitInput(page);
   await expect(page.locator(".approvalCard")).toHaveCount(0);
-  await expect(page.getByText("host_observation: global permission")).toBeVisible();
-  await expect(page.locator(".event.tool_result").filter({ hasText: "Tool evidence returned." }).first()).toBeVisible();
+  await expect(page.getByText("host_observation: global permission")).toHaveCount(0);
+  await expect(page.locator(".event.tool_result").first()).toBeVisible();
 
   await openNavItem(page, /Settings/);
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
   await page.getByText("Permissions").click();
   await expect(page.getByText("Permissions and preferences")).toBeVisible();
+});
+
+test("covers support, docs, settings subpages, and visual overflow probes", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await openUtilityItem(page, "Support");
+  await expect(page.getByRole("dialog", { name: "Need a hand?" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Docs" }).click();
+  await expect(page.locator(".docsView")).toBeVisible();
+  await expect(page.locator(".sidebar")).toHaveCount(0);
+  await expect(page.locator(".docsArticle")).toBeVisible();
+  await testInfo.attach("docs-view", {
+    body: await page.screenshot({ fullPage: false }),
+    contentType: "image/png"
+  });
+  await page.getByRole("button", { name: "Back" }).click();
+
+  await openNavItem(page, /Settings/);
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  const settingsSections = ["Permissions", "MCP", "Integrations", "Scheduled tasks", "Web search", "Preferences"];
+  const expectedPanelText: Record<string, string> = {
+    "Permissions": "Permissions",
+    "MCP": "MCP",
+    "Integrations": "Integrations",
+    "Scheduled tasks": "Scheduled",
+    "Web search": "Web search",
+    "Preferences": "Agent preferences"
+  };
+  for (const section of settingsSections) {
+    await page.getByRole("button", { name: section }).click();
+    await expect(page.locator(".settingsPanel")).toContainText(expectedPanelText[section]!);
+    const metrics = await page.evaluate(() => ({
+      horizontalOverflow: Math.max(document.documentElement.scrollWidth - document.documentElement.clientWidth, document.body.scrollWidth - document.body.clientWidth)
+    }));
+    expect(metrics.horizontalOverflow).toBeLessThanOrEqual(1);
+  }
+
+  await testInfo.attach("settings-preferences", {
+    body: await page.screenshot({ fullPage: false }),
+    contentType: "image/png"
+  });
 });
 
 test("manages task folders from the sidebar on desktop and mobile", async ({ page, request }, testInfo) => {
@@ -198,10 +272,57 @@ async function openNavItem(page: import("@playwright/test").Page, name: string |
   await page.locator(".sidebarNav").getByRole("button", { name }).click();
 }
 
+async function openUtilityItem(page: import("@playwright/test").Page, name: string | RegExp): Promise<void> {
+  if ((page.viewportSize()?.width ?? 1440) <= 760) {
+    await page.getByRole("button", { name: /Tasks/ }).click();
+  }
+  await page.locator(".sidebarUtilityToggle").click();
+  await page.locator(".sidebarUtilityMenu").getByRole("button", { name }).click();
+}
+
 async function openTaskDrawer(page: import("@playwright/test").Page): Promise<void> {
   if ((page.viewportSize()?.width ?? 1440) <= 760) {
     await page.getByRole("button", { name: /Tasks/ }).click();
   }
+}
+
+async function timelineMetrics(page: import("@playwright/test").Page): Promise<{
+  closedToolBodyText: string;
+  horizontalOverflow: number;
+  toolBodyHeight: number;
+  toolDetailsHeight: number;
+}> {
+  return page.evaluate(() => {
+    const toolDetails = document.querySelector(".toolResultDetails") as HTMLElement | null;
+    const shell = document.querySelector(".toolResultBodyShell") as HTMLElement | null;
+    const toolBodyHeight = shell?.getBoundingClientRect().height ?? 0;
+    return {
+      closedToolBodyText: toolBodyHeight > 1 ? shell?.innerText ?? "" : "",
+      horizontalOverflow: Math.max(
+        document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        document.body.scrollWidth - document.body.clientWidth
+      ),
+      toolBodyHeight,
+      toolDetailsHeight: toolDetails?.getBoundingClientRect().height ?? 0
+    };
+  });
+}
+
+async function thinkingMetrics(page: import("@playwright/test").Page): Promise<{
+  actionsOpacity: string;
+  eventHeight: number;
+  shellHeight: number;
+}> {
+  return page.evaluate(() => {
+    const event = document.querySelector(".event.thinking_delta") as HTMLElement | null;
+    const shell = document.querySelector(".thinkingBodyShell") as HTMLElement | null;
+    const actions = document.querySelector(".thinkingExpandedActions") as HTMLElement | null;
+    return {
+      actionsOpacity: actions ? getComputedStyle(actions).opacity : "0",
+      eventHeight: event?.getBoundingClientRect().height ?? 0,
+      shellHeight: shell?.getBoundingClientRect().height ?? 0
+    };
+  });
 }
 
 async function submitInput(page: import("@playwright/test").Page): Promise<void> {

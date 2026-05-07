@@ -21,6 +21,7 @@ import type {
   TaskCheckpoint,
   TaskDetail,
   TaskFolderRecord,
+  TaskTurn,
   TaskMemory,
   ToolApproval,
   UserPreferences,
@@ -39,6 +40,10 @@ export interface WorkbenchStore {
   getTask(taskId: string): Promise<TaskDetail | undefined>;
   listTasks(): Promise<TaskDetail[]>;
   deleteTask(taskId: string): Promise<void>;
+  saveTaskTurn(record: TaskTurn): Promise<void>;
+  getTaskTurn(turnId: string): Promise<TaskTurn | undefined>;
+  listTaskTurns(taskId?: string): Promise<TaskTurn[]>;
+  deleteTaskTurn(turnId: string): Promise<void>;
   saveTaskAttachment(record: TaskAttachment): Promise<void>;
   getTaskAttachment(attachmentId: string): Promise<TaskAttachment | undefined>;
   listTaskAttachments(taskId?: string): Promise<TaskAttachment[]>;
@@ -135,6 +140,7 @@ export interface EncryptedSecretValue {
 
 export class InMemoryWorkbenchStore implements WorkbenchStore {
   private readonly tasks = new Map<string, TaskDetail>();
+  private readonly taskTurns = new Map<string, TaskTurn>();
   private readonly taskAttachments = new Map<string, TaskAttachment>();
   private readonly taskCheckpoints = new Map<string, TaskCheckpoint>();
   private readonly conversationSummaries = new Map<string, ConversationSummary>();
@@ -180,6 +186,26 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
 
   async deleteTask(taskId: string): Promise<void> {
     this.tasks.delete(taskId);
+  }
+
+  async saveTaskTurn(record: TaskTurn): Promise<void> {
+    this.taskTurns.set(record.id, clone(record));
+  }
+
+  async getTaskTurn(turnId: string): Promise<TaskTurn | undefined> {
+    const record = this.taskTurns.get(turnId);
+    return record ? clone(record) : undefined;
+  }
+
+  async listTaskTurns(taskId?: string): Promise<TaskTurn[]> {
+    return [...this.taskTurns.values()]
+      .filter((record) => !taskId || record.taskId === taskId)
+      .map((record) => clone(record))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async deleteTaskTurn(turnId: string): Promise<void> {
+    this.taskTurns.delete(turnId);
   }
 
   async saveTaskAttachment(record: TaskAttachment): Promise<void> {
@@ -616,6 +642,7 @@ export function defaultPreferences(): UserPreferences {
     mcpApprovalMode: "confirm_dangerous",
     sanitizeSensitiveData: true,
     encryptStorage: false,
+    modelRoute: { fallbackProviderIds: [] },
     updatedAt: new Date().toISOString()
   };
 }

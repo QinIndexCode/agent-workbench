@@ -114,6 +114,12 @@ export const TaskEventSchema = z.object({
     "task_memory_created",
     "conversation_summary_created",
     "context_overflow_recovered",
+    "provider_fallback",
+    "turn_started",
+    "turn_reverted",
+    "turn_edit_submitted",
+    "event_reverted",
+    "rollback_partial",
     "task_checkpoint_created",
     "task_rollback_completed",
     "task_rollback_failed",
@@ -135,8 +141,39 @@ export const TaskEventSchema = z.object({
   ]),
   createdAt: z.string(),
   summary: z.string(),
-  payload: z.record(z.unknown()).default({})
+  payload: z.record(z.unknown()).default({}),
+  reverted: z.boolean().optional()
 });
+
+export const TaskTurnSchema = z.object({
+  id: z.string(),
+  taskId: z.string(),
+  startEventId: z.string(),
+  userEventId: z.string(),
+  endEventId: z.string().optional(),
+  originalContent: z.string(),
+  editedContent: z.string().optional(),
+  status: z.enum(["active", "reverted"]).default("active"),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  revertedAt: z.string().optional()
+});
+
+export const TaskTurnRevertResultSchema = z.object({
+  task: z.lazy(() => TaskDetailSchema),
+  turn: TaskTurnSchema,
+  draft: z.string(),
+  revertedEventCount: z.number().int().nonnegative(),
+  irreversibleEventCount: z.number().int().nonnegative(),
+  rollback: z.lazy(() => TaskRollbackResultSchema).optional()
+});
+
+export const TaskTurnEditRequestSchema = z
+  .object({
+    content: z.string().min(1),
+    attachmentIds: z.array(z.string().min(1)).default([])
+  })
+  .strict();
 
 export const TaskAttachmentKindSchema = z.enum(["text", "markdown", "code", "data", "image", "pdf", "office", "binary"]);
 
@@ -219,13 +256,41 @@ export const TaskCheckpointSchema = z.object({
 
 export const TaskRollbackRequestSchema = z
   .object({
-    checkpointId: z.string().optional()
+    checkpointId: z.string().optional(),
+    filePaths: z.array(z.string().min(1)).optional()
   })
   .strict();
+
+export const TaskRollbackFileChangeSchema = z.object({
+  path: z.string(),
+  relativePath: z.string(),
+  status: z.enum(["modified", "created", "deleted", "unchanged", "skipped"]),
+  existedBefore: z.boolean(),
+  existsNow: z.boolean(),
+  canRollback: z.boolean(),
+  beforeHash: z.string().optional(),
+  currentHash: z.string().optional(),
+  sizeBefore: z.number().int().nonnegative().default(0),
+  sizeNow: z.number().int().nonnegative().default(0),
+  reason: z.string().optional()
+});
+
+export const TaskRollbackPreviewSchema = z.object({
+  taskId: z.string(),
+  checkpointId: z.string(),
+  workRoot: z.string(),
+  files: z.array(TaskRollbackFileChangeSchema),
+  restorableFiles: z.number().int().nonnegative(),
+  deletableFiles: z.number().int().nonnegative(),
+  skippedFiles: z.number().int().nonnegative(),
+  createdAt: z.string()
+});
 
 export const TaskRollbackResultSchema = z.object({
   taskId: z.string(),
   checkpointId: z.string(),
+  workRoot: z.string(),
+  files: z.array(TaskRollbackFileChangeSchema),
   restoredFiles: z.number().int().nonnegative(),
   deletedFiles: z.number().int().nonnegative(),
   skippedFiles: z.number().int().nonnegative(),
@@ -362,6 +427,31 @@ export const MessageRequestSchema = z
   })
   .strict();
 
+export const MemoryDocumentSchema = z.object({
+  scope: z.enum(["user", "project"]),
+  folderId: z.string().optional(),
+  workRoot: z.string().optional(),
+  path: z.string(),
+  fileName: z.string(),
+  content: z.string(),
+  charLimit: z.number().int().positive(),
+  entryCharLimit: z.number().int().positive(),
+  updatedAt: z.string()
+});
+
+export const MemoryDocumentPatchSchema = z
+  .object({
+    content: z.string()
+  })
+  .strict();
+
+export const MemoryDocumentCompactResultSchema = z.object({
+  document: MemoryDocumentSchema,
+  beforeChars: z.number().int().nonnegative(),
+  afterChars: z.number().int().nonnegative(),
+  removedLines: z.number().int().nonnegative()
+});
+
 export const ControlRequestSchema = z
   .object({
     action: z.enum(["pause", "resume", "cancel"])
@@ -404,6 +494,16 @@ export const UserPreferencesSchema = z.object({
   sanitizeSensitiveData: z.boolean().default(true),
   encryptStorage: z.boolean().default(false),
   customPermissionSnapshot: z.array(z.enum(["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"])).optional(),
+  modelRoute: z
+    .object({
+      mainProviderId: z.string().optional(),
+      fallbackProviderIds: z.array(z.string()).default([]),
+      compressionProviderId: z.string().optional(),
+      titleGenerationProviderId: z.string().optional(),
+      ragSummaryProviderId: z.string().optional(),
+      reflectionProviderId: z.string().optional()
+    })
+    .default({ fallbackProviderIds: [] }),
   updatedAt: z.string()
 });
 
@@ -969,6 +1069,19 @@ export const SkillConflictSchema = z.object({
   status: z.enum(["open", "acknowledged", "resolved"]),
   createdAt: z.string(),
   updatedAt: z.string()
+});
+
+export const SkillCuratorItemSchema = z.object({
+  id: z.string(),
+  kind: z.enum(["candidate", "active", "duplicate", "conflict", "low_value_memory"]),
+  title: z.string(),
+  status: z.enum(["candidate", "active", "suspended", "retired", "needs_review", "not_promoted"]),
+  reason: z.string(),
+  recommendation: z.string(),
+  skillIds: z.array(z.string()).default([]),
+  memoryIds: z.array(z.string()).default([]),
+  confidence: z.number().min(0).max(1).optional(),
+  createdAt: z.string()
 });
 
 export const GlobalPermissionRequestSchema = z

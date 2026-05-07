@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GlobalPermissionGrant, KnowledgeItem, ModelProviderRecord, ScheduledTask, SkillRecord, TaskDetail, TaskFolderRecord, ToolApproval, UserPreferences } from "@scc/shared";
 import { App } from "./App.js";
@@ -18,6 +18,7 @@ import { TaskThread } from "./components/TaskThread.js";
 import { Timeline } from "./components/Timeline.js";
 
 afterEach(() => {
+  cleanup();
   vi.unstubAllGlobals();
 });
 
@@ -325,11 +326,49 @@ describe("Workbench components", () => {
   it("renders user-facing timeline evidence", () => {
     render(<Timeline task={task} onApprovalDecision={vi.fn()} />);
     expect(screen.getByText("check processes")).toBeInTheDocument();
-    expect(screen.getByText("View raw output")).toBeInTheDocument();
+    expect(screen.getByText(".../tool")).toBeInTheDocument();
+    expect(screen.queryByText("View raw output")).not.toBeInTheDocument();
+  });
+
+  it("keeps tool evidence collapsed, path-focused, and free of placeholder text", () => {
+    const { container } = render(
+      <Timeline
+        task={{
+          ...task,
+          events: [
+            {
+              id: "event_tool_path",
+              taskId: "task_1",
+              type: "tool_result",
+              createdAt: new Date().toISOString(),
+              summary: "Tool completed",
+              payload: {
+                toolName: "read_file",
+                ok: true,
+                args: { path: "src/components/Timeline.tsx" },
+                output: JSON.stringify({ summary: "Tool evidence returned.", path: "src/components/Timeline.tsx", content: "actual returned content" })
+              }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    const summary = screen.getByRole("button", { name: /components\/Timeline\.tsx/ });
+    expect(summary).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText(".../components/Timeline.tsx")).toBeInTheDocument();
+    expect(screen.queryByText("Tool evidence returned.")).not.toBeInTheDocument();
+    expect(container.querySelector(".toolResultDetails")).not.toHaveClass("open");
+
+    fireEvent.click(summary);
+    expect(summary).toHaveAttribute("aria-expanded", "true");
+    expect(container.querySelector(".toolResultDetails")).toHaveClass("open");
+    expect(screen.getByText(/actual returned content/)).toBeInTheDocument();
   });
 
   it("renders streaming assistant output and collapsible thinking", () => {
-    render(
+    const { container } = render(
       <Timeline
         task={{
           ...task,
@@ -367,6 +406,12 @@ describe("Workbench components", () => {
     );
     expect(screen.getByText("Thinking")).toBeInTheDocument();
     expect(screen.getByText("Partial output")).toBeInTheDocument();
+    const thinking = screen.getByRole("button", { name: /Thinking/ });
+    expect(thinking).toHaveAttribute("aria-expanded", "false");
+    expect(container.querySelector(".thinkingDetails")).not.toHaveClass("open");
+    fireEvent.click(thinking);
+    expect(thinking).toHaveAttribute("aria-expanded", "true");
+    expect(container.querySelector(".thinkingDetails")).toHaveClass("open");
   });
 
   it("renders assistant markdown as structured content", () => {
@@ -485,6 +530,7 @@ describe("Workbench components", () => {
       mcpApprovalMode: "confirm_dangerous",
       sanitizeSensitiveData: true,
       encryptStorage: false,
+      modelRoute: { fallbackProviderIds: [] },
       updatedAt: new Date().toISOString()
     };
 
@@ -805,6 +851,7 @@ describe("Workbench components", () => {
           url === "/api/skills" ||
           url === "/api/skills/duplicates" ||
           url === "/api/skill-conflicts" ||
+          url === "/api/skill-curator" ||
           url === "/api/permissions/global" ||
           url === "/api/reflections" ||
           url === "/api/project-memories" ||
@@ -837,6 +884,7 @@ describe("Workbench components", () => {
             mcpApprovalMode: "confirm_dangerous",
             sanitizeSensitiveData: true,
             encryptStorage: false,
+            modelRoute: { fallbackProviderIds: [] },
             updatedAt: new Date().toISOString()
           });
         }
@@ -896,6 +944,7 @@ describe("Workbench components", () => {
           url === "/api/skills" ||
           url === "/api/skills/duplicates" ||
           url === "/api/skill-conflicts" ||
+          url === "/api/skill-curator" ||
           url === "/api/permissions/global" ||
           url === "/api/reflections" ||
           url === "/api/project-memories" ||
@@ -928,6 +977,7 @@ describe("Workbench components", () => {
             mcpApprovalMode: "confirm_dangerous",
             sanitizeSensitiveData: true,
             encryptStorage: false,
+            modelRoute: { fallbackProviderIds: [] },
             updatedAt: new Date().toISOString()
           });
         }

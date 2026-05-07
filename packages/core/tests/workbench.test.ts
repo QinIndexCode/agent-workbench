@@ -24,6 +24,7 @@ import {
   type ModelTurn,
   PermissionEngine,
   buildHistoryLayer,
+  createLocalTaskTitle,
   detectSkillConflicts,
   createExperience,
   createId,
@@ -164,6 +165,15 @@ describe("ContextAssembler", () => {
   });
 });
 
+describe("Task title generation", () => {
+  it("formats local fallback titles according to language habits", () => {
+    expect(createLocalTaskTitle("请帮我检查 MCP 网络权限配置是否正确", "zh-CN")).toContain("MCP");
+    expect(createLocalTaskTitle("Please debug the failing payment webhook tests", "en-US")).toBe("Please Debug The Failing Payment Webhook Tests");
+    expect(createLocalTaskTitle("現在のプロジェクト構造を確認して改善案を出して", "ja-JP")).toContain("プロジェクト");
+    expect(createLocalTaskTitle("현재 프로젝트 구조를 점검하고 개선안을 정리해줘", "ko-KR")).toContain("프로젝트");
+  });
+});
+
 class StubToolExecutor {
   calls: ToolCall[] = [];
 
@@ -242,6 +252,20 @@ class StreamingFinalModel implements ModelClient {
     await stream?.onAssistantDelta("Hello");
     await stream?.onAssistantDelta(" stream.");
     return { kind: "final", message: "Hello stream.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+}
+
+class ProviderFallbackEventModel implements ModelClient {
+  async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    await stream?.onProviderFallback?.({
+      fromProviderId: "provider_primary",
+      toProviderId: "provider_backup",
+      fromModel: "primary-model",
+      toModel: "backup-model",
+      category: "rate_limit",
+      reason: "simulated rate limit"
+    });
+    return { kind: "final", message: "Fallback completed.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
   }
 }
 
@@ -619,6 +643,55 @@ describe("AgentWorkbench", () => {
     }
   });
 
+  it("previews checkpoint diffs and rolls back only selected files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-checkpoint-selective-"));
+    const hash = (content: string) => createHash("sha256").update(content).digest("hex").slice(0, 16);
+    try {
+      mkdirSync(join(root, "src"), { recursive: true });
+      const leftPath = join(root, "src", "left.txt");
+      const rightPath = join(root, "src", "right.txt");
+      writeFileSync(leftPath, "left-before\n", "utf8");
+      writeFileSync(rightPath, "right-before\n", "utf8");
+      const workbench = new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        model: new SequenceToolModel([
+          {
+            toolName: "edit_file",
+            args: {
+              path: "src/left.txt",
+              expectedHash: hash("left-before\n"),
+              edits: [{ startLine: 1, endLine: 1, newText: "left-after" }]
+            }
+          },
+          {
+            toolName: "edit_file",
+            args: {
+              path: "src/right.txt",
+              expectedHash: hash("right-before\n"),
+              edits: [{ startLine: 1, endLine: 1, newText: "right-after" }]
+            }
+          }
+        ]),
+        tools: new ShellToolExecutor()
+      });
+      const folder = await workbench.createTaskFolder({ name: "Selective root", rootPath: root });
+      await workbench.grantGlobalPermission("workspace_write", "selective rollback test");
+
+      const completed = await workbench.createTask("edit two files", "Edit two files", folder.id);
+      const preview = await workbench.previewTaskRollback(completed.id);
+
+      expect(preview.files.map((file) => file.relativePath.replace(/\\/g, "/")).sort()).toEqual(["src/left.txt", "src/right.txt"]);
+      expect(preview.files.every((file) => file.canRollback)).toBe(true);
+
+      const result = await workbench.rollbackTask(completed.id, { filePaths: ["src/left.txt"] });
+      expect(result.restoredFiles).toBe(1);
+      expect(readFileSync(leftPath, "utf8")).toBe("left-before\n");
+      expect(readFileSync(rightPath, "utf8")).toBe("right-after\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("runs scheduled reflection and records the result without creating a normal task", async () => {
     const store = new InMemoryWorkbenchStore();
     const workbench = new AgentWorkbench({ store, model: new StreamingFinalModel() });
@@ -691,6 +764,16 @@ describe("AgentWorkbench", () => {
     expect(stats[0]?.inputTokens).toBe(1000);
     expect(stats[0]?.cachedTokens).toBe(400);
     expect(stats[0]?.cacheHitRatio).toBe(0.4);
+  });
+
+  it("records provider fallback diagnostics in task events", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ProviderFallbackEventModel() });
+    const task = await workbench.createTask("exercise provider fallback");
+    const fallback = task.events.find((event) => event.type === "provider_fallback");
+
+    expect(fallback?.payload["fromModel"]).toBe("primary-model");
+    expect(fallback?.payload["toModel"]).toBe("backup-model");
+    expect(task.status).toBe("completed");
   });
 
   it("snapshots the selected local folder root when a task is created", async () => {
@@ -807,6 +890,22 @@ describe("AgentWorkbench", () => {
     const skills = await workbench.listSkills();
     expect(experiences[0]?.readOnly).toBe(true);
     expect(skills).toHaveLength(0);
+  });
+
+  it("surfaces skill curator explanations for candidates and low-value memories", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+    await workbench.createTask("brief answer only");
+    await workbench.createSkill({
+      title: "Reusable repository triage",
+      body: "# Reusable repository triage\nUse current evidence and summarize reusable risks.",
+      status: "candidate",
+      applicability: { description: "Repository triage", requiredTools: ["read_file"], keywords: ["repo", "triage"] }
+    });
+
+    const items = await workbench.listSkillCuratorItems();
+
+    expect(items.some((item) => item.kind === "candidate" && item.title === "Reusable repository triage")).toBe(true);
+    expect(items.some((item) => item.kind === "low_value_memory" && item.status === "not_promoted")).toBe(true);
   });
 
   it("deletes a task and can clean linked learning records and derived skills", async () => {

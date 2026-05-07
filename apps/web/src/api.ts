@@ -19,6 +19,9 @@ import type {
   ModelProviderCreateRequest,
   ModelProviderPatchRequest,
   ModelProviderRecord,
+  MemoryDocument,
+  MemoryDocumentCompactResult,
+  MemoryDocumentPatch,
   PatternRecord,
   PreferencesPatch,
   ProjectMemory,
@@ -31,6 +34,7 @@ import type {
   SkillBulkDeleteRequest,
   SkillCorrectionRequest,
   SkillConflict,
+  SkillCuratorItem,
   SkillCreateRequest,
   SkillDuplicateGroup,
   SkillMergeRequest,
@@ -40,9 +44,13 @@ import type {
   TaskDeleteRequest,
   TaskDeleteResult,
   TaskDetail,
+  TaskTurn,
+  TaskTurnEditRequest,
+  TaskTurnRevertResult,
   TaskAttachment,
   TaskAttachmentUploadRequest,
   TaskCheckpoint,
+  TaskRollbackPreview,
   TaskFolderClearRequest,
   TaskFolderClearResult,
   TaskFolderDeleteRequest,
@@ -64,17 +72,105 @@ import type {
 } from "@scc/shared";
 
 const apiBase = import.meta.env["VITE_API_BASE"] ?? "";
+const REQUEST_TIMEOUT_MS = 30000;
+
+export interface RequestMeta {
+  startTime: number;
+  endTime?: number;
+  duration?: number;
+  path: string;
+  status?: number;
+}
+
+let lastRequestMeta: RequestMeta | null = null;
+
+export function getLastRequestMeta(): RequestMeta | null {
+  return lastRequestMeta;
+}
+
+const friendlyErrorMessages: Record<number, string> = {
+  400: "请求参数有误，请检查输入后重试。",
+  401: "未授权，请检查登录状态。",
+  403: "无权访问此资源。",
+  404: "请求的资源不存在。",
+  409: "资源冲突，请刷新后重试。",
+  422: "请求数据验证失败，请检查输入。",
+  429: "请求过于频繁，请稍后再试。",
+  500: "服务器内部错误，请稍后重试。",
+  502: "网关错误，服务可能暂时不可用。",
+  503: "服务暂时不可用，请稍后重试。"
+};
+
+function getFriendlyErrorMessage(response: Response, bodyText: string): string {
+  const status = response.status;
+  const backendMessage = parseBackendError(bodyText);
+  if (backendMessage) {
+    if (/connection error|failed to fetch|network|fetch failed|ECONN|ETIMEDOUT|ENOTFOUND/i.test(backendMessage)) {
+      return "模型服务连接失败。请检查模型配置、Base URL、API Key 或网络状态，然后重试。";
+    }
+    if (/no model provider|no provider|not configured/i.test(backendMessage)) {
+      return "尚未配置可用模型。请先连接或添加模型配置。";
+    }
+    if (status >= 500 || /model provider|title|provider|connection/i.test(backendMessage)) return backendMessage;
+  }
+  if (friendlyErrorMessages[status]) return friendlyErrorMessages[status];
+  if (bodyText && bodyText.length < 200) return bodyText;
+  return `请求失败 (${status})。`;
+}
+
+function parseBackendError(bodyText: string): string | null {
+  if (!bodyText) return null;
+  try {
+    const parsed = JSON.parse(bodyText) as { error?: unknown; message?: unknown };
+    const value = typeof parsed.error === "string" ? parsed.error : typeof parsed.message === "string" ? parsed.message : "";
+    return value.trim() || null;
+  } catch {
+    return bodyText.length < 200 ? bodyText.trim() || null : null;
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
-  const response = await fetch(`${apiBase}${path}`, {
-    ...init,
-    headers
-  });
-  if (!response.ok) throw new Error(await response.text());
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const startTime = performance.now();
+
+  lastRequestMeta = { startTime, path };
+
+  try {
+    const response = await fetch(`${apiBase}${path}`, {
+      ...init,
+      headers,
+      signal: controller.signal
+    });
+    globalThis.clearTimeout(timeoutId);
+    const endTime = performance.now();
+    const duration = Math.round(endTime - startTime);
+    lastRequestMeta = { startTime, endTime, duration, path, status: response.status };
+
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => "");
+      throw new Error(getFriendlyErrorMessage(response, bodyText));
+    }
+    if (response.status === 204) return undefined as T;
+    return (await response.json()) as T;
+  } catch (error) {
+    globalThis.clearTimeout(timeoutId);
+    const endTime = performance.now();
+    const duration = Math.round(endTime - startTime);
+    const isAbort = error instanceof Error && error.name === "AbortError";
+    lastRequestMeta = { startTime, endTime, duration, path };
+
+    if (isAbort) {
+      if (duration >= REQUEST_TIMEOUT_MS - 100) {
+        throw new Error("后端响应超时。模型处理时间较长，请稍后重试或检查后端服务状态。");
+      }
+      throw new Error("请求被取消。");
+    }
+    throw error;
+  }
 }
 
 export const api = {
@@ -140,6 +236,18 @@ export const api = {
   rollbackTask(taskId: string, input: TaskRollbackRequest = {}): Promise<TaskRollbackResult> {
     return request(`/api/tasks/${taskId}/rollback`, { method: "POST", body: JSON.stringify(input) });
   },
+  previewTaskRollback(taskId: string, input: TaskRollbackRequest = {}): Promise<TaskRollbackPreview> {
+    return request(`/api/tasks/${taskId}/rollback/preview`, { method: "POST", body: JSON.stringify(input) });
+  },
+  listTaskTurns(taskId: string): Promise<TaskTurn[]> {
+    return request(`/api/tasks/${taskId}/turns`);
+  },
+  revertTaskTurn(taskId: string, turnId: string): Promise<TaskTurnRevertResult> {
+    return request(`/api/tasks/${taskId}/turns/${turnId}/revert`, { method: "POST" });
+  },
+  editTaskTurn(taskId: string, turnId: string, input: TaskTurnEditRequest): Promise<TaskDetail> {
+    return request(`/api/tasks/${taskId}/turns/${turnId}/edit`, { method: "POST", body: JSON.stringify(input) });
+  },
   control(taskId: string, action: "pause" | "resume" | "cancel"): Promise<TaskDetail> {
     return request(`/api/tasks/${taskId}/control`, { method: "POST", body: JSON.stringify({ action }) });
   },
@@ -179,6 +287,9 @@ export const api = {
   listSkillConflicts(): Promise<SkillConflict[]> {
     return request("/api/skill-conflicts");
   },
+  listSkillCurator(): Promise<SkillCuratorItem[]> {
+    return request("/api/skill-curator");
+  },
   exportSkill(skillId: string): Promise<{ markdown: string; manifest: Record<string, unknown> }> {
     return request(`/api/skills/${skillId}/export`);
   },
@@ -205,6 +316,21 @@ export const api = {
   },
   updatePreferences(patch: PreferencesPatch): Promise<UserPreferences> {
     return request("/api/preferences", { method: "PATCH", body: JSON.stringify(patch) });
+  },
+  getUserProfile(): Promise<MemoryDocument> {
+    return request("/api/user-profile");
+  },
+  updateUserProfile(input: MemoryDocumentPatch): Promise<MemoryDocument> {
+    return request("/api/user-profile", { method: "PATCH", body: JSON.stringify(input) });
+  },
+  getProjectMemory(folderId = "default"): Promise<MemoryDocument> {
+    return request(`/api/project-memory?folderId=${encodeURIComponent(folderId)}`);
+  },
+  updateProjectMemory(folderId: string, input: MemoryDocumentPatch): Promise<MemoryDocument> {
+    return request(`/api/project-memory?folderId=${encodeURIComponent(folderId)}`, { method: "PATCH", body: JSON.stringify(input) });
+  },
+  compactProjectMemory(folderId = "default"): Promise<MemoryDocumentCompactResult> {
+    return request(`/api/project-memory/compact?folderId=${encodeURIComponent(folderId)}`, { method: "POST" });
   },
   listReflections(): Promise<ReflectionSession[]> {
     return request("/api/reflections");
@@ -320,5 +446,8 @@ export const api = {
   },
   disconnectIntegration(integrationId: string): Promise<IntegrationProviderConfig> {
     return request(`/api/integrations/${integrationId}/disconnect`, { method: "POST" });
+  },
+  healthCheck(): Promise<{ status: string; timestamp: string }> {
+    return request("/api/health");
   }
 };

@@ -38,6 +38,9 @@ import type {
   ModelProviderCreateRequestSchema,
   ModelProviderPatchRequestSchema,
   ModelProviderRecordSchema,
+  MemoryDocumentCompactResultSchema,
+  MemoryDocumentPatchSchema,
+  MemoryDocumentSchema,
   PatternRecordSchema,
   PreferencesPatchSchema,
   ProviderProtocolSchema,
@@ -50,6 +53,7 @@ import type {
   SkillCorrectionRequestSchema,
   SkillBulkDeleteRequestSchema,
   SkillCreateRequestSchema,
+  SkillCuratorItemSchema,
   SkillConflictSchema,
   SkillDeleteRequestSchema,
   SkillDuplicateGroupSchema,
@@ -64,6 +68,8 @@ import type {
   TaskAttachmentSchema,
   TaskAttachmentUploadRequestSchema,
   TaskCheckpointSchema,
+  TaskRollbackFileChangeSchema,
+  TaskRollbackPreviewSchema,
   TaskRollbackRequestSchema,
   TaskRollbackResultSchema,
   TaskMemorySchema,
@@ -83,6 +89,9 @@ import type {
   TaskDeleteResultSchema,
   TaskDetailSchema,
   TaskEventSchema,
+  TaskTurnEditRequestSchema,
+  TaskTurnRevertResultSchema,
+  TaskTurnSchema,
   TaskStatusSchema,
   ToolApprovalSchema,
   ToolCallSchema,
@@ -113,6 +122,8 @@ export type TaskAttachmentKind = z.infer<typeof TaskAttachmentKindSchema>;
 export type TaskAttachment = z.infer<typeof TaskAttachmentSchema>;
 export type TaskAttachmentUploadRequest = z.infer<typeof TaskAttachmentUploadRequestSchema>;
 export type TaskCheckpoint = z.infer<typeof TaskCheckpointSchema>;
+export type TaskRollbackFileChange = z.infer<typeof TaskRollbackFileChangeSchema>;
+export type TaskRollbackPreview = z.infer<typeof TaskRollbackPreviewSchema>;
 export type TaskRollbackRequest = z.infer<typeof TaskRollbackRequestSchema>;
 export type TaskRollbackResult = z.infer<typeof TaskRollbackResultSchema>;
 export type ConversationSummary = z.infer<typeof ConversationSummarySchema>;
@@ -145,6 +156,9 @@ export type ModelPreset = z.infer<typeof ModelPresetSchema>;
 export type ModelProviderRecord = z.infer<typeof ModelProviderRecordSchema>;
 export type ModelProviderCreateRequest = z.infer<typeof ModelProviderCreateRequestSchema>;
 export type ModelProviderPatchRequest = z.infer<typeof ModelProviderPatchRequestSchema>;
+export type MemoryDocument = z.infer<typeof MemoryDocumentSchema>;
+export type MemoryDocumentPatch = z.infer<typeof MemoryDocumentPatchSchema>;
+export type MemoryDocumentCompactResult = z.infer<typeof MemoryDocumentCompactResultSchema>;
 export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderConfigSchema>;
 export type KnowledgeItem = z.infer<typeof KnowledgeItemSchema>;
 export type KnowledgeChunk = z.infer<typeof KnowledgeChunkSchema>;
@@ -168,6 +182,7 @@ export type FeishuEventRequest = z.infer<typeof FeishuEventRequestSchema>;
 export type TaskMemory = z.infer<typeof TaskMemorySchema>;
 export type PatternRecord = z.infer<typeof PatternRecordSchema>;
 export type SkillRecord = z.infer<typeof SkillRecordSchema>;
+export type SkillCuratorItem = z.infer<typeof SkillCuratorItemSchema>;
 export type SkillConflict = z.infer<typeof SkillConflictSchema>;
 export type SkillStatusPatch = z.infer<typeof SkillStatusPatchSchema>;
 export type SkillCreateRequest = z.infer<typeof SkillCreateRequestSchema>;
@@ -188,3 +203,6 @@ export type WebSearchProviderConfig = z.infer<typeof WebSearchProviderConfigSche
 export type WebSearchProviderCreateRequest = z.infer<typeof WebSearchProviderCreateRequestSchema>;
 export type WebSearchProviderPatchRequest = z.infer<typeof WebSearchProviderPatchRequestSchema>;
 export type WebSearchResult = z.infer<typeof WebSearchResultSchema>;
+export type TaskTurn = z.infer<typeof TaskTurnSchema>;
+export type TaskTurnEditRequest = z.infer<typeof TaskTurnEditRequestSchema>;
+export type TaskTurnRevertResult = z.infer<typeof TaskTurnRevertResultSchema>;

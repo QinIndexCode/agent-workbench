@@ -33,6 +33,7 @@ import {
   McpServerPatchRequestSchema,
   ModelProviderCreateRequestSchema,
   ModelProviderPatchRequestSchema,
+  MemoryDocumentPatchSchema,
   PreferencesPatchSchema,
   ProjectMemoryCreateRequestSchema,
   ScheduledTaskCreateRequestSchema,
@@ -49,9 +50,11 @@ import {
   TaskFolderPatchRequestSchema,
   TaskPatchRequestSchema,
   TaskRollbackRequestSchema,
+  TaskTurnEditRequestSchema,
   TaskTitleRequestSchema,
   TaskDeleteRequestSchema,
   TaskAttachmentUploadRequestSchema,
+  type ModelProviderRecord,
   type ModelPreset,
   type TaskEvent,
   WebSearchProviderCreateRequestSchema,
@@ -228,6 +231,17 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     return task ? workbench.listTaskCheckpoints(id) : reply.code(404).send({ error: "Task not found" });
   });
 
+  app.post("/api/tasks/:id/rollback/preview", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = TaskRollbackRequestSchema.parse(request.body ?? {});
+    try {
+      return await workbench.previewTaskRollback(id, input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") || message.includes("No checkpoint") ? 404 : 400).send({ error: message });
+    }
+  });
+
   app.post("/api/tasks/:id/rollback", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = TaskRollbackRequestSchema.parse(request.body ?? {});
@@ -236,6 +250,36 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return reply.code(message.includes("not found") || message.includes("No checkpoint") ? 404 : 400).send({ error: message });
+    }
+  });
+
+  app.get("/api/tasks/:id/turns", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    try {
+      return await workbench.listTaskTurns(id);
+    } catch (error) {
+      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/api/tasks/:id/turns/:turnId/revert", async (request, reply) => {
+    const { id, turnId } = z.object({ id: z.string(), turnId: z.string() }).parse(request.params);
+    try {
+      return await workbench.revertTaskTurn(id, turnId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") ? 404 : 400).send({ error: message });
+    }
+  });
+
+  app.post("/api/tasks/:id/turns/:turnId/edit", async (request, reply) => {
+    const { id, turnId } = z.object({ id: z.string(), turnId: z.string() }).parse(request.params);
+    const input = TaskTurnEditRequestSchema.parse(request.body);
+    try {
+      return await workbench.editTaskTurn(id, turnId, input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") ? 404 : 400).send({ error: message });
     }
   });
 
@@ -318,6 +362,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   });
   app.post("/api/skills/cleanup-duplicates", async () => workbench.cleanupDuplicateSkills());
   app.get("/api/skill-conflicts", async () => workbench.listSkillConflicts());
+  app.get("/api/skill-curator", async () => workbench.listSkillCuratorItems());
 
   app.get("/api/skills/:id", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
@@ -440,6 +485,29 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   app.patch("/api/preferences", async (request) => {
     const input = PreferencesPatchSchema.parse(request.body);
     return workbench.updatePreferences(input);
+  });
+
+  app.get("/api/user-profile", async () => workbench.getUserProfileDocument());
+
+  app.patch("/api/user-profile", async (request) => {
+    const input = MemoryDocumentPatchSchema.parse(request.body);
+    return workbench.updateUserProfileDocument(input);
+  });
+
+  app.get("/api/project-memory", async (request) => {
+    const query = z.object({ folderId: z.string().optional() }).parse(request.query);
+    return workbench.getProjectMemoryDocument(query.folderId ?? "default");
+  });
+
+  app.patch("/api/project-memory", async (request) => {
+    const query = z.object({ folderId: z.string().optional() }).parse(request.query);
+    const input = MemoryDocumentPatchSchema.parse(request.body);
+    return workbench.updateProjectMemoryDocument(query.folderId ?? "default", input);
+  });
+
+  app.post("/api/project-memory/compact", async (request) => {
+    const query = z.object({ folderId: z.string().optional() }).parse(request.query);
+    return workbench.compactProjectMemoryDocument(query.folderId ?? "default");
   });
 
   app.get("/api/model-providers", async () => workbench.listModelProviders());
@@ -722,20 +790,24 @@ function createDefaultRuntime(onEvent: (event: TaskEvent) => void): { workbench:
       providerResolver: async (): Promise<ResolvedModelProviderConfig | null> => {
         const preferences = await store.getPreferences();
         const providers = (await store.listModelProviders()).filter((provider) => provider.enabled);
-        const provider =
+        const route = preferences.modelRoute;
+        const main =
+          providers.find((item) => item.id === route.mainProviderId) ??
           providers.find((item) => item.id === preferences.activeModelProviderId) ??
           providers.find((item) => item.apiKeyRef) ??
           null;
-        if (!provider?.apiKeyRef) return null;
-        const encrypted = await store.getModelProviderSecret(provider.id);
-        if (!encrypted) return null;
-        return {
-          providerId: provider.id,
-          protocol: provider.protocol,
-          apiKey: secretBox.decrypt(encrypted),
-          ...(provider.baseUrl ? { baseURL: provider.baseUrl } : {}),
-          model: provider.defaultModelId
-        };
+        const resolved = main ? await resolveRuntimeModelProvider(store, secretBox, main) : null;
+        if (!resolved || !main) return null;
+        const fallbackIds = [...new Set(route.fallbackProviderIds.filter((id) => id !== main.id))];
+        const fallbacks = (
+          await Promise.all(
+            fallbackIds
+              .map((id) => providers.find((provider) => provider.id === id))
+              .filter((provider): provider is ModelProviderRecord => Boolean(provider))
+              .map((provider) => resolveRuntimeModelProvider(store, secretBox, provider))
+          )
+        ).filter((provider): provider is ResolvedModelProviderConfig => Boolean(provider));
+        return fallbacks.length > 0 ? { ...resolved, fallbacks } : resolved;
       }
     }),
     tools,
@@ -743,6 +815,23 @@ function createDefaultRuntime(onEvent: (event: TaskEvent) => void): { workbench:
     onEvent
   });
   return { workbench, mcpRegistry, close: () => store.close() };
+}
+
+async function resolveRuntimeModelProvider(
+  store: SqliteWorkbenchStore,
+  secretBox: LocalSecretBox,
+  provider: ModelProviderRecord
+): Promise<ResolvedModelProviderConfig | null> {
+  if (!provider.apiKeyRef) return null;
+  const encrypted = await store.getModelProviderSecret(provider.id);
+  if (!encrypted) return null;
+  return {
+    providerId: provider.id,
+    protocol: provider.protocol,
+    apiKey: secretBox.decrypt(encrypted),
+    ...(provider.baseUrl ? { baseURL: provider.baseUrl } : {}),
+    model: provider.defaultModelId
+  };
 }
 
 function redactSensitiveText(input: string): string {

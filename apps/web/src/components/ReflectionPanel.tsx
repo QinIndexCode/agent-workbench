@@ -26,7 +26,7 @@ export function ReflectionPanel({
           <h3>{text.title}</h3>
           <p>{text.subtitle}</p>
         </div>
-        <button className="subtleButton iconText" type="button" onClick={() => void onRunReflection?.()}>
+        <button aria-label="Run reflection" className="subtleButton iconText" type="button" onClick={() => void onRunReflection?.()}>
           <RefreshCcw size={15} />
           {text.run}
         </button>

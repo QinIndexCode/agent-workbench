@@ -30,8 +30,18 @@
   min-width: 0;
   min-height: 68px;
   padding: 14px 22px 12px;
-  background: color-mix(in srgb, var(--app-bg) 92%, var(--surface) 8%);
+  background: var(--app-bg);
   border-bottom: 1px solid var(--border);
+}
+
+:root[data-theme="dark"] .threadHeader,
+:root[data-theme="dark"] .settingsHeader {
+  background: #080808;
+}
+
+:root[data-theme="light"] .threadHeader,
+:root[data-theme="light"] .settingsHeader {
+  background: #ffffff;
 }
 
 .threadHeader h1,
@@ -100,7 +110,27 @@
 .approvalActions button:hover,
 .copyOutputButton:hover {
   background: var(--surface-hover);
-  border-color: color-mix(in srgb, var(--border-strong) 72%, var(--accent) 28%);
+  border-color: var(--border-strong);
+}
+
+:root[data-theme="dark"] .dangerButton:hover,
+:root[data-theme="dark"] .textButton:hover,
+:root[data-theme="dark"] .settingsNavItem:hover,
+:root[data-theme="dark"] .newTaskButton:hover,
+:root[data-theme="dark"] .iconNavButton:hover,
+:root[data-theme="dark"] .approvalActions button:hover,
+:root[data-theme="dark"] .copyOutputButton:hover {
+  border-color: #3f3f46;
+}
+
+:root[data-theme="light"] .dangerButton:hover,
+:root[data-theme="light"] .textButton:hover,
+:root[data-theme="light"] .settingsNavItem:hover,
+:root[data-theme="light"] .newTaskButton:hover,
+:root[data-theme="light"] .iconNavButton:hover,
+:root[data-theme="light"] .approvalActions button:hover,
+:root[data-theme="light"] .copyOutputButton:hover {
+  border-color: #a1a1aa;
 }
 
 .dangerButton {

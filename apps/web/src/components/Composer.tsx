@@ -1,8 +1,29 @@
-import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { ArrowUp, ChevronDown, Eye, Folder, LoaderCircle, MessageCircle, Mic, MicOff, Paperclip, ShieldAlert, SlidersHorizontal, Square } from "lucide-react";
 import type { TaskAttachment } from "@scc/shared";
 import { getUiCopy } from "../i18n.js";
 import { FileTypeIcon } from "./FileTypeIcon.js";
+
+function useClickOutside(ref: React.RefObject<HTMLElement | null>, handler: () => void, enabled: boolean) {
+  useEffect(() => {
+    if (!enabled) return;
+    function handleClick(event: MouseEvent) {
+      const target = event.target as Node;
+      if (ref.current && !ref.current.contains(target)) {
+        handler();
+      }
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") handler();
+    }
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [enabled, handler, ref]);
+}
 
 function VoiceWaveform() {
   return (
@@ -99,6 +120,13 @@ export function Composer({
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderAccordionRef = useRef<HTMLDivElement>(null);
+  const modelAccordionRef = useRef<HTMLDivElement>(null);
+  const permissionAccordionRef = useRef<HTMLDivElement>(null);
+
+  useClickOutside(folderAccordionRef, () => setFolderOpen(false), folderOpen);
+  useClickOutside(modelAccordionRef, () => setModelOpen(false), modelOpen);
+  useClickOutside(permissionAccordionRef, () => setPermissionOpen(false), permissionOpen);
   const text = draft ?? localText;
   const canSubmit = text.trim().length > 0;
   const canStop = running && !canSubmit;
@@ -187,7 +215,7 @@ export function Composer({
           </button>
           <span className="composerDivider" aria-hidden="true" />
           {folderOptions.length > 0 && currentFolder ? (
-            <div className={folderOpen ? "composerModelAccordion composerFolderAccordion open" : "composerModelAccordion composerFolderAccordion"} title={`${labels.folder}: ${currentFolder.description ?? currentFolder.label}`}>
+            <div ref={folderAccordionRef} className={folderOpen ? "composerModelAccordion composerFolderAccordion open" : "composerModelAccordion composerFolderAccordion"} title={`${labels.folder}: ${currentFolder.description ?? currentFolder.label}`}>
               <button
                 aria-expanded={folderOpen}
                 aria-label={labels.folderToggle}
@@ -229,7 +257,7 @@ export function Composer({
             </div>
           ) : null}
           {modelOptions.length > 0 && currentModel ? (
-            <div className={modelOpen ? "composerModelAccordion open" : "composerModelAccordion"} title={`${labels.model}: ${currentModel.label}`}>
+            <div ref={modelAccordionRef} className={modelOpen ? "composerModelAccordion open" : "composerModelAccordion"} title={`${labels.model}: ${currentModel.label}`}>
               <button
                 aria-expanded={modelOpen}
                 aria-label={labels.modelToggle}
@@ -271,7 +299,7 @@ export function Composer({
           ) : (
             <span className="composerChip">{labels.model}: {modelLabel ?? labels.modelUnknown}</span>
           )}
-          <div className={permissionOpen ? "composerPermissionAccordion open" : "composerPermissionAccordion"} title={permissionScopeLabel ?? currentPermission.description}>
+          <div ref={permissionAccordionRef} className={permissionOpen ? "composerPermissionAccordion open" : "composerPermissionAccordion"} title={permissionScopeLabel ?? currentPermission.description}>
             <button
               aria-expanded={permissionOpen}
               aria-label={labels.permissionToggle}
@@ -325,7 +353,7 @@ export function Composer({
     </form>
   );
 
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
     submit();

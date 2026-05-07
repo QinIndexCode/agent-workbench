@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ModelPreset, ModelProviderCreateRequest, ModelProviderPatchRequest, ModelProviderRecord, ProviderProtocol } from "@scc/shared";
+import type { ModelPreset, ModelProviderCreateRequest, ModelProviderPatchRequest, ModelProviderRecord, PreferencesPatch, ProviderProtocol, UserPreferences } from "@scc/shared";
 import { CheckCircle2, Edit3, Plus, Trash2, X } from "lucide-react";
 import { CONTEXT_QUICK_PRESETS, MODEL_PROVIDER_PRESETS, formatTokenAmount, parseTokenAmount, type ModelProviderPreset } from "../llm-presets.js";
 import { AccordionSelect } from "./AccordionSelect.js";
@@ -24,17 +24,21 @@ export function ModelProvidersPanel({
   activeProviderId,
   currentModelLabel,
   language,
+  preferences,
   providers,
   onCreate,
   onDelete,
+  onPreference,
   onUpdate
 }: {
   activeProviderId?: string | null;
   currentModelLabel?: string | null;
   language?: string | null;
+  preferences?: UserPreferences | null;
   providers: ModelProviderRecord[];
   onCreate: (input: ModelProviderCreateRequest) => Promise<void> | void;
   onDelete: (providerId: string) => Promise<void> | void;
+  onPreference?: (patch: PreferencesPatch) => Promise<void> | void;
   onUpdate: (providerId: string, input: ModelProviderPatchRequest) => Promise<void> | void;
 }) {
   const text = getProviderCopy(language);
@@ -83,6 +87,41 @@ export function ModelProvidersPanel({
           <span>{activeProvider ? `${activeProvider.label} · ${activeProvider.protocol.replace("_", " ")}` : currentModelLabel ? text.fromPreferences : text.addFirst}</span>
         </div>
       </section>
+
+      {providers.length > 1 ? (
+        <section className="modelRouteCard">
+          <div>
+            <h3>{text.routing}</h3>
+            <p>{text.routingHelp}</p>
+          </div>
+          <div className="routeFallbackRows">
+            {providers.filter((provider) => provider.id !== activeProvider?.id).map((provider) => {
+              const enabled = Boolean(preferences?.modelRoute?.fallbackProviderIds?.includes(provider.id));
+              return (
+                <ToggleSettingRow
+                  key={provider.id}
+                  label={provider.label}
+                  description={`${provider.defaultModelId} · ${provider.protocol.replace("_", " ")}`}
+                  value={enabled}
+                  onChange={(nextEnabled) => {
+                    const currentRoute = preferences?.modelRoute ?? { fallbackProviderIds: [] };
+                    const current = new Set(currentRoute.fallbackProviderIds ?? []);
+                    if (nextEnabled) current.add(provider.id);
+                    else current.delete(provider.id);
+                    void onPreference?.({
+                      modelRoute: {
+                        ...currentRoute,
+                        mainProviderId: activeProvider?.id,
+                        fallbackProviderIds: [...current]
+                      }
+                    });
+                  }}
+                />
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
 
       <div className="providerRows">
         {providers.length === 0 ? <p className="muted">{text.empty}</p> : null}
@@ -466,6 +505,8 @@ function getProviderCopy(language?: string | null) {
   return {
     title: zh ? "模型配置" : "Model configuration",
     subtitle: zh ? "从预设厂商或自定义接口添加模型。API Key 只保存在本机，运行时使用当前激活模型。" : "Add models from presets or custom endpoints. API keys stay local; the active model is used at runtime.",
+    routing: zh ? "模型路由" : "Model routing",
+    routingHelp: zh ? "选择主模型失败时可尝试的备用模型。认证失败和权限拒绝不会自动切换。" : "Choose fallback models for provider errors. Auth failures and permission denials do not fallback.",
     add: zh ? "添加模型" : "Add model",
     edit: zh ? "编辑模型" : "Edit model",
     delete: zh ? "删除模型" : "Delete model",

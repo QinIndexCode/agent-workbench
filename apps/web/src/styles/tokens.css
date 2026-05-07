@@ -34,10 +34,15 @@
   --danger-bg: #241210;
   --danger-border: #7a3028;
   --voice: #f5f5f4;
-  --voice-soft: color-mix(in srgb, #f5f5f4 10%, transparent);
-  --voice-bg: color-mix(in srgb, #f5f5f4 8%, transparent);
+  --voice-soft: rgba(245, 245, 244, 0.1);
+  --voice-bg: rgba(245, 245, 244, 0.08);
   --shadow: 0 18px 50px rgb(0 0 0 / 0.48);
   --shadow-soft: 0 10px 30px rgb(0 0 0 / 0.32);
+  --shadow-control: 0 2px 8px rgb(0 0 0 / 0.18);
+  --shadow-floating: 0 14px 34px rgb(0 0 0 / 0.34);
+  --shadow-modal: 0 24px 80px rgb(0 0 0 / 0.42), 0 1px 4px rgb(0 0 0 / 0.12);
+  --shadow-composer: 0 -10px 30px rgb(0 0 0 / 0.22), 0 1px 0 rgb(255 255 255 / 0.03) inset;
+  --shadow-composer-focus: 0 -12px 36px rgb(0 0 0 / 0.26), 0 0 0 1px rgb(244 244 245 / 0.08) inset;
   --radius: 10px;
   --radius-sm: 8px;
   --radius-lg: 16px;
@@ -94,10 +99,15 @@
   --danger-bg: #fff1f0;
   --danger-border: #f5b5ae;
   --voice: #3f3f46;
-  --voice-soft: color-mix(in srgb, #3f3f46 10%, transparent);
-  --voice-bg: color-mix(in srgb, #3f3f46 8%, transparent);
+  --voice-soft: rgba(63, 63, 70, 0.1);
+  --voice-bg: rgba(63, 63, 70, 0.08);
   --shadow: 0 18px 50px rgb(24 24 27 / 0.12);
   --shadow-soft: 0 10px 30px rgb(24 24 27 / 0.1);
+  --shadow-control: 0 2px 8px rgb(24 24 27 / 0.08);
+  --shadow-floating: 0 14px 34px rgb(24 24 27 / 0.12);
+  --shadow-modal: 0 24px 80px rgb(24 24 27 / 0.16), 0 1px 4px rgb(24 24 27 / 0.06);
+  --shadow-composer: 0 -10px 30px rgb(24 24 27 / 0.08), 0 1px 0 rgb(255 255 255 / 0.7) inset;
+  --shadow-composer-focus: 0 -12px 36px rgb(24 24 27 / 0.1), 0 0 0 1px rgb(24 24 27 / 0.08) inset;
   --scrollbar-thumb: rgba(24, 24, 27, 0.2);
   --scrollbar-thumb-hover: rgba(24, 24, 27, 0.34);
 }
@@ -117,6 +127,9 @@ body {
   margin: 0;
   overflow: hidden;
   background: var(--app-bg);
+}
+html {
+  scroll-behavior: smooth;
 }
 
 button,
@@ -140,8 +153,22 @@ button:focus-visible,
 textarea:focus-visible,
 input:focus-visible,
 select:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline: 2px solid rgba(128, 128, 128, 0.7);
   outline-offset: 2px;
+}
+
+:root[data-theme="dark"] button:focus-visible,
+:root[data-theme="dark"] textarea:focus-visible,
+:root[data-theme="dark"] input:focus-visible,
+:root[data-theme="dark"] select:focus-visible {
+  outline-color: rgba(244, 244, 245, 0.7);
+}
+
+:root[data-theme="light"] button:focus-visible,
+:root[data-theme="light"] textarea:focus-visible,
+:root[data-theme="light"] input:focus-visible,
+:root[data-theme="light"] select:focus-visible {
+  outline-color: rgba(24, 24, 27, 0.7);
 }
 
 pre {
