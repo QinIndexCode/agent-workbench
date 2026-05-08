@@ -123,12 +123,13 @@ async function searchWithProvider(
     const url = `${endpoint}?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`;
     const payload = await fetchJson(url, requestInit(signal));
     const related = readArray(payload, ["RelatedTopics"]).flatMap(flattenDuckDuckGoTopic);
-    return related.slice(0, limit).map((item) => ({
+    if (related.length > 0) return related.slice(0, limit).map((item) => ({
       title: item.title,
       url: item.url,
       snippet: item.snippet,
       source: "duckduckgo"
     }));
+    return searchDuckDuckGoHtml(query, limit, signal);
   }
 
   const endpoint = provider.endpoint?.trim();
@@ -142,6 +143,55 @@ async function searchWithProvider(
     snippet: stringOf(item["snippet"] ?? item["description"] ?? item["summary"]),
     source: "custom"
   }));
+}
+
+async function searchDuckDuckGoHtml(query: string, limit: number, signal?: AbortSignal): Promise<WebSearchResult[]> {
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const response = await fetch(url, requestInit(signal, { accept: "text/html" }));
+  if (!response.ok) throw new Error(`DuckDuckGo HTML search failed: ${response.status} ${await response.text()}`);
+  const html = await response.text();
+  const results: WebSearchResult[] = [];
+  const resultRegex = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
+  for (const match of html.matchAll(resultRegex)) {
+    const rawUrl = decodeHtml(match[1] ?? "");
+    const title = decodeHtml(stripHtml(match[2] ?? ""));
+    const snippet = decodeHtml(stripHtml(match[3] ?? ""));
+    const cleanedUrl = cleanDuckDuckGoRedirect(rawUrl);
+    if (!title || !cleanedUrl) continue;
+    results.push({ title, url: cleanedUrl, snippet, source: "duckduckgo" });
+    if (results.length >= limit) break;
+  }
+  return results;
+}
+
+function cleanDuckDuckGoRedirect(value: string): string {
+  if (!value) return "";
+  try {
+    const url = new URL(value, "https://duckduckgo.com");
+    const uddg = url.searchParams.get("uddg");
+    if (uddg) return decodeURIComponent(uddg);
+    return url.href;
+  } catch {
+    return value;
+  }
+}
+
+function stripHtml(value: string): string {
+  return value
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .trim();
 }
 
 function requestInit(signal?: AbortSignal, headers?: HeadersInit): RequestInit {

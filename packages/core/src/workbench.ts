@@ -2427,6 +2427,7 @@ export class AgentWorkbench {
     for (const summary of this.contextAssembler.drainConversationSummaryEvents(task.id)) {
       this.addEvent(task, "conversation_summary_created", "Earlier context was compacted into an auditable summary.", {
         summaryId: summary.id,
+        summary: summary.summary,
         rangeStartEventId: summary.rangeStartEventId,
         rangeEndEventId: summary.rangeEndEventId,
         tokenEstimate: summary.tokenEstimate,

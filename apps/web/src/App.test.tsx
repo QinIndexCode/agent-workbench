@@ -330,6 +330,22 @@ describe("Workbench components", () => {
     expect(screen.queryByText("View raw output")).not.toBeInTheDocument();
   });
 
+  it("windows very large timelines so old events do not overload the DOM", () => {
+    const events = Array.from({ length: 390 }, (_, index) => ({
+      id: `event_window_${index}`,
+      taskId: "task_1",
+      type: "assistant_message" as const,
+      createdAt: new Date().toISOString(),
+      summary: `assistant item ${index}`,
+      payload: {}
+    }));
+    render(<Timeline task={{ ...task, events }} onApprovalDecision={vi.fn()} />);
+
+    expect(screen.getByText(/only the latest 360 items are shown/i)).toBeInTheDocument();
+    expect(screen.getByText("assistant item 389")).toBeInTheDocument();
+    expect(screen.queryByText("assistant item 0")).not.toBeInTheDocument();
+  });
+
   it("keeps tool evidence collapsed, path-focused, and free of placeholder text", () => {
     const { container } = render(
       <Timeline
@@ -843,7 +859,7 @@ describe("Workbench components", () => {
           return jsonResponse(createTask(body.goal, body.title));
         }
         if (url === "/api/tasks") return jsonResponse(currentTasks);
-        if (url === "/api/tasks/task_1") return jsonResponse(currentTasks.find((item) => item.id === "task_1") ?? created);
+        if (url === "/api/tasks/task_1" || url.startsWith("/api/tasks/task_1?")) return jsonResponse(currentTasks.find((item) => item.id === "task_1") ?? created);
         if (
           url === "/api/experiences" ||
           url === "/api/task-memories" ||

@@ -105,6 +105,37 @@ describe("ContextAssembler", () => {
     expect(history).toContain("earlier events omitted");
   });
 
+  it("does not compact short conversations just because internal planning changed", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const assembler = new ContextAssembler(store);
+    const task: TaskDetail = {
+      id: "task_short_context",
+      title: "Short task",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_user", taskId: "task_short_context", type: "user_message", createdAt: nowIso(), summary: "Check the current context injection.", payload: {} },
+        ...Array.from({ length: 18 }, (_, index) => ({
+          id: `event_plan_${index}`,
+          taskId: "task_short_context",
+          type: "plan_revised" as const,
+          createdAt: nowIso(),
+          summary: `Plan refresh ${index}`,
+          payload: { status: "running", steps: [{ title: "test", status: "running" }] }
+        }))
+      ]
+    };
+
+    const context = await assembler.assemble(task);
+    const summaries = await store.listConversationSummaries(task.id);
+
+    expect(summaries).toHaveLength(0);
+    expect(context.input).not.toContain("Conversation Summary");
+  });
+
   it("creates an auditable summary pack instead of only dropping old context", async () => {
     const store = new InMemoryWorkbenchStore();
     const assembler = new ContextAssembler(store);
@@ -116,12 +147,12 @@ describe("ContextAssembler", () => {
       updatedAt: nowIso(),
       approvals: [],
       pendingGuidance: [],
-      events: Array.from({ length: 36 }, (_, index) => ({
+      events: Array.from({ length: 72 }, (_, index) => ({
         id: `event_${index}`,
         taskId: "task_summary",
         type: (index % 3 === 0 ? "tool_result" : index % 3 === 1 ? "assistant_message" : "user_message") as const,
         createdAt: nowIso(),
-        summary: index === 35 ? "LATEST_DECISION_MARKER keep this detail" : `older event ${index}`,
+        summary: index === 71 ? "LATEST_DECISION_MARKER keep this detail" : `older event ${index}`,
         payload: index % 3 === 0 ? { toolName: "read_file", ok: true } : {}
       }))
     };

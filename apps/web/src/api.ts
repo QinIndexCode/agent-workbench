@@ -73,6 +73,7 @@ import type {
 
 const apiBase = import.meta.env["VITE_API_BASE"] ?? "";
 const REQUEST_TIMEOUT_MS = 30000;
+const TASK_EVENT_WINDOW = 600;
 
 export interface RequestMeta {
   startTime: number;
@@ -177,6 +178,7 @@ export const api = {
   taskEventsWebSocketUrl(taskId: string): string {
     const url = new URL(`${apiBase}/api/tasks/${taskId}/events/ws`, window.location.origin);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.searchParams.set("eventLimit", String(TASK_EVENT_WINDOW));
     return url.toString();
   },
   generateTaskTitle(goal: string, language?: string | null, useLocalFallback = false): Promise<TaskTitleResponse> {
@@ -207,7 +209,7 @@ export const api = {
     return request(`/api/task-folders/${folderId}/clear`, { method: "POST", body: JSON.stringify(input) });
   },
   getTask(taskId: string): Promise<TaskDetail> {
-    return request(`/api/tasks/${taskId}`);
+    return request(`/api/tasks/${taskId}?eventLimit=${TASK_EVENT_WINDOW}`);
   },
   patchTask(taskId: string, input: TaskPatchRequest): Promise<TaskDetail> {
     return request(`/api/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(input) });
@@ -447,7 +449,7 @@ export const api = {
   disconnectIntegration(integrationId: string): Promise<IntegrationProviderConfig> {
     return request(`/api/integrations/${integrationId}/disconnect`, { method: "POST" });
   },
-  healthCheck(): Promise<{ status: string; timestamp: string }> {
-    return request("/api/health");
+  healthCheck(): Promise<{ ok: boolean }> {
+    return request("/health");
   }
 };

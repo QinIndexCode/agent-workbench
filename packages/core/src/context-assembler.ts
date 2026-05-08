@@ -73,7 +73,7 @@ export class ContextAssembler {
       usedTokens += estimateTokens(skillLayer);
     }
 
-    const projectLayer = await this.buildProjectLayer();
+    const projectLayer = await this.buildProjectLayer(task);
     if (projectLayer) {
       layers.push(projectLayer);
       usedTokens += estimateTokens(projectLayer);
@@ -203,7 +203,7 @@ export class ContextAssembler {
     if (skills.length === 0) return "";
     return [
       "## Available Skills",
-      "Skill metadata is always safe to inspect. Call use_skill with skillId or name only when a skill is directly relevant and you need its full guidance.",
+      "Skill metadata is always safe to inspect. Call use_skill with name set to the skill ID or exact title only when a skill is directly relevant and you need its full guidance.",
       ...skills.map((skill) => {
         const success = Math.round(skill.stats.successRate * 100);
         return [
@@ -226,6 +226,7 @@ export class ContextAssembler {
       "When a tool needs user approval, the application will ask the user; do not assume the current authorization state.",
       "Scripts, builds, tests, and command output are tool evidence for you to interpret; they are never task-completion judges.",
       "Do not emit fixed machine-readable wrappers, diagnostic files, or scripted review reports unless the user explicitly asks.",
+      "USER.md and MEMORY.md content below is already injected from SCC's internal memory store. Do not try to read USER.md or MEMORY.md from the workRoot; use the memory tools only when the user wants durable memory changed.",
       "Use USER.md and MEMORY.md tools only for durable memories the user wants kept; do not store transient task outputs, secrets, or speculative guesses.",
       "Use skill_create or skill_delete only when the user explicitly asks or when a reviewed reusable pattern is ready; normal task completion should create memory, not a skill.",
       "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
@@ -256,7 +257,7 @@ export class ContextAssembler {
     );
     return [
       "## Stable Memory Files",
-      "These are durable, user-managed memory notes. Treat them as preferences and project context, not proof of current file contents. Full files are injected up to their configured limits.",
+      "These are durable, user-managed memory notes from SCC's internal memory store. Treat them as preferences and project context, not proof of current file contents. Do not read USER.md or MEMORY.md from the workRoot; the content below is the authoritative injected memory snapshot.",
       `### Global USER.md\n${user}`,
       `### Global MEMORY.md\n${globalMemory}`,
       `### Project MEMORY.md\n${project}`
@@ -317,8 +318,8 @@ export class ContextAssembler {
     ].join("\n");
   }
 
-  private async buildProjectLayer(): Promise<string> {
-    const memories = await this.store.listProjectMemories("default");
+  private async buildProjectLayer(task: TaskDetail): Promise<string> {
+    const memories = await this.store.listProjectMemories(task.folderId || "default");
     if (memories.length === 0) return "";
     return [
       "## Project Context",
@@ -342,15 +343,21 @@ export class ContextAssembler {
   ): Promise<ConversationSummary | undefined> {
     const existing = await this.store.listConversationSummaries(task.id);
     const latest = existing.at(-1);
-    const visibleEvents = task.events.filter((event) => !["assistant_delta", "thinking_delta"].includes(event.type));
-    if (!options.force && visibleEvents.length < 28) return latest;
+    const visibleEvents = task.events.filter(isSummarizableContextEvent);
+    const maxPromptInput = options.tokenBudget
+      ? Math.max(1, options.tokenBudget.maxTotal - options.tokenBudget.reservedForResponse)
+      : Number.POSITIVE_INFINITY;
+    const historyPressure = estimateEventsForSummary(visibleEvents) + (options.usedBefore ?? 0);
+    const highPressure = historyPressure > maxPromptInput * 0.7;
+    const lowBudgetPressure = Boolean(options.tokenBudget && options.tokenBudget.maxTotal <= 3000 && visibleEvents.length >= 28);
+    if (!options.force && !highPressure && !lowBudgetPressure && visibleEvents.length < 60) return latest;
     const latestCoveredIndex = latest ? visibleEvents.findIndex((event) => event.id === latest.rangeEndEventId) : -1;
-    if (!options.force && latest && visibleEvents.length - latestCoveredIndex < 18) return latest;
+    if (!options.force && latest && !highPressure && !lowBudgetPressure && visibleEvents.length - latestCoveredIndex < 30) return latest;
     const startIndex = latestCoveredIndex >= 0 ? latestCoveredIndex + 1 : 0;
-    const keepRecent = options.force ? 4 : 12;
+    const keepRecent = options.force ? 6 : highPressure || lowBudgetPressure ? 12 : 18;
     const endIndex = Math.max(startIndex, visibleEvents.length - keepRecent);
     const slice = visibleEvents.slice(startIndex, endIndex);
-    if (slice.length < (options.force ? 1 : 8)) return latest;
+    if (slice.length < (options.force || highPressure || lowBudgetPressure ? 1 : 12)) return latest;
     const summaryText = buildExtractiveConversationSummary(slice);
     const now = nowIso();
     const retainedFacts = buildRetainedFacts(task, slice);
@@ -361,7 +368,7 @@ export class ContextAssembler {
       rangeEndEventId: slice.at(-1)!.id,
       summary: latest ? `${latest.summary}\n\n${summaryText}` : summaryText,
       tokenEstimate: estimateTokens(summaryText),
-      reason: options.force ? "context_overflow_retry" : "event_window",
+      reason: options.force ? "context_overflow_retry" : highPressure || lowBudgetPressure ? "token_pressure" : "event_window",
       retainedFacts,
       droppedRanges: [{ startEventId: slice[0]!.id, endEventId: slice.at(-1)!.id, eventCount: slice.length }],
       ...(options.tokenBudget
@@ -520,6 +527,9 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
     case "tool_requested":
       return `**Tool Call**: ${event.payload["toolName"]}(${JSON.stringify(event.payload["args"] ?? {})})`;
     case "tool_result": {
+      if (event.payload["uiHidden"] === true && event.payload["toolName"] === "plan_update") {
+        return "**Plan Panel**: The visible task plan/progress panel was updated successfully. Do not repeat the same plan_update call unless the plan materially changes.";
+      }
       const fileResult = formatFileToolResult(event);
       if (tracker && isFileContentInTracker(event, tracker) && fileResult) return fileResult;
       if (fileResult) return fileResult;
@@ -552,6 +562,17 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
   }
 }
 
+function isSummarizableContextEvent(event: TaskEvent): boolean {
+  if (event.payload["uiHidden"] === true) return false;
+  if (["assistant_delta", "thinking_delta", "conversation_summary_created", "prompt_cache_stats"].includes(event.type)) return false;
+  if (event.type.startsWith("plan_")) return false;
+  return true;
+}
+
+function estimateEventsForSummary(events: TaskEvent[]): number {
+  return events.reduce((sum, event) => sum + estimateTokens(formatEvent(event)), 0);
+}
+
 function formatAttachmentForContext(attachment: TaskAttachment): string {
   const preview = attachment.textPreview ? `\nPreview:\n${attachment.textPreview.slice(0, 1200)}` : "";
   return `- ${attachment.id}: ${attachment.fileName} (${attachment.kind}, ${attachment.mimeType}, ${attachment.size} bytes, hash ${attachment.contentHash})${preview}`;
@@ -563,7 +584,7 @@ function buildExtractiveConversationSummary(events: TaskEvent[]): string {
     .filter(Boolean)
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter(Boolean);
-  const compact = lines.slice(0, 18).map((line) => `- ${line.slice(0, 360)}`).join("\n");
+  const compact = lines.slice(0, 32).map((line) => `- ${line.slice(0, 800)}`).join("\n");
   return [
     "Earlier conversation was compacted to keep the task within the model context window.",
     "Retain these facts as prior evidence, but prefer fresh tool evidence when exact file contents or host state matter.",
@@ -574,10 +595,10 @@ function buildExtractiveConversationSummary(events: TaskEvent[]): string {
 function buildRetainedFacts(task: TaskDetail, summarizedEvents: TaskEvent[]): string[] {
   const facts = new Set<string>();
   const firstUser = task.events.find((event) => event.type === "user_message");
-  if (firstUser) facts.add(`Original goal: ${truncate(firstUser.summary, 180)}`);
+  if (firstUser) facts.add(`Original goal: ${truncate(firstUser.summary, 600)}`);
   if (task.workRoot) facts.add(`Work root: ${task.workRoot}`);
   const latestGuidance = [...task.events].reverse().find((event) => event.type === "guidance_pending" || event.type === "guidance_consumed");
-  if (latestGuidance) facts.add(`Latest guidance: ${truncate(latestGuidance.summary, 160)}`);
+  if (latestGuidance) facts.add(`Latest guidance: ${truncate(latestGuidance.summary, 300)}`);
   const tools = summarizedEvents
     .filter((event) => event.type === "tool_result")
     .map((event) => String(event.payload["toolName"] ?? "tool"))

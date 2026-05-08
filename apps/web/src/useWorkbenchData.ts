@@ -108,6 +108,8 @@ export function useWorkbenchData(): WorkbenchData {
   const refreshTimerRef = useRef<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const wsCancelRef = useRef(false);
+  const wsEventQueueRef = useRef<TaskEvent[]>([]);
+  const wsFlushTimerRef = useRef<number | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   async function refresh(nextId?: string | null) {
@@ -214,6 +216,11 @@ export function useWorkbenchData(): WorkbenchData {
   useEffect(() => {
     if (!selectedId) return;
     wsCancelRef.current = false;
+    wsEventQueueRef.current = [];
+    if (wsFlushTimerRef.current !== null) {
+      window.clearTimeout(wsFlushTimerRef.current);
+      wsFlushTimerRef.current = null;
+    }
     const connectTimer = window.setTimeout(() => {
       if (wsCancelRef.current) return;
       const ws = new WebSocket(api.taskEventsWebSocketUrl(selectedId));
@@ -235,24 +242,62 @@ export function useWorkbenchData(): WorkbenchData {
         if (wsCancelRef.current) return;
         const parsed = parseRealtimeMessage(message.data);
         if (!parsed) return;
-        setSelected((current) => {
-          if (!current || current.id !== selectedId) return current;
-          if (parsed.type === "snapshot") return { ...current, events: parsed.events };
-          if (current.events.some((event) => event.id === parsed.event.id)) return current;
-          const nextApprovals = approvalFromEvent(parsed.event, current.approvals);
-          return { ...current, events: [...current.events, parsed.event], approvals: nextApprovals, updatedAt: parsed.event.createdAt };
-        });
+        if (parsed.type === "snapshot") {
+          wsEventQueueRef.current = [];
+          if (wsFlushTimerRef.current !== null) {
+            window.clearTimeout(wsFlushTimerRef.current);
+            wsFlushTimerRef.current = null;
+          }
+          setSelected((current) => {
+            if (!current || current.id !== selectedId) return current;
+            return { ...current, events: parsed.events };
+          });
+          return;
+        }
+        wsEventQueueRef.current.push(parsed.event);
+        scheduleRealtimeFlush(selectedId);
       };
     }, 50);
     return () => {
       wsCancelRef.current = true;
       window.clearTimeout(connectTimer);
+      wsEventQueueRef.current = [];
+      if (wsFlushTimerRef.current !== null) {
+        window.clearTimeout(wsFlushTimerRef.current);
+        wsFlushTimerRef.current = null;
+      }
       if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
         wsRef.current.close();
       }
       wsRef.current = null;
     };
   }, [selectedId]);
+
+  function scheduleRealtimeFlush(taskId: string) {
+    if (wsFlushTimerRef.current !== null) return;
+    wsFlushTimerRef.current = window.setTimeout(() => {
+      wsFlushTimerRef.current = null;
+      const queued = wsEventQueueRef.current;
+      wsEventQueueRef.current = [];
+      if (queued.length === 0 || wsCancelRef.current) return;
+      setSelected((current) => {
+        if (!current || current.id !== taskId) return current;
+        const seen = new Set(current.events.map((event) => event.id));
+        const nextEvents = [...current.events];
+        let nextApprovals = current.approvals;
+        let updatedAt = current.updatedAt;
+        for (const event of queued) {
+          if (seen.has(event.id)) continue;
+          seen.add(event.id);
+          nextEvents.push(event);
+          nextApprovals = approvalFromEvent(event, nextApprovals);
+          updatedAt = event.createdAt;
+        }
+        if (nextEvents.length === current.events.length) return current;
+        return { ...current, events: nextEvents, approvals: nextApprovals, updatedAt };
+      });
+    }, 40);
+  }
 
   async function selectTask(taskId: string) {
     newTaskModeRef.current = false;

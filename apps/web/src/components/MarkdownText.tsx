@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { memo, useMemo, type ReactNode } from "react";
 
 interface MarkdownTextProps {
   content: string;
@@ -13,8 +13,8 @@ type Block =
   | { kind: "hr" }
   | { kind: "table"; headers: string[]; rows: string[][] };
 
-export function MarkdownText({ content }: MarkdownTextProps) {
-  const blocks = parseMarkdown(normalizeLooseMarkdown(content));
+export const MarkdownText = memo(function MarkdownText({ content }: MarkdownTextProps) {
+  const blocks = useMemo(() => parseMarkdown(normalizeLooseMarkdown(content)), [content]);
   if (blocks.length === 0) return null;
   return (
     <div className="markdownText">
@@ -23,7 +23,7 @@ export function MarkdownText({ content }: MarkdownTextProps) {
       ))}
     </div>
   );
-}
+});
 
 function MarkdownBlock({ block }: { block: Block }) {
   if (block.kind === "heading") {

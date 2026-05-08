@@ -56,6 +56,7 @@ import {
   TaskAttachmentUploadRequestSchema,
   type ModelProviderRecord,
   type ModelPreset,
+  type TaskDetail,
   type TaskEvent,
   WebSearchProviderCreateRequestSchema,
   WebSearchProviderPatchRequestSchema
@@ -67,6 +68,42 @@ import { SqliteWorkbenchStore } from "./sqlite-store.js";
 
 function generateRequestId(): string {
   return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+const DEFAULT_EVENT_WINDOW = 600;
+const MAX_EVENT_WINDOW = 1200;
+const LIST_EVENT_WINDOW = 0;
+const MAX_UI_OUTPUT_CHARS = 12000;
+const MAX_UI_SUMMARY_CHARS = 8000;
+
+function parseEventWindow(query: unknown, fallback = DEFAULT_EVENT_WINDOW): number {
+  const value = z.object({ eventLimit: z.coerce.number().int().nonnegative().optional() }).safeParse(query);
+  const limit = value.success ? value.data.eventLimit ?? fallback : fallback;
+  return Math.min(Math.max(limit, 0), MAX_EVENT_WINDOW);
+}
+
+function taskForTransport(task: TaskDetail, eventLimit = DEFAULT_EVENT_WINDOW): TaskDetail {
+  const events = eventLimit <= 0 ? [] : task.events.slice(-eventLimit).map(compactEventForTransport);
+  return {
+    ...task,
+    events,
+    pendingGuidance: task.pendingGuidance.map(compactEventForTransport)
+  };
+}
+
+function compactEventForTransport(event: TaskEvent): TaskEvent {
+  const summary = compactUiText(event.summary, MAX_UI_SUMMARY_CHARS);
+  const payload: Record<string, unknown> = { ...event.payload };
+  if (typeof payload["output"] === "string") payload["output"] = compactUiText(payload["output"], MAX_UI_OUTPUT_CHARS);
+  if (typeof payload["delta"] === "string") payload["delta"] = compactUiText(payload["delta"], MAX_UI_OUTPUT_CHARS);
+  if (typeof payload["summary"] === "string") payload["summary"] = compactUiText(payload["summary"], MAX_UI_SUMMARY_CHARS);
+  return { ...event, summary, payload };
+}
+
+function compactUiText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const omitted = value.length - maxChars;
+  return `${value.slice(0, maxChars)}\n\n[UI preview truncated: ${omitted} characters omitted. Full evidence is retained by SCC.]`;
 }
 
 export interface AppOptions {
@@ -116,7 +153,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.get("/health", async () => ({ ok: true }));
 
-  app.get("/api/tasks", async () => workbench.listTasks());
+  app.get("/api/tasks", async () => (await workbench.listTasks()).map((task) => taskForTransport(task, LIST_EVENT_WINDOW)));
 
   app.post("/api/tasks/title", async (request, reply) => {
     const input = TaskTitleRequestSchema.parse(request.body);
@@ -182,8 +219,9 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.get("/api/tasks/:id", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
+    const eventLimit = parseEventWindow(request.query);
     const task = await workbench.getTask(id);
-    return task ? task : reply.code(404).send({ error: "Task not found" });
+    return task ? taskForTransport(task, eventLimit) : reply.code(404).send({ error: "Task not found" });
   });
 
   app.patch("/api/tasks/:id", async (request, reply) => {
@@ -209,8 +247,9 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.get("/api/tasks/:id/events", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
+    const eventLimit = parseEventWindow(request.query);
     const task = await workbench.getTask(id);
-    return task ? task.events : reply.code(404).send({ error: "Task not found" });
+    return task ? task.events.slice(-eventLimit).map(compactEventForTransport) : reply.code(404).send({ error: "Task not found" });
   });
 
   app.get("/api/tasks/:id/attachments", async (request, reply) => {
@@ -300,9 +339,10 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.get("/api/tasks/:id/events/ws", { websocket: true }, async (socket, request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
+    const eventLimit = parseEventWindow(request.query);
     const task = await workbench.getTask(id);
-    socket.send(JSON.stringify({ type: "snapshot", events: task?.events ?? [] }));
-    const unsubscribe = events.subscribe(id, (event) => socket.send(JSON.stringify({ type: "event", event })));
+    socket.send(JSON.stringify({ type: "snapshot", events: task?.events.slice(-eventLimit).map(compactEventForTransport) ?? [] }));
+    const unsubscribe = events.subscribe(id, (event) => socket.send(JSON.stringify({ type: "event", event: compactEventForTransport(event) })));
     socket.on("close", unsubscribe);
   });
 

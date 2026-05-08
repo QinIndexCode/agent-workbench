@@ -507,7 +507,7 @@ function getComposerMode(task: TaskDetail | null): ComposerMode {
 function getThreadMeta(task: TaskDetail | null, mode: ComposerMode, language?: string | null): string {
   const text = getUiCopy(language).thread;
   if (!task) return text.ready;
-  const status = task.status.replace("_", " ");
+  const status = String(task.status ?? "unknown").replace("_", " ");
   if (mode === "guidance") return text.runningGuidance;
   return text.continueTask(status);
 }

@@ -24,6 +24,7 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
 ]);
 
 const FOLLOW_BOTTOM_DISTANCE = 120;
+const MAX_RENDERED_TIMELINE_ITEMS = 360;
 
 export function Timeline({
   language,
@@ -59,14 +60,15 @@ export function Timeline({
   );
   const lastEventId = task?.events[task.events.length - 1]?.id ?? "empty";
   const timelineVersion = useMemo(() => getTimelineVersion(items), [items]);
+  const displayItems = useMemo(() => limitTimelineItems(items, language), [items, language]);
   const latestUserEventId = useMemo(() => {
     const latest = [...(task?.events ?? [])].reverse().find((event) => event.type === "user_message" && !event.reverted);
     return latest?.id ?? null;
   }, [task?.events]);
   const latestAgentItemKey = useMemo(() => {
-    const latest = [...items].reverse().find(isAgentMessageItem);
+    const latest = [...displayItems].reverse().find(isAgentMessageItem);
     return latest?.key ?? null;
-  }, [items]);
+  }, [displayItems]);
 
   useEffect(() => {
     followBottomRef.current = true;
@@ -161,7 +163,7 @@ export function Timeline({
           updateBottomState(event.currentTarget);
         }}
       >
-        {items.map((item) => (
+        {displayItems.map((item) => (
           <TimelineEvent
             item={item}
             key={item.key}
@@ -200,10 +202,12 @@ export function Timeline({
 
 type TimelineItem =
   | { key: string; kind: "event"; event: TaskEvent }
-  | { key: string; kind: "stream"; type: "assistant_delta" | "thinking_delta"; streamId: string; summary: string };
+  | { key: string; kind: "stream"; type: "assistant_delta" | "thinking_delta"; streamId: string; summary: string }
+  | { key: string; kind: "notice"; summary: string };
 
 function isAgentMessageItem(item: TimelineItem): boolean {
   if (item.kind === "stream") return item.type === "assistant_delta";
+  if (item.kind === "notice") return false;
   return item.event.type === "assistant_message";
 }
 
@@ -224,6 +228,7 @@ function getTimelineVersion(items: TimelineItem[]): string {
     .slice(-8)
     .map((item) => {
       if (item.kind === "stream") return `${item.key}:${item.summary.length}`;
+      if (item.kind === "notice") return item.key;
       const output = typeof item.event.payload["output"] === "string" ? String(item.event.payload["output"]).length : 0;
       return `${item.key}:${item.event.reverted ? "r" : "a"}:${item.event.summary.length}:${output}`;
     })
@@ -254,6 +259,13 @@ function TimelineEvent({
   const [thinkingOpen, setThinkingOpen] = useState(false);
   const [toolOpen, setToolOpen] = useState(false);
   const zh = language === "zh-CN";
+  if (item.kind === "notice") {
+    return (
+      <article className="event note timeline_window_notice">
+        <span>{item.summary}</span>
+      </article>
+    );
+  }
   if (item.kind === "stream") {
     if (item.type === "thinking_delta") {
       return (
@@ -318,10 +330,17 @@ function TimelineEvent({
 
   if (event.type === "conversation_summary_created" || event.type === "context_overflow_recovered") {
     const retained = Array.isArray(event.payload["retainedFacts"]) ? event.payload["retainedFacts"].map(String).slice(0, 4) : [];
+    const summary = String(event.payload["summary"] ?? "");
+    const title = event.type === "context_overflow_recovered" ? (zh ? "上下文超限，已压缩并重试" : "Context limit recovered with compaction") : (zh ? "已压缩较早上下文" : "Earlier context compacted");
     return (
-      <article className={`event note ${event.type}`}>
-        <span>{event.type === "context_overflow_recovered" ? (zh ? "上下文超限，已压缩并重试" : "Context limit recovered with compaction") : (zh ? "已压缩较早上下文" : "Earlier context compacted")}</span>
-        {retained.length > 0 ? <small>{retained.join(" · ")}</small> : null}
+      <article className={`event note contextCompactEvent ${event.type}`}>
+        <details className="contextCompactDetails">
+          <summary>
+            <span>{title}</span>
+            {retained.length > 0 ? <small>{retained.join(" · ")}</small> : null}
+          </summary>
+          {summary ? <pre>{summary}</pre> : event.summary ? <pre>{event.summary}</pre> : null}
+        </details>
       </article>
     );
   }
@@ -530,6 +549,21 @@ function buildTimelineItems(events: TaskEvent[]): TimelineItem[] {
     items.push({ key: event.id, kind: "event", event });
   }
   return items.filter((item) => item.kind === "event" || item.summary.trim().length > 0);
+}
+
+function limitTimelineItems(items: TimelineItem[], language?: string | null): TimelineItem[] {
+  if (items.length <= MAX_RENDERED_TIMELINE_ITEMS) return items;
+  const hidden = items.length - MAX_RENDERED_TIMELINE_ITEMS;
+  return [
+    {
+      key: `timeline-window-notice-${hidden}`,
+      kind: "notice",
+      summary: language === "zh-CN"
+        ? `为保持流畅，界面只渲染最近 ${MAX_RENDERED_TIMELINE_ITEMS} 条信息；较早 ${hidden} 条仍保留在任务历史和上下文摘要中。`
+        : `For smooth rendering, only the latest ${MAX_RENDERED_TIMELINE_ITEMS} items are shown; ${hidden} earlier items remain in task history and context summaries.`
+    },
+    ...items.slice(-MAX_RENDERED_TIMELINE_ITEMS)
+  ];
 }
 
 function appendStreamDelta(current: string, delta: string, type: "assistant_delta" | "thinking_delta"): string {

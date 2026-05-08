@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore, McpRegistry } from "@scc/core";
-import type { TaskDetail, ToolCall, ToolResult } from "@scc/shared";
+import type { TaskDetail, TaskEvent, ToolCall, ToolResult } from "@scc/shared";
 import { createApp } from "../src/server.js";
 import { SqliteWorkbenchStore } from "../src/sqlite-store.js";
 
@@ -22,6 +22,45 @@ class StubToolExecutor {
 }
 
 describe("server API", () => {
+  it("keeps task list and task snapshots lightweight for large streamed histories", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const now = new Date().toISOString();
+    const events: TaskEvent[] = Array.from({ length: 8 }, (_, index) => ({
+      id: `event_${index}`,
+      taskId: "task_large",
+      type: "tool_result",
+      createdAt: now,
+      summary: `Tool result ${index}`,
+      payload: {
+        toolName: "run_command",
+        ok: true,
+        output: "x".repeat(index === 7 ? 15000 : 32)
+      }
+    }));
+    await store.saveTask({
+      id: "task_large",
+      title: "Large stream",
+      folderId: "default",
+      workRoot: process.cwd(),
+      status: "completed",
+      createdAt: now,
+      updatedAt: now,
+      approvals: [],
+      pendingGuidance: [],
+      events
+    });
+    const app = await createApp({ workbench: new AgentWorkbench({ store }) });
+
+    const listTask = (await app.inject("/api/tasks")).json()[0];
+    expect(listTask.events).toHaveLength(0);
+
+    const detail = (await app.inject("/api/tasks/task_large?eventLimit=2")).json();
+    expect(detail.events.map((event: TaskEvent) => event.id)).toEqual(["event_6", "event_7"]);
+    expect(String(detail.events[1].payload.output)).toContain("UI preview truncated");
+
+    await app.close();
+  });
+
   it("creates a task and exposes an approval", async () => {
     const app = await createApp({
       workbench: new AgentWorkbench({

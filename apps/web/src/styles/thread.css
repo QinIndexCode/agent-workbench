@@ -890,6 +890,61 @@
   white-space: nowrap;
 }
 
+.event.contextCompactEvent {
+  display: block;
+  max-width: min(760px, 88%);
+  padding: 2px 0;
+}
+
+.contextCompactDetails {
+  min-width: 0;
+  color: var(--muted);
+}
+
+.contextCompactDetails summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+}
+
+.contextCompactDetails summary::-webkit-details-marker {
+  display: none;
+}
+
+.contextCompactDetails summary::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-container-high);
+}
+
+.contextCompactDetails summary span,
+.contextCompactDetails summary small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contextCompactDetails pre {
+  max-height: 220px;
+  margin: 8px 0 0 15px;
+  padding: 9px 10px;
+  overflow: auto;
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  background: var(--surface-container-low);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
 .event.reverted {
   color: var(--muted);
   opacity: 0.78;

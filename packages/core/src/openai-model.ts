@@ -71,14 +71,25 @@ export class OpenAIModelClient implements ModelClient {
     if (turn.kind !== "tool_calls") return turn;
 
     const skillCall = turn.calls.find((call) => call.toolName === "use_skill");
+    let requestedSkillId = "";
     if (skillCall && this.contextAssembler) {
-      const skillId = String(skillCall.args["skillId"] ?? skillCall.args["name"] ?? skillCall.args["title"] ?? "");
-      const skill = await this.contextAssembler.loadSkill(task.id, skillId);
-      if ((skill || skillRetryCount < 2) && skillRetryCount < 3) return this.nextWithSkillRetries(task, skillRetryCount + 1, stream);
+      requestedSkillId = String(skillCall.args["skillId"] ?? skillCall.args["name"] ?? skillCall.args["title"] ?? "").trim();
+      if (requestedSkillId) {
+        const skill = await this.contextAssembler.loadSkill(task.id, requestedSkillId);
+        if ((skill || skillRetryCount < 2) && skillRetryCount < 3) return this.nextWithSkillRetries(task, skillRetryCount + 1, stream);
+      }
     }
 
     const executableCalls = turn.calls.filter((call) => call.toolName !== "use_skill");
     if (executableCalls.length > 0) return { ...turn, calls: executableCalls };
+    if (skillCall) {
+      return {
+        kind: "final",
+        message: requestedSkillId ? "I loaded the requested skill and need another model turn to continue." : "I need the skill name or ID before I can load a skill.",
+        ...(stream?.streamId ? { streamId: stream.streamId } : {}),
+        ...(turn.usage ? { usage: turn.usage } : {})
+      };
+    }
     return {
       kind: "final",
       message: "I loaded the requested skill and need another model turn to continue.",
@@ -337,8 +348,9 @@ export function createModelClientFromEnvironment(
 function fallbackInstructions(): string {
   return [
     "You are the SCC workbench agent.",
-    "Choose the next action yourself based on the user's goal, available tools, permissions, and evidence.",
+    "Choose the next action yourself based on the user's goal, available tools, durable memory, skills, and evidence.",
     "Use tools when the environment must be observed. Do not invent host, file, network, or command results.",
+    "When a tool needs user approval, the application will ask the user; do not assume the current authorization state.",
     "Do not emit fixed machine-readable wrappers, diagnostic files, or scripted review reports unless explicitly requested.",
     "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
     "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
@@ -697,8 +709,8 @@ function toolDefinitions(): ModelToolDefinition[] {
         description: "Load a listed skill's full guidance into the next context. Use only for directly relevant skills.",
         parameters: strictObject({
           skillId: { type: "string", description: "Skill ID from Available Skills" },
-          name: { type: "string", description: "Skill title/name from Available Skills. Use when the user refers to a skill by name." }
-        }, [])
+          name: { type: "string", description: "Skill ID or exact title/name from Available Skills." }
+        }, ["name"])
       }
     },
     {
@@ -819,7 +831,7 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "plan_update",
-        description: "Update the side-panel task plan/progress when a task benefits from visible planning. Do not use for trivial tasks.",
+        description: "Update the side-panel task plan/progress when a task benefits from visible planning. Do not use for trivial tasks. After a successful plan_update, do not call plan_update again unless the plan materially changes; continue the task or answer the user.",
         parameters: strictObject({
           context: { type: "string", description: "Short current plan context or why the plan changed." },
           status: { type: "string", enum: ["empty", "planning", "running", "blocked", "completed"] },
