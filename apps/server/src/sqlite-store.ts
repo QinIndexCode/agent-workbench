@@ -30,7 +30,7 @@ import type {
   PromptCacheStats,
   WebSearchProviderConfig
 } from "@scc/shared";
-import { defaultPreferences, normalizeKnowledgeItem, normalizeSkillRecord, normalizeTaskDetail, normalizeTaskFolderRecord, type EncryptedSecretValue, type WorkbenchStore } from "@scc/core";
+import { LocalSecretBox, defaultPreferences, normalizeKnowledgeItem, normalizeSkillRecord, normalizeTaskDetail, normalizeTaskFolderRecord, type EncryptedSecretValue, type WorkbenchStore } from "@scc/core";
 
 type Namespace =
   | "tasks"
@@ -63,9 +63,16 @@ type Namespace =
   | "integration_messages"
   | "integration_task_links";
 type Row = { key: string; value: string };
+type NamespacedRow = Row & { namespace: Namespace };
+type EncryptedRecordEnvelope = {
+  __sccEncrypted: true;
+  algorithm: "local-secret-box-v1";
+  payload: EncryptedSecretValue;
+};
 
 export class SqliteWorkbenchStore implements WorkbenchStore {
   private readonly db: Database.Database;
+  private secretBox: LocalSecretBox | undefined;
 
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
@@ -284,7 +291,11 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   }
 
   async savePreferences(preferences: UserPreferences): Promise<void> {
+    const previous = this.get<UserPreferences>("preferences", "default");
     this.upsert("preferences", "default", preferences);
+    if (previous?.encryptStorage !== preferences.encryptStorage) {
+      this.rewriteEncryptedRecords(preferences.encryptStorage);
+    }
   }
 
   async saveModelProvider(record: ModelProviderRecord): Promise<void> {
@@ -498,24 +509,73 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   }
 
   private upsert(namespace: Namespace, key: string, value: unknown): void {
+    const stored = namespace !== "preferences" && this.isStorageEncryptionEnabled() ? this.encryptRecordValue(value) : value;
     this.db
       .prepare("INSERT INTO records(namespace, key, value) VALUES (?, ?, ?) ON CONFLICT(namespace, key) DO UPDATE SET value=excluded.value")
-      .run(namespace, key, JSON.stringify(value));
+      .run(namespace, key, JSON.stringify(stored));
   }
 
   private get<T>(namespace: Namespace, key: string): T | undefined {
     const row = this.db.prepare("SELECT value FROM records WHERE namespace = ? AND key = ?").get(namespace, key) as
       | Row
       | undefined;
-    return row ? (JSON.parse(row.value) as T) : undefined;
+    return row ? this.decodeRecordValue<T>(JSON.parse(row.value)) : undefined;
   }
 
   private list<T>(namespace: Namespace): T[] {
     const rows = this.db.prepare("SELECT value FROM records WHERE namespace = ?").all(namespace) as Row[];
-    return rows.map((row) => JSON.parse(row.value) as T);
+    return rows.map((row) => this.decodeRecordValue<T>(JSON.parse(row.value)));
   }
 
   private delete(namespace: Namespace, key: string): void {
     this.db.prepare("DELETE FROM records WHERE namespace = ? AND key = ?").run(namespace, key);
   }
+
+  private rewriteEncryptedRecords(enabled: boolean): void {
+    const rows = this.db.prepare("SELECT namespace, key, value FROM records WHERE namespace <> ?").all("preferences") as NamespacedRow[];
+    const update = this.db.prepare("UPDATE records SET value = ? WHERE namespace = ? AND key = ?");
+    const rewrite = this.db.transaction((records: NamespacedRow[]) => {
+      for (const row of records) {
+        const decoded = this.decodeRecordValue<unknown>(JSON.parse(row.value));
+        const stored = enabled ? this.encryptRecordValue(decoded) : decoded;
+        update.run(JSON.stringify(stored), row.namespace, row.key);
+      }
+    });
+    rewrite(rows);
+  }
+
+  private isStorageEncryptionEnabled(): boolean {
+    const row = this.db.prepare("SELECT value FROM records WHERE namespace = ? AND key = ?").get("preferences", "default") as Row | undefined;
+    if (!row) return false;
+    try {
+      const preferences = this.decodeRecordValue<{ encryptStorage?: unknown }>(JSON.parse(row.value));
+      return preferences.encryptStorage === true;
+    } catch {
+      return false;
+    }
+  }
+
+  private encryptRecordValue(value: unknown): EncryptedRecordEnvelope {
+    return {
+      __sccEncrypted: true,
+      algorithm: "local-secret-box-v1",
+      payload: this.storageSecretBox().encrypt(JSON.stringify(value))
+    };
+  }
+
+  private decodeRecordValue<T>(value: unknown): T {
+    if (!isEncryptedRecordEnvelope(value)) return value as T;
+    return JSON.parse(this.storageSecretBox().decrypt(value.payload)) as T;
+  }
+
+  private storageSecretBox(): LocalSecretBox {
+    this.secretBox ??= new LocalSecretBox();
+    return this.secretBox;
+  }
+}
+
+function isEncryptedRecordEnvelope(value: unknown): value is EncryptedRecordEnvelope {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<EncryptedRecordEnvelope>;
+  return record.__sccEncrypted === true && record.algorithm === "local-secret-box-v1" && Boolean(record.payload);
 }

@@ -93,7 +93,7 @@ import { createId, nowIso } from "./ids.js";
 import { indexKnowledgeItem, searchKnowledge } from "./knowledge-rag.js";
 import type { ResolvedModelProviderConfig } from "./openai-model.js";
 import { PermissionEngine, type PermissionState, type RiskAssessment } from "./permission-engine.js";
-import { LocalSecretBox, maskSecret } from "./secrets.js";
+import { LocalSecretBox, maskSecret, sanitizeSensitiveText, sanitizeSensitiveValue } from "./secrets.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
 import { ShellToolExecutor, type ToolExecutor } from "./tools.js";
 import { createWebSearchApiKeyRef } from "./web-search.js";
@@ -753,10 +753,11 @@ export class AgentWorkbench {
       });
 
       if (decision === "deny") {
+        const preferences = await this.store.getPreferences();
         this.addEvent(task, "tool_result", "Tool denied by user", {
           toolCallId: approval.toolCall.id,
           toolName: approval.toolCall.toolName,
-          args: approval.toolCall.args,
+          args: this.sanitizeForPreferences(approval.toolCall.args, preferences),
           ok: false,
           output: "Tool request denied by user. Explain the limitation, ask for a different approval, or choose a non-denied path."
         });
@@ -773,7 +774,7 @@ export class AgentWorkbench {
       await this.store.saveTask(task);
       const result = await this.executeTool(task.id, approval.toolCall);
       const latest = await this.requiredTask(task.id);
-      this.addToolResultEvent(latest, approval.toolCall, result);
+      await this.addToolResultEvent(latest, approval.toolCall, result);
       await this.store.saveTask(latest);
       if (latest.status !== "running") return latest;
       return this.step(latest.id);
@@ -1680,11 +1681,12 @@ export class AgentWorkbench {
 
     this.consumePendingGuidance(task);
     await this.store.saveTask(task);
-    const turn = await this.safeModelNext(task);
+    const modelTurn = await this.safeModelNext(task);
     this.addLoadedSkillEvents(task);
-    if (!turn) return task;
+    if (!modelTurn) return task;
     const stoppedAfterModel = await this.stoppedTask(task.id);
     if (stoppedAfterModel) return stoppedAfterModel;
+    const turn = this.normalizeInlineToolMarkupTurn(task, modelTurn);
     if (turn.kind === "final") {
       this.addEvent(task, "assistant_message", turn.message, turn.streamId ? { streamId: turn.streamId } : {});
       this.setStatus(task, "completed");
@@ -1700,7 +1702,7 @@ export class AgentWorkbench {
       if (call.toolName === "plan_update") {
         const result = await this.executeTool(task.id, call);
         const latest = await this.requiredTask(task.id);
-        this.addToolResultEvent(latest, call, result);
+        await this.addToolResultEvent(latest, call, result);
         await this.store.saveTask(latest);
         Object.assign(task, latest);
         continue;
@@ -1708,12 +1710,15 @@ export class AgentWorkbench {
 
       const assessment = (await this.toolRiskProvider?.assessTool(call)) ?? this.permissions.assess(call.toolName, call.args);
       const metadata = await this.describeToolCall(task, call, assessment);
+      const preferences = await this.store.getPreferences();
+      const eventArgs = this.sanitizeForPreferences(call.args, preferences);
+      const eventMetadata = this.sanitizeForPreferences(metadata, preferences);
       this.addEvent(task, "tool_requested", call.toolName, {
         toolCallId: call.id,
         toolName: call.toolName,
-        args: call.args,
+        args: eventArgs,
         riskCategory: assessment.category,
-        ...metadata
+        ...eventMetadata
       });
 
       const globalGrants = await this.store.listGlobalPermissions();
@@ -1722,22 +1727,36 @@ export class AgentWorkbench {
           toolCallId: call.id,
           toolName: call.toolName,
           riskCategory: assessment.category,
-          ...metadata
+          ...eventMetadata
         });
-      } else if (this.permissions.needsApproval(assessment.category, this.stateFor(task.id, task))) {
-        const approval = this.permissions.createApproval({ taskId: task.id, toolCall: call, assessment, metadata });
-        task.approvals.push(approval);
-        this.addApprovalPendingEvent(task, approval);
-        this.setStatus(task, "waiting_approval");
-        await this.store.saveTask(task);
-        return task;
+      } else {
+        const preferenceGrant = this.preferenceAutoApproval(call, assessment.category, preferences);
+        if (preferenceGrant.allowed) {
+          this.addEvent(task, "approval_auto_granted", `${assessment.category}: ${preferenceGrant.reason}`, {
+            toolCallId: call.id,
+            toolName: call.toolName,
+            riskCategory: assessment.category,
+            approvalSource: preferenceGrant.source,
+            ...eventMetadata
+          });
+        } else if (
+          preferenceGrant.forceApproval ||
+          this.permissions.needsApproval(assessment.category, this.stateFor(task.id, task))
+        ) {
+          const approval = this.permissions.createApproval({ taskId: task.id, toolCall: call, assessment, metadata: eventMetadata });
+          task.approvals.push(approval);
+          await this.addApprovalPendingEvent(task, approval);
+          this.setStatus(task, "waiting_approval");
+          await this.store.saveTask(task);
+          return task;
+        }
       }
 
       await this.createCheckpointForTool(task, call, assessment);
       await this.store.saveTask(task);
       const result = await this.executeTool(task.id, call);
       const latest = await this.requiredTask(task.id);
-      this.addToolResultEvent(latest, call, result);
+      await this.addToolResultEvent(latest, call, result);
       await this.store.saveTask(latest);
       if (latest.status !== "running") return latest;
       Object.assign(task, latest);
@@ -1745,6 +1764,27 @@ export class AgentWorkbench {
 
     await this.store.saveTask(task);
     return this.step(task.id);
+  }
+
+  private normalizeInlineToolMarkupTurn(task: TaskDetail, turn: Awaited<ReturnType<ModelClient["next"]>>): Awaited<ReturnType<ModelClient["next"]>> {
+    if (turn.kind !== "final") return turn;
+    const calls = extractInlineToolCallsFromMessage(turn.message);
+    if (calls.length === 0) return turn;
+    if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId);
+    return {
+      kind: "tool_calls",
+      calls,
+      ...(turn.streamId ? { streamId: turn.streamId } : {}),
+      ...(turn.usage ? { usage: turn.usage } : {})
+    };
+  }
+
+  private hideAssistantStreamDeltas(task: TaskDetail, streamId: string): void {
+    for (const event of task.events) {
+      if (event.type !== "assistant_delta") continue;
+      if (String(event.payload["streamId"] ?? "") !== streamId) continue;
+      event.payload = { ...event.payload, uiHidden: true };
+    }
   }
 
   private async recordExperience(task: TaskDetail): Promise<void> {
@@ -1942,6 +1982,12 @@ export class AgentWorkbench {
         return managed;
       }
       return await this.tools.execute(call, { signal: controller.signal, workRoot: task.workRoot });
+    } catch (error) {
+      const preferences = await this.store.getPreferences().catch(() => undefined);
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      const prefix = controller.signal.aborted ? "Tool execution cancelled" : "Tool execution failed";
+      const message = `${prefix}: ${rawMessage || "Unknown error."}`;
+      return failedToolResult(call, preferences?.sanitizeSensitiveData === false ? message : sanitizeSensitiveText(message));
     } finally {
       if (this.runningToolControllers.get(taskId) === controller) {
         this.runningToolControllers.delete(taskId);
@@ -2139,7 +2185,7 @@ export class AgentWorkbench {
     const now = nowIso();
     const checkpointId = createId("checkpoint");
     const files =
-      call.toolName === "edit_file"
+      call.toolName === "edit_file" || call.toolName === "write_file"
         ? await this.snapshotExplicitToolFile(checkpointId, task, String(call.args["path"] ?? ""))
         : await this.snapshotWorkRootTextFiles(checkpointId, task);
     const checkpoint: TaskCheckpoint = {
@@ -2343,13 +2389,16 @@ export class AgentWorkbench {
     };
   }
 
-  private addToolResultEvent(task: TaskDetail, call: ToolCall, result: ToolResult): void {
+  private async addToolResultEvent(task: TaskDetail, call: ToolCall, result: ToolResult): Promise<void> {
+    const preferences = await this.store.getPreferences();
+    const output = this.sanitizeForPreferences(result.output, preferences);
+    const args = this.sanitizeForPreferences(call.args, preferences);
     this.addEvent(task, "tool_result", result.ok ? "Tool completed" : "Tool failed", {
       toolCallId: result.toolCallId,
       toolName: call.toolName,
-      args: call.args,
+      args,
       ok: result.ok,
-      output: result.output,
+      output,
       ...(call.toolName === "plan_update" ? { uiHidden: true } : {})
     });
     const toolEvent = task.events[task.events.length - 1]!;
@@ -2357,22 +2406,67 @@ export class AgentWorkbench {
       this.addEvent(task, "web_search_result", result.ok ? "Search evidence returned" : "Search failed", {
         toolCallId: result.toolCallId,
         ok: result.ok,
-        output: result.output
+        output
       });
     }
     this.contextAssembler.getFileStateTracker(task.id).updateFromToolResult(toolEvent);
   }
 
-  private addApprovalPendingEvent(task: TaskDetail, approval: ToolApproval): void {
+  private async addApprovalPendingEvent(task: TaskDetail, approval: ToolApproval): Promise<void> {
+    const preferences = await this.store.getPreferences();
+    const safeApproval = this.sanitizeForPreferences(approval, preferences);
     this.addEvent(task, "approval_pending", `${approval.riskCategory}: ${approval.toolCall.toolName}`, {
       approvalId: approval.id,
-      approval,
+      approval: safeApproval,
       toolName: approval.toolCall.toolName,
-      args: approval.toolCall.args,
+      args: this.sanitizeForPreferences(approval.toolCall.args, preferences),
       riskCategory: approval.riskCategory,
       reason: approval.reason,
-      ...(approval.metadata ?? {})
+      ...this.sanitizeForPreferences(approval.metadata ?? {}, preferences)
     });
+  }
+
+  private sanitizeForPreferences<T>(value: T, preferences: UserPreferences): T {
+    return preferences.sanitizeSensitiveData ? sanitizeSensitiveValue(value) : value;
+  }
+
+  private preferenceAutoApproval(
+    call: ToolCall,
+    category: RiskCategory,
+    preferences: UserPreferences
+  ): { allowed: boolean; forceApproval: boolean; reason?: string; source?: "mcpApprovalMode" | "autoApprove" } {
+    if (category === "destructive") return { allowed: false, forceApproval: false };
+    if (isMcpToolName(call.toolName)) {
+      if (preferences.mcpApprovalMode === "confirm_each") {
+        return { allowed: false, forceApproval: true };
+      }
+      if (preferences.mcpApprovalMode === "auto") {
+        return {
+          allowed: true,
+          forceApproval: false,
+          reason: "MCP preference auto-approve",
+          source: "mcpApprovalMode"
+        };
+      }
+      if (category === "host_observation" || category === "workspace_read") {
+        return {
+          allowed: true,
+          forceApproval: false,
+          reason: "MCP read-only preference",
+          source: "mcpApprovalMode"
+        };
+      }
+      return { allowed: false, forceApproval: false };
+    }
+    if (autoApproveAllows(preferences.autoApprove, category)) {
+      return {
+        allowed: true,
+        forceApproval: false,
+        reason: "preference auto-approve",
+        source: "autoApprove"
+      };
+    }
+    return { allowed: false, forceApproval: false };
   }
 
   private consumePendingGuidance(task: TaskDetail): void {
@@ -2566,6 +2660,18 @@ export class AgentWorkbench {
   }
 }
 
+function isMcpToolName(toolName: string): boolean {
+  return toolName.startsWith("mcp__");
+}
+
+function autoApproveAllows(level: UserPreferences["autoApprove"], category: RiskCategory): boolean {
+  if (category === "destructive") return false;
+  if (level === "none") return false;
+  if (level === "low") return category === "host_observation" || category === "workspace_read";
+  if (level === "medium") return category === "host_observation" || category === "workspace_read" || category === "network";
+  return category === "host_observation" || category === "workspace_read" || category === "workspace_write" || category === "shell" || category === "network";
+}
+
 function initialIntegrationStatus(kind: IntegrationKind, callbackUrl?: string): IntegrationProviderConfig["status"] {
   if (kind === "feishu" && !callbackUrl) return "setup_pending";
   return "connected";
@@ -2589,9 +2695,7 @@ function approximateTokenCount(text: string): number {
 }
 
 function sanitizeProviderError(input: string): string {
-  return input
-    .replace(/\bsk-[A-Za-z0-9_\-*]{8,}/g, "[redacted-api-key]")
-    .replace(/\btp-[A-Za-z0-9_\-*]{8,}/g, "[redacted-api-key]");
+  return sanitizeSensitiveText(input);
 }
 
 function formatProviderFailureMessage(message: string, preferences: UserPreferences): string {
@@ -3113,6 +3217,39 @@ function isManagedStateTool(toolName: string): boolean {
   );
 }
 
+function extractInlineToolCallsFromMessage(message: string): ToolCall[] {
+  if (!/<function_calls\b|<invoke\b/i.test(message)) return [];
+  const calls: ToolCall[] = [];
+  const invokePattern = /<invoke\s+name=(["'])(?<name>[^"']+)\1\s*>(?<body>[\s\S]*?)<\/invoke>/gi;
+  for (const match of message.matchAll(invokePattern)) {
+    const toolName = match.groups?.["name"]?.trim();
+    if (!toolName) continue;
+    const args: Record<string, unknown> = {};
+    const body = match.groups?.["body"] ?? "";
+    const parameterPattern = /<parameter\s+name=(["'])(?<name>[^"']+)\1\s*>(?<value>[\s\S]*?)<\/parameter>/gi;
+    for (const parameter of body.matchAll(parameterPattern)) {
+      const name = parameter.groups?.["name"]?.trim();
+      if (!name) continue;
+      args[name] = decodeXmlText((parameter.groups?.["value"] ?? "").trim());
+    }
+    calls.push({
+      id: createId("tool_call"),
+      toolName,
+      args
+    });
+  }
+  return calls;
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
 function managedToolResult(call: ToolCall, ok: boolean, output: string): ToolResult {
   return {
     id: createId("tool_result"),
@@ -3121,6 +3258,10 @@ function managedToolResult(call: ToolCall, ok: boolean, output: string): ToolRes
     output,
     createdAt: nowIso()
   };
+}
+
+function failedToolResult(call: ToolCall, output: string): ToolResult {
+  return managedToolResult(call, false, output);
 }
 
 function requiredFolder(folder?: TaskFolderRecord): TaskFolderRecord {

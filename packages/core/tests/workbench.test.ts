@@ -136,9 +136,129 @@ describe("ContextAssembler", () => {
     expect(context.input).not.toContain("Conversation Summary");
   });
 
+  it("keeps UI-hidden tool results in model history while hiding visible plan events", () => {
+    const task: TaskDetail = {
+      id: "task_plan_context",
+      title: "Plan context",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_user", taskId: "task_plan_context", type: "user_message", createdAt: nowIso(), summary: "继续优化任务界面", payload: {} },
+        {
+          id: "event_plan_tool",
+          taskId: "task_plan_context",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Plan updated",
+          payload: { toolName: "plan_update", uiHidden: true, output: JSON.stringify({ action: "plan_updated", stepCount: 4 }) }
+        },
+        {
+          id: "event_hidden_tool",
+          taskId: "task_plan_context",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Hidden utility completed",
+          payload: { toolName: "hidden_utility", uiHidden: true, output: "hidden utility evidence" }
+        },
+        {
+          id: "event_plan_revised",
+          taskId: "task_plan_context",
+          type: "plan_revised",
+          createdAt: nowIso(),
+          summary: "侧边栏计划已更新",
+          payload: { status: "running", steps: [{ title: "检查", status: "running" }] }
+        },
+        { id: "event_answer", taskId: "task_plan_context", type: "assistant_message", createdAt: nowIso(), summary: "我会继续检查。", payload: {} }
+      ]
+    };
+
+    const history = buildHistoryLayer(task, 2000);
+
+    expect(history).toContain("继续优化任务界面");
+    expect(history).toContain("我会继续检查");
+    expect(history).toContain("Tool Result plan_update");
+    expect(history).toContain("plan_updated");
+    expect(history).toContain("Tool Result hidden_utility");
+    expect(history).toContain("hidden utility evidence");
+    expect(history).not.toContain("侧边栏计划已更新");
+    expect(history).not.toContain("Plan Panel");
+  });
+
+  it("keeps read_file content in Known Files instead of duplicating it in history", () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const content = "UNIQUE_READ_FILE_CONTENT";
+    const task: TaskDetail = {
+      id: "task_file_dedupe",
+      title: "File dedupe",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_read",
+          taskId: "task_file_dedupe",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool completed",
+          payload: {
+            toolName: "read_file",
+            ok: true,
+            output: JSON.stringify({ path: "src/example.ts", content, hash: "hash_1", partial: false })
+          }
+        }
+      ]
+    };
+    const tracker = assembler.getFileStateTracker(task.id);
+    tracker.updateFromToolResult(task.events[0]!);
+
+    const history = buildHistoryLayer(task, 4000, tracker);
+    const knownFiles = tracker.buildFileStateTable();
+    const combined = `${knownFiles}\n${history}`;
+
+    expect(knownFiles).toContain(content);
+    expect(history).toContain("content recorded in Known Files");
+    expect(history).not.toContain(content);
+    expect(combined.match(/UNIQUE_READ_FILE_CONTENT/g)).toHaveLength(1);
+  });
+
+  it("does not compact ordinary small messages by event count alone", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const assembler = new ContextAssembler(store);
+    const task: TaskDetail = {
+      id: "task_many_small_events",
+      title: "Many small turns",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: Array.from({ length: 90 }, (_, index) => ({
+        id: `event_small_${index}`,
+        taskId: "task_many_small_events",
+        type: (index % 2 === 0 ? "user_message" : "assistant_message") as const,
+        createdAt: nowIso(),
+        summary: `small message ${index}`,
+        payload: {}
+      }))
+    };
+
+    const context = await assembler.assemble(task);
+    const summaries = await store.listConversationSummaries(task.id);
+
+    expect(summaries).toHaveLength(0);
+    expect(context.input).not.toContain("Conversation Summary");
+    expect(context.input).toContain("small message 89");
+  });
+
   it("creates an auditable summary pack instead of only dropping old context", async () => {
     const store = new InMemoryWorkbenchStore();
     const assembler = new ContextAssembler(store);
+    const longConstraint = "persist the user goal, current file decisions, latest plan state, and tool evidence references. ".repeat(8);
     const task: TaskDetail = {
       id: "task_summary",
       title: "Long task",
@@ -147,29 +267,86 @@ describe("ContextAssembler", () => {
       updatedAt: nowIso(),
       approvals: [],
       pendingGuidance: [],
-      events: Array.from({ length: 72 }, (_, index) => ({
+      events: Array.from({ length: 180 }, (_, index) => ({
         id: `event_${index}`,
         taskId: "task_summary",
         type: (index % 3 === 0 ? "tool_result" : index % 3 === 1 ? "assistant_message" : "user_message") as const,
         createdAt: nowIso(),
-        summary: index === 71 ? "LATEST_DECISION_MARKER keep this detail" : `older event ${index}`,
-        payload: index % 3 === 0 ? { toolName: "read_file", ok: true } : {}
+        summary: index === 179 ? "LATEST_DECISION_MARKER keep this detail" : `older event ${index} ${longConstraint}`,
+        payload: index % 3 === 0 ? { toolName: "read_file", ok: true, args: { path: `src/file-${index}.ts` } } : {}
       }))
     };
 
-    const context = await assembler.assemble(task);
+    const context = await assembler.assemble(task, { maxTotal: 10000, reservedForResponse: 1600 });
     const summaries = await store.listConversationSummaries(task.id);
 
     expect(summaries).toHaveLength(1);
     expect(summaries[0]?.summary).toContain("older event");
     expect(context.input).toContain("Conversation Summary");
+    expect(context.input).toContain("Active Task Continuity");
+    expect(context.input).toContain("Original user goal");
     expect(context.input).toContain("LATEST_DECISION_MARKER");
+  });
+
+  it("summarizes large tool payloads as references instead of copying raw edit output", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const assembler = new ContextAssembler(store);
+    const hugePatch = "UI preview truncated should never be copied into model summary. ".repeat(420);
+    const task: TaskDetail = {
+      id: "task_large_tool_summary",
+      title: "Large tool summary",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_goal",
+          taskId: "task_large_tool_summary",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "Maintain the generated blog page without losing the theme requirement.",
+          payload: {}
+        },
+        ...Array.from({ length: 70 }, (_, index) => ({
+          id: `event_tool_${index}`,
+          taskId: "task_large_tool_summary",
+          type: "tool_result" as const,
+          createdAt: nowIso(),
+          summary: `edit_file result ${index}`,
+          payload: {
+            toolName: "edit_file",
+            ok: true,
+            args: { path: "styles.css", edits: [{ startLine: 1, endLine: 1, newText: hugePatch }] },
+            output: JSON.stringify({ path: "styles.css", summary: "File edited", diff: hugePatch })
+          }
+        })),
+        {
+          id: "event_latest_user",
+          taskId: "task_large_tool_summary",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "LATEST_THEME_REQUIREMENT verify the dark/light theme switch before final summary.",
+          payload: {}
+        }
+      ]
+    };
+
+    const context = await assembler.assemble(task, { maxTotal: 10000, reservedForResponse: 1600 });
+    const summaries = await store.listConversationSummaries(task.id);
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.summary).not.toContain("UI preview truncated");
+    expect(summaries[0]?.summary).not.toContain(hugePatch.slice(0, 200));
+    expect(summaries[0]?.retainedFacts.join("\n")).toContain("Earlier tool evidence refs");
+    expect(context.input).toContain("LATEST_THEME_REQUIREMENT");
   });
 
   it("keeps assembled context inside a strict low token budget", async () => {
     const store = new InMemoryWorkbenchStore();
     const preferences = await store.getPreferences();
-    await store.savePreferences({ ...preferences, maxTokensPerRequest: 900, updatedAt: nowIso() });
+    await store.savePreferences({ ...preferences, maxTokensPerRequest: 10000, updatedAt: nowIso() });
     const assembler = new ContextAssembler(store);
     const task: TaskDetail = {
       id: "task_budget",
@@ -191,7 +368,7 @@ describe("ContextAssembler", () => {
 
     const context = await assembler.assemble(task);
 
-    expect(context.usedTokens).toBeLessThanOrEqual(900);
+    expect(context.usedTokens).toBeLessThanOrEqual(10000);
     expect(context.input).toContain("Context Budget Notice");
     expect(context.input).toContain("LATEST_BUDGET_MARKER");
   });
@@ -325,6 +502,15 @@ class StubToolExecutor {
   }
 }
 
+class ThrowingToolExecutor {
+  calls: ToolCall[] = [];
+
+  async execute(call: ToolCall): Promise<ToolResult> {
+    this.calls.push(call);
+    throw new Error("simulated tool crash with sk-testsecret123456");
+  }
+}
+
 class AbortableToolExecutor {
   calls: ToolCall[] = [];
 
@@ -351,6 +537,12 @@ class AbortableToolExecutor {
   }
 }
 
+class BrokenKnowledgeStore extends InMemoryWorkbenchStore {
+  async listKnowledgeChunks(): Promise<Awaited<ReturnType<InMemoryWorkbenchStore["listKnowledgeChunks"]>>> {
+    throw new Error("knowledge backend failed with Bearer secret-token-123456");
+  }
+}
+
 class SingleToolModel implements ModelClient {
   constructor(
     private readonly toolName: string,
@@ -364,6 +556,30 @@ class SingleToolModel implements ModelClient {
     return {
       kind: "tool_calls",
       calls: [{ id: createId("tool_call"), toolName: this.toolName, args: this.args }]
+    };
+  }
+}
+
+class ContextAwarePlanModel implements ModelClient {
+  calls = 0;
+
+  constructor(private readonly assembler: ContextAssembler) {}
+
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    this.calls += 1;
+    const context = await this.assembler.assemble(task);
+    if (context.input.includes("Tool Result plan_update") && context.input.includes("plan_updated")) {
+      return { kind: "final", message: "Saw the plan update result and continued." };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [
+        {
+          id: createId("tool_call"),
+          toolName: "plan_update",
+          args: { context: "Planning visible progress.", status: "running", steps: [{ title: "Inspect continuity", status: "running" }] }
+        }
+      ]
     };
   }
 }
@@ -388,6 +604,25 @@ class StreamingFinalModel implements ModelClient {
     await stream?.onAssistantDelta("Hello");
     await stream?.onAssistantDelta(" stream.");
     return { kind: "final", message: "Hello stream.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+}
+
+class InlineToolMarkupModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    if (task.events.some((event) => event.type === "tool_result")) {
+      await stream?.onAssistantDelta("Artifact verified.");
+      return { kind: "final", message: "Artifact verified.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+    }
+    const message = [
+      "I need to inspect files.",
+      "<function_calls>",
+      "<invoke name=\"list_files\">",
+      "<parameter name=\"path\">.</parameter>",
+      "</invoke>",
+      "</function_calls>"
+    ].join("\n");
+    await stream?.onAssistantDelta(message);
+    return { kind: "final", message, ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
   }
 }
 
@@ -518,6 +753,7 @@ describe("AgentWorkbench", () => {
     }> = [
       { toolName: "run_command", args: { command: "Get-Process | Select-Object -First 5" }, riskCategory: "host_observation" },
       { toolName: "edit_file", args: { path: "note.txt", expectedHash: "abc", edits: [] }, riskCategory: "workspace_write" },
+      { toolName: "write_file", args: { path: "note.txt", expectedHash: "__new__", content: "hello" }, riskCategory: "workspace_write" },
       { toolName: "web_search", args: { query: "SCC workbench" }, riskCategory: "network" },
       { toolName: "run_command", args: { command: "Stop-Process -Id 99999" }, riskCategory: "destructive" }
     ];
@@ -542,6 +778,92 @@ describe("AgentWorkbench", () => {
     }
   });
 
+  it("turns thrown tool errors into explicit failed tool_result events", async () => {
+    const tools = new ThrowingToolExecutor();
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools,
+      model: new ConfiguredToolModelClient("Get-Process")
+    });
+    await workbench.grantGlobalPermission("host_observation", "throwing tool regression");
+
+    const completed = await workbench.createTask("check running processes");
+    const result = completed.events.find((event) => event.type === "tool_result");
+
+    expect(completed.status).toBe("completed");
+    expect(tools.calls).toHaveLength(1);
+    expect(result?.payload["ok"]).toBe(false);
+    expect(String(result?.payload["output"])).toContain("Tool execution failed");
+    expect(String(result?.payload["output"])).not.toContain("sk-testsecret");
+  });
+
+  it("auto-approves non-MCP tools according to autoApprove without bypassing destructive tools", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const preferences = await store.getPreferences();
+    await store.savePreferences({ ...preferences, autoApprove: "low", updatedAt: nowIso() });
+    const tools = new StubToolExecutor();
+    const readWorkbench = new AgentWorkbench({
+      store,
+      tools,
+      model: new SingleToolModel("list_files", { path: "." })
+    });
+
+    const completed = await readWorkbench.createTask("list files");
+
+    expect(completed.status).toBe("completed");
+    expect(completed.approvals).toHaveLength(0);
+    expect(completed.events.some((event) => event.type === "approval_auto_granted" && event.payload["approvalSource"] === "autoApprove")).toBe(true);
+    expect(tools.calls).toHaveLength(1);
+
+    await store.savePreferences({ ...(await store.getPreferences()), autoApprove: "all", updatedAt: nowIso() });
+    const destructiveWorkbench = new AgentWorkbench({
+      store,
+      tools: new StubToolExecutor(),
+      model: new SingleToolModel("run_command", { command: "Stop-Process -Id 99999" })
+    });
+    const pending = await destructiveWorkbench.createTask("try destructive command");
+
+    expect(pending.status).toBe("waiting_approval");
+    expect(pending.approvals[0]?.riskCategory).toBe("destructive");
+  });
+
+  it("applies mcpApprovalMode before general auto approval", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const preferences = await store.getPreferences();
+    await store.savePreferences({ ...preferences, autoApprove: "all", mcpApprovalMode: "confirm_each", updatedAt: nowIso() });
+    const riskProvider = {
+      async assessTool(call: ToolCall) {
+        return call.toolName.startsWith("mcp__")
+          ? { category: "workspace_read" as const, reason: "fixture MCP read." }
+          : undefined;
+      }
+    };
+    const confirmWorkbench = new AgentWorkbench({
+      store,
+      tools: new StubToolExecutor(),
+      toolRiskProvider: riskProvider,
+      model: new SingleToolModel("mcp__fixture__read", {})
+    });
+
+    const pending = await confirmWorkbench.createTask("read through MCP");
+    expect(pending.status).toBe("waiting_approval");
+    expect(pending.approvals[0]?.riskCategory).toBe("workspace_read");
+
+    await store.savePreferences({ ...(await store.getPreferences()), mcpApprovalMode: "auto", updatedAt: nowIso() });
+    const autoTools = new StubToolExecutor();
+    const autoWorkbench = new AgentWorkbench({
+      store,
+      tools: autoTools,
+      toolRiskProvider: riskProvider,
+      model: new SingleToolModel("mcp__fixture__read", {})
+    });
+    const completed = await autoWorkbench.createTask("read through MCP automatically");
+
+    expect(completed.status).toBe("completed");
+    expect(completed.events.some((event) => event.type === "approval_auto_granted" && event.payload["approvalSource"] === "mcpApprovalMode")).toBe(true);
+    expect(autoTools.calls).toHaveLength(1);
+  });
+
   it("records streaming thinking and assistant deltas before final response", async () => {
     const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
 
@@ -555,6 +877,20 @@ describe("AgentWorkbench", () => {
     expect(deltas.map((event) => event.summary).join("")).toBe("Hello stream.");
     expect(final?.summary).toBe("Hello stream.");
     expect(final?.payload["streamId"]).toBe(deltas[0]?.payload["streamId"]);
+  });
+
+  it("continues execution when a provider returns inline XML tool markup as text", async () => {
+    const tools = new StubToolExecutor();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), tools, model: new InlineToolMarkupModel() });
+    await workbench.grantGlobalPermission("workspace_read", "inline markup regression");
+
+    const completed = await workbench.createTask("inspect files before answering");
+
+    expect(completed.status).toBe("completed");
+    expect(tools.calls.map((call) => call.toolName)).toEqual(["list_files"]);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("<function_calls>"))).toBe(false);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("Artifact verified"))).toBe(true);
+    expect(completed.events.some((event) => event.type === "assistant_delta" && event.payload["uiHidden"] === true)).toBe(true);
   });
 
   it("compacts and retries once after a model context overflow", async () => {
@@ -749,6 +1085,21 @@ describe("AgentWorkbench", () => {
     expect(toolResult?.payload["uiHidden"]).toBe(true);
   });
 
+  it("keeps plan_update results visible to the next model turn even when hidden from UI", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const assembler = new ContextAssembler(store);
+    const model = new ContextAwarePlanModel(assembler);
+    const workbench = new AgentWorkbench({ store, contextAssembler: assembler, model });
+
+    const completed = await workbench.createTask("更新计划后继续执行");
+    const planResults = completed.events.filter((event) => event.type === "tool_result" && event.payload["toolName"] === "plan_update");
+
+    expect(completed.status).toBe("completed");
+    expect(model.calls).toBe(2);
+    expect(planResults).toHaveLength(1);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary === "Saw the plan update result and continued.")).toBe(true);
+  });
+
   it("copies uploaded attachments, links them to tasks, and exposes them to context as references", async () => {
     const store = new InMemoryWorkbenchStore();
     const assembler = new ContextAssembler(store);
@@ -885,6 +1236,27 @@ describe("AgentWorkbench", () => {
     expect(completed.events.some((event) => event.type === "tool_result" && String(event.payload["output"] ?? "").includes("Approval notes"))).toBe(true);
     expect(search[0]?.citation?.title).toBe("Approval notes");
     expect(search[0]?.citation?.excerpt).toContain("ask before risky tools");
+  });
+
+  it("returns failed knowledge_search results when the knowledge store throws or is cancelled", async () => {
+    const call: ToolCall = {
+      id: createId("tool_call"),
+      toolName: "knowledge_search",
+      args: { query: "approval policy" }
+    };
+    const failed = await new KnowledgeSearchToolExecutor(new BrokenKnowledgeStore()).execute(call);
+    const controller = new AbortController();
+    controller.abort();
+    const cancelled = await new KnowledgeSearchToolExecutor(new InMemoryWorkbenchStore()).execute(
+      { ...call, id: createId("tool_call") },
+      { signal: controller.signal }
+    );
+
+    expect(failed.ok).toBe(false);
+    expect(failed.output).toContain("Knowledge search failed");
+    expect(failed.output).not.toContain("secret-token");
+    expect(cancelled.ok).toBe(false);
+    expect(cancelled.output).toContain("cancelled");
   });
 
   it("creates checkpoints before edits and can roll back task file changes", async () => {
@@ -1600,6 +1972,7 @@ describe("McpRegistry", () => {
       const script = join(temp, "mock-mcp.mjs");
       writeFileSync(script, mockMcpServerSource());
       const store = new InMemoryWorkbenchStore();
+      await store.savePreferences({ ...(await store.getPreferences()), mcpApprovalMode: "confirm_each", updatedAt: nowIso() });
       const registry = new McpRegistry(store);
       await registry.createServer({
         id: "mock",
@@ -1790,6 +2163,91 @@ describe("ShellToolExecutor", () => {
       expect(result.output.toLowerCase()).toContain(resolve(workRoot).toLowerCase());
     } finally {
       rmSync(workRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("reads complete small and medium files by default without manual line pagination", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "tmp-scc-read-full-"));
+    try {
+      const lines = Array.from({ length: 320 }, (_, index) => `line-${index + 1}`);
+      writeFileSync(join(temp, "long.txt"), lines.join("\n"), "utf8");
+      const executor = new ShellToolExecutor(temp);
+
+      const result = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "read_file",
+        args: { path: "long.txt" }
+      });
+
+      expect(result.ok).toBe(true);
+      const parsed = JSON.parse(result.output) as Record<string, unknown>;
+      expect(parsed["mode"]).toBe("full");
+      expect(parsed["partial"]).toBe(false);
+      expect(parsed["totalLines"]).toBe(320);
+      expect(String(parsed["content"])).toContain("line-260");
+      expect(String(parsed["content"])).toContain("line-320");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a large file preview by default and supports targeted range reads", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "tmp-scc-read-large-"));
+    try {
+      const lines = Array.from({ length: 6000 }, (_, index) => `line-${index + 1} ${"x".repeat(80)}`);
+      writeFileSync(join(temp, "huge.txt"), lines.join("\n"), "utf8");
+      const executor = new ShellToolExecutor(temp);
+
+      const preview = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "read_file",
+        args: { path: "huge.txt" }
+      });
+      expect(preview.ok).toBe(true);
+      const previewJson = JSON.parse(preview.output) as Record<string, unknown>;
+      expect(previewJson["mode"]).toBe("large_preview");
+      expect(previewJson["partial"]).toBe(true);
+      expect(String(previewJson["content"])).toContain("line-1");
+      expect(String(previewJson["content"])).toContain("line-6000");
+      expect(String(previewJson["content"])).not.toContain("line-3000");
+
+      const range = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "read_file",
+        args: { path: "huge.txt", offset: 3000, limit: 3 }
+      });
+      expect(range.ok).toBe(true);
+      const rangeJson = JSON.parse(range.output) as Record<string, unknown>;
+      expect(rangeJson["mode"]).toBe("range");
+      expect(rangeJson["partial"]).toBe(true);
+      expect(String(rangeJson["content"])).toContain("line-3000");
+      expect(String(rangeJson["content"])).toContain("line-3002");
+      expect(typeof rangeJson["hash"]).toBe("string");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("writes large whole-file content without exposing write chunking to the model", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "tmp-scc-write-large-"));
+    try {
+      const content = Array.from({ length: 5000 }, (_, index) => `generated-${index + 1}`).join("\n");
+      const executor = new ShellToolExecutor(temp);
+
+      const result = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "write_file",
+        args: { path: "generated.txt", expectedHash: "__new__", content }
+      });
+
+      expect(result.ok).toBe(true);
+      expect(readFileSync(join(temp, "generated.txt"), "utf8")).toBe(content);
+      const parsed = JSON.parse(result.output) as Record<string, unknown>;
+      expect(parsed["path"]).toContain("generated.txt");
+      expect(parsed["changed"]).toBe(true);
+      expect(result.output).not.toContain("chunk");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
     }
   });
 

@@ -74,13 +74,13 @@ function summarizeToolEvidence(output: string): string {
       const id = item["Id"] === undefined ? "" : ` pid ${String(item["Id"])}`;
       return `- ${name}${id}${cpu}${memory}`;
     });
-    return `Tool evidence returned.\n\nTop entries:\n${rows.join("\n")}`;
+    return `Top entries:\n${rows.join("\n")}`;
   }
   if (isRecord(parsed) && typeof parsed["summary"] === "string") {
-    return `Tool evidence returned.\n\n${parsed["summary"]}`;
+    return String(parsed["summary"]);
   }
   const compact = output.length > 1400 ? `${output.slice(0, 1400)}\n... output truncated ...` : output;
-  return `Tool evidence returned.\n\n${compact}`;
+  return compact;
 }
 
 function parseJson(value: string): unknown {

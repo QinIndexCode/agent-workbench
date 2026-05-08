@@ -563,7 +563,7 @@ SCC-Batch Engine 全称 **Semantic Contract-based Batch DAG Engine**（语义契
 | ContextAssembler / FileStateTracker | Implemented | 继续用真实代码任务验证“不要猜代码”的效果 |
 | Experience / Skill 学习闭环 | Implemented / Partial | Task Memory、Experience、基础 Pattern/Skill 有实现；skill 冲突处理、使用统计闭环、审核队列仍需加强 |
 | 批处理 DAG / ContractParser / ContractValidator / SnapshotManager | Planned / Research | 属于研究方向，不能作为当前产品已完成能力宣传 |
-| MCP 生态兼容 | Planned / Partial | 当前只有偏好字段和设计文档；尚无 MCP discovery、tools/list、tools/call 和远端工具生命周期 |
+| MCP 生态兼容 | Implemented / Partial | 已支持配置式 stdio 与 streamable HTTP discovery、tools/list、tools/call；资源模板、远程 auth 和完整生命周期仍需加强 |
 | 可观测性、调试能力 | Implemented / Partial | 继续减少 raw JSON 噪音，提升 task inspector、事件流和 diagnostics 的一致性 |
 | 多消息平台网关、远程执行后端、Python SDK、OpenTelemetry 完整兼容 | Planned / Research | 不作为当前已实现能力宣传，后续按生态优先级逐步落地 |
 

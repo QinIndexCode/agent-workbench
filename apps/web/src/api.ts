@@ -62,6 +62,7 @@ import type {
   TaskRollbackRequest,
   TaskRollbackResult,
   TaskTitleResponse,
+  TaskTranscriptItem,
   TaskMemory,
   UserPreferences,
   ConversationSummary,
@@ -210,6 +211,9 @@ export const api = {
   },
   getTask(taskId: string): Promise<TaskDetail> {
     return request(`/api/tasks/${taskId}?eventLimit=${TASK_EVENT_WINDOW}`);
+  },
+  listTaskTranscript(taskId: string): Promise<TaskTranscriptItem[]> {
+    return request(`/api/tasks/${taskId}/transcript`);
   },
   patchTask(taskId: string, input: TaskPatchRequest): Promise<TaskDetail> {
     return request(`/api/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(input) });

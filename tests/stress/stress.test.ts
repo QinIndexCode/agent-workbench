@@ -113,6 +113,7 @@ describe("stress matrix", () => {
     const store = new InMemoryWorkbenchStore();
     const assembler = new ContextAssembler(store);
     const taskId = createId("task");
+    const recurringConstraint = "preserve active task identity, folder isolation, latest user constraint, file evidence, and rollback state. ".repeat(8);
     const task: TaskDetail = {
       id: taskId,
       title: "Long context stress",
@@ -123,22 +124,24 @@ describe("stress matrix", () => {
       updatedAt: nowIso(),
       approvals: [],
       pendingGuidance: [],
-      events: Array.from({ length: 90 }, (_, index) => ({
+      events: Array.from({ length: 240 }, (_, index) => ({
         id: createId("event"),
         taskId,
         type: (index % 3 === 0 ? "user_message" : index % 3 === 1 ? "assistant_message" : "tool_result") as TaskDetail["events"][number]["type"],
         createdAt: nowIso(),
-        summary: `long context item ${index} with recurring project constraint, work root evidence, and user requirement ${index % 7}`,
+        summary: `long context item ${index} with recurring project constraint ${index % 7}. ${recurringConstraint}`,
         payload: index % 3 === 2
-          ? { toolName: "read_file", ok: true, args: { path: `src/file-${index}.ts` }, output: JSON.stringify({ summary: `file evidence ${index}` }) }
+          ? { toolName: "read_file", ok: true, args: { path: `src/file-${index}.ts` }, output: JSON.stringify({ summary: `file evidence ${index}`, excerpt: recurringConstraint }) }
           : {}
       }))
     };
 
-    const assembled = await assembler.assemble(task, { maxTotal: 900, reservedForResponse: 160 });
+    const assembled = await assembler.assemble(task, { maxTotal: 10000, reservedForResponse: 1600 });
     const summaries = await store.listConversationSummaries(task.id);
-    expect(assembled.usedTokens).toBeLessThanOrEqual(900);
+    expect(assembled.usedTokens).toBeLessThanOrEqual(10000);
     expect(assembled.input).toContain("Conversation Summary");
+    expect(assembled.input).toContain("Active Task Continuity");
+    expect(assembled.input).toContain("Latest user constraint");
     expect(assembled.input).toContain(task.workRoot);
     expect(summaries).toHaveLength(1);
     recordPass("long context compaction", task, {

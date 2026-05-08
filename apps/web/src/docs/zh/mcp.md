@@ -17,7 +17,7 @@ Model Context Protocol (MCP) 是一种开放协议，用于连接外部工具服
 
 ## 配置远程服务
 
-- 支持 SSE (Server-Sent Events) 传输
+- 支持远程 MCP endpoint 的 streamable HTTP 传输
 - 填写服务端点后自动同步工具列表
 
 ## 使用

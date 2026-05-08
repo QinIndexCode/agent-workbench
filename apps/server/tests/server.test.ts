@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import Database from "better-sqlite3";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore, McpRegistry } from "@scc/core";
@@ -58,6 +59,111 @@ describe("server API", () => {
     expect(detail.events.map((event: TaskEvent) => event.id)).toEqual(["event_6", "event_7"]);
     expect(String(detail.events[1].payload.output)).toContain("UI preview truncated");
 
+    await app.close();
+  });
+
+  it("keeps audit events windowed while transcript remains complete and user-facing", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const now = new Date().toISOString();
+    const events: TaskEvent[] = [
+      {
+        id: "event_task_created",
+        taskId: "task_windowed",
+        type: "task_created",
+        createdAt: now,
+        summary: "Task created",
+        payload: {}
+      },
+      {
+        id: "event_user_goal",
+        taskId: "task_windowed",
+        type: "user_message",
+        createdAt: now,
+        summary: "Build the actual requested artifact",
+        payload: {}
+      },
+      {
+        id: "event_early_agent",
+        taskId: "task_windowed",
+        type: "assistant_message",
+        createdAt: now,
+        summary: "I will build the artifact and keep the page verifiable.",
+        payload: {}
+      },
+      {
+        id: "event_agent_tool_boilerplate",
+        taskId: "task_windowed",
+        type: "assistant_message",
+        createdAt: now,
+        summary: "Tool evidence returned.\n\nTop entries:\n- node.exe",
+        payload: { message: "Tool evidence returned.\n\nTop entries:\n- node.exe" }
+      },
+      {
+        id: "event_attachment",
+        taskId: "task_windowed",
+        type: "attachment_added",
+        createdAt: now,
+        summary: "logo.png",
+        payload: { fileName: "logo.png", kind: "image", size: 1024 }
+      },
+      {
+        id: "event_context_summary",
+        taskId: "task_windowed",
+        type: "conversation_summary_created",
+        createdAt: now,
+        summary: "Earlier context was compacted",
+        payload: {
+          summary: [
+            "Earlier conversation was compacted to keep the task within the model context window.",
+            "- **Tool Call**: edit_file({ very large payload })",
+            "[UI preview truncated: 999 characters omitted. Full evidence is retained by SCC.]"
+          ].join("\n"),
+          retainedFacts: ["Original goal: Build the actual requested artifact"]
+        }
+      },
+      ...Array.from({ length: 1000 }, (_, index) => ({
+        id: `event_agent_${index}`,
+        taskId: "task_windowed",
+        type: "assistant_message" as const,
+        createdAt: now,
+        summary: `assistant item ${index}`,
+        payload: {}
+      }))
+    ];
+    await store.saveTask({
+      id: "task_windowed",
+      title: "Windowed history",
+      folderId: "default",
+      workRoot: process.cwd(),
+      status: "completed",
+      createdAt: now,
+      updatedAt: now,
+      approvals: [],
+      pendingGuidance: [],
+      events
+    });
+    const app = await createApp({ workbench: new AgentWorkbench({ store }) });
+
+    const detail = (await app.inject("/api/tasks/task_windowed?eventLimit=50")).json();
+    const eventWindow = (await app.inject("/api/tasks/task_windowed/events?eventLimit=50")).json();
+    const transcript = (await app.inject("/api/tasks/task_windowed/transcript?eventLimit=50")).json();
+
+    expect(detail.events.map((event: TaskEvent) => event.id)).toContain("event_user_goal");
+    expect(detail.events.at(-1)?.id).toBe("event_agent_999");
+    expect(eventWindow.map((event: TaskEvent) => event.id)).toContain("event_user_goal");
+    expect(eventWindow.at(-1)?.id).toBe("event_agent_999");
+    expect(eventWindow.length).toBeLessThan(transcript.length);
+    expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_user_goal");
+    expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_early_agent");
+    expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_agent_tool_boilerplate");
+    expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_attachment");
+    expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_agent_0");
+    expect(transcript.at(-1)?.id).toBe("event_agent_999");
+    expect(transcript.map((event: TaskEvent) => event.id)).not.toContain("event_context_summary");
+    expect(JSON.stringify(transcript)).not.toContain("UI preview truncated");
+    expect(JSON.stringify(transcript)).not.toContain("Original goal");
+    expect(JSON.stringify(transcript)).not.toContain("Tool evidence returned");
+    expect(JSON.stringify(transcript)).toContain("Top entries");
     await app.close();
   });
 
@@ -534,6 +640,73 @@ describe("SqliteWorkbenchStore", () => {
       expect((await reloaded.listTasks()).length).toBe(1);
       reloaded.close();
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("encrypts local records when encryptStorage is enabled while keeping them readable", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-encrypted-"));
+    const previousSecretFile = process.env["SCC_LOCAL_SECRET_FILE"];
+    process.env["SCC_LOCAL_SECRET_FILE"] = join(dir, "local-secret.key");
+    try {
+      const file = join(dir, "state.sqlite");
+      const store = new SqliteWorkbenchStore(file);
+      const preferences = await store.getPreferences();
+      await store.savePreferences({ ...preferences, encryptStorage: true, updatedAt: new Date().toISOString() });
+      const now = new Date().toISOString();
+      await store.saveTask({
+        id: "task_secret",
+        title: "Encrypted task",
+        status: "completed",
+        createdAt: now,
+        updatedAt: now,
+        approvals: [],
+        pendingGuidance: [],
+        events: [
+          {
+            id: "event_secret",
+            taskId: "task_secret",
+            type: "assistant_message",
+            createdAt: now,
+            summary: "SECRET_TASK_TRANSCRIPT",
+            payload: {}
+          }
+        ]
+      });
+      await store.saveKnowledgeItem({
+        id: "knowledge_secret",
+        projectId: "default",
+        kind: "memory",
+        title: "Secret note",
+        content: "PLAINTEXT_KNOWLEDGE_SECRET",
+        tags: [],
+        indexStatus: "pending",
+        chunkCount: 0,
+        createdAt: now,
+        updatedAt: now
+      });
+      store.close();
+
+      const raw = new Database(file, { readonly: true });
+      const rows = raw.prepare("SELECT namespace, value FROM records").all() as Array<{ namespace: string; value: string }>;
+      raw.close();
+      const taskRow = rows.find((row) => row.namespace === "tasks")?.value ?? "";
+      const knowledgeRow = rows.find((row) => row.namespace === "knowledge_items")?.value ?? "";
+      const preferencesRow = rows.find((row) => row.namespace === "preferences")?.value ?? "";
+
+      expect(taskRow).not.toContain("SECRET_TASK_TRANSCRIPT");
+      expect(knowledgeRow).not.toContain("PLAINTEXT_KNOWLEDGE_SECRET");
+      expect(taskRow).toContain("__sccEncrypted");
+      expect(knowledgeRow).toContain("__sccEncrypted");
+      expect(preferencesRow).toContain("\"encryptStorage\":true");
+
+      const reloaded = new SqliteWorkbenchStore(file);
+      expect((await reloaded.getTask("task_secret"))?.events[0]?.summary).toBe("SECRET_TASK_TRANSCRIPT");
+      expect((await reloaded.getKnowledgeItem("knowledge_secret"))?.content).toBe("PLAINTEXT_KNOWLEDGE_SECRET");
+      reloaded.close();
+    } finally {
+      if (previousSecretFile === undefined) delete process.env["SCC_LOCAL_SECRET_FILE"];
+      else process.env["SCC_LOCAL_SECRET_FILE"] = previousSecretFile;
       rmSync(dir, { recursive: true, force: true });
     }
   });

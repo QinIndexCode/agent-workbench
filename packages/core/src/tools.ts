@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createReadStream, existsSync } from "node:fs";
+import { mkdir, open, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import type { ToolCall, ToolResult } from "@scc/shared";
 import { createId, nowIso } from "./ids.js";
@@ -32,6 +32,13 @@ export class CompositeToolExecutor implements ToolExecutor {
   }
 }
 
+const DEFAULT_READ_RANGE_LINES = 200;
+const READ_FILE_FULL_INLINE_BYTES = 256 * 1024;
+const READ_FILE_RESULT_INLINE_CHARS = 320 * 1024;
+const LARGE_FILE_HEAD_LINES = 220;
+const LARGE_FILE_TAIL_LINES = 120;
+const WRITE_CHUNK_CHARS = 64 * 1024;
+
 export class ShellToolExecutor implements ToolExecutor {
   private readonly workspaceRoot: string;
 
@@ -48,6 +55,9 @@ export class ShellToolExecutor implements ToolExecutor {
     }
     if (call.toolName === "edit_file") {
       return this.editFile(call, options);
+    }
+    if (call.toolName === "write_file") {
+      return this.writeFileDirect(call, options);
     }
     if (call.toolName === "search_files") {
       return this.searchFiles(call, options);
@@ -130,27 +140,65 @@ export class ShellToolExecutor implements ToolExecutor {
   private async readFile(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     try {
       const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
-      const content = await readFile(path, "utf8");
-      const offset = Math.max(1, Number(call.args["offset"] ?? 1));
-      const limit = Math.max(1, Number(call.args["limit"] ?? 200));
-      const lines = content.split(/\r?\n/);
-      const slice = lines.slice(offset - 1, offset - 1 + limit).join("\n");
+      const hasExplicitRange = Object.hasOwn(call.args, "offset") || Object.hasOwn(call.args, "limit");
+      const info = await stat(path);
+      if (hasExplicitRange) {
+        const offset = Math.max(1, Number(call.args["offset"] ?? 1));
+        const limit = Math.max(1, Number(call.args["limit"] ?? DEFAULT_READ_RANGE_LINES));
+        const range = await readTextLineRange(path, offset, limit);
+        return this.result(
+          call,
+          true,
+          JSON.stringify(
+            {
+              path,
+              mode: "range",
+              offset,
+              limit,
+              sizeBytes: info.size,
+              totalLines: range.totalLines,
+              content: range.content,
+              hash: range.hash,
+              partial: offset > 1 || offset - 1 + limit < range.totalLines
+            },
+            null,
+            2
+          ),
+          { maxInlineChars: READ_FILE_RESULT_INLINE_CHARS }
+        );
+      }
+
+      const profile = await readTextFileProfile(path, info.size);
+      const isFull = info.size <= READ_FILE_FULL_INLINE_BYTES;
       return this.result(
         call,
         true,
         JSON.stringify(
-          {
-            path,
-            offset,
-            limit,
-            totalLines: lines.length,
-            content: slice,
-            hash: hash(content),
-            partial: offset > 1 || offset - 1 + limit < lines.length
-          },
+          isFull
+            ? {
+                path,
+                mode: "full",
+                sizeBytes: info.size,
+                totalLines: profile.totalLines,
+                content: profile.content,
+                hash: profile.hash,
+                partial: false
+              }
+            : {
+                path,
+                mode: "large_preview",
+                sizeBytes: info.size,
+                totalLines: profile.totalLines,
+                content: profile.preview,
+                hash: profile.hash,
+                partial: true,
+                strategy:
+                  "File is too large to inject fully into one model turn. Use read_file with offset/limit or search_files for targeted sections."
+              },
           null,
           2
-        )
+        ),
+        { maxInlineChars: READ_FILE_RESULT_INLINE_CHARS }
       );
     } catch (error) {
       return this.result(call, false, error instanceof Error ? error.message : String(error));
@@ -196,9 +244,44 @@ export class ShellToolExecutor implements ToolExecutor {
       }
 
       const next = lines.join("\n");
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, next, "utf8");
+      await writeTextFileInChunks(path, next);
       return this.result(call, true, JSON.stringify({ path, hash: hash(next), changed: current !== next }, null, 2));
+    } catch (error) {
+      return this.result(call, false, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private async writeFileDirect(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
+    try {
+      const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
+      const content = String(call.args["content"] ?? "");
+      const fileExists = existsSync(path);
+      const current = fileExists ? await readFile(path, "utf8") : "";
+      const expectedHash = String(call.args["expectedHash"] ?? "");
+      if (!expectedHash) {
+        return this.result(call, false, "Missing expectedHash. Read the file first, or use __new__ when creating a new file.");
+      }
+      const isNewFileIntent = !fileExists && expectedHash === "__new__";
+      if (!isNewFileIntent && expectedHash !== hash(current)) {
+        return this.result(call, false, `File changed before write. Expected ${expectedHash}, actual ${hash(current)}.`);
+      }
+
+      await writeTextFileInChunks(path, content);
+      return this.result(
+        call,
+        true,
+        JSON.stringify(
+          {
+            path,
+            hash: hash(content),
+            changed: current !== content,
+            sizeBytes: Buffer.byteLength(content, "utf8"),
+            totalLines: content.split(/\r?\n/).length
+          },
+          null,
+          2
+        )
+      );
     } catch (error) {
       return this.result(call, false, error instanceof Error ? error.message : String(error));
     }
@@ -243,13 +326,13 @@ export class ShellToolExecutor implements ToolExecutor {
     }
   }
 
-  private async result(call: ToolCall, ok: boolean, output: string): Promise<ToolResult> {
+  private async result(call: ToolCall, ok: boolean, output: string, options: { maxInlineChars?: number } = {}): Promise<ToolResult> {
     const id = createId("tool_result");
     return {
       id,
       toolCallId: call.id,
       ok,
-      output: await materializeOutput(this.workspaceRoot, id, output),
+      output: await materializeOutput(this.workspaceRoot, id, output, options.maxInlineChars),
       createdAt: nowIso()
     };
   }
@@ -320,8 +403,85 @@ function appendLimited(current: string, chunk: string, maxChars: number): string
   return next.length <= maxChars ? next : next.slice(-maxChars);
 }
 
-async function materializeOutput(workspaceRoot: string, resultId: string, output: string): Promise<string> {
-  if (output.length <= 12000) return output;
+async function readTextFileProfile(path: string, sizeBytes: number): Promise<{ content: string; preview: string; totalLines: number; hash: string }> {
+  const hasher = createHash("sha256");
+  const collectFullContent = sizeBytes <= READ_FILE_FULL_INLINE_BYTES;
+  const contentParts: string[] = [];
+  const headLines: string[] = [];
+  const tailLines: string[] = [];
+  let carry = "";
+  let totalLines = 0;
+
+  const consumeLine = (line: string): void => {
+    totalLines += 1;
+    if (headLines.length < LARGE_FILE_HEAD_LINES) headLines.push(line);
+    tailLines.push(line);
+    if (tailLines.length > LARGE_FILE_TAIL_LINES) tailLines.shift();
+  };
+
+  for await (const chunk of createReadStream(path, { encoding: "utf8", highWaterMark: 64 * 1024 })) {
+    const text = String(chunk);
+    hasher.update(text);
+    if (collectFullContent) contentParts.push(text);
+    const lines = `${carry}${text}`.split(/\r?\n/);
+    carry = lines.pop() ?? "";
+    for (const line of lines) consumeLine(line);
+  }
+  consumeLine(carry);
+
+  const content = contentParts.join("");
+  if (collectFullContent) {
+    return { content, preview: content, totalLines, hash: hasher.digest("hex").slice(0, 16) };
+  }
+
+  const omittedLines = Math.max(0, totalLines - headLines.length - tailLines.length);
+  const preview = [
+    `[Large file preview: ${sizeBytes} bytes, ${totalLines} lines. Full content is retained on disk and was not inserted into this tool result.]`,
+    ...headLines,
+    omittedLines > 0 ? `... (${omittedLines} lines omitted; use read_file with offset/limit or search_files for targeted sections) ...` : "",
+    ...tailLines
+  ].filter(Boolean).join("\n");
+  return { content: "", preview, totalLines, hash: hasher.digest("hex").slice(0, 16) };
+}
+
+async function readTextLineRange(path: string, offset: number, limit: number): Promise<{ content: string; totalLines: number; hash: string }> {
+  const hasher = createHash("sha256");
+  const selected: string[] = [];
+  let carry = "";
+  let totalLines = 0;
+  const endLine = offset + limit - 1;
+
+  const consumeLine = (line: string): void => {
+    totalLines += 1;
+    if (totalLines >= offset && totalLines <= endLine) selected.push(line);
+  };
+
+  for await (const chunk of createReadStream(path, { encoding: "utf8", highWaterMark: 64 * 1024 })) {
+    const text = String(chunk);
+    hasher.update(text);
+    const lines = `${carry}${text}`.split(/\r?\n/);
+    carry = lines.pop() ?? "";
+    for (const line of lines) consumeLine(line);
+  }
+  consumeLine(carry);
+
+  return { content: selected.join("\n"), totalLines, hash: hasher.digest("hex").slice(0, 16) };
+}
+
+async function writeTextFileInChunks(path: string, content: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const handle = await open(path, "w");
+  try {
+    for (let index = 0; index < content.length; index += WRITE_CHUNK_CHARS) {
+      await handle.write(content.slice(index, index + WRITE_CHUNK_CHARS), undefined, "utf8");
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function materializeOutput(workspaceRoot: string, resultId: string, output: string, maxInlineChars = 12000): Promise<string> {
+  if (output.length <= maxInlineChars) return output;
   const rawOutputRef = resolve(workspaceRoot, "data", "tool-output", `${resultId}.txt`);
   await mkdir(dirname(rawOutputRef), { recursive: true });
   await writeFile(rawOutputRef, output, "utf8");

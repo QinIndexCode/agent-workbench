@@ -9,6 +9,7 @@ import type {
   ToolResult
 } from "@scc/shared";
 import { createId, nowIso } from "./ids.js";
+import { sanitizeSensitiveText } from "./secrets.js";
 import type { WorkbenchStore } from "./store.js";
 import type { ToolExecutionOptions, ToolExecutorDelegate } from "./tools.js";
 
@@ -22,34 +23,41 @@ export class KnowledgeSearchToolExecutor implements ToolExecutorDelegate {
     return toolName === "knowledge_search";
   }
 
-  async execute(call: ToolCall, _options: ToolExecutionOptions = {}): Promise<ToolResult> {
+  async execute(call: ToolCall, options: ToolExecutionOptions = {}): Promise<ToolResult> {
     const query = String(call.args["query"] ?? "").trim();
     if (!query) return result(call, false, "Missing knowledge search query.");
+    if (options.signal?.aborted) return result(call, false, "Knowledge search cancelled before it started.");
     const projectId = String(call.args["projectId"] ?? "default");
     const limit = clamp(Number(call.args["limit"] ?? 5), 1, 12);
-    const matches = await searchKnowledge(this.store, { query, projectId, limit });
-    return result(
-      call,
-      true,
-      JSON.stringify(
-        {
-          query,
-          projectId,
-          results: matches.map((match) => ({
-            score: Number(match.score.toFixed(4)),
-            knowledgeId: match.item.id,
-            title: match.item.title,
-            chunkId: match.chunk.id,
-            excerpt: match.chunk.content.slice(0, 1200),
-            citation: match.citation,
-            tags: match.chunk.tags,
-            sourceUri: match.chunk.sourceUri
-          }))
-        },
-        null,
-        2
-      )
-    );
+    try {
+      const matches = await searchKnowledge(this.store, { query, projectId, limit });
+      if (options.signal?.aborted) return result(call, false, "Knowledge search cancelled by user.");
+      return result(
+        call,
+        true,
+        JSON.stringify(
+          {
+            query,
+            projectId,
+            results: matches.map((match) => ({
+              score: Number(match.score.toFixed(4)),
+              knowledgeId: match.item.id,
+              title: match.item.title,
+              chunkId: match.chunk.id,
+              excerpt: match.chunk.content.slice(0, 1200),
+              citation: match.citation,
+              tags: match.chunk.tags,
+              sourceUri: match.chunk.sourceUri
+            }))
+          },
+          null,
+          2
+        )
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return result(call, false, `Knowledge search failed: ${sanitizeSensitiveText(message)}`);
+    }
   }
 }
 

@@ -14,8 +14,6 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
   "guidance_pending",
   "approval_pending",
   "tool_result",
-  "conversation_summary_created",
-  "context_overflow_recovered",
   "task_checkpoint_created",
   "task_rollback_completed",
   "task_rollback_failed",
@@ -29,11 +27,13 @@ const MAX_RENDERED_TIMELINE_ITEMS = 360;
 export function Timeline({
   language,
   task,
+  showThinking = true,
   onApprovalDecision,
   onRevertLatestTurn
 }: {
   language?: string | null;
   task: TaskDetail | null;
+  showThinking?: boolean | undefined;
   onApprovalDecision: (approvalId: string, decision: ApprovalDecision) => void;
   onRevertLatestTurn?: (() => Promise<void> | void) | undefined;
 }) {
@@ -45,34 +45,38 @@ export function Timeline({
   const taskIdRef = useRef<string | null>(null);
   const [atBottom, setAtBottom] = useState(true);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [visibleLimit, setVisibleLimit] = useState(MAX_RENDERED_TIMELINE_ITEMS);
   const items = useMemo(
     () =>
       buildTimelineItems(
         task?.events.filter((event) => {
-        if (!visibleEventTypes.has(event.type)) return false;
-        if (event.type === "tool_result" && event.payload["uiHidden"] === true) return false;
-        if (event.type !== "approval_pending") return true;
-        const approvalId = String(event.payload["approvalId"] ?? "");
-        return task.approvals.some((approval) => approval.id === approvalId && approval.status === "pending");
+          if (!visibleEventTypes.has(event.type)) return false;
+          if (!showThinking && event.type === "thinking_delta") return false;
+          if (event.payload["uiHidden"] === true) return false;
+          if (isInlineToolMarkupEvent(event)) return false;
+          if (event.type !== "approval_pending") return true;
+          const approvalId = String(event.payload["approvalId"] ?? "");
+          return task.approvals.some((approval) => approval.id === approvalId && approval.status === "pending");
         }) ?? []
       ),
     [task]
   );
   const lastEventId = task?.events[task.events.length - 1]?.id ?? "empty";
   const timelineVersion = useMemo(() => getTimelineVersion(items), [items]);
-  const displayItems = useMemo(() => limitTimelineItems(items, language), [items, language]);
+  const displayItems = useMemo(() => limitTimelineItems(items, language, visibleLimit), [items, language, visibleLimit]);
   const latestUserEventId = useMemo(() => {
     const latest = [...(task?.events ?? [])].reverse().find((event) => event.type === "user_message" && !event.reverted);
     return latest?.id ?? null;
   }, [task?.events]);
-  const latestAgentItemKey = useMemo(() => {
-    const latest = [...displayItems].reverse().find(isAgentMessageItem);
-    return latest?.key ?? null;
+  const latestVisibleAgentBodyKey = useMemo(() => {
+    const latest = displayItems[displayItems.length - 1];
+    return latest && isAgentMessageItem(latest) ? latest.key : null;
   }, [displayItems]);
 
   useEffect(() => {
     followBottomRef.current = true;
     setAtBottom(true);
+    setVisibleLimit(MAX_RENDERED_TIMELINE_ITEMS);
   }, [task?.id]);
 
   const updateBottomState = useCallback((node: HTMLDivElement) => {
@@ -169,7 +173,7 @@ export function Timeline({
             key={item.key}
             approvals={task.approvals}
             copied={copiedKey === item.key}
-            alwaysShowActions={item.key === latestAgentItemKey}
+            alwaysShowActions={item.key === latestVisibleAgentBodyKey}
             language={language ?? null}
             canRevert={item.kind === "event" && item.event.id === latestUserEventId && Boolean(onRevertLatestTurn)}
             onApprovalDecision={onApprovalDecision}
@@ -178,6 +182,7 @@ export function Timeline({
               setCopiedKey(item.key);
               window.setTimeout(() => setCopiedKey((current) => (current === item.key ? null : current)), 1400);
             }}
+            onLoadOlder={() => setVisibleLimit((current) => Math.min(items.length, current + MAX_RENDERED_TIMELINE_ITEMS))}
             onRevertLatestTurn={onRevertLatestTurn}
           />
         ))}
@@ -203,7 +208,7 @@ export function Timeline({
 type TimelineItem =
   | { key: string; kind: "event"; event: TaskEvent }
   | { key: string; kind: "stream"; type: "assistant_delta" | "thinking_delta"; streamId: string; summary: string }
-  | { key: string; kind: "notice"; summary: string };
+  | { key: string; kind: "notice"; summary: string; hiddenCount?: number };
 
 function isAgentMessageItem(item: TimelineItem): boolean {
   if (item.kind === "stream") return item.type === "assistant_delta";
@@ -244,6 +249,7 @@ function TimelineEvent({
   language,
   onApprovalDecision,
   onCopy,
+  onLoadOlder,
   onRevertLatestTurn
 }: {
   item: TimelineItem;
@@ -254,6 +260,7 @@ function TimelineEvent({
   language?: string | null | undefined;
   onApprovalDecision: (approvalId: string, decision: ApprovalDecision) => void;
   onCopy: (text: string) => void;
+  onLoadOlder: () => void;
   onRevertLatestTurn?: (() => Promise<void> | void) | undefined;
 }) {
   const [thinkingOpen, setThinkingOpen] = useState(false);
@@ -263,6 +270,11 @@ function TimelineEvent({
     return (
       <article className="event note timeline_window_notice">
         <span>{item.summary}</span>
+        {item.hiddenCount && item.hiddenCount > 0 ? (
+          <button className="loadOlderTimelineButton" type="button" onClick={onLoadOlder}>
+            {zh ? `显示更早 ${Math.min(item.hiddenCount, MAX_RENDERED_TIMELINE_ITEMS)} 条` : `Load ${Math.min(item.hiddenCount, MAX_RENDERED_TIMELINE_ITEMS)} older`}
+          </button>
+        ) : null}
       </article>
     );
   }
@@ -324,23 +336,6 @@ function TimelineEvent({
         <MessageActions alwaysShow={alwaysShowActions} copied={copied} language={language} onCopy={() => onCopy(event.summary)} />
         <small>{zh ? "附件" : "attachment"}</small>
         <MarkdownText content={`${event.summary}\n\n${formatBytes(Number(event.payload["size"] ?? 0))} · ${String(event.payload["kind"] ?? "file")}`} />
-      </article>
-    );
-  }
-
-  if (event.type === "conversation_summary_created" || event.type === "context_overflow_recovered") {
-    const retained = Array.isArray(event.payload["retainedFacts"]) ? event.payload["retainedFacts"].map(String).slice(0, 4) : [];
-    const summary = String(event.payload["summary"] ?? "");
-    const title = event.type === "context_overflow_recovered" ? (zh ? "上下文超限，已压缩并重试" : "Context limit recovered with compaction") : (zh ? "已压缩较早上下文" : "Earlier context compacted");
-    return (
-      <article className={`event note contextCompactEvent ${event.type}`}>
-        <details className="contextCompactDetails">
-          <summary>
-            <span>{title}</span>
-            {retained.length > 0 ? <small>{retained.join(" · ")}</small> : null}
-          </summary>
-          {summary ? <pre>{summary}</pre> : event.summary ? <pre>{event.summary}</pre> : null}
-        </details>
       </article>
     );
   }
@@ -483,6 +478,26 @@ function stripPlaceholderToolEvidence(value: string): string {
     .trim();
 }
 
+function isInlineToolMarkupEvent(event: TaskEvent): boolean {
+  if (event.type !== "assistant_message" && event.type !== "assistant_delta") return false;
+  return containsInlineToolMarkup(formatRawEventText(event));
+}
+
+function formatRawEventText(event: TaskEvent): string {
+  return [
+    event.summary,
+    typeof event.payload["message"] === "string" ? event.payload["message"] : "",
+    typeof event.payload["delta"] === "string" ? event.payload["delta"] : "",
+    typeof event.payload["text"] === "string" ? event.payload["text"] : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function containsInlineToolMarkup(value: string): boolean {
+  return /<function_calls\b|<invoke\s+name=/i.test(value);
+}
+
 function compactInline(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -548,22 +563,44 @@ function buildTimelineItems(events: TaskEvent[]): TimelineItem[] {
     }
     items.push({ key: event.id, kind: "event", event });
   }
-  return items.filter((item) => item.kind === "event" || item.summary.trim().length > 0);
+  return items.filter((item) => {
+    if (item.kind !== "stream") return true;
+    const summary = item.summary.trim();
+    return summary.length > 0 && !containsInlineToolMarkup(summary);
+  });
 }
 
-function limitTimelineItems(items: TimelineItem[], language?: string | null): TimelineItem[] {
-  if (items.length <= MAX_RENDERED_TIMELINE_ITEMS) return items;
-  const hidden = items.length - MAX_RENDERED_TIMELINE_ITEMS;
-  return [
-    {
-      key: `timeline-window-notice-${hidden}`,
-      kind: "notice",
-      summary: language === "zh-CN"
-        ? `为保持流畅，界面只渲染最近 ${MAX_RENDERED_TIMELINE_ITEMS} 条信息；较早 ${hidden} 条仍保留在任务历史和上下文摘要中。`
-        : `For smooth rendering, only the latest ${MAX_RENDERED_TIMELINE_ITEMS} items are shown; ${hidden} earlier items remain in task history and context summaries.`
-    },
-    ...items.slice(-MAX_RENDERED_TIMELINE_ITEMS)
-  ];
+function limitTimelineItems(items: TimelineItem[], language?: string | null, visibleLimit = MAX_RENDERED_TIMELINE_ITEMS): TimelineItem[] {
+  if (items.length <= visibleLimit) return items;
+  const tail = items.slice(-visibleLimit);
+  const tailKeys = new Set(tail.map((item) => item.key));
+  const anchors = items
+    .slice(0, -visibleLimit)
+    .filter(isPreservedTimelineAnchor)
+    .filter((item) => !tailKeys.has(item.key));
+  const hidden = Math.max(0, items.length - tail.length - anchors.length);
+  const ordered = [...anchors, ...tail].sort((left, right) => itemTimestamp(left).localeCompare(itemTimestamp(right)));
+  if (hidden <= 0) return ordered;
+  return [{
+    key: `timeline-window-notice-${hidden}-${visibleLimit}`,
+    kind: "notice",
+    hiddenCount: hidden,
+    summary: language === "zh-CN"
+      ? `较早 ${hidden} 条助手/工具信息暂未渲染，完整历史仍保留。`
+      : `${hidden} older assistant/tool items are not rendered yet. Full history is retained.`
+  }, ...ordered];
+}
+
+function isPreservedTimelineAnchor(item: TimelineItem): boolean {
+  if (item.kind !== "event") return false;
+  return (
+    item.event.type === "user_message" ||
+    item.event.type === "attachment_added"
+  );
+}
+
+function itemTimestamp(item: TimelineItem): string {
+  return item.kind === "event" ? item.event.createdAt : item.key;
 }
 
 function appendStreamDelta(current: string, delta: string, type: "assistant_delta" | "thinking_delta"): string {
@@ -650,7 +687,7 @@ function parseToolOutput(output: string): { summary: string; preview: string; di
 }
 
 function isPlaceholderToolSummary(value: string): boolean {
-  return /^(tool evidence returned\.?|工具证据已返回。?)$/i.test(value.trim());
+  return /^(tool evidence returned\.?|tool evidence returned[:：].*|工具证据已返回。?|工具证据已返回[:：].*)$/i.test(value.trim());
 }
 
 function stringifyToolDisplay(parsed: Record<string, unknown>, summary: string): string {

@@ -17,7 +17,7 @@ Model Context Protocol (MCP) is an open protocol for connecting external tool se
 
 ## Configuring Remote Services
 
-- SSE (Server-Sent Events) transport is supported
+- Streamable HTTP transport is supported for remote MCP endpoints
 - Tool lists are synced automatically after entering the endpoint
 
 ## Usage

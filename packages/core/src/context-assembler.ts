@@ -67,6 +67,10 @@ export class ContextAssembler {
     layers.push(workingFolderLayer);
     usedTokens += estimateTokens(workingFolderLayer);
 
+    const continuityLayer = this.buildTaskContinuityLayer(task);
+    layers.push(continuityLayer);
+    usedTokens += estimateTokens(continuityLayer);
+
     const skillLayer = await this.buildSkillMetaLayer(task, preferences);
     if (skillLayer) {
       layers.push(skillLayer);
@@ -88,12 +92,17 @@ export class ContextAssembler {
     const tracker = this.getFileStateTracker(task.id);
     const fileLayer = tracker.buildFileStateTable();
     const fileTokens = estimateTokens(fileLayer);
-    if (fileLayer && usedTokens + fileTokens < tokenBudget.maxTotal * 0.3) {
+    let fileLayerIncluded = false;
+    if (fileLayer && usedTokens + fileTokens < tokenBudget.maxTotal * 0.45) {
       layers.push(fileLayer);
       usedTokens += fileTokens;
+      fileLayerIncluded = true;
     }
 
-    const forceSummary = task.events.some((event) => event.type === "context_overflow_recovered");
+    const latestContextControlEvent = [...task.events]
+      .reverse()
+      .find((event) => event.type === "context_overflow_recovered" || event.type === "conversation_summary_created");
+    const forceSummary = latestContextControlEvent?.type === "context_overflow_recovered";
     const summary = await this.ensureConversationSummary(task, {
       force: forceSummary,
       tokenBudget,
@@ -106,7 +115,7 @@ export class ContextAssembler {
     }
 
     const remaining = tokenBudget.maxTotal - usedTokens - tokenBudget.reservedForResponse;
-    layers.push(buildHistoryLayer(task, Math.max(160, remaining), tracker, summary?.rangeEndEventId));
+    layers.push(buildHistoryLayer(task, Math.max(160, remaining), fileLayerIncluded ? tracker : undefined, summary?.rangeEndEventId));
 
     const nonEmpty = layers.filter((layer) => layer.trim().length > 0);
     const systemPrompt = nonEmpty[0] ?? "";
@@ -118,8 +127,10 @@ export class ContextAssembler {
         `Tool root: ${task.workRoot || "(default workbench root)"}`,
         `Task folder ID: ${task.folderId || "default"}`
       ].join("\n"),
+      continuityLayer,
+      buildRecentUserContextLayer(task, summary?.rangeEndEventId),
       ...(summary ? [`## Conversation Summary\n${summary.summary}`] : [])
-    ];
+    ].filter(Boolean);
     const input = trimMiddleToTokenBudget(rawInput, inputBudget, protectedLayers);
     return {
       systemPrompt,
@@ -229,6 +240,7 @@ export class ContextAssembler {
       "USER.md and MEMORY.md content below is already injected from SCC's internal memory store. Do not try to read USER.md or MEMORY.md from the workRoot; use the memory tools only when the user wants durable memory changed.",
       "Use USER.md and MEMORY.md tools only for durable memories the user wants kept; do not store transient task outputs, secrets, or speculative guesses.",
       "Use skill_create or skill_delete only when the user explicitly asks or when a reviewed reusable pattern is ready; normal task completion should create memory, not a skill.",
+      "When using side-effect-free state tools such as plan_update or use_skill, do not narrate the tool mechanics, tool JSON, or success status to the user; continue with the actual task.",
       "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
       "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
       "If you need a file but are unsure it exists, list or search first instead of guessing paths such as README.md.",
@@ -318,6 +330,24 @@ export class ContextAssembler {
     ].join("\n");
   }
 
+  private buildTaskContinuityLayer(task: TaskDetail): string {
+    const firstUser = task.events.find((event) => event.type === "user_message" && !event.reverted);
+    const latestUser = [...task.events].reverse().find((event) =>
+      (event.type === "user_message" || event.type === "guidance_pending" || event.type === "guidance_consumed") && !event.reverted
+    );
+    const latestPlan = [...task.events].reverse().find((event) => event.type.startsWith("plan_") && !event.reverted);
+    return [
+      "## Active Task Continuity",
+      `Task ID: ${task.id}`,
+      `Task title: ${task.title}`,
+      `Task status: ${task.status}`,
+      latestUser && latestUser.id !== firstUser?.id ? `Latest user constraint: ${truncate(latestUser.summary, 1800)}` : "",
+      firstUser ? `Original user goal: ${truncate(firstUser.summary, 900)}` : "",
+      latestPlan ? `Latest visible plan state: ${truncate(latestPlan.summary, 1000)}` : "",
+      "Do not restart the task or reread already summarized files unless fresh evidence is needed."
+    ].filter(Boolean).join("\n");
+  }
+
   private async buildProjectLayer(task: TaskDetail): Promise<string> {
     const memories = await this.store.listProjectMemories(task.folderId || "default");
     if (memories.length === 0) return "";
@@ -350,7 +380,7 @@ export class ContextAssembler {
     const historyPressure = estimateEventsForSummary(visibleEvents) + (options.usedBefore ?? 0);
     const highPressure = historyPressure > maxPromptInput * 0.7;
     const lowBudgetPressure = Boolean(options.tokenBudget && options.tokenBudget.maxTotal <= 3000 && visibleEvents.length >= 28);
-    if (!options.force && !highPressure && !lowBudgetPressure && visibleEvents.length < 60) return latest;
+    if (!options.force && !highPressure && !lowBudgetPressure) return latest;
     const latestCoveredIndex = latest ? visibleEvents.findIndex((event) => event.id === latest.rangeEndEventId) : -1;
     if (!options.force && latest && !highPressure && !lowBudgetPressure && visibleEvents.length - latestCoveredIndex < 30) return latest;
     const startIndex = latestCoveredIndex >= 0 ? latestCoveredIndex + 1 : 0;
@@ -415,10 +445,11 @@ export interface FileState {
 export class FileStateTracker {
   private states = new Map<string, FileState>();
   private readonly maxFiles = 20;
-  private readonly maxContentLength = 2000;
+  private readonly maxContentLength = 12000;
 
   updateFromToolResult(event: TaskEvent): void {
     if (event.type !== "tool_result") return;
+    if (event.payload["ok"] === false) return;
     const output = String(event.payload["output"] ?? "");
     if (!output || looksLikeBinary(output)) return;
 
@@ -431,10 +462,10 @@ export class FileStateTracker {
       return;
     }
 
-    if (toolName === "edit_file") {
+    if (toolName === "edit_file" || toolName === "write_file") {
       const parsed = parseJson(output);
       const path = String(parsed["path"] ?? "");
-      if (path) this.set(path, "File edited; read_file for current content before further edits.", event.createdAt, true);
+      if (path) this.set(path, "File changed; read_file for current content before further edits.", event.createdAt, true);
       return;
     }
 
@@ -486,10 +517,7 @@ export class FileStateTracker {
 
 export function buildHistoryLayer(task: TaskDetail, maxTokens: number, tracker?: FileStateTracker, afterEventId?: string): string {
   if (maxTokens <= 0) return "";
-  const events = task.events.filter(
-    (event) =>
-      !["status_changed", "task_created", "task_memory_created", "pattern_discovered", "reflection_completed"].includes(event.type)
-  );
+  const events = task.events.filter(isModelHistoryEvent);
   const startIndex = afterEventId ? events.findIndex((event) => event.id === afterEventId) + 1 : 0;
   const visibleEvents = startIndex > 0 ? events.slice(startIndex) : events;
   const formatted: string[] = [];
@@ -513,6 +541,21 @@ export function buildHistoryLayer(task: TaskDetail, maxTokens: number, tracker?:
   return formatted.join("\n\n");
 }
 
+function buildRecentUserContextLayer(task: TaskDetail, afterEventId?: string): string {
+  const startIndex = afterEventId ? task.events.findIndex((event) => event.id === afterEventId) + 1 : 0;
+  const visibleEvents = startIndex > 0 ? task.events.slice(startIndex) : task.events;
+  const recent = [...visibleEvents]
+    .reverse()
+    .filter((event) => (event.type === "user_message" || event.type === "guidance_pending" || event.type === "guidance_consumed") && !event.reverted)
+    .slice(0, 2)
+    .reverse();
+  if (recent.length === 0) return "";
+  return [
+    "## Recent User Messages",
+    ...recent.map((event) => `- ${event.type}: ${truncate(event.summary, 4000)}`)
+  ].join("\n");
+}
+
 export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): string {
   switch (event.type) {
     case "user_message":
@@ -525,15 +568,12 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
     case "assistant_message":
       return `**Agent**: ${event.summary}`;
     case "tool_requested":
-      return `**Tool Call**: ${event.payload["toolName"]}(${JSON.stringify(event.payload["args"] ?? {})})`;
+      return `**Tool Call**: ${event.payload["toolName"]}(${formatToolArgsForContext(event.payload["args"] ?? {})})`;
     case "tool_result": {
-      if (event.payload["uiHidden"] === true && event.payload["toolName"] === "plan_update") {
-        return "**Plan Panel**: The visible task plan/progress panel was updated successfully. Do not repeat the same plan_update call unless the plan materially changes.";
-      }
+      if (tracker && isFileContentInTracker(event, tracker)) return formatTrackedReadFileResult(event);
       const fileResult = formatFileToolResult(event);
-      if (tracker && isFileContentInTracker(event, tracker) && fileResult) return fileResult;
       if (fileResult) return fileResult;
-      return `**Tool Result**:\n${formatToolOutput(String(event.payload["output"] ?? ""))}`;
+      return `${formatToolResultHeading(event)}:\n${formatToolOutput(String(event.payload["output"] ?? ""))}`;
     }
     case "approval_pending":
       return `**Approval Required**: ${event.payload["toolName"]} [${event.payload["riskCategory"]}]`;
@@ -548,7 +588,7 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
     case "conversation_summary_created":
       return "";
     case "context_overflow_recovered":
-      return `**Context Compaction**: ${event.summary}`;
+      return "";
     case "plan_created":
     case "plan_step_started":
     case "plan_step_completed":
@@ -562,10 +602,18 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
   }
 }
 
-function isSummarizableContextEvent(event: TaskEvent): boolean {
-  if (event.payload["uiHidden"] === true) return false;
-  if (["assistant_delta", "thinking_delta", "conversation_summary_created", "prompt_cache_stats"].includes(event.type)) return false;
+function isModelHistoryEvent(event: TaskEvent): boolean {
+  if (["status_changed", "task_created", "task_memory_created", "pattern_discovered", "reflection_completed"].includes(event.type)) return false;
   if (event.type.startsWith("plan_")) return false;
+  if (["prompt_cache_stats", "conversation_summary_created", "context_overflow_recovered"].includes(event.type)) return false;
+  if (event.payload["uiHidden"] === true && event.type !== "tool_result") return false;
+  return true;
+}
+
+function isSummarizableContextEvent(event: TaskEvent): boolean {
+  if (["assistant_delta", "thinking_delta", "conversation_summary_created", "context_overflow_recovered", "prompt_cache_stats"].includes(event.type)) return false;
+  if (event.type.startsWith("plan_")) return false;
+  if (event.payload["uiHidden"] === true && event.type !== "tool_result") return false;
   return true;
 }
 
@@ -582,12 +630,13 @@ function buildExtractiveConversationSummary(events: TaskEvent[]): string {
   const lines = events
     .map((event) => formatEvent(event))
     .filter(Boolean)
+    .filter((line) => !line.includes("UI preview truncated"))
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter(Boolean);
   const compact = lines.slice(0, 32).map((line) => `- ${line.slice(0, 800)}`).join("\n");
   return [
-    "Earlier conversation was compacted to keep the task within the model context window.",
-    "Retain these facts as prior evidence, but prefer fresh tool evidence when exact file contents or host state matter.",
+    "Auditable model context summary. This is for model continuity only; it is not the user-visible transcript.",
+    "Retain durable goals, decisions, constraints, file-state conclusions, and tool evidence references. Prefer fresh tool evidence when exact file contents or host state matter.",
     compact
   ].join("\n");
 }
@@ -599,14 +648,56 @@ function buildRetainedFacts(task: TaskDetail, summarizedEvents: TaskEvent[]): st
   if (task.workRoot) facts.add(`Work root: ${task.workRoot}`);
   const latestGuidance = [...task.events].reverse().find((event) => event.type === "guidance_pending" || event.type === "guidance_consumed");
   if (latestGuidance) facts.add(`Latest guidance: ${truncate(latestGuidance.summary, 300)}`);
+  const latestUser = [...task.events].reverse().find((event) => event.type === "user_message" && !event.reverted);
+  if (latestUser) facts.add(`Latest user message: ${truncate(latestUser.summary, 600)}`);
+  const latestPlan = [...task.events].reverse().find((event) => event.type.startsWith("plan_") && !event.reverted);
+  if (latestPlan) facts.add(`Latest plan state: ${truncate(latestPlan.summary, 300)}`);
   const tools = summarizedEvents
     .filter((event) => event.type === "tool_result")
     .map((event) => String(event.payload["toolName"] ?? "tool"))
     .filter(Boolean);
-  if (tools.length > 0) facts.add(`Earlier tools: ${[...new Set(tools)].slice(0, 8).join(", ")}`);
+  if (tools.length > 0) facts.add(`Earlier tool evidence refs: ${[...new Set(tools)].slice(0, 8).join(", ")}`);
   const blocked = [...task.events].reverse().find((event) => event.type === "plan_step_blocked");
   if (blocked) facts.add(`Latest blocked step: ${truncate(blocked.summary, 160)}`);
   return [...facts];
+}
+
+function formatToolArgsForContext(args: unknown): string {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return "{}";
+  const compact: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+    if (key === "edits" && Array.isArray(value)) {
+      compact[key] = `[${value.length} edits; content omitted]`;
+      continue;
+    }
+    if (key === "content" || key === "newText" || key === "text") {
+      compact[key] = typeof value === "string" ? summarizeLargeString(value) : "[content omitted]";
+      continue;
+    }
+    if (typeof value === "string") {
+      compact[key] = summarizeLargeString(value);
+      continue;
+    }
+    if (Array.isArray(value)) {
+      compact[key] = value.length > 8 ? `[${value.length} items]` : value.map((item) => (typeof item === "string" ? summarizeLargeString(item) : summarizeJsonValue(item)));
+      continue;
+    }
+    compact[key] = summarizeJsonValue(value);
+  }
+  return JSON.stringify(compact);
+}
+
+function summarizeLargeString(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 180) return normalized;
+  return `${normalized.slice(0, 140)}... (${normalized.length - 180} chars omitted) ...${normalized.slice(-40)}`;
+}
+
+function summarizeJsonValue(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const raw = JSON.stringify(value);
+  if (raw.length <= 220) return value;
+  return `[object ${raw.length} chars omitted]`;
 }
 
 function truncate(text: string, maxChars: number): string {
@@ -652,15 +743,16 @@ function trimMiddleToTokenBudget(text: string, maxTokens: number, protectedBlock
   ].join("\n");
   const usefulProtected = protectedBlocks
     .map((block) => block.trim())
-    .filter((block, index, all) => block && text.includes(block) && all.indexOf(block) === index);
+    .filter((block, index, all) => block && all.indexOf(block) === index);
   let remainingText = text;
   for (const block of usefulProtected) {
     remainingText = remainingText.replace(block, "");
   }
-  const protectedBudget = usefulProtected.length > 0 ? Math.max(48, Math.floor(maxTokens * 0.34)) : 0;
+  const protectedBudget = usefulProtected.length > 0 ? Math.max(96, Math.floor(maxTokens * 0.5)) : 0;
   const protectedBlockBudget = usefulProtected.length > 0 ? Math.max(24, Math.floor(protectedBudget / usefulProtected.length)) : 0;
   const protectedText = usefulProtected.map((block) => {
     if (block.includes("Tool root:")) return block;
+    if (block.startsWith("## Recent User Messages")) return truncateToTokenBudget(block, Math.max(80, protectedBlockBudget));
     return truncateToTokenBudget(block, protectedBlockBudget);
   }).join("\n\n");
   const contentBudget = Math.max(20, maxTokens - estimateTokens(notice) - estimateTokens(protectedText));
@@ -711,10 +803,26 @@ function trimTailToTokenBudget(text: string, maxTokens: number): string {
 }
 
 function isFileContentInTracker(event: TaskEvent, tracker: FileStateTracker): boolean {
+  if (event.payload["ok"] === false) return false;
+  if (String(event.payload["toolName"] ?? "") !== "read_file") return false;
   const output = String(event.payload["output"] ?? "");
   const parsed = parseJson(output);
   const path = String(parsed["path"] ?? "");
-  return Boolean(path && tracker.hasFile(path));
+  return Boolean(path && typeof parsed["content"] === "string" && tracker.hasFile(path));
+}
+
+function formatTrackedReadFileResult(event: TaskEvent): string {
+  const parsed = parseJson(String(event.payload["output"] ?? ""));
+  const path = typeof parsed["path"] === "string" ? parsed["path"] : "unknown file";
+  const partial = parsed["partial"] ? " partial" : "";
+  const hashValue = typeof parsed["hash"] === "string" ? ` hash=${parsed["hash"]}` : "";
+  return `**Tool Result read_file**: ${path}${partial}${hashValue} (content recorded in Known Files)`;
+}
+
+function formatToolResultHeading(event: TaskEvent): string {
+  const toolName = String(event.payload["toolName"] ?? "").trim();
+  const suffix = event.payload["uiHidden"] === true ? " (hidden from UI)" : "";
+  return toolName ? `**Tool Result ${toolName}${suffix}**` : `**Tool Result${suffix}**`;
 }
 
 function formatFileToolResult(event: TaskEvent): string | null {
@@ -727,17 +835,21 @@ function formatFileToolResult(event: TaskEvent): string | null {
     const content = parsed["content"];
     const partial = parsed["partial"] ? " partial" : "";
     const hashValue = typeof parsed["hash"] === "string" ? ` hash=${parsed["hash"]}` : "";
+    const maxContentChars = 24000;
     return [
       `**Tool Result read_file**: ${path}${partial}${hashValue}`,
       "```",
-      content.length > 1800 ? `${content.slice(0, 1800)}\n... (file excerpt truncated)` : content,
+      content.length > maxContentChars
+        ? `${content.slice(0, 16000)}\n... (file content budget-limited; use targeted read_file if exact omitted lines are needed) ...\n${content.slice(-6000)}`
+        : content,
       "```"
     ].join("\n");
   }
 
   if (typeof parsed["changed"] === "boolean") {
     const hashValue = typeof parsed["hash"] === "string" ? ` hash=${parsed["hash"]}` : "";
-    return `**Tool Result edit_file**: ${path} changed=${parsed["changed"]}${hashValue}`;
+    const toolName = String(event.payload["toolName"] ?? "edit_file");
+    return `**Tool Result ${toolName}**: ${path} changed=${parsed["changed"]}${hashValue}`;
   }
 
   return null;

@@ -89,6 +89,7 @@ import type {
   TaskDeleteResultSchema,
   TaskDetailSchema,
   TaskEventSchema,
+  TaskTranscriptItemSchema,
   TaskTurnEditRequestSchema,
   TaskTurnRevertResultSchema,
   TaskTurnSchema,
@@ -118,6 +119,7 @@ export type McpServerCreateRequest = z.infer<typeof McpServerCreateRequestSchema
 export type McpServerPatchRequest = z.infer<typeof McpServerPatchRequestSchema>;
 export type ToolApproval = z.infer<typeof ToolApprovalSchema>;
 export type TaskEvent = z.infer<typeof TaskEventSchema>;
+export type TaskTranscriptItem = z.infer<typeof TaskTranscriptItemSchema>;
 export type TaskAttachmentKind = z.infer<typeof TaskAttachmentKindSchema>;
 export type TaskAttachment = z.infer<typeof TaskAttachmentSchema>;
 export type TaskAttachmentUploadRequest = z.infer<typeof TaskAttachmentUploadRequestSchema>;

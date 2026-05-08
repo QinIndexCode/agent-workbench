@@ -58,6 +58,7 @@ import {
   type ModelPreset,
   type TaskDetail,
   type TaskEvent,
+  type TaskTranscriptItem,
   WebSearchProviderCreateRequestSchema,
   WebSearchProviderPatchRequestSchema
 } from "@scc/shared";
@@ -83,12 +84,95 @@ function parseEventWindow(query: unknown, fallback = DEFAULT_EVENT_WINDOW): numb
 }
 
 function taskForTransport(task: TaskDetail, eventLimit = DEFAULT_EVENT_WINDOW): TaskDetail {
-  const events = eventLimit <= 0 ? [] : task.events.slice(-eventLimit).map(compactEventForTransport);
+  const events = eventLimit <= 0 ? [] : selectEventsForTransport(task.events, eventLimit).map(compactEventForTransport);
   return {
     ...task,
     events,
     pendingGuidance: task.pendingGuidance.map(compactEventForTransport)
   };
+}
+
+function selectEventsForTransport(events: TaskEvent[], eventLimit: number): TaskEvent[] {
+  if (eventLimit <= 0) return [];
+  if (events.length <= eventLimit) return events;
+  const tail = events.slice(-eventLimit);
+  if (eventLimit < 50) return tail;
+
+  const tailIds = new Set(tail.map((event) => event.id));
+  const anchors = events
+    .slice(0, -eventLimit)
+    .filter((event) => shouldPreserveTransportAnchor(event))
+    .slice(-80)
+    .filter((event) => !tailIds.has(event.id));
+
+  return [...anchors, ...tail].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+function shouldPreserveTransportAnchor(event: TaskEvent): boolean {
+  return (
+    event.type === "task_created" ||
+    event.type === "turn_started" ||
+    event.type === "user_message" ||
+    event.type === "attachment_added" ||
+    event.type === "conversation_summary_created" ||
+    event.type === "context_overflow_recovered"
+  );
+}
+
+function taskTranscriptForTransport(task: TaskDetail): TaskTranscriptItem[] {
+  return buildTaskTranscript(task).map(compactTranscriptItemForTransport);
+}
+
+function buildTaskTranscript(task: TaskDetail): TaskTranscriptItem[] {
+  const finalStreamIds = new Set(
+    task.events
+      .filter((event) => event.type === "assistant_message")
+      .map((event) => String(event.payload["streamId"] ?? ""))
+      .filter(Boolean)
+  );
+  return task.events.filter((event) => {
+    if (!isTranscriptVisibleEvent(event)) return false;
+    if (event.payload["uiHidden"] === true) return false;
+    if (isInlineToolMarkupEvent(event)) return false;
+    if (event.type === "assistant_delta" && finalStreamIds.has(String(event.payload["streamId"] ?? ""))) return false;
+    if (event.type !== "approval_pending") return true;
+    const approvalId = String(event.payload["approvalId"] ?? "");
+    return task.approvals.some((approval) => approval.id === approvalId && approval.status === "pending");
+  });
+}
+
+function isTranscriptVisibleEvent(event: TaskEvent): boolean {
+  return (
+    event.type === "user_message" ||
+    event.type === "attachment_added" ||
+    event.type === "assistant_delta" ||
+    event.type === "assistant_message" ||
+    event.type === "thinking_delta" ||
+    event.type === "guidance_pending" ||
+    event.type === "approval_pending" ||
+    event.type === "tool_result" ||
+    event.type === "task_checkpoint_created" ||
+    event.type === "task_rollback_completed" ||
+    event.type === "task_rollback_failed" ||
+    event.type === "plan_step_blocked" ||
+    event.type === "web_search_result"
+  );
+}
+
+function compactTranscriptItemForTransport(event: TaskTranscriptItem): TaskTranscriptItem {
+  if (event.type === "assistant_message" || event.type === "assistant_delta") {
+    return {
+      ...event,
+      summary: stripToolEvidenceBoilerplate(event.summary),
+      payload: stripAssistantPayloadBoilerplate(event.payload)
+    };
+  }
+  if (event.type !== "tool_result" && event.type !== "web_search_result") return event;
+  const summary = compactTranscriptText(event.summary, MAX_UI_SUMMARY_CHARS);
+  const payload: Record<string, unknown> = { ...event.payload };
+  if (typeof payload["output"] === "string") payload["output"] = compactTranscriptText(payload["output"], MAX_UI_OUTPUT_CHARS);
+  if (typeof payload["summary"] === "string") payload["summary"] = compactTranscriptText(payload["summary"], MAX_UI_SUMMARY_CHARS);
+  return { ...event, summary, payload };
 }
 
 function compactEventForTransport(event: TaskEvent): TaskEvent {
@@ -100,10 +184,46 @@ function compactEventForTransport(event: TaskEvent): TaskEvent {
   return { ...event, summary, payload };
 }
 
+function isInlineToolMarkupEvent(event: TaskEvent): boolean {
+  if (event.type !== "assistant_message" && event.type !== "assistant_delta") return false;
+  const text = [
+    event.summary,
+    typeof event.payload["message"] === "string" ? event.payload["message"] : "",
+    typeof event.payload["delta"] === "string" ? event.payload["delta"] : "",
+    typeof event.payload["text"] === "string" ? event.payload["text"] : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return /<function_calls\b|<invoke\s+name=/i.test(text);
+}
+
 function compactUiText(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
   const omitted = value.length - maxChars;
   return `${value.slice(0, maxChars)}\n\n[UI preview truncated: ${omitted} characters omitted. Full evidence is retained by SCC.]`;
+}
+
+function compactTranscriptText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const omitted = value.length - maxChars;
+  return `${value.slice(0, maxChars)}\n\n[Output truncated: ${omitted} characters omitted. Full evidence is available in the audit log.]`;
+}
+
+function stripAssistantPayloadBoilerplate(payload: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...payload };
+  for (const key of ["message", "delta", "text"]) {
+    if (typeof next[key] === "string") next[key] = stripToolEvidenceBoilerplate(next[key]);
+  }
+  return next;
+}
+
+function stripToolEvidenceBoilerplate(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .filter((line) => !/^(tool evidence returned\.?|tool evidence returned[:：].*|工具证据已返回。?|工具证据已返回[:：].*)$/i.test(line.trim()))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 export interface AppOptions {
@@ -249,7 +369,13 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const eventLimit = parseEventWindow(request.query);
     const task = await workbench.getTask(id);
-    return task ? task.events.slice(-eventLimit).map(compactEventForTransport) : reply.code(404).send({ error: "Task not found" });
+    return task ? selectEventsForTransport(task.events, eventLimit).map(compactEventForTransport) : reply.code(404).send({ error: "Task not found" });
+  });
+
+  app.get("/api/tasks/:id/transcript", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const task = await workbench.getTask(id);
+    return task ? taskTranscriptForTransport(task) : reply.code(404).send({ error: "Task not found" });
   });
 
   app.get("/api/tasks/:id/attachments", async (request, reply) => {
@@ -341,7 +467,11 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const eventLimit = parseEventWindow(request.query);
     const task = await workbench.getTask(id);
-    socket.send(JSON.stringify({ type: "snapshot", events: task?.events.slice(-eventLimit).map(compactEventForTransport) ?? [] }));
+    socket.send(JSON.stringify({
+      type: "snapshot",
+      events: task ? selectEventsForTransport(task.events, eventLimit).map(compactEventForTransport) : [],
+      transcript: task ? taskTranscriptForTransport(task) : []
+    }));
     const unsubscribe = events.subscribe(id, (event) => socket.send(JSON.stringify({ type: "event", event: compactEventForTransport(event) })));
     socket.on("close", unsubscribe);
   });

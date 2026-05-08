@@ -491,7 +491,7 @@ function evidence(task, extra = {}) {
       taskId: task.id,
       status: task.status,
       workRoot: task.workRoot,
-      assistant: excerpt(assistantText(task), 900),
+      assistant: excerpt(assistantText(task), 10000),
       ...extra,
       eventCounts: eventCounts(task),
       toolRequestCount: toolRequests.length,
@@ -577,7 +577,7 @@ function eventCounts(task) {
   return counts;
 }
 
-function excerpt(value, max = 500) {
+function excerpt(value, max = 10000) {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
@@ -621,7 +621,7 @@ function markdownReport(data) {
     if (item.evidence && Object.keys(item.evidence).length > 0) {
       lines.push("");
       lines.push("```json");
-      lines.push(JSON.stringify(item.evidence, null, 2).slice(0, 6000));
+      lines.push(JSON.stringify(item.evidence, null, 2));
       lines.push("```");
     }
     lines.push("");

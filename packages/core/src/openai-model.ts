@@ -352,6 +352,7 @@ function fallbackInstructions(): string {
     "Use tools when the environment must be observed. Do not invent host, file, network, or command results.",
     "When a tool needs user approval, the application will ask the user; do not assume the current authorization state.",
     "Do not emit fixed machine-readable wrappers, diagnostic files, or scripted review reports unless explicitly requested.",
+    "When using side-effect-free state tools such as plan_update or use_skill, do not narrate the tool mechanics, tool JSON, or success status to the user; continue with the actual task.",
     "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
     "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
     "If you need a file but are unsure it exists, list or search first instead of guessing paths such as README.md.",
@@ -529,10 +530,14 @@ function buildInput(task: TaskDetail): string {
   const lines = [`Task: ${task.title}`, ""];
   for (const event of task.events) {
     if (event.type === "status_changed" || event.type === "task_created") continue;
+    if (event.type.startsWith("plan_")) continue;
+    if (event.type === "conversation_summary_created" || event.type === "context_overflow_recovered" || event.type === "prompt_cache_stats") continue;
     if (event.type === "tool_result") {
-      lines.push(`tool_result: ${String(event.payload["output"] ?? "").slice(0, 6000)}`);
+      const toolName = String(event.payload["toolName"] ?? "tool");
+      lines.push(`tool_result ${toolName}: ${String(event.payload["output"] ?? "").slice(0, 6000)}`);
       continue;
     }
+    if (event.payload["uiHidden"] === true) continue;
     lines.push(`${event.type}: ${event.summary}`);
   }
   return lines.join("\n");
@@ -643,11 +648,11 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "read_file",
-        description: "Read file content inside the task folder with optional 1-based line range. Use this instead of run_command for file reads. If the path is uncertain, call list_files or search_files first.",
+        description: "Read file content inside the task folder. By default the tool returns the complete file when it is small or medium sized; use offset/limit only for targeted ranges in very large files. Use this instead of run_command for file reads. If the path is uncertain, call list_files or search_files first.",
         parameters: strictObject({
           path: { type: "string" },
-          offset: { type: "number", description: "Start line, default 1" },
-          limit: { type: "number", description: "Maximum lines, default 200" }
+          offset: { type: "number", description: "Optional 1-based start line for targeted very large file reads." },
+          limit: { type: "number", description: "Optional maximum lines for targeted very large file reads." }
         }, ["path"])
       }
     },
@@ -678,6 +683,18 @@ function toolDefinitions(): ModelToolDefinition[] {
           },
           required: ["path", "expectedHash", "edits"]
         }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "write_file",
+        description: "Create or replace a whole project file. Use __new__ as expectedHash only for new files; otherwise include the hash from read_file. Large content is written safely by the tool.",
+        parameters: strictObject({
+          path: { type: "string" },
+          expectedHash: { type: "string", description: "Hash from read_file; use __new__ only when creating a new file." },
+          content: { type: "string", description: "Complete file content to write." }
+        }, ["path", "expectedHash", "content"])
       }
     },
     {

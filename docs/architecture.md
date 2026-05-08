@@ -18,7 +18,7 @@ SCC 当前实现的是本地 Agent Workbench，而不是脚本门禁系统，也
 
 - 不用 scenario pack、quality gate、固定 JSON、固定报告模板判断普通任务是否完成。
 - 不把工程测试或脚本输出当作任务完成判官。
-- 不声称当前已完成 Python SDK、完整 MCP connector、完整远程执行后端、OpenTelemetry 全量兼容或多消息平台网关。
+- 不声称当前已完成 Python SDK、OpenTelemetry 全量兼容或多消息平台网关。MCP 当前覆盖已配置的 stdio 与 streamable HTTP 工具发现/调用，不等同于完整远程 auth 或资源模板平台。
 
 ## Runtime Loop
 
@@ -53,7 +53,7 @@ flowchart LR
 | Runtime | `packages/core/src/workbench.ts` | Simple model/tool/approval/evidence loop. This is the product source of truth. |
 | Context | `packages/core/src/context-assembler.ts` | System layer, loaded skills, skill metadata, project memory, file state table, truncated history. |
 | Permissions | `packages/core/src/permission-engine.ts` | Risk-category classifier plus task/global grants. Deterministic safety boundary, not task-quality logic. |
-| Tools | `packages/core/src/tools.ts` | `run_command`, `read_file`, `edit_file`, `search_files`, `list_files`. `edit_file` requires `expectedHash`. |
+| Tools | `packages/core/src/tools.ts`, `packages/core/src/mcp.ts` | Built-in tools plus configured MCP tools. File writes require `expectedHash`; MCP calls use the same evidence and approval path. |
 | Model | `packages/core/src/openai-model.ts` | OpenAI-compatible chat completions and function tools. Uses API key document or env vars. |
 | Learning | `packages/core/src/experience.ts` | Task Memory, Experience, Pattern, Skill promotion heuristics. Early-stage and intentionally conservative. |
 
@@ -62,9 +62,11 @@ flowchart LR
 Approval order is fixed:
 
 1. Global risk-category grant.
-2. Existing task-scoped approval grant.
-3. Pending approval UI.
-4. Denied result goes back into context for the agent to choose another path.
+2. MCP approval preference for MCP tools.
+3. General auto-approval preference for non-MCP tools.
+4. Existing task-scoped approval grant.
+5. Pending approval UI.
+6. Denied result goes back into context for the agent to choose another path.
 
 Risk categories are:
 
@@ -75,7 +77,7 @@ Risk categories are:
 - `network`
 - `destructive`
 
-Global grants are persisted. Task-scoped grants are stored on the task approval record and rehydrated by the runtime.
+Global grants are persisted. Task-scoped grants are stored on the task approval record and rehydrated by the runtime. Preference-based auto approval never bypasses `destructive`; only an explicit global grant can do that.
 
 ## Context Assembly
 
@@ -109,16 +111,9 @@ Known limitations:
 
 ## MCP Boundary
 
-Current implementation has only MCP-related preferences and design notes. It does not yet implement MCP client/server discovery, `tools/list`, `tools/call`, resource templates, remote auth, or server lifecycle management.
+Current implementation discovers configured MCP servers over stdio or streamable HTTP, converts `tools/list` schemas into model tool definitions, routes `tools/call` through risk approval, and records results as normal `tool_result` evidence.
 
-Target MCP direction:
-
-- Treat MCP tools exactly like built-in tools after discovery.
-- Convert MCP tool schemas into model tool definitions.
-- Route every MCP call through the same risk approval engine.
-- Record MCP results as normal tool evidence.
-
-Until that exists in code and tests, MCP must be described as planned/partial.
+Still partial: resource templates, remote auth negotiation, marketplace-style discovery, and broader server lifecycle management are not product-complete.
 
 ## Validation
 

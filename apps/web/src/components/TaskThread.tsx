@@ -1,4 +1,4 @@
-import type { ApprovalDecision, TaskAttachment, TaskDetail, UserPreferences } from "@scc/shared";
+import type { ApprovalDecision, TaskAttachment, TaskDetail, TaskTranscriptItem, UserPreferences } from "@scc/shared";
 import { AlertCircle, Menu, PanelRightClose, PanelRightOpen, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { getUiCopy } from "../i18n.js";
@@ -9,6 +9,7 @@ import type { ConversationSummary, PromptCacheStats, TaskRollbackPreview, TaskRo
 
 export function TaskThread({
   task,
+  transcriptEvents,
   busy,
   busySince,
   attachments,
@@ -49,6 +50,7 @@ export function TaskThread({
   onApprovalDecision
 }: {
   task: TaskDetail | null;
+  transcriptEvents?: TaskTranscriptItem[] | undefined;
   busy: boolean;
   busySince?: number | null;
   attachments: TaskAttachment[];
@@ -163,7 +165,8 @@ export function TaskThread({
             <div className="threadMain">
               <Timeline
                 language={language ?? null}
-                task={task}
+                showThinking={preferences?.showThinking ?? true}
+                task={transcriptEvents ? { ...task, events: transcriptEvents } : task}
                 onApprovalDecision={onApprovalDecision}
                 onRevertLatestTurn={async () => {
                   if (!onRevertLatestTurn) return;

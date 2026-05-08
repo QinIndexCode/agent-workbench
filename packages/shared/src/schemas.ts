@@ -145,6 +145,8 @@ export const TaskEventSchema = z.object({
   reverted: z.boolean().optional()
 });
 
+export const TaskTranscriptItemSchema = TaskEventSchema;
+
 export const TaskTurnSchema = z.object({
   id: z.string(),
   taskId: z.string(),

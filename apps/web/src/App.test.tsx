@@ -341,9 +341,97 @@ describe("Workbench components", () => {
     }));
     render(<Timeline task={{ ...task, events }} onApprovalDecision={vi.fn()} />);
 
-    expect(screen.getByText(/only the latest 360 items are shown/i)).toBeInTheDocument();
+    expect(screen.getByText(/30 older assistant\/tool items are not rendered yet/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Load 30 older/i })).toBeInTheDocument();
     expect(screen.getByText("assistant item 389")).toBeInTheDocument();
     expect(screen.queryByText("assistant item 0")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Load 30 older/i }));
+    expect(screen.getByText("assistant item 0")).toBeInTheDocument();
+  });
+
+  it("preserves the original user request when windowing a large timeline", () => {
+    const events = [
+      {
+        id: "event_original_goal",
+        taskId: "task_1",
+        type: "user_message" as const,
+        createdAt: new Date().toISOString(),
+        summary: "Build a complete blog page with smooth interactions",
+        payload: {}
+      },
+      ...Array.from({ length: 390 }, (_, index) => ({
+        id: `event_window_${index}`,
+        taskId: "task_1",
+        type: "assistant_message" as const,
+        createdAt: new Date().toISOString(),
+        summary: `assistant item ${index}`,
+        payload: {}
+      }))
+    ];
+    render(<Timeline task={{ ...task, events }} onApprovalDecision={vi.fn()} />);
+
+    expect(screen.getByText("Build a complete blog page with smooth interactions")).toBeInTheDocument();
+    expect(screen.getByText("assistant item 389")).toBeInTheDocument();
+  });
+
+  it("keeps context compaction audit out of the chat stream", () => {
+    const fullUserMessage = "优化样式，当前主题变化还未实现，你怎么没有检查呢";
+    render(
+      <Timeline
+        task={{
+          ...task,
+          events: [
+            {
+              id: "event_user_full",
+              taskId: "task_1",
+              type: "user_message",
+              createdAt: new Date().toISOString(),
+              summary: fullUserMessage,
+              payload: {}
+            },
+            {
+              id: "event_summary",
+              taskId: "task_1",
+              type: "conversation_summary_created",
+              createdAt: new Date().toISOString(),
+              summary: "Earlier context was compacted into an auditable summary.",
+              payload: {
+                summary: [
+                  "Earlier conversation was compacted to keep the task within the model context window.",
+                  "- **Tool Call**: edit_file({ very large payload })",
+                  "[UI preview truncated: 999 characters omitted. Full evidence is retained by SCC.]"
+                ].join("\n"),
+                retainedFacts: ["Original goal: 编写一个完整博客页面"]
+              }
+            },
+            {
+              id: "event_overflow",
+              taskId: "task_1",
+              type: "context_overflow_recovered",
+              createdAt: new Date().toISOString(),
+              summary: "Context exceeded the active model window; older context was compacted and the request was retried once.",
+              payload: {}
+            },
+            {
+              id: "event_answer",
+              taskId: "task_1",
+              type: "assistant_message",
+              createdAt: new Date().toISOString(),
+              summary: "我会先重新检查主题切换，再验证页面效果。",
+              payload: {}
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(fullUserMessage)).toBeInTheDocument();
+    expect(screen.getByText("我会先重新检查主题切换，再验证页面效果。")).toBeInTheDocument();
+    expect(screen.queryByText(/已压缩较早上下文|Earlier context compacted/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Original goal/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Tool Call/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/UI preview truncated/)).not.toBeInTheDocument();
   });
 
   it("keeps tool evidence collapsed, path-focused, and free of placeholder text", () => {
@@ -381,6 +469,66 @@ describe("Workbench components", () => {
     expect(summary).toHaveAttribute("aria-expanded", "true");
     expect(container.querySelector(".toolResultDetails")).toHaveClass("open");
     expect(screen.getByText(/actual returned content/)).toBeInTheDocument();
+  });
+
+  it("strips provider fallback tool boilerplate from assistant messages", () => {
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "completed",
+          events: [
+            {
+              id: "event_boilerplate_answer",
+              taskId: "task_1",
+              type: "assistant_message",
+              createdAt: new Date().toISOString(),
+              summary: "Tool evidence returned.\n\nTop entries:\n- node.exe",
+              payload: { message: "Tool evidence returned.\n\nTop entries:\n- node.exe" }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByText(/Tool evidence returned/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Top entries/)).toBeInTheDocument();
+  });
+
+  it("does not render provider-leaked inline tool markup as assistant text", () => {
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "completed",
+          events: [
+            {
+              id: "event_leaked_tool_markup",
+              taskId: "task_1",
+              type: "assistant_message",
+              createdAt: new Date().toISOString(),
+              summary:
+                'I will inspect files.\n\n<function_calls><invoke name="list_files"><parameter name="path">.</parameter></invoke></function_calls>',
+              payload: {}
+            },
+            {
+              id: "event_visible_answer",
+              taskId: "task_1",
+              type: "assistant_message",
+              createdAt: new Date().toISOString(),
+              summary: "Artifact verified.",
+              payload: {}
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByText(/function_calls/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/list_files/)).not.toBeInTheDocument();
+    expect(screen.getByText("Artifact verified.")).toBeInTheDocument();
   });
 
   it("renders streaming assistant output and collapsible thinking", () => {
@@ -428,6 +576,73 @@ describe("Workbench components", () => {
     fireEvent.click(thinking);
     expect(thinking).toHaveAttribute("aria-expanded", "true");
     expect(container.querySelector(".thinkingDetails")).toHaveClass("open");
+  });
+
+  it("hides thinking events when the user preference disables thinking display", () => {
+    render(
+      <Timeline
+        showThinking={false}
+        task={{
+          ...task,
+          events: [
+            {
+              id: "event_thinking_hidden",
+              taskId: "task_1",
+              type: "thinking_delta",
+              createdAt: new Date().toISOString(),
+              summary: "internal thought should not render",
+              payload: { delta: "internal thought should not render", streamId: "stream_hidden" }
+            },
+            {
+              id: "event_visible_body",
+              taskId: "task_1",
+              type: "assistant_message",
+              createdAt: new Date().toISOString(),
+              summary: "Visible answer.",
+              payload: {}
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByText(/internal thought should not render/)).not.toBeInTheDocument();
+    expect(screen.getByText("Visible answer.")).toBeInTheDocument();
+  });
+
+  it("only keeps copy actions visible when the last timeline item is assistant body text", () => {
+    const { container } = render(
+      <Timeline
+        task={{
+          ...task,
+          status: "running",
+          events: [
+            {
+              id: "event_assistant_body",
+              taskId: "task_1",
+              type: "assistant_message",
+              createdAt: new Date().toISOString(),
+              summary: "I will inspect the current files first.",
+              payload: {}
+            },
+            {
+              id: "event_later_thinking",
+              taskId: "task_1",
+              type: "thinking_delta",
+              createdAt: new Date().toISOString(),
+              summary: "Thinking about the next read.",
+              payload: { streamId: "stream_thinking", delta: "Thinking about the next read." }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("I will inspect the current files first.")).toBeInTheDocument();
+    expect(screen.getByText("Thinking")).toBeInTheDocument();
+    expect(container.querySelector(".event.assistant_message .messageActions")).not.toHaveClass("alwaysVisible");
   });
 
   it("renders assistant markdown as structured content", () => {
@@ -859,6 +1074,7 @@ describe("Workbench components", () => {
           return jsonResponse(createTask(body.goal, body.title));
         }
         if (url === "/api/tasks") return jsonResponse(currentTasks);
+        if (url.startsWith("/api/tasks/task_1/transcript")) return jsonResponse((currentTasks.find((item) => item.id === "task_1") ?? created).events);
         if (url === "/api/tasks/task_1" || url.startsWith("/api/tasks/task_1?")) return jsonResponse(currentTasks.find((item) => item.id === "task_1") ?? created);
         if (
           url === "/api/experiences" ||
@@ -944,6 +1160,118 @@ describe("Workbench components", () => {
     fireEvent.click(screen.getByLabelText("Send"));
     await waitFor(() => expect(sendMessage).toHaveBeenCalledWith("/api/tasks/task_1/messages", "second goal"));
     expect(createTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the full transcript endpoint instead of rebuilding chat from windowed events", async () => {
+    const now = new Date().toISOString();
+    const windowedTask: TaskDetail = {
+      ...task,
+      id: "task_1",
+      title: "Long transcript",
+      status: "completed",
+      events: [
+        {
+          id: "event_window_tail",
+          taskId: "task_1",
+          type: "assistant_message",
+          createdAt: now,
+          summary: "Tail-only event from the audit window",
+          payload: {}
+        }
+      ]
+    };
+    const fullTranscript = [
+      {
+        id: "event_original_user",
+        taskId: "task_1",
+        type: "user_message" as const,
+        createdAt: now,
+        summary: "完整用户原始需求：编写一个完整博客页面，拥有炫酷效果和优雅布局和丝滑交互",
+        payload: {}
+      },
+      {
+        id: "event_context_summary",
+        taskId: "task_1",
+        type: "conversation_summary_created" as const,
+        createdAt: now,
+        summary: "Earlier context compacted",
+        payload: {
+          summary: "Original goal: should not appear in transcript\n[UI preview truncated: 123 characters omitted. Full evidence is retained by SCC.]"
+        }
+      },
+      {
+        id: "event_early_agent",
+        taskId: "task_1",
+        type: "assistant_message" as const,
+        createdAt: now,
+        summary: "我已经创建 styles.css 和 script.js，并会继续验证主题切换。",
+        payload: {}
+      },
+      windowedTask.events[0]!
+    ];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/task-folders") return jsonResponse([{ id: "default", name: "Default", sortOrder: 0, createdAt: now, updatedAt: now }]);
+        if (url === "/api/tasks") return jsonResponse([windowedTask]);
+        if (url === "/api/tasks/task_1" || url.startsWith("/api/tasks/task_1?")) return jsonResponse(windowedTask);
+        if (url === "/api/tasks/task_1/transcript") return jsonResponse(fullTranscript.filter((event) => event.type !== "conversation_summary_created"));
+        if (
+          url === "/api/experiences" ||
+          url === "/api/task-memories" ||
+          url === "/api/patterns" ||
+          url === "/api/skills" ||
+          url === "/api/skills/duplicates" ||
+          url === "/api/skill-conflicts" ||
+          url === "/api/skill-curator" ||
+          url === "/api/permissions/global" ||
+          url === "/api/reflections" ||
+          url === "/api/project-memories" ||
+          url === "/api/mcp/servers" ||
+          url === "/api/mcp/tools" ||
+          url === "/api/knowledge" ||
+          url === "/api/model-providers" ||
+          url === "/api/scheduled-tasks" ||
+          url === "/api/web-search/providers"
+        ) {
+          return jsonResponse([]);
+        }
+        if (url === "/api/preferences") {
+          return jsonResponse({
+            llmProvider: "mimo",
+            defaultModel: "mimo-v2.5",
+            providerBaseUrl: "",
+            contextMode: "auto",
+            customModelContextWindow: 128000,
+            maxTokensPerRequest: 128000,
+            autoApprove: "none",
+            showThinking: true,
+            language: "zh-CN",
+            theme: "dark",
+            agentTone: "balanced",
+            agentRole: "Pragmatic engineering assistant",
+            responseDetail: "normal",
+            skillAutoInject: true,
+            maxInjectedSkills: 3,
+            mcpApprovalMode: "confirm_dangerous",
+            sanitizeSensitiveData: true,
+            encryptStorage: false,
+            modelRoute: { fallbackProviderIds: [] },
+            updatedAt: now
+          });
+        }
+        return jsonResponse([]);
+      })
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText(/完整用户原始需求/)).toBeInTheDocument();
+    expect(screen.getByText(/我已经创建 styles.css 和 script.js/)).toBeInTheDocument();
+    expect(screen.getByText("Tail-only event from the audit window")).toBeInTheDocument();
+    expect(screen.queryByText(/Original goal|UI preview truncated/)).not.toBeInTheDocument();
   });
 
   it("moves governance surfaces into settings", async () => {

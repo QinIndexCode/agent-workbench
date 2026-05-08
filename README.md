@@ -34,4 +34,4 @@ npm.cmd run dev
 
 The web UI runs on `http://127.0.0.1:5173`; the API runs on `http://127.0.0.1:5177`.
 
-MCP support is a planned extension point. The current implementation does not yet expose MCP discovery or remote tool execution.
+MCP support is implemented for configured local and remote tool servers. The runtime discovers stdio and streamable HTTP MCP tools, converts them into model-visible tool definitions, routes calls through the same risk approval flow, and records MCP responses as normal tool evidence.

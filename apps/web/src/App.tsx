@@ -146,6 +146,7 @@ export function App() {
       {activeView === "tasks" ? (
         <TaskThread
           task={data.selected}
+          transcriptEvents={data.selectedTranscript}
           busy={data.busy}
           busySince={data.busySince}
           attachments={pendingAttachments}

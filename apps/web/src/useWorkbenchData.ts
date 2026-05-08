@@ -25,6 +25,7 @@ import type {
   TaskEvent,
   TaskMemory,
   TaskPatchRequest,
+  TaskTranscriptItem,
   ToolApproval,
   UserPreferences,
   PromptCacheStats,
@@ -36,6 +37,7 @@ export interface WorkbenchData {
   tasks: TaskDetail[];
   taskFolders: TaskFolderRecord[];
   selected: TaskDetail | null;
+  selectedTranscript: TaskTranscriptItem[];
   selectedId: string | null;
   memories: TaskMemory[];
   patterns: PatternRecord[];
@@ -80,6 +82,7 @@ export function useWorkbenchData(): WorkbenchData {
   const [taskFolders, setTaskFolders] = useState<TaskFolderRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selected, setSelected] = useState<TaskDetail | null>(null);
+  const [selectedTranscript, setSelectedTranscript] = useState<TaskTranscriptItem[]>([]);
   const [memories, setMemories] = useState<TaskMemory[]>([]);
   const [patterns, setPatterns] = useState<PatternRecord[]>([]);
   const [skills, setSkills] = useState<SkillRecord[]>([]);
@@ -164,7 +167,14 @@ export function useWorkbenchData(): WorkbenchData {
     const id = preferredExists ? preferredId : newTaskModeRef.current && !hasExplicitNext ? null : list[0]?.id ?? null;
     selectedIdRef.current = id;
     setSelectedId(id);
-    setSelected(id ? await api.getTask(id) : null);
+    if (id) {
+      const [nextSelected, nextTranscript] = await Promise.all([api.getTask(id), api.listTaskTranscript(id)]);
+      setSelected(nextSelected);
+      setSelectedTranscript(nextTranscript);
+    } else {
+      setSelected(null);
+      setSelectedTranscript([]);
+    }
     setMemories(nextMemories);
     setPatterns(nextPatterns);
     setSkills(nextSkills);
@@ -252,6 +262,13 @@ export function useWorkbenchData(): WorkbenchData {
             if (!current || current.id !== selectedId) return current;
             return { ...current, events: parsed.events };
           });
+          if (parsed.transcript) {
+            setSelectedTranscript(parsed.transcript);
+          } else {
+            void api.listTaskTranscript(selectedId).then((transcript) => {
+              if (!wsCancelRef.current && selectedIdRef.current === selectedId) setSelectedTranscript(transcript);
+            }).catch(() => undefined);
+          }
           return;
         }
         wsEventQueueRef.current.push(parsed.event);
@@ -296,6 +313,7 @@ export function useWorkbenchData(): WorkbenchData {
         if (nextEvents.length === current.events.length) return current;
         return { ...current, events: nextEvents, approvals: nextApprovals, updatedAt };
       });
+      setSelectedTranscript((current) => appendTranscriptEvents(current, queued));
     }, 40);
   }
 
@@ -303,7 +321,9 @@ export function useWorkbenchData(): WorkbenchData {
     newTaskModeRef.current = false;
     selectedIdRef.current = taskId;
     setSelectedId(taskId);
-    setSelected(await api.getTask(taskId));
+    const [nextSelected, nextTranscript] = await Promise.all([api.getTask(taskId), api.listTaskTranscript(taskId)]);
+    setSelected(nextSelected);
+    setSelectedTranscript(nextTranscript);
   }
 
   function clearSelection() {
@@ -311,6 +331,7 @@ export function useWorkbenchData(): WorkbenchData {
     selectedIdRef.current = null;
     setSelectedId(null);
     setSelected(null);
+    setSelectedTranscript([]);
   }
 
   async function deleteTask(taskId: string, options: TaskDeleteRequest) {
@@ -321,6 +342,7 @@ export function useWorkbenchData(): WorkbenchData {
         selectedIdRef.current = null;
         setSelectedId(null);
         setSelected(null);
+        setSelectedTranscript([]);
       }
       await refresh(wasSelected ? undefined : selectedIdRef.current);
     });
@@ -331,6 +353,7 @@ export function useWorkbenchData(): WorkbenchData {
       const updated = await api.patchTask(taskId, input);
       if (selectedIdRef.current === taskId) {
         setSelected(updated);
+        setSelectedTranscript(await api.listTaskTranscript(taskId));
       }
       await refresh(selectedIdRef.current);
     });
@@ -358,6 +381,7 @@ export function useWorkbenchData(): WorkbenchData {
       const result = await api.revertTaskTurn(taskId, latest.id);
       draft = result.draft;
       setSelected(result.task);
+      setSelectedTranscript(await api.listTaskTranscript(taskId));
       await refresh(taskId);
     });
     return draft;
@@ -372,6 +396,7 @@ export function useWorkbenchData(): WorkbenchData {
         selectedIdRef.current = null;
         setSelectedId(null);
         setSelected(null);
+        setSelectedTranscript([]);
       }
       await refresh(affectsSelected ? null : selectedIdRef.current);
     });
@@ -384,6 +409,7 @@ export function useWorkbenchData(): WorkbenchData {
       selectedIdRef.current = task.id;
       setSelectedId(task.id);
       setSelected(task);
+      setSelectedTranscript(await api.listTaskTranscript(task.id));
       await refresh(task.id);
     });
   }
@@ -426,6 +452,7 @@ export function useWorkbenchData(): WorkbenchData {
     tasks,
     taskFolders,
     selected,
+    selectedTranscript,
     selectedId,
     memories,
     patterns,
@@ -474,13 +501,17 @@ function approvalFromEvent(event: TaskEvent, approvals: ToolApproval[]): ToolApp
 }
 
 function parseRealtimeMessage(value: unknown):
-  | { type: "snapshot"; events: TaskEvent[] }
+  | { type: "snapshot"; events: TaskEvent[]; transcript?: TaskTranscriptItem[] }
   | { type: "event"; event: TaskEvent }
   | null {
   try {
     const parsed = JSON.parse(String(value)) as Record<string, unknown>;
     if (parsed["type"] === "snapshot" && Array.isArray(parsed["events"])) {
-      return { type: "snapshot", events: parsed["events"] as TaskEvent[] };
+      return {
+        type: "snapshot",
+        events: parsed["events"] as TaskEvent[],
+        ...(Array.isArray(parsed["transcript"]) ? { transcript: parsed["transcript"] as TaskTranscriptItem[] } : {})
+      };
     }
     if (parsed["type"] === "event" && typeof parsed["event"] === "object" && parsed["event"]) {
       return { type: "event", event: parsed["event"] as TaskEvent };
@@ -489,4 +520,90 @@ function parseRealtimeMessage(value: unknown):
   } catch {
     return null;
   }
+}
+
+function appendTranscriptEvents(current: TaskTranscriptItem[], events: TaskEvent[]): TaskTranscriptItem[] {
+  const next = [...current];
+  const seen = new Set(next.map((event) => event.id));
+  for (const event of events) {
+    if (seen.has(event.id) || !isClientTranscriptEvent(event)) continue;
+    if (isInlineToolMarkupEvent(event)) continue;
+    seen.add(event.id);
+    next.push(compactLiveTranscriptEvent(event));
+  }
+  return next;
+}
+
+function compactLiveTranscriptEvent(event: TaskEvent): TaskTranscriptItem {
+  if (event.type === "assistant_message" || event.type === "assistant_delta") {
+    return {
+      ...event,
+      summary: stripToolEvidenceBoilerplate(event.summary),
+      payload: stripAssistantPayloadBoilerplate(event.payload)
+    };
+  }
+  if (event.type !== "tool_result" && event.type !== "web_search_result") return event;
+  const payload: Record<string, unknown> = { ...event.payload };
+  if (typeof payload["output"] === "string") payload["output"] = normalizeTranscriptTruncationMarker(payload["output"]);
+  if (typeof payload["summary"] === "string") payload["summary"] = normalizeTranscriptTruncationMarker(payload["summary"]);
+  return {
+    ...event,
+    summary: normalizeTranscriptTruncationMarker(event.summary),
+    payload
+  };
+}
+
+function stripAssistantPayloadBoilerplate(payload: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...payload };
+  for (const key of ["message", "delta", "text"]) {
+    if (typeof next[key] === "string") next[key] = stripToolEvidenceBoilerplate(next[key]);
+  }
+  return next;
+}
+
+function stripToolEvidenceBoilerplate(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .filter((line) => !/^(tool evidence returned\.?|tool evidence returned[:：].*|工具证据已返回。?|工具证据已返回[:：].*)$/i.test(line.trim()))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizeTranscriptTruncationMarker(value: string): string {
+  return value.replace(
+    /\[UI preview truncated: (\d+) characters omitted\. Full evidence is retained by SCC\.\]/g,
+    "[Output truncated: $1 characters omitted. Full evidence is available in the audit log.]"
+  );
+}
+
+function isClientTranscriptEvent(event: TaskEvent): boolean {
+  return (
+    event.type === "user_message" ||
+    event.type === "attachment_added" ||
+    event.type === "assistant_delta" ||
+    event.type === "assistant_message" ||
+    event.type === "thinking_delta" ||
+    event.type === "guidance_pending" ||
+    event.type === "approval_pending" ||
+    event.type === "tool_result" ||
+    event.type === "task_checkpoint_created" ||
+    event.type === "task_rollback_completed" ||
+    event.type === "task_rollback_failed" ||
+    event.type === "plan_step_blocked" ||
+    event.type === "web_search_result"
+  );
+}
+
+function isInlineToolMarkupEvent(event: TaskEvent): boolean {
+  if (event.type !== "assistant_message" && event.type !== "assistant_delta") return false;
+  const text = [
+    event.summary,
+    typeof event.payload["message"] === "string" ? event.payload["message"] : "",
+    typeof event.payload["delta"] === "string" ? event.payload["delta"] : "",
+    typeof event.payload["text"] === "string" ? event.payload["text"] : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return /<function_calls\b|<invoke\s+name=/i.test(text);
 }
