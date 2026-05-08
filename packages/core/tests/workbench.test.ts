@@ -34,6 +34,7 @@ import {
   promoteExperience,
   shouldPromoteExperienceToSkill
 } from "../src/index.js";
+import { defaultTaskWorkRoot } from "../src/workspace-root.js";
 
 const hostObservationModel = new ConfiguredToolModelClient("Get-Process | Sort-Object CPU");
 
@@ -162,6 +163,110 @@ describe("ContextAssembler", () => {
     expect(context.usedTokens).toBeLessThanOrEqual(900);
     expect(context.input).toContain("Context Budget Notice");
     expect(context.input).toContain("LATEST_BUDGET_MARKER");
+  });
+
+  it("injects full global and project memory files before task history", async () => {
+    const previousMemoryDir = process.env["SCC_MEMORY_DIR"];
+    const memoryDir = mkdtempSync(join(tmpdir(), "scc-context-memory-"));
+    const workRoot = mkdtempSync(join(tmpdir(), "scc-context-work-root-"));
+    process.env["SCC_MEMORY_DIR"] = memoryDir;
+    try {
+      const projectHash = createHash("sha256").update(resolve(workRoot)).digest("hex").slice(0, 20);
+      mkdirSync(join(memoryDir, "projects", projectHash), { recursive: true });
+      writeFileSync(join(memoryDir, "USER.md"), "# USER.md\n\n- Prefer concise Chinese engineering updates.\n");
+      writeFileSync(join(memoryDir, "MEMORY.md"), "# MEMORY.md\n\n- Global memory marker for all SCC tasks.\n");
+      writeFileSync(join(memoryDir, "projects", projectHash, "MEMORY.md"), "# MEMORY.md\n\n- Project scoped memory marker.\n");
+
+      const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+      const task: TaskDetail = {
+        id: "task_memory_injection",
+        title: "Memory injection",
+        status: "running",
+        workRoot,
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: []
+      };
+
+      const context = await assembler.assemble(task);
+
+      expect(context.input).toContain("### Global USER.md");
+      expect(context.input).toContain("Prefer concise Chinese engineering updates.");
+      expect(context.input).toContain("### Global MEMORY.md");
+      expect(context.input).toContain("Global memory marker for all SCC tasks.");
+      expect(context.input).toContain("### Project MEMORY.md");
+      expect(context.input).toContain("Project scoped memory marker.");
+    } finally {
+      if (previousMemoryDir === undefined) delete process.env["SCC_MEMORY_DIR"];
+      else process.env["SCC_MEMORY_DIR"] = previousMemoryDir;
+      rmSync(memoryDir, { recursive: true, force: true });
+      rmSync(workRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("injects runtime metadata without exposing approval state to the agent", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const now = nowIso();
+    await store.saveModelProvider({
+      id: "provider_mimo",
+      vendor: "mimo",
+      label: "Mimo",
+      protocol: "openai_compatible",
+      baseUrl: "https://example.invalid/v1",
+      apiKeyRef: { secretId: "provider_mimo", last4: "1234", updatedAt: now },
+      models: [{ id: "mimo-v2.5", label: "MiMo-V2.5", contextWindow: 1048576, supportsTools: true, supportsThinking: true }],
+      defaultModelId: "mimo-v2.5",
+      enabled: true,
+      createdAt: now,
+      updatedAt: now
+    });
+    await store.saveMcpServer({
+      id: "mock_mcp",
+      label: "Mock MCP",
+      transport: "stdio",
+      command: "node",
+      args: [],
+      env: {},
+      enabled: true,
+      toolRiskOverrides: {},
+      createdAt: now,
+      updatedAt: now
+    });
+    await store.saveIntegrationProvider({
+      id: "integration_discord",
+      kind: "discord",
+      label: "Discord",
+      status: "setup_pending",
+      enabled: false,
+      defaultFolderId: "default",
+      defaultPermissionPreset: "ask",
+      createdAt: now,
+      updatedAt: now
+    });
+    const preferences = await store.getPreferences();
+    await store.savePreferences({ ...preferences, activeModelProviderId: "provider_mimo", updatedAt: now });
+
+    const assembler = new ContextAssembler(store);
+    const context = await assembler.assemble({
+      id: "task_runtime_metadata",
+      title: "Runtime metadata",
+      status: "running",
+      createdAt: now,
+      updatedAt: now,
+      approvals: [],
+      pendingGuidance: [],
+      events: []
+    });
+
+    expect(context.input).toContain("## Runtime Metadata");
+    expect(context.input).toContain("Active model: Mimo / mimo-v2.5");
+    expect(context.input).toContain("Web search: built-in DuckDuckGo fallback is available");
+    expect(context.input).toContain("mock_mcp: Mock MCP");
+    expect(context.input).toContain("integration_discord: Discord");
+    expect(context.systemPrompt).not.toContain("Auto approval preference");
+    expect(context.input).not.toContain("Auto approval preference");
   });
 });
 
@@ -450,6 +555,169 @@ describe("AgentWorkbench", () => {
     expect(persisted?.events.filter((event) => event.type === "assistant_delta").map((event) => event.summary).join("")).toBe("started");
   });
 
+  it("lets the agent add global USER.md memory through the permissioned tool path", async () => {
+    const previousMemoryDir = process.env["SCC_MEMORY_DIR"];
+    const memoryDir = mkdtempSync(join(tmpdir(), "scc-user-memory-"));
+    process.env["SCC_MEMORY_DIR"] = memoryDir;
+    try {
+      const workbench = new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        model: new SingleToolModel("user_memory_add", {
+          content: "Prefers concise Chinese engineering summaries.",
+          section: "Preferences"
+        })
+      });
+
+      const created = await workbench.createTask("请记住我的回答偏好");
+      expect(created.status).toBe("waiting_approval");
+      expect(created.approvals[0]?.riskCategory).toBe("workspace_write");
+      const completed = await workbench.decideApproval(created.id, created.approvals[0]!.id, "allow_for_task");
+      const memory = await workbench.getUserProfileDocument();
+
+      expect(completed.status).toBe("completed");
+      expect(memory.content).toContain("Prefers concise Chinese engineering summaries.");
+    } finally {
+      if (previousMemoryDir === undefined) delete process.env["SCC_MEMORY_DIR"];
+      else process.env["SCC_MEMORY_DIR"] = previousMemoryDir;
+      rmSync(memoryDir, { recursive: true, force: true });
+    }
+  });
+
+  it("lets the agent edit and delete project MEMORY.md through task-scoped tools", async () => {
+    const previousMemoryDir = process.env["SCC_MEMORY_DIR"];
+    const memoryDir = mkdtempSync(join(tmpdir(), "scc-project-memory-"));
+    process.env["SCC_MEMORY_DIR"] = memoryDir;
+    try {
+      const workbench = new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        model: new SequenceToolModel([
+          { toolName: "project_memory_add", args: { content: "Fixture uses Vitest for core tests.", section: "Key Facts" } },
+          { toolName: "project_memory_edit", args: { match: "Vitest", replacement: "Fixture uses Vitest and Playwright for validation." } },
+          { toolName: "project_memory_delete", args: { match: "Playwright for validation" } }
+        ])
+      });
+
+      const created = await workbench.createTask("维护项目记忆");
+      expect(created.status).toBe("waiting_approval");
+      const completed = await workbench.decideApproval(created.id, created.approvals[0]!.id, "allow_for_task");
+      const memory = await workbench.getProjectMemoryDocument("default");
+
+      expect(completed.status).toBe("completed");
+      expect(memory.content).not.toContain("Fixture uses Vitest");
+      expect(completed.events.filter((event) => event.type === "tool_result")).toHaveLength(3);
+    } finally {
+      if (previousMemoryDir === undefined) delete process.env["SCC_MEMORY_DIR"];
+      else process.env["SCC_MEMORY_DIR"] = previousMemoryDir;
+      rmSync(memoryDir, { recursive: true, force: true });
+    }
+  });
+
+  it("supports skill create, use, and delete as permissioned agent tools", async () => {
+    const skillWorkbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new SequenceToolModel([
+        {
+          toolName: "skill_create",
+          args: {
+            title: "Fixture Debugging",
+            body: "Use failing test output to identify the smallest source edit, then rerun the same test.",
+            requiredTools: ["read_file", "edit_file", "run_command"],
+            keywords: ["debug", "fixture"]
+          }
+        },
+        { toolName: "skill_delete", args: { title: "Fixture Debugging" } }
+      ])
+    });
+    const created = await skillWorkbench.createTask("创建再删除一个测试 Skill");
+    const completed = await skillWorkbench.decideApproval(created.id, created.approvals[0]!.id, "allow_for_task");
+    expect(completed.status).toBe("completed");
+    expect(await skillWorkbench.listSkills()).toHaveLength(0);
+
+    const store = new InMemoryWorkbenchStore();
+    const useWorkbench = new AgentWorkbench({ store });
+    const skill = await useWorkbench.createSkill({
+      title: "Read Only Summary",
+      body: "Summarize only after reading directly relevant files.",
+      status: "active",
+      applicability: { description: "File summary tasks", requiredTools: ["read_file"], requiredContext: [], exclusions: [], keywords: ["summary"] },
+      sourceMemoryIds: [],
+      relatedPatterns: []
+    });
+    const useTaskWorkbench = new AgentWorkbench({
+      store,
+      model: new SingleToolModel("use_skill", { skillId: skill.id })
+    });
+    const started = await useTaskWorkbench.createTask("调用已有 Skill");
+    expect(started.approvals[0]?.riskCategory).toBe("workspace_read");
+    const loaded = await useTaskWorkbench.decideApproval(started.id, started.approvals[0]!.id, "allow_for_task");
+    expect(loaded.status).toBe("completed");
+    expect(loaded.events.some((event) => event.type === "skill_loaded" && event.payload["skillId"] === skill.id)).toBe(true);
+  });
+
+  it("supports skill lookup by name and skill edits through agent tools", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    const skill = await workbench.createSkill({
+      title: "Careful File Summary",
+      body: "Read relevant files before summarizing.",
+      status: "active",
+      applicability: { description: "File summary tasks", requiredTools: ["read_file"], requiredContext: [], exclusions: [], keywords: ["summary"] },
+      sourceMemoryIds: [],
+      relatedPatterns: []
+    });
+
+    const useByNameWorkbench = new AgentWorkbench({
+      store,
+      model: new SingleToolModel("use_skill", { name: "Careful File Summary" })
+    });
+    const started = await useByNameWorkbench.createTask("按名称调用 Skill");
+    const used = await useByNameWorkbench.decideApproval(started.id, started.approvals[0]!.id, "allow_for_task");
+    expect(used.events.some((event) => event.type === "skill_loaded" && event.payload["skillId"] === skill.id)).toBe(true);
+
+    const editWorkbench = new AgentWorkbench({
+      store,
+      model: new SingleToolModel("skill_edit", {
+        title: "Careful File Summary",
+        newTitle: "Careful Source Summary",
+        body: "Read directly relevant source files, state evidence, then summarize reusable findings.",
+        requiredTools: ["read_file", "search_files"]
+      })
+    });
+    const editStarted = await editWorkbench.createTask("编辑 Skill");
+    expect(editStarted.approvals[0]?.riskCategory).toBe("workspace_write");
+    const editedTask = await editWorkbench.decideApproval(editStarted.id, editStarted.approvals[0]!.id, "allow_for_task");
+    const updated = await store.getSkill(skill.id);
+
+    expect(editedTask.status).toBe("completed");
+    expect(updated?.title).toBe("Careful Source Summary");
+    expect(updated?.body).toContain("state evidence");
+    expect(updated?.applicability.requiredTools).toContain("search_files");
+  });
+
+  it("lets the agent update the plan without showing a tool card in the conversation stream", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new SingleToolModel("plan_update", {
+        context: "Investigating a user-reported frontend layout issue.",
+        status: "running",
+        steps: [
+          { title: "Reproduce the layout issue", status: "completed" },
+          { title: "Patch the interaction", status: "running" }
+        ]
+      })
+    });
+
+    const completed = await workbench.createTask("更新计划");
+    const planEvent = completed.events.find((event) => event.type === "plan_revised");
+    const toolResult = completed.events.find((event) => event.type === "tool_result" && event.payload["toolName"] === "plan_update");
+
+    expect(completed.status).toBe("completed");
+    expect(completed.approvals).toHaveLength(0);
+    expect(planEvent?.payload["context"]).toBe("Investigating a user-reported frontend layout issue.");
+    expect((planEvent?.payload["steps"] as Array<{ title: string }> | undefined)?.map((step) => step.title)).toContain("Patch the interaction");
+    expect(toolResult?.payload["uiHidden"]).toBe(true);
+  });
+
   it("copies uploaded attachments, links them to tasks, and exposes them to context as references", async () => {
     const store = new InMemoryWorkbenchStore();
     const assembler = new ContextAssembler(store);
@@ -534,6 +802,31 @@ describe("AgentWorkbench", () => {
       expect(completed.events.some((event) => event.type === "approval_auto_granted" && event.payload["riskCategory"] === "network")).toBe(true);
     } finally {
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  });
+
+  it("uses the built-in web search fallback when no provider is configured", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          RelatedTopics: [{ Text: "SCC - Built-in fallback result", FirstURL: "https://example.test/scc" }]
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    try {
+      const executor = new WebSearchToolExecutor(new InMemoryWorkbenchStore());
+      const result = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "web_search",
+        args: { query: "scc", limit: 1 }
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.output).toContain("builtin_duckduckgo");
+      expect(result.output).toContain("Built-in fallback result");
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 
@@ -795,6 +1088,18 @@ describe("AgentWorkbench", () => {
       rmSync(firstRoot, { recursive: true, force: true });
       rmSync(secondRoot, { recursive: true, force: true });
     }
+  });
+
+  it("uses an isolated SCC workspace as the default task folder instead of the project root", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+
+    const task = await workbench.createTask("默认工作目录检查");
+    const defaultFolder = (await workbench.listTaskFolders()).find((folder) => folder.id === "default");
+
+    expect(defaultFolder?.rootPath).toBe(defaultTaskWorkRoot());
+    expect(task.workRoot).toBe(defaultTaskWorkRoot());
+    expect(resolve(task.workRoot ?? "")).not.toBe(resolve(process.cwd()));
+    expect(task.workRoot?.replace(/\\/g, "/")).toContain("/workspace/default");
   });
 
   it("edits task title and folder without changing the work root snapshot", async () => {
@@ -1458,16 +1763,16 @@ describe("ShellToolExecutor", () => {
   });
 
   it("requires expectedHash before editing existing files", async () => {
-    const temp = mkdtempSync(join(process.cwd(), "tmp-scc-tools-"));
+    const temp = mkdtempSync(join(tmpdir(), "tmp-scc-tools-"));
     try {
       const file = join(temp, "note.txt");
       writeFileSync(file, "before");
-      const executor = new ShellToolExecutor();
+      const executor = new ShellToolExecutor(temp);
       const result = await executor.execute({
         id: createId("tool_call"),
         toolName: "edit_file",
         args: {
-          path: file,
+          path: "note.txt",
           edits: [{ startLine: 1, endLine: 1, newText: "after" }]
         }
       });

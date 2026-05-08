@@ -5,7 +5,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import type { ToolCall, ToolResult } from "@scc/shared";
 import { createId, nowIso } from "./ids.js";
-import { findWorkspaceRoot } from "./workspace-root.js";
+import { defaultTaskWorkRoot } from "./workspace-root.js";
 
 export interface ToolExecutor {
   execute(call: ToolCall, options?: ToolExecutionOptions): Promise<ToolResult>;
@@ -35,7 +35,7 @@ export class CompositeToolExecutor implements ToolExecutor {
 export class ShellToolExecutor implements ToolExecutor {
   private readonly workspaceRoot: string;
 
-  constructor(workspaceRoot = findWorkspaceRoot()) {
+  constructor(workspaceRoot = defaultTaskWorkRoot()) {
     this.workspaceRoot = workspaceRoot;
   }
 

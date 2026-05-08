@@ -20,7 +20,26 @@ export class WebSearchToolExecutor implements ToolExecutorDelegate {
     const limit = clamp(Number(call.args["limit"] ?? 5), 1, 10);
     const provider = (await this.store.listWebSearchProviders()).find((item) => item.enabled);
     if (!provider) {
-      return result(call, false, "No web search provider is configured. Add a provider in Settings before using web_search.");
+      try {
+        const results = await searchWithBuiltinDuckDuckGo(query, limit, options.signal);
+        return result(
+          call,
+          true,
+          JSON.stringify(
+            {
+              query,
+              providerId: "builtin_duckduckgo",
+              provider: "Built-in DuckDuckGo",
+              note: "No configured search provider was found; SCC used its built-in no-key fallback.",
+              results
+            },
+            null,
+            2
+          )
+        );
+      } catch (error) {
+        return result(call, false, `Built-in web search failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     const secret = provider.apiKeyRef ? await this.store.getWebSearchProviderSecret(provider.id) : undefined;
     const apiKey = secret ? this.secretBox.decrypt(secret) : "";
@@ -44,6 +63,18 @@ export class WebSearchToolExecutor implements ToolExecutorDelegate {
       return result(call, false, error instanceof Error ? error.message : String(error));
     }
   }
+}
+
+async function searchWithBuiltinDuckDuckGo(query: string, limit: number, signal?: AbortSignal): Promise<WebSearchResult[]> {
+  const provider: WebSearchProviderConfig = {
+    id: "builtin_duckduckgo",
+    label: "Built-in DuckDuckGo",
+    kind: "duckduckgo",
+    enabled: true,
+    createdAt: nowIso(),
+    updatedAt: nowIso()
+  };
+  return searchWithProvider(provider, query, limit, "", signal);
 }
 
 export function createWebSearchApiKeyRef(providerId: string, apiKey: string, encrypted: EncryptedSecretValue) {

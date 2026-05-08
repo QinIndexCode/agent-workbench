@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export function findWorkspaceRoot(): string {
@@ -20,4 +20,11 @@ export function findWorkspaceRoot(): string {
     if (parent === current) return process.cwd();
     current = parent;
   }
+}
+
+export function defaultTaskWorkRoot(): string {
+  const configured = process.env["SCC_DEFAULT_TASK_ROOT"];
+  const root = configured?.trim() ? resolve(configured) : resolve(findWorkspaceRoot(), "workspace", "default");
+  mkdirSync(root, { recursive: true });
+  return root;
 }

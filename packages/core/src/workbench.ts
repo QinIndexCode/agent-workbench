@@ -97,7 +97,7 @@ import { LocalSecretBox, maskSecret } from "./secrets.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
 import { ShellToolExecutor, type ToolExecutor } from "./tools.js";
 import { createWebSearchApiKeyRef } from "./web-search.js";
-import { findWorkspaceRoot } from "./workspace-root.js";
+import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
 
 export interface ToolRiskProvider {
   assessTool(call: ToolCall): Promise<RiskAssessment | undefined>;
@@ -156,13 +156,6 @@ export class AgentWorkbench {
     task.workRoot = folder.rootPath;
     this.addEvent(task, "task_created", "Task created");
     await this.beginTaskTurn(task, goal, "user_message");
-    this.addEvent(task, "plan_created", "Initial plan created", {
-      steps: [
-        { id: createId("plan_step"), title: "Understand the request", status: "completed" },
-        { id: createId("plan_step"), title: "Choose evidence or tools", status: "pending" },
-        { id: createId("plan_step"), title: "Return a visible result", status: "pending" }
-      ]
-    });
     await this.attachUploadedFiles(task, attachmentIds);
     this.setStatus(task, "running");
     await this.store.saveTask(task);
@@ -274,14 +267,14 @@ export class AgentWorkbench {
   }
 
   private async validateFolderRoot(rootPath?: string): Promise<string> {
-    const full = resolve(rootPath?.trim() || findWorkspaceRoot());
+    const full = resolve(rootPath?.trim() || defaultTaskWorkRoot());
     const info = await stat(full).catch(() => null);
     if (!info?.isDirectory()) throw new Error(`Folder path must exist and be a directory: ${full}`);
     return full;
   }
 
   private async refreshFolderStatus(folder: TaskFolderRecord): Promise<TaskFolderRecord> {
-    const rootPath = resolve(folder.rootPath?.trim() || findWorkspaceRoot());
+    const rootPath = resolve(folder.rootPath?.trim() || defaultTaskWorkRoot());
     const exists = Boolean((await stat(rootPath).catch(() => null))?.isDirectory());
     return {
       ...folder,
@@ -464,7 +457,7 @@ export class AgentWorkbench {
     const ordered = [...checkpoints].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const earliestByPath = new Map<string, TaskCheckpoint["files"][number]>();
     for (const checkpoint of ordered) {
-      const root = resolve(checkpoint.workRoot || task.workRoot || findWorkspaceRoot());
+      const root = resolve(checkpoint.workRoot || task.workRoot || defaultTaskWorkRoot());
       for (const file of checkpoint.files) {
         const resolvedPath = resolveTaskPath(root, file.path);
         const key = process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath;
@@ -781,11 +774,6 @@ export class AgentWorkbench {
       const result = await this.executeTool(task.id, approval.toolCall);
       const latest = await this.requiredTask(task.id);
       this.addToolResultEvent(latest, approval.toolCall, result);
-      this.addEvent(latest, result.ok ? "plan_step_completed" : "plan_step_blocked", `${approval.toolCall.toolName}: ${result.ok ? "completed" : "blocked"}`, {
-        toolCallId: approval.toolCall.id,
-        toolName: approval.toolCall.toolName,
-        ok: result.ok
-      });
       await this.store.saveTask(latest);
       if (latest.status !== "running") return latest;
       return this.step(latest.id);
@@ -1698,7 +1686,6 @@ export class AgentWorkbench {
     const stoppedAfterModel = await this.stoppedTask(task.id);
     if (stoppedAfterModel) return stoppedAfterModel;
     if (turn.kind === "final") {
-      this.addEvent(task, "plan_step_completed", "Return a visible result", { status: "completed" });
       this.addEvent(task, "assistant_message", turn.message, turn.streamId ? { streamId: turn.streamId } : {});
       this.setStatus(task, "completed");
       await this.recordExperience(task);
@@ -1710,13 +1697,17 @@ export class AgentWorkbench {
       const stoppedBeforeTool = await this.stoppedTask(task.id);
       if (stoppedBeforeTool) return stoppedBeforeTool;
 
+      if (call.toolName === "plan_update") {
+        const result = await this.executeTool(task.id, call);
+        const latest = await this.requiredTask(task.id);
+        this.addToolResultEvent(latest, call, result);
+        await this.store.saveTask(latest);
+        Object.assign(task, latest);
+        continue;
+      }
+
       const assessment = (await this.toolRiskProvider?.assessTool(call)) ?? this.permissions.assess(call.toolName, call.args);
       const metadata = await this.describeToolCall(task, call, assessment);
-      this.addEvent(task, "plan_step_started", `Use ${call.toolName}`, {
-        toolCallId: call.id,
-        toolName: call.toolName,
-        riskCategory: assessment.category
-      });
       this.addEvent(task, "tool_requested", call.toolName, {
         toolCallId: call.id,
         toolName: call.toolName,
@@ -1747,11 +1738,6 @@ export class AgentWorkbench {
       const result = await this.executeTool(task.id, call);
       const latest = await this.requiredTask(task.id);
       this.addToolResultEvent(latest, call, result);
-      this.addEvent(latest, result.ok ? "plan_step_completed" : "plan_step_blocked", `${call.toolName}: ${result.ok ? "completed" : "blocked"}`, {
-        toolCallId: call.id,
-        toolName: call.toolName,
-        ok: result.ok
-      });
       await this.store.saveTask(latest);
       if (latest.status !== "running") return latest;
       Object.assign(task, latest);
@@ -1918,7 +1904,7 @@ export class AgentWorkbench {
       id,
       title,
       folderId: "default",
-      workRoot: findWorkspaceRoot(),
+      workRoot: defaultTaskWorkRoot(),
       status: "idle",
       createdAt: now,
       updatedAt: now,
@@ -1950,6 +1936,11 @@ export class AgentWorkbench {
     const controller = new AbortController();
     this.runningToolControllers.set(taskId, controller);
     try {
+      const managed = await this.executeManagedTool(task, call);
+      if (managed) {
+        await this.store.saveTask(task);
+        return managed;
+      }
       return await this.tools.execute(call, { signal: controller.signal, workRoot: task.workRoot });
     } finally {
       if (this.runningToolControllers.get(taskId) === controller) {
@@ -1958,8 +1949,193 @@ export class AgentWorkbench {
     }
   }
 
+  private async executeManagedTool(task: TaskDetail, call: ToolCall): Promise<ToolResult | undefined> {
+    if (!isManagedStateTool(call.toolName)) return undefined;
+    try {
+      switch (call.toolName) {
+        case "use_skill":
+          return await this.executeUseSkillTool(task, call);
+        case "user_memory_add":
+          return await this.executeMemoryAddTool(call, "user");
+        case "user_memory_edit":
+          return await this.executeMemoryEditTool(call, "user");
+        case "user_memory_delete":
+          return await this.executeMemoryDeleteTool(call, "user");
+        case "project_memory_add":
+          return await this.executeMemoryAddTool(call, "project", await this.folderForMemoryTool(task, call));
+        case "project_memory_edit":
+          return await this.executeMemoryEditTool(call, "project", await this.folderForMemoryTool(task, call));
+        case "project_memory_delete":
+          return await this.executeMemoryDeleteTool(call, "project", await this.folderForMemoryTool(task, call));
+        case "skill_create":
+          return await this.executeSkillCreateTool(call);
+        case "skill_edit":
+          return await this.executeSkillEditTool(call);
+        case "skill_delete":
+          return await this.executeSkillDeleteTool(call);
+        case "plan_update":
+          return this.executePlanUpdateTool(task, call);
+        default:
+          return undefined;
+      }
+    } catch (error) {
+      return managedToolResult(call, false, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private async executeUseSkillTool(task: TaskDetail, call: ToolCall): Promise<ToolResult> {
+    const skillId = String(call.args["skillId"] ?? call.args["name"] ?? call.args["title"] ?? "").trim();
+    if (!skillId) throw new Error("skillId or name is required.");
+    const skill = await this.contextAssembler.loadSkill(task.id, skillId);
+    this.addLoadedSkillEvents(task);
+    if (!skill) return managedToolResult(call, false, `Skill not found or unavailable: ${skillId}`);
+    return managedToolResult(
+      call,
+      true,
+      JSON.stringify({
+        skillId: skill.id,
+        title: skill.title,
+        status: skill.status,
+        body: skill.body.slice(0, 2400)
+      })
+    );
+  }
+
+  private async executeMemoryAddTool(
+    call: ToolCall,
+    scope: "user" | "project",
+    folder?: TaskFolderRecord
+  ): Promise<ToolResult> {
+    const content = normalizeMemoryEntry(String(call.args["content"] ?? ""));
+    if (!content) throw new Error("content is required.");
+    const section = typeof call.args["section"] === "string" ? call.args["section"] : undefined;
+    const before = scope === "project" ? await this.readMemoryDocument("project", requiredFolder(folder)) : await this.readMemoryDocument("user");
+    const updatedContent = appendMemoryEntry(before.content, content, section);
+    const after =
+      scope === "project"
+        ? await this.writeMemoryDocument("project", updatedContent, requiredFolder(folder))
+        : await this.writeMemoryDocument("user", updatedContent);
+    return managedToolResult(call, true, JSON.stringify(memoryToolOutput("added", after, content)));
+  }
+
+  private async executeMemoryEditTool(
+    call: ToolCall,
+    scope: "user" | "project",
+    folder?: TaskFolderRecord
+  ): Promise<ToolResult> {
+    const match = String(call.args["match"] ?? "").trim();
+    const replacement = normalizeMemoryEntry(String(call.args["replacement"] ?? ""));
+    if (!match) throw new Error("match is required.");
+    if (!replacement) throw new Error("replacement is required.");
+    const before = scope === "project" ? await this.readMemoryDocument("project", requiredFolder(folder)) : await this.readMemoryDocument("user");
+    const updatedContent = replaceMemoryEntry(before.content, match, replacement);
+    const after =
+      scope === "project"
+        ? await this.writeMemoryDocument("project", updatedContent, requiredFolder(folder))
+        : await this.writeMemoryDocument("user", updatedContent);
+    return managedToolResult(call, true, JSON.stringify(memoryToolOutput("edited", after, replacement)));
+  }
+
+  private async executeMemoryDeleteTool(
+    call: ToolCall,
+    scope: "user" | "project",
+    folder?: TaskFolderRecord
+  ): Promise<ToolResult> {
+    const match = String(call.args["match"] ?? "").trim();
+    if (!match) throw new Error("match is required.");
+    const before = scope === "project" ? await this.readMemoryDocument("project", requiredFolder(folder)) : await this.readMemoryDocument("user");
+    const updatedContent = deleteMemoryEntry(before.content, match);
+    const after =
+      scope === "project"
+        ? await this.writeMemoryDocument("project", updatedContent, requiredFolder(folder))
+        : await this.writeMemoryDocument("user", updatedContent);
+    return managedToolResult(call, true, JSON.stringify(memoryToolOutput("deleted", after, match)));
+  }
+
+  private async executeSkillCreateTool(call: ToolCall): Promise<ToolResult> {
+    const title = String(call.args["title"] ?? "").trim();
+    const body = String(call.args["body"] ?? "").trim();
+    if (!title) throw new Error("title is required.");
+    if (!body) throw new Error("body is required.");
+    const status = parseSkillStatus(call.args["status"]);
+    const skill = await this.createSkill({
+      title,
+      body,
+      status: status ?? "candidate",
+      applicability: {
+        description: String(call.args["description"] ?? `Tasks similar to: ${title}`),
+        requiredTools: stringsFromUnknown(call.args["requiredTools"]),
+        requiredContext: stringsFromUnknown(call.args["requiredContext"]),
+        exclusions: stringsFromUnknown(call.args["exclusions"]),
+        keywords: stringsFromUnknown(call.args["keywords"])
+      },
+      sourceMemoryIds: [],
+      relatedPatterns: []
+    });
+    return managedToolResult(call, true, JSON.stringify({ action: "created", skillId: skill.id, title: skill.title, status: skill.status }));
+  }
+
+  private async executeSkillDeleteTool(call: ToolCall): Promise<ToolResult> {
+    const skillId = String(call.args["skillId"] ?? "").trim();
+    const title = String(call.args["title"] ?? "").trim();
+    const skill = skillId ? await this.store.getSkill(skillId) : await this.findSkillByTitle(title);
+    if (!skill) throw new Error(skillId ? `Skill not found: ${skillId}` : `Skill not found by title: ${title}`);
+    await this.deleteSkill(skill.id);
+    return managedToolResult(call, true, JSON.stringify({ action: "deleted", skillId: skill.id, title: skill.title }));
+  }
+
+  private async executeSkillEditTool(call: ToolCall): Promise<ToolResult> {
+    const skillId = String(call.args["skillId"] ?? "").trim();
+    const title = String(call.args["title"] ?? "").trim();
+    const skill = skillId ? await this.store.getSkill(skillId) : await this.findSkillByTitle(title);
+    if (!skill) throw new Error(skillId ? `Skill not found: ${skillId}` : `Skill not found by title: ${title}`);
+    const status = parseSkillStatus(call.args["status"]);
+    const applicabilityPatch = {
+      ...(typeof call.args["description"] === "string" ? { description: String(call.args["description"]) } : {}),
+      ...(Array.isArray(call.args["requiredTools"]) ? { requiredTools: stringsFromUnknown(call.args["requiredTools"]) } : {}),
+      ...(Array.isArray(call.args["requiredContext"]) ? { requiredContext: stringsFromUnknown(call.args["requiredContext"]) } : {}),
+      ...(Array.isArray(call.args["exclusions"]) ? { exclusions: stringsFromUnknown(call.args["exclusions"]) } : {}),
+      ...(Array.isArray(call.args["keywords"]) ? { keywords: stringsFromUnknown(call.args["keywords"]) } : {})
+    };
+    const updated = await this.updateSkill(skill.id, {
+      ...(typeof call.args["newTitle"] === "string" ? { title: String(call.args["newTitle"]).trim() } : {}),
+      ...(typeof call.args["body"] === "string" ? { body: String(call.args["body"]).trim() } : {}),
+      ...(status ? { status } : {}),
+      ...(Object.keys(applicabilityPatch).length > 0 ? { applicability: applicabilityPatch } : {})
+    });
+    return managedToolResult(call, true, JSON.stringify({ action: "edited", skillId: updated.id, title: updated.title, status: updated.status }));
+  }
+
+  private executePlanUpdateTool(task: TaskDetail, call: ToolCall): ToolResult {
+    const status = parsePlanStatus(call.args["status"]);
+    const context = typeof call.args["context"] === "string" ? String(call.args["context"]).trim() : "";
+    const steps = planStepsFromUnknown(call.args["steps"]);
+    this.addEvent(task, "plan_revised", context || (status === "empty" || steps.length === 0 ? "Plan cleared" : "Plan updated"), {
+      status: status ?? (steps.length > 0 ? "running" : "empty"),
+      context,
+      steps
+    });
+    return managedToolResult(call, true, JSON.stringify({ action: "plan_updated", status: status ?? "running", stepCount: steps.length }));
+  }
+
+  private async findSkillByTitle(title: string): Promise<SkillRecord | undefined> {
+    if (!title.trim()) return undefined;
+    const normalized = title.trim().toLowerCase();
+    const skills = await this.store.listSkills();
+    return (
+      skills.find((skill) => skill.title.trim().toLowerCase() === normalized) ??
+      skills.find((skill) => skill.title.trim().toLowerCase().includes(normalized))
+    );
+  }
+
+  private async folderForMemoryTool(task: TaskDetail, call: ToolCall): Promise<TaskFolderRecord> {
+    const folderId = String(call.args["folderId"] ?? task.folderId ?? "default").trim() || "default";
+    return this.resolveTaskFolder(folderId);
+  }
+
   private async createCheckpointForTool(task: TaskDetail, call: ToolCall, assessment: RiskAssessment): Promise<TaskCheckpoint | undefined> {
     if (assessment.category !== "workspace_write" && assessment.category !== "destructive") return undefined;
+    if (isManagedStateTool(call.toolName)) return undefined;
     const now = nowIso();
     const checkpointId = createId("checkpoint");
     const files =
@@ -1969,7 +2145,7 @@ export class AgentWorkbench {
     const checkpoint: TaskCheckpoint = {
       id: checkpointId,
       taskId: task.id,
-      workRoot: task.workRoot || findWorkspaceRoot(),
+      workRoot: task.workRoot || defaultTaskWorkRoot(),
       toolCallId: call.id,
       toolName: call.toolName,
       reason: `${assessment.category}: ${call.toolName}`,
@@ -1995,15 +2171,15 @@ export class AgentWorkbench {
     inputPath: string
   ): Promise<{ files: TaskCheckpoint["files"]; truncated: boolean }> {
     if (!inputPath.trim()) return { files: [], truncated: false };
-    const fullPath = resolveTaskPath(task.workRoot || findWorkspaceRoot(), inputPath);
-    return { files: [await this.snapshotPath(checkpointId, task.workRoot || findWorkspaceRoot(), fullPath, 0)], truncated: false };
+    const fullPath = resolveTaskPath(task.workRoot || defaultTaskWorkRoot(), inputPath);
+    return { files: [await this.snapshotPath(checkpointId, task.workRoot || defaultTaskWorkRoot(), fullPath, 0)], truncated: false };
   }
 
   private async snapshotWorkRootTextFiles(
     checkpointId: string,
     task: TaskDetail
   ): Promise<{ files: TaskCheckpoint["files"]; truncated: boolean }> {
-    const root = resolve(task.workRoot || findWorkspaceRoot());
+    const root = resolve(task.workRoot || defaultTaskWorkRoot());
     const candidates = await collectCheckpointCandidates(root, 80, 2_000_000);
     const files = [];
     for (let index = 0; index < candidates.files.length; index += 1) {
@@ -2013,7 +2189,7 @@ export class AgentWorkbench {
   }
 
   private async snapshotPath(checkpointId: string, workRoot: string, fullPath: string, index: number): Promise<TaskCheckpoint["files"][number]> {
-    const root = resolve(workRoot || findWorkspaceRoot());
+    const root = resolve(workRoot || defaultTaskWorkRoot());
     const normalized = resolveTaskPath(root, fullPath);
     const relativePath = relative(root, normalized) || basename(normalized);
     const info = await stat(normalized).catch(() => null);
@@ -2041,7 +2217,7 @@ export class AgentWorkbench {
     const files = await this.previewCheckpointFiles(task, checkpoint, filePaths);
     const selected = this.filterCheckpointFiles(task, checkpoint, filePaths);
     for (const file of selected) {
-      const target = resolveTaskPath(checkpoint.workRoot || task.workRoot || findWorkspaceRoot(), file.path);
+      const target = resolveTaskPath(checkpoint.workRoot || task.workRoot || defaultTaskWorkRoot(), file.path);
       if (file.existed && file.snapshotPath) {
         await mkdir(dirname(target), { recursive: true });
         await copyFile(file.snapshotPath, target);
@@ -2072,7 +2248,7 @@ export class AgentWorkbench {
 
   private filterCheckpointFiles(task: TaskDetail, checkpoint: TaskCheckpoint, filePaths?: string[]): TaskCheckpoint["files"] {
     if (!filePaths || filePaths.length === 0) return checkpoint.files;
-    const root = resolve(checkpoint.workRoot || task.workRoot || findWorkspaceRoot());
+    const root = resolve(checkpoint.workRoot || task.workRoot || defaultTaskWorkRoot());
     const requested = new Set(
       filePaths.map((filePath) => {
         const normalized = resolveTaskPath(root, filePath);
@@ -2087,7 +2263,7 @@ export class AgentWorkbench {
   }
 
   private async previewCheckpointFiles(task: TaskDetail, checkpoint: TaskCheckpoint, filePaths?: string[]): Promise<TaskRollbackFileChange[]> {
-    const root = resolve(checkpoint.workRoot || task.workRoot || findWorkspaceRoot());
+    const root = resolve(checkpoint.workRoot || task.workRoot || defaultTaskWorkRoot());
     const selected = this.filterCheckpointFiles(task, checkpoint, filePaths);
     const changes: TaskRollbackFileChange[] = [];
     for (const file of selected) {
@@ -2161,7 +2337,7 @@ export class AgentWorkbench {
       riskCategory: assessment.category,
       argsPreview: previewArgs(call.args),
       workRoot: task.workRoot,
-      resolvedCwd: resolve(task.workRoot || findWorkspaceRoot(), String(call.args["cwd"] ?? ".")),
+      resolvedCwd: resolve(task.workRoot || defaultTaskWorkRoot(), String(call.args["cwd"] ?? ".")),
       ...inferBuiltInToolMetadata(call),
       ...providerMetadata
     };
@@ -2173,7 +2349,8 @@ export class AgentWorkbench {
       toolName: call.toolName,
       args: call.args,
       ok: result.ok,
-      output: result.output
+      output: result.output,
+      ...(call.toolName === "plan_update" ? { uiHidden: true } : {})
     });
     const toolEvent = task.events[task.events.length - 1]!;
     if (call.toolName === "web_search") {
@@ -2607,7 +2784,7 @@ function truncateCjkTitle(text: string, maxChars: number): string {
 
 function defaultTaskFolder(): TaskFolderRecord {
   const now = nowIso();
-  const rootPath = findWorkspaceRoot();
+  const rootPath = defaultTaskWorkRoot();
   return {
     id: "default",
     name: "Default",
@@ -2667,7 +2844,7 @@ function sanitizeFileName(fileName: string): string {
 
 function resolveTaskPath(workRoot: string, input: string): string {
   if (!input.trim()) throw new Error("Missing path.");
-  const resolvedRoot = resolve(workRoot || findWorkspaceRoot());
+  const resolvedRoot = resolve(workRoot || defaultTaskWorkRoot());
   const full = resolve(resolvedRoot, input);
   const compareRoot = process.platform === "win32" ? resolvedRoot.toLowerCase() : resolvedRoot;
   const compareFull = process.platform === "win32" ? full.toLowerCase() : full;
@@ -2917,6 +3094,147 @@ function compactMemoryMarkdown(content: string, charLimit: number, entryCharLimi
     return [line];
   });
   return { content: limitMemoryContent(lines.join("\n"), charLimit, entryCharLimit), removedLines };
+}
+
+function isManagedStateTool(toolName: string): boolean {
+  return (
+    toolName === "use_skill" ||
+    toolName === "user_memory_add" ||
+    toolName === "user_memory_edit" ||
+    toolName === "user_memory_delete" ||
+    toolName === "project_memory_add" ||
+    toolName === "project_memory_edit" ||
+    toolName === "project_memory_delete" ||
+    toolName === "skill_create" ||
+    toolName === "skill_edit" ||
+    toolName === "skill_delete" ||
+    toolName === "plan_update"
+  );
+}
+
+function managedToolResult(call: ToolCall, ok: boolean, output: string): ToolResult {
+  return {
+    id: createId("tool_result"),
+    toolCallId: call.id,
+    ok,
+    output,
+    createdAt: nowIso()
+  };
+}
+
+function requiredFolder(folder?: TaskFolderRecord): TaskFolderRecord {
+  if (!folder) throw new Error("A task folder is required for project memory tools.");
+  return folder;
+}
+
+function normalizeMemoryEntry(input: string): string {
+  return input
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/^\s*[-*]\s+/, "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sanitizeMemorySection(section?: string): string {
+  const cleaned = String(section ?? "").replace(/[#\r\n]/g, " ").replace(/\s+/g, " ").trim();
+  return cleaned || "Agent Notes";
+}
+
+function appendMemoryEntry(content: string, entry: string, section?: string): string {
+  const normalized = normalizeMemoryEntry(entry);
+  if (!normalized) throw new Error("Memory entry is empty.");
+  const bullet = `- ${normalized}`;
+  if (content.toLowerCase().includes(bullet.toLowerCase())) return content;
+  const heading = `## ${sanitizeMemorySection(section)}`;
+  const lines = content.replace(/\r\n/g, "\n").trimEnd().split("\n");
+  const headingIndex = lines.findIndex((line) => line.trim().toLowerCase() === heading.toLowerCase());
+  if (headingIndex < 0) {
+    return `${lines.join("\n")}\n\n${heading}\n${bullet}\n`;
+  }
+  let insertIndex = headingIndex + 1;
+  while (insertIndex < lines.length && lines[insertIndex]?.trim() === "") insertIndex += 1;
+  lines.splice(insertIndex, 0, bullet);
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function replaceMemoryEntry(content: string, match: string, replacement: string): string {
+  const target = match.trim();
+  const next = normalizeMemoryEntry(replacement);
+  if (!target) throw new Error("match is required.");
+  if (!next) throw new Error("replacement is empty.");
+  if (content.includes(target)) return `${content.replace(target, next).trimEnd()}\n`;
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const index = lines.findIndex((line) => line.toLowerCase().includes(target.toLowerCase()));
+  if (index < 0) throw new Error(`Memory entry not found: ${target}`);
+  const prefix = /^\s*[-*]\s+/.test(lines[index] ?? "") ? "- " : "";
+  lines[index] = `${prefix}${next}`;
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function deleteMemoryEntry(content: string, match: string): string {
+  const target = match.trim();
+  if (!target) throw new Error("match is required.");
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const filtered = lines.filter((line) => !line.toLowerCase().includes(target.toLowerCase()));
+  if (filtered.length !== lines.length) return `${filtered.join("\n").trimEnd()}\n`;
+  if (content.includes(target)) return `${content.replace(target, "").trimEnd()}\n`;
+  throw new Error(`Memory entry not found: ${target}`);
+}
+
+function memoryToolOutput(action: "added" | "edited" | "deleted", document: MemoryDocument, subject: string): Record<string, unknown> {
+  return {
+    action,
+    scope: document.scope,
+    fileName: document.fileName,
+    ...(document.folderId ? { folderId: document.folderId } : {}),
+    ...(document.workRoot ? { workRoot: document.workRoot } : {}),
+    subject,
+    charLimit: document.charLimit,
+    currentCharacters: document.content.length
+  };
+}
+
+function stringsFromUnknown(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => String(item).trim()).filter(Boolean))].slice(0, 24);
+}
+
+function parseSkillStatus(value: unknown): SkillRecord["status"] | undefined {
+  if (value === "candidate" || value === "active" || value === "suspended" || value === "retired") return value;
+  return undefined;
+}
+
+function parsePlanStatus(value: unknown): "empty" | "planning" | "running" | "blocked" | "completed" | undefined {
+  if (value === "empty" || value === "planning" || value === "running" || value === "blocked" || value === "completed") return value;
+  return undefined;
+}
+
+function planStepsFromUnknown(value: unknown): Array<{ id: string; title: string; status: "pending" | "running" | "completed" | "blocked"; detail?: string }> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+    .map((item, index) => {
+      const status = parseStepStatus(item["status"]);
+      const title = String(item["title"] ?? "").trim();
+      if (!title) return null;
+      const detail = typeof item["detail"] === "string" ? item["detail"].trim() : "";
+      return {
+        id: String(item["id"] ?? `plan_step_${index + 1}`),
+        title,
+        status,
+        ...(detail ? { detail } : {})
+      };
+    })
+    .filter((item): item is { id: string; title: string; status: "pending" | "running" | "completed" | "blocked"; detail?: string } => Boolean(item))
+    .slice(0, 12);
+}
+
+function parseStepStatus(value: unknown): "pending" | "running" | "completed" | "blocked" {
+  if (value === "running" || value === "completed" || value === "blocked") return value;
+  return "pending";
 }
 
 function cleanTags(tags: string[]): string[] {

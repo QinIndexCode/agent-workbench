@@ -462,8 +462,10 @@ function ContextAuditView({ language, summaries, cacheStats, task }: { language?
 }
 
 function derivePlanSteps(task: TaskDetail): Array<{ id: string; title: string; status: "pending" | "running" | "completed" | "blocked"; detail?: string }> {
-  const initial = task.events.find((event) => event.type === "plan_created");
+  const revised = [...task.events].reverse().find((event) => event.type === "plan_revised" && Array.isArray(event.payload["steps"]));
+  const initial = revised ?? task.events.find((event) => event.type === "plan_created");
   const rawSteps = Array.isArray(initial?.payload["steps"]) ? initial.payload["steps"] : [];
+  if (initial?.payload["status"] === "empty") return [];
   const steps: Array<{ id: string; title: string; status: "pending" | "running" | "completed" | "blocked"; detail?: string }> = rawSteps
     .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
     .map((item) => ({

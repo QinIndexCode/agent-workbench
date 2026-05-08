@@ -72,7 +72,7 @@ export class OpenAIModelClient implements ModelClient {
 
     const skillCall = turn.calls.find((call) => call.toolName === "use_skill");
     if (skillCall && this.contextAssembler) {
-      const skillId = String(skillCall.args["skillId"] ?? "");
+      const skillId = String(skillCall.args["skillId"] ?? skillCall.args["name"] ?? skillCall.args["title"] ?? "");
       const skill = await this.contextAssembler.loadSkill(task.id, skillId);
       if ((skill || skillRetryCount < 2) && skillRetryCount < 3) return this.nextWithSkillRetries(task, skillRetryCount + 1, stream);
     }
@@ -696,8 +696,148 @@ function toolDefinitions(): ModelToolDefinition[] {
         name: "use_skill",
         description: "Load a listed skill's full guidance into the next context. Use only for directly relevant skills.",
         parameters: strictObject({
-          skillId: { type: "string", description: "Skill ID from Available Skills" }
-        }, ["skillId"])
+          skillId: { type: "string", description: "Skill ID from Available Skills" },
+          name: { type: "string", description: "Skill title/name from Available Skills. Use when the user refers to a skill by name." }
+        }, [])
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "user_memory_add",
+        description: "Add a short durable global USER.md memory only when the user explicitly asks you to remember a stable preference or habit.",
+        parameters: strictObject({
+          content: { type: "string", description: "One concise memory entry. Do not include transient task output." },
+          section: { type: "string", description: "Optional USER.md section, such as Preferences or Long-term Constraints." }
+        }, ["content"])
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "user_memory_edit",
+        description: "Edit an existing global USER.md memory by matching a short exact phrase and replacing it.",
+        parameters: strictObject({
+          match: { type: "string", description: "Existing phrase or line to replace." },
+          replacement: { type: "string", description: "Replacement memory text." }
+        }, ["match", "replacement"])
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "user_memory_delete",
+        description: "Delete an existing global USER.md memory when the user asks to forget or remove it.",
+        parameters: strictObject({
+          match: { type: "string", description: "Phrase or line identifying the memory to remove." }
+        }, ["match"])
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "project_memory_add",
+        description: "Add a short durable project MEMORY.md fact for the current task folder. Use only for stable project facts, constraints, paths, or risks.",
+        parameters: strictObject({
+          content: { type: "string", description: "One concise project memory entry." },
+          section: { type: "string", description: "Optional MEMORY.md section, such as Key Facts or Open Risks." },
+          folderId: { type: "string", description: "Optional task folder id; defaults to the current task folder." }
+        }, ["content"])
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "project_memory_edit",
+        description: "Edit an existing project MEMORY.md entry in the current task folder.",
+        parameters: strictObject({
+          match: { type: "string", description: "Existing phrase or line to replace." },
+          replacement: { type: "string", description: "Replacement memory text." },
+          folderId: { type: "string", description: "Optional task folder id; defaults to the current task folder." }
+        }, ["match", "replacement"])
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "project_memory_delete",
+        description: "Delete an existing project MEMORY.md entry in the current task folder.",
+        parameters: strictObject({
+          match: { type: "string", description: "Phrase or line identifying the project memory to remove." },
+          folderId: { type: "string", description: "Optional task folder id; defaults to the current task folder." }
+        }, ["match"])
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "skill_create",
+        description: "Create a reusable skill draft only when the user explicitly asks to create a skill or after a stable reusable pattern has been approved.",
+        parameters: strictObject({
+          title: { type: "string" },
+          body: { type: "string", description: "Reusable method only. Do not include single-run outputs or full conversation logs." },
+          description: { type: "string", description: "Applicability description." },
+          requiredTools: { type: "array", items: { type: "string" } },
+          requiredContext: { type: "array", items: { type: "string" } },
+          exclusions: { type: "array", items: { type: "string" } },
+          keywords: { type: "array", items: { type: "string" } },
+          status: { type: "string", enum: ["candidate", "active", "suspended", "retired"] }
+        }, ["title", "body"])
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "skill_delete",
+        description: "Delete a saved skill by id or title when the user explicitly asks to remove it.",
+        parameters: strictObject({
+          skillId: { type: "string" },
+          title: { type: "string" }
+        }, [])
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "skill_edit",
+        description: "Edit a saved skill by id or title when the user explicitly asks to revise it.",
+        parameters: strictObject({
+          skillId: { type: "string" },
+          title: { type: "string", description: "Existing skill title if skillId is unknown." },
+          newTitle: { type: "string" },
+          body: { type: "string", description: "Reusable revised method only; no single-run outputs." },
+          description: { type: "string" },
+          requiredTools: { type: "array", items: { type: "string" } },
+          requiredContext: { type: "array", items: { type: "string" } },
+          exclusions: { type: "array", items: { type: "string" } },
+          keywords: { type: "array", items: { type: "string" } },
+          status: { type: "string", enum: ["candidate", "active", "suspended", "retired"] }
+        }, [])
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "plan_update",
+        description: "Update the side-panel task plan/progress when a task benefits from visible planning. Do not use for trivial tasks.",
+        parameters: strictObject({
+          context: { type: "string", description: "Short current plan context or why the plan changed." },
+          status: { type: "string", enum: ["empty", "planning", "running", "blocked", "completed"] },
+          steps: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                id: { type: "string" },
+                title: { type: "string" },
+                status: { type: "string", enum: ["pending", "running", "completed", "blocked"] },
+                detail: { type: "string" }
+              },
+              required: ["title", "status"]
+            }
+          }
+        }, [])
       }
     },
     {

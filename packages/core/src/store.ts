@@ -29,7 +29,7 @@ import type {
   WebSearchProviderConfig
 } from "@scc/shared";
 import { normalizeSkillRecord } from "./experience.js";
-import { findWorkspaceRoot } from "./workspace-root.js";
+import { defaultTaskWorkRoot } from "./workspace-root.js";
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -603,12 +603,12 @@ export function normalizeTaskDetail(task: TaskDetail): TaskDetail {
   return {
     ...task,
     folderId: task.folderId || "default",
-    workRoot: task.workRoot || findWorkspaceRoot()
+    workRoot: task.workRoot || defaultTaskWorkRoot()
   };
 }
 
 export function normalizeTaskFolderRecord(record: TaskFolderRecord): TaskFolderRecord {
-  const rootPath = record.rootPath?.trim() || findWorkspaceRoot();
+  const rootPath = record.rootPath?.trim() || defaultTaskWorkRoot();
   return {
     ...record,
     rootPath,

@@ -20,7 +20,6 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
   "task_rollback_completed",
   "task_rollback_failed",
   "plan_step_blocked",
-  "plan_revised",
   "web_search_result"
 ]);
 
@@ -40,6 +39,8 @@ export function Timeline({
   const timelineRef = useRef<HTMLDivElement>(null);
   const followBottomRef = useRef(true);
   const scrollFrameRef = useRef<number | null>(null);
+  const smoothScrollUntilRef = useRef(0);
+  const smoothScrollTimerRef = useRef<number | null>(null);
   const taskIdRef = useRef<string | null>(null);
   const [atBottom, setAtBottom] = useState(true);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -48,6 +49,7 @@ export function Timeline({
       buildTimelineItems(
         task?.events.filter((event) => {
         if (!visibleEventTypes.has(event.type)) return false;
+        if (event.type === "tool_result" && event.payload["uiHidden"] === true) return false;
         if (event.type !== "approval_pending") return true;
         const approvalId = String(event.payload["approvalId"] ?? "");
         return task.approvals.some((approval) => approval.id === approvalId && approval.status === "pending");
@@ -73,6 +75,14 @@ export function Timeline({
 
   const updateBottomState = useCallback((node: HTMLDivElement) => {
     const isAtBottom = getDistanceFromBottom(node) <= FOLLOW_BOTTOM_DISTANCE;
+    if (Date.now() < smoothScrollUntilRef.current) {
+      followBottomRef.current = true;
+      if (isAtBottom) {
+        smoothScrollUntilRef.current = 0;
+        setAtBottom(true);
+      }
+      return isAtBottom;
+    }
     if (!isAtBottom && scrollFrameRef.current !== null) {
       window.cancelAnimationFrame(scrollFrameRef.current);
       scrollFrameRef.current = null;
@@ -89,17 +99,22 @@ export function Timeline({
       window.cancelAnimationFrame(scrollFrameRef.current);
       scrollFrameRef.current = null;
     }
-    const apply = () => {
-      scrollElementTo(node, node.scrollHeight, behavior);
-      if (behavior === "auto") node.scrollTop = node.scrollHeight;
+    if (behavior === "smooth") {
+      smoothScrollUntilRef.current = Date.now() + 520;
+      if (smoothScrollTimerRef.current !== null) window.clearTimeout(smoothScrollTimerRef.current);
+      scrollElementTo(node, node.scrollHeight, "smooth");
       setAtBottom(true);
-    };
+      smoothScrollTimerRef.current = window.setTimeout(() => {
+        smoothScrollUntilRef.current = 0;
+        smoothScrollTimerRef.current = null;
+        if (followBottomRef.current && getDistanceFromBottom(node) <= FOLLOW_BOTTOM_DISTANCE) setAtBottom(true);
+      }, 540);
+      return;
+    }
     scrollFrameRef.current = window.requestAnimationFrame(() => {
-      apply();
-      scrollFrameRef.current = window.requestAnimationFrame(() => {
-        node.scrollTop = node.scrollHeight;
-        scrollFrameRef.current = null;
-      });
+      node.scrollTop = node.scrollHeight;
+      setAtBottom(true);
+      scrollFrameRef.current = null;
     });
   }, []);
 
@@ -130,6 +145,7 @@ export function Timeline({
   useEffect(() => {
     return () => {
       if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+      if (smoothScrollTimerRef.current !== null) window.clearTimeout(smoothScrollTimerRef.current);
     };
   }, []);
 

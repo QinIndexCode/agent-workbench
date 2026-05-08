@@ -20,7 +20,6 @@ import { TaskList } from "./components/TaskList.js";
 import { TaskThread } from "./components/TaskThread.js";
 import { WebSearchPanel } from "./components/WebSearchPanel.js";
 import type { ComposerMode, ComposerPermissionMode, PermissionPreset } from "./components/Composer.js";
-import { providerById } from "./llm-presets.js";
 import { useWorkbenchData } from "./useWorkbenchData.js";
 
 type ActiveView = "tasks" | "history" | "library" | "docs" | "settings";
@@ -48,22 +47,18 @@ export function App() {
   const theme = data.preferences?.theme ?? "dark";
   const engineStatus = data.backendHealthy === false ? "attention" : data.error ? "attention" : data.realtimeConnected ? "streaming" : "running";
   const activeProvider = data.modelProviders.find((provider) => provider.id === data.preferences?.activeModelProviderId) ?? data.modelProviders.find((provider) => provider.enabled);
-  const modelLabel = activeProvider?.defaultModelId || data.preferences?.defaultModel || "not configured";
+  const activeModel = activeProvider?.models.find((model) => model.id === activeProvider.defaultModelId) ?? activeProvider?.models[0];
+  const modelLabel = activeProvider && activeModel ? (activeModel.label || activeModel.id) : "not configured";
   const permissionPreset = getPermissionPreset(data.permissions);
   const permissionScopeLabel = formatPermissionPreset(permissionPreset, language);
   const hasCustomSnapshot = Boolean(data.preferences?.customPermissionSnapshot?.length);
-  const modelProvider = providerById(data.preferences?.llmProvider);
-  const modelOptions =
-    activeProvider?.models.map((model) => ({
+  const modelOptions = activeProvider
+    ? activeProvider.models.map((model) => ({
       icon: <ProviderBrandIcon className="providerBadgeInline" modelId={model.id} vendor={activeProvider.vendor} />,
       label: model.label || model.id,
       value: model.id
-    })) ??
-    modelProvider.models.map((model) => ({
-      icon: <ProviderBrandIcon className="providerBadgeInline" modelId={model.id} vendor={modelProvider.vendor} />,
-      label: model.id,
-      value: model.id
-    }));
+    }))
+    : [];
   const taskFolderOptions = data.taskFolders.length > 0
     ? data.taskFolders.map((folder) => ({
         label: folder.id === "default" || folder.isDefault ? getDefaultFolderLabel(language) : folder.name,

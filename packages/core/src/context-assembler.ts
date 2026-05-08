@@ -1,11 +1,11 @@
-import type { ConversationSummary, SkillRecord, TaskAttachment, TaskDetail, TaskEvent, ToolCall, UserPreferences } from "@scc/shared";
+import type { ConversationSummary, ModelProviderRecord, SkillRecord, TaskAttachment, TaskDetail, TaskEvent, ToolCall, UserPreferences } from "@scc/shared";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { findRelevantSkills } from "./experience.js";
 import { createId, nowIso } from "./ids.js";
 import type { WorkbenchStore } from "./store.js";
-import { findWorkspaceRoot } from "./workspace-root.js";
+import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
 
 export interface TokenBudget {
   maxTotal: number;
@@ -49,6 +49,12 @@ export class ContextAssembler {
     if (memoryFileLayer) {
       layers.push(memoryFileLayer);
       usedTokens += estimateTokens(memoryFileLayer);
+    }
+
+    const runtimeLayer = await this.buildRuntimeMetadataLayer(preferences);
+    if (runtimeLayer) {
+      layers.push(runtimeLayer);
+      usedTokens += estimateTokens(runtimeLayer);
     }
 
     const loadedSkills = this.loadedSkillPrompt(task.id);
@@ -139,7 +145,7 @@ export class ContextAssembler {
   async loadSkill(taskId: string, skillId: string): Promise<SkillRecord | undefined> {
     const session = this.sessionFor(taskId);
     if (session.loadedSkills.has(skillId) || session.loadCount >= 3) return undefined;
-    const skill = await this.store.getSkill(skillId);
+    const skill = await this.resolveSkillReference(skillId);
     if (!skill || skill.status !== "active") {
       if (skillId) session.unavailableSkills.add(skillId);
       session.loadCount += 1;
@@ -189,14 +195,22 @@ export class ContextAssembler {
 
   private async buildSkillMetaLayer(task: TaskDetail, preferences: UserPreferences): Promise<string> {
     if (!preferences.skillAutoInject) return "";
-    const skills = findRelevantSkills(task.title, await this.store.listSkills(), preferences.maxInjectedSkills);
+    const allSkills = (await this.store.listSkills())
+      .filter((skill) => skill.status === "active" || skill.status === "candidate")
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const relevant = findRelevantSkills(task.title, allSkills, preferences.maxInjectedSkills);
+    const skills = uniqueSkills([...relevant, ...allSkills]).slice(0, preferences.maxInjectedSkills);
     if (skills.length === 0) return "";
     return [
       "## Available Skills",
-      "Call use_skill(skillId) only when the skill is directly relevant and you need its full guidance.",
+      "Skill metadata is always safe to inspect. Call use_skill with skillId or name only when a skill is directly relevant and you need its full guidance.",
       ...skills.map((skill) => {
         const success = Math.round(skill.stats.successRate * 100);
-        return `- ${skill.id}: ${skill.title} (${success}% success)`;
+        return [
+          `- ${skill.id}: ${skill.title} (${skill.status}, ${success}% success)`,
+          `  applicability: ${skill.applicability.description}`,
+          skill.applicability.requiredTools.length > 0 ? `  tools: ${skill.applicability.requiredTools.join(", ")}` : ""
+        ].filter(Boolean).join("\n");
       })
     ].join("\n");
   }
@@ -207,10 +221,13 @@ export class ContextAssembler {
       `User preferred agent role: ${preferences.agentRole || "Pragmatic engineering assistant"}.`,
       `User preferred tone: ${preferences.agentTone || "balanced"}.`,
       `User preferred response detail: ${preferences.responseDetail || "normal"}.`,
-      "Choose the next action yourself based on the user's goal, available tools, permissions, and evidence.",
+      "Choose the next action yourself based on the user's goal, available tools, durable memory, skills, and evidence.",
       "Use tools when the environment must be observed. Do not invent host, file, network, or command results.",
+      "When a tool needs user approval, the application will ask the user; do not assume the current authorization state.",
       "Scripts, builds, tests, and command output are tool evidence for you to interpret; they are never task-completion judges.",
       "Do not emit fixed machine-readable wrappers, diagnostic files, or scripted review reports unless the user explicitly asks.",
+      "Use USER.md and MEMORY.md tools only for durable memories the user wants kept; do not store transient task outputs, secrets, or speculative guesses.",
+      "Use skill_create or skill_delete only when the user explicitly asks or when a reviewed reusable pattern is ready; normal task completion should create memory, not a skill.",
       "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
       "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
       "If you need a file but are unsure it exists, list or search first instead of guessing paths such as README.md.",
@@ -225,23 +242,70 @@ export class ContextAssembler {
     if (preferences.responseDetail === "brief") lines.push("Prefer concise answers unless the task requires detail.");
     if (preferences.responseDetail === "detailed") lines.push("Provide enough detail for a careful user to audit the reasoning and result.");
     lines.push(`User language preference: ${preferences.language}`);
-    lines.push(`Auto approval preference: ${preferences.autoApprove}`);
     return lines.join("\n");
   }
 
   private async buildMemoryFileLayer(task: TaskDetail): Promise<string> {
     const baseDir = memoryBaseDir();
-    const user = await readMemoryFile(resolve(baseDir, "USER.md"), 6000);
-    const project = task.workRoot
-      ? await readMemoryFile(resolve(baseDir, "projects", memoryPathHash(task.workRoot), "MEMORY.md"), 12000)
-      : "";
-    if (!user && !project) return "";
+    const user = await readMemoryFile(resolve(baseDir, "USER.md"), 6000, defaultUserMemoryContent());
+    const globalMemory = await readMemoryFile(resolve(baseDir, "MEMORY.md"), 12000, defaultGlobalMemoryContent());
+    const project = await readMemoryFile(
+      resolve(baseDir, "projects", memoryPathHash(task.workRoot || defaultTaskWorkRoot()), "MEMORY.md"),
+      12000,
+      defaultProjectMemoryContent(task.workRoot || defaultTaskWorkRoot())
+    );
     return [
       "## Stable Memory Files",
-      "These are durable, user-managed memory notes. Treat them as preferences and project context, not proof of current file contents.",
-      user ? `### USER.md\n${user}` : "",
-      project ? `### MEMORY.md\n${project}` : ""
+      "These are durable, user-managed memory notes. Treat them as preferences and project context, not proof of current file contents. Full files are injected up to their configured limits.",
+      `### Global USER.md\n${user}`,
+      `### Global MEMORY.md\n${globalMemory}`,
+      `### Project MEMORY.md\n${project}`
     ].filter(Boolean).join("\n\n");
+  }
+
+  private async buildRuntimeMetadataLayer(preferences: UserPreferences): Promise<string> {
+    const providers = await this.store.listModelProviders();
+    const active = findActiveModelProvider(providers, preferences.activeModelProviderId);
+    const mcpServers = await this.store.listMcpServers();
+    const integrations = await this.store.listIntegrationProviders();
+    const webSearchProviders = await this.store.listWebSearchProviders();
+    const lines = ["## Runtime Metadata"];
+    lines.push(
+      active
+        ? `Active model: ${active.label} / ${active.defaultModelId} (${active.vendor}, ${active.protocol}, context ${formatContextWindow(active)})`
+        : `Active model: ${preferences.llmProvider || "not configured"} / ${preferences.defaultModel || "not configured"}`
+    );
+    const fallbackProviderIds = preferences.modelRoute?.fallbackProviderIds ?? [];
+    if (fallbackProviderIds.length > 0) {
+      lines.push(`Model fallbacks configured: ${fallbackProviderIds.join(", ")}`);
+    }
+    lines.push(
+      webSearchProviders.some((provider) => provider.enabled)
+        ? `Web search providers: ${webSearchProviders.filter((provider) => provider.enabled).map((provider) => `${provider.label} (${provider.kind})`).join(", ")}`
+        : "Web search: built-in DuckDuckGo fallback is available; configured providers can improve quality."
+    );
+    if (mcpServers.length > 0) {
+      lines.push("MCP servers:");
+      for (const server of mcpServers.slice(0, 12)) lines.push(`- ${server.id}: ${server.label} (${server.transport}, ${server.enabled ? "enabled" : "disabled"})`);
+    }
+    if (integrations.length > 0) {
+      lines.push("External integrations:");
+      for (const integration of integrations.slice(0, 12)) lines.push(`- ${integration.id}: ${integration.label} (${integration.kind}, ${integration.status})`);
+    }
+    return lines.join("\n");
+  }
+
+  private async resolveSkillReference(reference: string): Promise<SkillRecord | undefined> {
+    const value = reference.trim();
+    if (!value) return undefined;
+    const byId = await this.store.getSkill(value);
+    if (byId) return byId;
+    const lowered = value.toLowerCase();
+    const skills = await this.store.listSkills();
+    return (
+      skills.find((skill) => skill.title.trim().toLowerCase() === lowered) ??
+      skills.find((skill) => skill.title.trim().toLowerCase().includes(lowered))
+    );
   }
 
   private buildWorkingFolderLayer(task: TaskDetail): string {
@@ -613,7 +677,16 @@ function trimTailToTokenBudget(text: string, maxTokens: number): string {
     if (used + token > budget) break;
     used += token;
   }
-  return text.slice(index + 1);
+  const start = index + 1;
+  let adjustedStart = start;
+  while (adjustedStart > 0 && start - adjustedStart < 96 && /\S/.test(text[adjustedStart - 1] ?? "")) {
+    adjustedStart -= 1;
+  }
+  if (adjustedStart !== start) {
+    const candidate = text.slice(adjustedStart);
+    if (estimateTokens(candidate) <= budget + 8) return candidate;
+  }
+  return text.slice(start);
 }
 
 function isFileContentInTracker(event: TaskEvent, tracker: FileStateTracker): boolean {
@@ -706,9 +779,78 @@ function hash(content: string): string {
   return value.toString(16);
 }
 
-async function readMemoryFile(path: string, maxChars: number): Promise<string> {
-  const content = await readFile(path, "utf8").catch(() => "");
+async function readMemoryFile(path: string, maxChars: number, fallback = ""): Promise<string> {
+  const content = await readFile(path, "utf8").catch(() => fallback);
   return content.trim().slice(0, maxChars);
+}
+
+function defaultUserMemoryContent(): string {
+  return [
+    "# USER.md",
+    "",
+    "Stable user preferences for SCC. Keep entries short, durable, and broadly useful.",
+    "",
+    "## Preferences",
+    "- Language: zh-CN unless the user asks otherwise.",
+    "- Style: direct, careful, evidence-backed.",
+    "",
+    "## Long-term Constraints",
+    "- Do not use scripted task quality gates or fixed report protocols to control ordinary agent work."
+  ].join("\n");
+}
+
+function defaultGlobalMemoryContent(): string {
+  return [
+    "# MEMORY.md",
+    "",
+    "Global durable memory shared across projects.",
+    "",
+    "## Key Facts",
+    "- Keep only stable facts that should apply across future SCC tasks.",
+    "",
+    "## Open Risks",
+    "- Add only cross-project risks that remain important."
+  ].join("\n");
+}
+
+function defaultProjectMemoryContent(workRoot: string): string {
+  return [
+    "# MEMORY.md",
+    "",
+    "Project durable memory scoped to the current task folder.",
+    `Work root: ${workRoot}`,
+    "",
+    "## Key Facts",
+    "- Keep only stable project facts, constraints, paths, and unresolved risks.",
+    "",
+    "## Open Risks",
+    "- Add risks only when they remain relevant across future tasks."
+  ].join("\n");
+}
+
+function uniqueSkills(skills: SkillRecord[]): SkillRecord[] {
+  const seen = new Set<string>();
+  return skills.filter((skill) => {
+    if (seen.has(skill.id)) return false;
+    seen.add(skill.id);
+    return true;
+  });
+}
+
+function findActiveModelProvider(providers: ModelProviderRecord[], activeId?: string): ModelProviderRecord | undefined {
+  return (
+    providers.find((provider) => provider.id === activeId && provider.enabled) ??
+    providers.find((provider) => provider.enabled && Boolean(provider.apiKeyRef)) ??
+    providers.find((provider) => provider.enabled)
+  );
+}
+
+function formatContextWindow(provider: ModelProviderRecord): string {
+  const model = provider.models.find((item) => item.id === provider.defaultModelId) ?? provider.models[0];
+  if (!model) return "unknown";
+  if (model.contextWindow >= 1_000_000) return `${Math.round(model.contextWindow / 10_000) / 100}M`;
+  if (model.contextWindow >= 1000) return `${Math.round(model.contextWindow / 1000)}K`;
+  return String(model.contextWindow);
 }
 
 function memoryPathHash(path: string): string {

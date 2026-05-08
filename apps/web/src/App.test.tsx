@@ -986,6 +986,8 @@ describe("Workbench components", () => {
     );
 
     render(<App />);
+    expect(await screen.findByText("Model: not configured")).toBeInTheDocument();
+    expect(screen.queryByText("gpt-5.4-mini")).not.toBeInTheDocument();
     fireEvent.click(await screen.findByText("Settings"));
     expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
     fireEvent.click(screen.getByText("Permissions"));

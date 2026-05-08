@@ -24,11 +24,30 @@ export class PermissionEngine {
     if (toolName === "read_file" || toolName === "search_files" || toolName === "list_files") {
       return { category: "workspace_read", reason: `${toolName} reads local project state.` };
     }
+    if (toolName === "use_skill") {
+      return { category: "workspace_read", reason: "use_skill reads a saved skill and loads its reusable guidance." };
+    }
     if (toolName === "knowledge_search") {
       return { category: "workspace_read", reason: "knowledge_search reads indexed local knowledge snippets." };
     }
     if (toolName === "edit_file") {
       return { category: "workspace_write", reason: "edit_file changes local project files." };
+    }
+    if (
+      toolName === "user_memory_add" ||
+      toolName === "user_memory_edit" ||
+      toolName === "user_memory_delete" ||
+      toolName === "project_memory_add" ||
+      toolName === "project_memory_edit" ||
+      toolName === "project_memory_delete" ||
+      toolName === "skill_create" ||
+      toolName === "skill_edit" ||
+      toolName === "skill_delete"
+    ) {
+      return { category: "workspace_write", reason: `${toolName} changes persistent local SCC memory or skills.` };
+    }
+    if (toolName === "plan_update") {
+      return { category: "workspace_read", reason: "plan_update changes visible task planning state without touching external resources." };
     }
     if (toolName === "web_search") {
       return { category: "network", reason: "web_search reaches external search providers and web pages." };

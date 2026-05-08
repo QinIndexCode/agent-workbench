@@ -5,6 +5,7 @@ dist-types
 .env.*
 dont_touch_(APIKEY).md
 data
+workspace
 coverage
 playwright-report
 test-results
