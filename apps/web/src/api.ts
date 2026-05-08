@@ -188,8 +188,8 @@ export const api = {
       body: JSON.stringify({ goal, ...(language ? { language } : {}), useLocalFallback })
     });
   },
-  createTask(goal: string, title: string, folderId?: string, attachmentIds: string[] = []): Promise<TaskDetail> {
-    return request("/api/tasks", { method: "POST", body: JSON.stringify({ goal, title, ...(folderId ? { folderId } : {}), ...(attachmentIds.length ? { attachmentIds } : {}) }) });
+  createTask(goal: string, title?: string, folderId?: string, attachmentIds: string[] = []): Promise<TaskDetail> {
+    return request("/api/tasks", { method: "POST", body: JSON.stringify({ goal, ...(title ? { title } : {}), ...(folderId ? { folderId } : {}), ...(attachmentIds.length ? { attachmentIds } : {}) }) });
   },
   listTasks(): Promise<TaskDetail[]> {
     return request("/api/tasks");

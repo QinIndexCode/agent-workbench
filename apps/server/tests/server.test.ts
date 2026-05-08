@@ -204,6 +204,22 @@ describe("server API", () => {
     await app.close();
   });
 
+  it("lets the backend create a task title when the client omits one", async () => {
+    const app = await createApp({
+      workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ConfiguredToolModelClient("Get-Process") })
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/tasks",
+      payload: { goal: "请检查新任务后端自动命名" }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().title).toContain("检查");
+    await app.close();
+  });
+
   it("generates local fallback titles and manages task folders", async () => {
     const app = await createApp({
       workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ConfiguredToolModelClient("Get-Process") })

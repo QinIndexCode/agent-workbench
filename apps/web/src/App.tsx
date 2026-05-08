@@ -395,14 +395,17 @@ export function App() {
   }
 
   async function submitNewTaskAction(goal: string, useLocalFallback: boolean, attachmentIds = pendingAttachments.map((attachment) => attachment.id)) {
-    try {
-      const title = await api.generateTaskTitle(goal, language, useLocalFallback);
-      setTitleIssue(null);
-      return api.createTask(goal, title.title, activeTaskFolderId, attachmentIds);
-    } catch (error) {
-      setTitleIssue({ goal, error: error instanceof Error ? error.message : String(error) });
-      throw error;
+    let title: string | undefined;
+    if (useLocalFallback) {
+      try {
+        title = (await api.generateTaskTitle(goal, language, true)).title;
+      } catch (error) {
+        setTitleIssue({ goal, error: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
     }
+    setTitleIssue(null);
+    return api.createTask(goal, title, activeTaskFolderId, attachmentIds);
   }
 
   function approve(approvalId: string, decision: ApprovalDecision) {

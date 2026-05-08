@@ -136,17 +136,27 @@ export class AgentWorkbench {
     this.onEvent = options.onEvent;
   }
 
-  async createTask(goal: string, title = createLocalTaskTitle(goal), folderId = "default", attachmentIds: string[] = []): Promise<TaskDetail> {
-    const task = await this.initializeTask(goal, title, folderId, attachmentIds);
+  async createTask(goal: string, title?: string, folderId = "default", attachmentIds: string[] = []): Promise<TaskDetail> {
+    const task = await this.initializeTask(goal, await this.resolveTaskTitle(goal, title), folderId, attachmentIds);
     return this.runTaskExclusive(task.id, () => this.step(task.id));
   }
 
-  async startTask(goal: string, title = createLocalTaskTitle(goal), folderId = "default", attachmentIds: string[] = []): Promise<TaskDetail> {
-    const task = await this.initializeTask(goal, title, folderId, attachmentIds);
+  async startTask(goal: string, title?: string, folderId = "default", attachmentIds: string[] = []): Promise<TaskDetail> {
+    const task = await this.initializeTask(goal, await this.resolveTaskTitle(goal, title), folderId, attachmentIds);
     void this.runTaskExclusive(task.id, () => this.step(task.id)).catch((error) => {
       void this.failBackgroundRun(task.id, error);
     });
     return task;
+  }
+
+  private async resolveTaskTitle(goal: string, title?: string, language?: string): Promise<string> {
+    const explicit = title?.trim();
+    if (explicit) return explicit;
+    try {
+      return (await this.generateTaskTitle({ goal, useLocalFallback: false, ...(language ? { language } : {}) })).title;
+    } catch {
+      return createLocalTaskTitle(goal, language);
+    }
   }
 
   private async initializeTask(goal: string, title: string, folderId: string, attachmentIds: string[] = []): Promise<TaskDetail> {
@@ -168,7 +178,7 @@ export class AgentWorkbench {
 
   async generateTaskTitle(input: TaskTitleRequest): Promise<TaskTitleResponse> {
     if (input.useLocalFallback) return { title: createLocalTaskTitle(input.goal, input.language), source: "local_fallback" };
-    const provider = await this.resolveModelProviderConfig();
+    const provider = await this.resolveModelProviderConfig("title_generation");
     if (!provider) throw new Error("No model provider is configured for title generation.");
     const title = normalizeGeneratedTaskTitle(await generateTaskTitleWithProvider(provider, input.goal, input.language), input.goal, input.language);
     return { title, source: "model" };
@@ -1512,7 +1522,7 @@ export class AgentWorkbench {
       createdAt: now
     };
     await this.store.saveIntegrationMessage(message);
-    const task = await this.initializeTask(text, createLocalTaskTitle(text), provider.defaultFolderId || "default");
+    const task = await this.initializeTask(text, await this.resolveTaskTitle(text), provider.defaultFolderId || "default");
     const linkedMessage: IntegrationMessage = { ...message, taskId: task.id };
     await this.store.saveIntegrationMessage(linkedMessage);
     const link: IntegrationTaskLink = {
@@ -2586,18 +2596,32 @@ export class AgentWorkbench {
     return created;
   }
 
-  private async resolveModelProviderConfig(): Promise<ResolvedModelProviderConfig | null> {
+  private async resolveModelProviderConfig(purpose?: "title_generation"): Promise<ResolvedModelProviderConfig | null> {
     const preferences = await this.store.getPreferences();
     const providers = (await this.store.listModelProviders()).filter((provider) => provider.enabled);
     const route = preferences.modelRoute;
-    const main =
-      providers.find((item) => item.id === route.mainProviderId) ??
-      providers.find((item) => item.id === preferences.activeModelProviderId) ??
-      providers.find((item) => item.apiKeyRef) ??
-      null;
-    if (!main) return null;
-    const resolved = main ? await this.resolveStoredProvider(main) : null;
-    if (!resolved) return null;
+    const preferredIds = [
+      purpose === "title_generation" ? route.titleGenerationProviderId : undefined,
+      route.mainProviderId,
+      preferences.activeModelProviderId
+    ].filter((id): id is string => Boolean(id));
+    const candidates = [
+      ...preferredIds.map((id) => providers.find((item) => item.id === id)).filter((item): item is ModelProviderRecord => Boolean(item)),
+      ...providers.filter((item) => item.apiKeyRef)
+    ];
+    const seen = new Set<string>();
+    let main: ModelProviderRecord | undefined;
+    let resolved: ResolvedModelProviderConfig | null = null;
+    for (const candidate of candidates) {
+      if (seen.has(candidate.id)) continue;
+      seen.add(candidate.id);
+      resolved = await this.resolveStoredProvider(candidate);
+      if (resolved) {
+        main = candidate;
+        break;
+      }
+    }
+    if (!main || !resolved) return null;
     const fallbackIds = [...new Set(route.fallbackProviderIds.filter((id) => id !== main.id))];
     const fallbacks = (
       await Promise.all(

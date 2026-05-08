@@ -330,7 +330,7 @@ export const TaskDetailSchema = z.object({
 export const CreateTaskRequestSchema = z
   .object({
     goal: z.string().min(1),
-    title: z.string().min(1),
+    title: z.string().min(1).optional(),
     folderId: z.string().min(1).optional(),
     attachmentIds: z.array(z.string().min(1)).default([])
   })

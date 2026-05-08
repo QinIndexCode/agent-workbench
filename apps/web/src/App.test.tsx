@@ -1057,9 +1057,9 @@ describe("Workbench components", () => {
       ]
     };
     let currentTasks: TaskDetail[] = [];
-    const createTask = vi.fn((goal: string, title: string) => {
-      currentTasks = [created];
-      return { ...created, title };
+    const createTask = vi.fn((goal: string, title?: string) => {
+      currentTasks = [{ ...created, title: title ?? "Check host" }];
+      return currentTasks[0];
     });
     const sendMessage = vi.fn();
 
@@ -1068,9 +1068,8 @@ describe("Workbench components", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url === "/api/task-folders") return jsonResponse([{ id: "default", name: "Default", sortOrder: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }]);
-        if (url === "/api/tasks/title" && init?.method === "POST") return jsonResponse({ title: "Check host", source: "model" });
         if (url === "/api/tasks" && init?.method === "POST") {
-          const body = JSON.parse(String(init.body)) as { goal: string; title: string };
+          const body = JSON.parse(String(init.body)) as { goal: string; title?: string };
           return jsonResponse(createTask(body.goal, body.title));
         }
         if (url === "/api/tasks") return jsonResponse(currentTasks);
@@ -1152,7 +1151,7 @@ describe("Workbench components", () => {
     fireEvent.click(screen.getByLabelText("Send"));
 
     expect(await screen.findByText("Reads host state")).toBeInTheDocument();
-    expect(createTask).toHaveBeenCalledWith("check host", "Check host");
+    expect(createTask).toHaveBeenCalledWith("check host", undefined);
     fireEvent.click(screen.getByText("Allow once"));
     await waitFor(() => expect(screen.getByText("Top process: node")).toBeInTheDocument());
 

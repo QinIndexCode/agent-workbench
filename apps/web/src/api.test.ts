@@ -21,6 +21,12 @@ describe("api client", () => {
       expect.objectContaining({ method: "POST", body: JSON.stringify({ goal: "hello", title: "Greeting" }) })
     );
 
+    await api.createTask("hello");
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/tasks",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ goal: "hello" }) })
+    );
+
     await api.generateTaskTitle("hello", "en-US");
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/tasks/title",

@@ -485,6 +485,37 @@ describe("Task title generation", () => {
     expect(createLocalTaskTitle("現在のプロジェクト構造を確認して改善案を出して", "ja-JP")).toContain("プロジェクト");
     expect(createLocalTaskTitle("현재 프로젝트 구조를 점검하고 개선안을 정리해줘", "ko-KR")).toContain("프로젝트");
   });
+
+  it("uses the configured model provider when a new task omits the title", async () => {
+    const titleServer = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ choices: [{ message: { content: "后端智能命名检查" } }] }));
+    });
+    await new Promise<void>((resolve) => titleServer.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = titleServer.address() as AddressInfo;
+      const store = new InMemoryWorkbenchStore();
+      const workbench = new AgentWorkbench({ store, model: new StreamingFinalModel() });
+      await workbench.createModelProvider({
+        vendor: "custom",
+        label: "Title provider",
+        protocol: "openai_compatible",
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: "test-title-key",
+        models: [{ id: "title-model", label: "title-model", contextWindow: 128000, supportsTools: true, supportsThinking: false }],
+        defaultModelId: "title-model",
+        enabled: true,
+        makeActive: true
+      });
+
+      const task = await workbench.createTask("请检查新任务建立后的后端自动命名流程");
+
+      expect(task.title).toBe("后端智能命名检查");
+      expect(task.status).toBe("completed");
+    } finally {
+      await new Promise<void>((resolve) => titleServer.close(() => resolve()));
+    }
+  });
 });
 
 class StubToolExecutor {
