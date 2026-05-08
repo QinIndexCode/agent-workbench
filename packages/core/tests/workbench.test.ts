@@ -544,7 +544,7 @@ describe("Task title generation", () => {
 });
 
 describe("Tool surface selection", () => {
-  it("keeps greetings tool-free and tool inventory requests on a safe read-only surface", () => {
+  it("keeps greetings tool-free, tool inventory requests read-only, and build requests writable", () => {
     const directTask: TaskDetail = {
       id: "task_direct_chat",
       title: "你好",
@@ -565,10 +565,29 @@ describe("Tool surface selection", () => {
       pendingGuidance: [],
       events: [{ id: "event_inventory", taskId: "task_tool_inventory", type: "user_message", createdAt: nowIso(), summary: "测试所有你能调用的工具", payload: {} }]
     };
+    const buildTask: TaskDetail = {
+      id: "task_build_blog",
+      title: "构建博客页面",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [{
+        id: "event_build",
+        taskId: "task_build_blog",
+        type: "user_message",
+        createdAt: nowIso(),
+        summary: "帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑",
+        payload: {}
+      }]
+    };
 
     expect(selectModelToolsForTask(directTask)).toHaveLength(0);
     const toolNames = selectModelToolsForTask(inventoryTask).map((tool) => tool.function.name);
     expect(toolNames).toEqual(["read_file", "search_files", "list_files", "web_search", "knowledge_search"]);
+    expect(selectModelToolsForTask(buildTask).some((tool) => tool.function.name === "write_file")).toBe(true);
+    expect(selectModelToolsForTask(buildTask).some((tool) => tool.function.name === "edit_file")).toBe(true);
   });
 });
 

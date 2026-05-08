@@ -75,7 +75,12 @@ function isMemorySkillAdminRequest(text: string): boolean {
 
 function isCodeChangeRequest(text: string): boolean {
   const normalized = normalizeIntentText(text);
-  return /(实现|修复|修改|优化|重构|编辑|写入|创建文件|删除文件|提交|推送|运行测试|跑测试|implement|fix|patch|refactor|edit|write|commit|push|run tests?)/iu.test(normalized);
+  if (/(实现|修复|修改|优化|重构|编辑|写入|创建文件|删除文件|提交|推送|运行测试|跑测试|implement|fix|patch|refactor|edit|write|commit|push|run tests?)/iu.test(normalized)) {
+    return true;
+  }
+  const buildVerb = /(编写|搭建|构建|开发|制作|生成|新建|scaffold|build|create|generate|develop|code)/iu.test(normalized);
+  const codeObject = /(文件|代码|项目|页面|博客|网站|应用|组件|界面|前端|后端|react|vue|vite|next|html|css|js|ts|typescript|javascript|node)/iu.test(normalized);
+  return buildVerb && codeObject;
 }
 
 function isReadOnlyEvidenceRequest(text: string): boolean {
