@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { findRelevantSkills } from "./experience.js";
 import { createId, nowIso } from "./ids.js";
 import type { WorkbenchStore } from "./store.js";
+import { classifyTaskIntent, isLeanContextIntent, isTrivialUserMessage } from "./task-intent.js";
 import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
 
 export interface TokenBudget {
@@ -35,6 +36,8 @@ export class ContextAssembler {
 
   async assemble(task: TaskDetail, budget?: Partial<TokenBudget>): Promise<AssembledContext> {
     const preferences = await this.store.getPreferences();
+    const intent = classifyTaskIntent(task);
+    const leanContext = isLeanContextIntent(intent);
     const maxTotal = budget?.maxTotal ?? preferences.maxTokensPerRequest;
     const reservedForResponse = budget?.reservedForResponse ?? Math.min(16000, Math.round(maxTotal * 0.15));
     const tokenBudget = { maxTotal, reservedForResponse };
@@ -45,19 +48,19 @@ export class ContextAssembler {
     layers.push(systemLayer);
     usedTokens += estimateTokens(systemLayer);
 
-    const memoryFileLayer = await this.buildMemoryFileLayer(task);
+    const memoryFileLayer = leanContext ? "" : await this.buildMemoryFileLayer(task);
     if (memoryFileLayer) {
       layers.push(memoryFileLayer);
       usedTokens += estimateTokens(memoryFileLayer);
     }
 
-    const runtimeLayer = await this.buildRuntimeMetadataLayer(preferences);
+    const runtimeLayer = leanContext ? "" : await this.buildRuntimeMetadataLayer(preferences);
     if (runtimeLayer) {
       layers.push(runtimeLayer);
       usedTokens += estimateTokens(runtimeLayer);
     }
 
-    const loadedSkills = this.loadedSkillPrompt(task.id);
+    const loadedSkills = leanContext ? "" : this.loadedSkillPrompt(task.id);
     if (loadedSkills) {
       layers.push(loadedSkills);
       usedTokens += estimateTokens(loadedSkills);
@@ -67,33 +70,39 @@ export class ContextAssembler {
     layers.push(workingFolderLayer);
     usedTokens += estimateTokens(workingFolderLayer);
 
+    const currentTurnLayer = this.buildCurrentTurnLayer(task);
+    if (currentTurnLayer) {
+      layers.push(currentTurnLayer);
+      usedTokens += estimateTokens(currentTurnLayer);
+    }
+
     const continuityLayer = this.buildTaskContinuityLayer(task);
     layers.push(continuityLayer);
     usedTokens += estimateTokens(continuityLayer);
 
-    const skillLayer = await this.buildSkillMetaLayer(task, preferences);
+    const skillLayer = leanContext ? "" : await this.buildSkillMetaLayer(task, preferences);
     if (skillLayer) {
       layers.push(skillLayer);
       usedTokens += estimateTokens(skillLayer);
     }
 
-    const projectLayer = await this.buildProjectLayer(task);
+    const projectLayer = leanContext ? "" : await this.buildProjectLayer(task);
     if (projectLayer) {
       layers.push(projectLayer);
       usedTokens += estimateTokens(projectLayer);
     }
 
-    const attachmentLayer = await this.buildAttachmentLayer(task.id);
+    const attachmentLayer = leanContext ? "" : await this.buildAttachmentLayer(task.id);
     if (attachmentLayer) {
       layers.push(attachmentLayer);
       usedTokens += estimateTokens(attachmentLayer);
     }
 
     const tracker = this.getFileStateTracker(task.id);
-    const fileLayer = tracker.buildFileStateTable();
+    const fileLayer = leanContext ? "" : tracker.buildFileStateTable();
     const fileTokens = estimateTokens(fileLayer);
     let fileLayerIncluded = false;
-    if (fileLayer && usedTokens + fileTokens < tokenBudget.maxTotal * 0.45) {
+    if (fileLayer && usedTokens + fileTokens < tokenBudget.maxTotal * 0.2) {
       layers.push(fileLayer);
       usedTokens += fileTokens;
       fileLayerIncluded = true;
@@ -103,7 +112,7 @@ export class ContextAssembler {
       .reverse()
       .find((event) => event.type === "context_overflow_recovered" || event.type === "conversation_summary_created");
     const forceSummary = latestContextControlEvent?.type === "context_overflow_recovered";
-    const summary = await this.ensureConversationSummary(task, {
+    const summary = leanContext ? undefined : await this.ensureConversationSummary(task, {
       force: forceSummary,
       tokenBudget,
       usedBefore: usedTokens
@@ -127,9 +136,9 @@ export class ContextAssembler {
         `Tool root: ${task.workRoot || "(default workbench root)"}`,
         `Task folder ID: ${task.folderId || "default"}`
       ].join("\n"),
+      currentTurnLayer,
       continuityLayer,
       buildRecentUserContextLayer(task, summary?.rangeEndEventId),
-      ...(summary ? [`## Conversation Summary\n${summary.summary}`] : [])
     ].filter(Boolean);
     const input = trimMiddleToTokenBudget(rawInput, inputBudget, protectedLayers);
     return {
@@ -241,6 +250,8 @@ export class ContextAssembler {
       "Use USER.md and MEMORY.md tools only for durable memories the user wants kept; do not store transient task outputs, secrets, or speculative guesses.",
       "Use skill_create or skill_delete only when the user explicitly asks or when a reviewed reusable pattern is ready; normal task completion should create memory, not a skill.",
       "When using side-effect-free state tools such as plan_update or use_skill, do not narrate the tool mechanics, tool JSON, or success status to the user; continue with the actual task.",
+      "For greetings, thanks, simple chat, and capability questions, answer directly without calling tools or loading more context.",
+      "When asked to test or list tools, treat it as a safe capability check; do not create files, edit memory, edit skills, or run persistent side-effect tools unless the user explicitly authorizes that scope.",
       "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
       "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
       "If you need a file but are unsure it exists, list or search first instead of guessing paths such as README.md.",
@@ -330,19 +341,28 @@ export class ContextAssembler {
     ].join("\n");
   }
 
+  private buildCurrentTurnLayer(task: TaskDetail): string {
+    const latestUser = latestUserEvent(task);
+    if (!latestUser) return "";
+    return [
+      "## Current Turn",
+      `Latest user request: ${truncate(latestUser.summary, 2200)}`,
+      "Treat this as the active objective. Earlier messages are background unless this request explicitly depends on them."
+    ].join("\n");
+  }
+
   private buildTaskContinuityLayer(task: TaskDetail): string {
     const firstUser = task.events.find((event) => event.type === "user_message" && !event.reverted);
-    const latestUser = [...task.events].reverse().find((event) =>
-      (event.type === "user_message" || event.type === "guidance_pending" || event.type === "guidance_consumed") && !event.reverted
-    );
+    const latestUser = latestUserEvent(task);
     const latestPlan = [...task.events].reverse().find((event) => event.type.startsWith("plan_") && !event.reverted);
+    const currentGoalIsOriginal = Boolean(firstUser && latestUser && firstUser.id === latestUser.id && !isTrivialUserMessage(firstUser.summary));
     return [
       "## Active Task Continuity",
       `Task ID: ${task.id}`,
       `Task title: ${task.title}`,
       `Task status: ${task.status}`,
       latestUser && latestUser.id !== firstUser?.id ? `Latest user constraint: ${truncate(latestUser.summary, 1800)}` : "",
-      firstUser ? `Original user goal: ${truncate(firstUser.summary, 900)}` : "",
+      currentGoalIsOriginal ? `Original user goal: ${truncate(firstUser!.summary, 900)}` : "",
       latestPlan ? `Latest visible plan state: ${truncate(latestPlan.summary, 1000)}` : "",
       "Do not restart the task or reread already summarized files unless fresh evidence is needed."
     ].filter(Boolean).join("\n");
@@ -378,17 +398,17 @@ export class ContextAssembler {
       ? Math.max(1, options.tokenBudget.maxTotal - options.tokenBudget.reservedForResponse)
       : Number.POSITIVE_INFINITY;
     const historyPressure = estimateEventsForSummary(visibleEvents) + (options.usedBefore ?? 0);
-    const highPressure = historyPressure > maxPromptInput * 0.7;
-    const lowBudgetPressure = Boolean(options.tokenBudget && options.tokenBudget.maxTotal <= 3000 && visibleEvents.length >= 28);
+    const highPressure = historyPressure > maxPromptInput * 0.9;
+    const lowBudgetPressure = Boolean(options.tokenBudget && options.tokenBudget.maxTotal <= 3000 && visibleEvents.length >= 60);
     if (!options.force && !highPressure && !lowBudgetPressure) return latest;
     const latestCoveredIndex = latest ? visibleEvents.findIndex((event) => event.id === latest.rangeEndEventId) : -1;
-    if (!options.force && latest && !highPressure && !lowBudgetPressure && visibleEvents.length - latestCoveredIndex < 30) return latest;
+    if (!options.force && latest && !highPressure && !lowBudgetPressure && visibleEvents.length - latestCoveredIndex < 60) return latest;
     const startIndex = latestCoveredIndex >= 0 ? latestCoveredIndex + 1 : 0;
     const keepRecent = options.force ? 6 : highPressure || lowBudgetPressure ? 12 : 18;
     const endIndex = Math.max(startIndex, visibleEvents.length - keepRecent);
     const slice = visibleEvents.slice(startIndex, endIndex);
     if (slice.length < (options.force || highPressure || lowBudgetPressure ? 1 : 12)) return latest;
-    const summaryText = buildExtractiveConversationSummary(slice);
+    const summaryText = buildRollingConversationSummary(task, slice);
     const now = nowIso();
     const retainedFacts = buildRetainedFacts(task, slice);
     const summary: ConversationSummary = {
@@ -396,7 +416,7 @@ export class ContextAssembler {
       taskId: task.id,
       rangeStartEventId: slice[0]!.id,
       rangeEndEventId: slice.at(-1)!.id,
-      summary: latest ? `${latest.summary}\n\n${summaryText}` : summaryText,
+      summary: summaryText,
       tokenEstimate: estimateTokens(summaryText),
       reason: options.force ? "context_overflow_retry" : highPressure || lowBudgetPressure ? "token_pressure" : "event_window",
       retainedFacts,
@@ -444,8 +464,8 @@ export interface FileState {
 
 export class FileStateTracker {
   private states = new Map<string, FileState>();
-  private readonly maxFiles = 20;
-  private readonly maxContentLength = 12000;
+  private readonly maxFiles = 8;
+  private readonly maxContentLength = 6000;
 
   updateFromToolResult(event: TaskEvent): void {
     if (event.type !== "tool_result") return;
@@ -626,30 +646,36 @@ function formatAttachmentForContext(attachment: TaskAttachment): string {
   return `- ${attachment.id}: ${attachment.fileName} (${attachment.kind}, ${attachment.mimeType}, ${attachment.size} bytes, hash ${attachment.contentHash})${preview}`;
 }
 
-function buildExtractiveConversationSummary(events: TaskEvent[]): string {
+function buildRollingConversationSummary(task: TaskDetail, events: TaskEvent[]): string {
+  const latestUser = latestUserEvent(task);
   const lines = events
     .map((event) => formatEvent(event))
     .filter(Boolean)
     .filter((line) => !line.includes("UI preview truncated"))
+    .filter((line) => !isTrivialHistoryLine(line))
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter(Boolean);
-  const compact = lines.slice(0, 32).map((line) => `- ${line.slice(0, 800)}`).join("\n");
+  const compact = lines.slice(-24).map((line) => `- ${line.slice(0, 700)}`).join("\n");
   return [
     "Auditable model context summary. This is for model continuity only; it is not the user-visible transcript.",
-    "Retain durable goals, decisions, constraints, file-state conclusions, and tool evidence references. Prefer fresh tool evidence when exact file contents or host state matter.",
+    latestUser ? `Current objective: ${truncate(latestUser.summary, 1000)}` : "",
+    "Retain decisions, constraints, file-state conclusions, and tool evidence references. Prefer fresh tool evidence when exact file contents or host state matter.",
+    "Earlier event digest:",
     compact
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function buildRetainedFacts(task: TaskDetail, summarizedEvents: TaskEvent[]): string[] {
   const facts = new Set<string>();
   const firstUser = task.events.find((event) => event.type === "user_message");
-  if (firstUser) facts.add(`Original goal: ${truncate(firstUser.summary, 600)}`);
+  const latestUser = latestUserEvent(task);
+  if (latestUser) facts.add(`Current user request: ${truncate(latestUser.summary, 600)}`);
+  if (firstUser && latestUser?.id === firstUser.id && !isTrivialUserMessage(firstUser.summary)) {
+    facts.add(`Original goal: ${truncate(firstUser.summary, 600)}`);
+  }
   if (task.workRoot) facts.add(`Work root: ${task.workRoot}`);
   const latestGuidance = [...task.events].reverse().find((event) => event.type === "guidance_pending" || event.type === "guidance_consumed");
   if (latestGuidance) facts.add(`Latest guidance: ${truncate(latestGuidance.summary, 300)}`);
-  const latestUser = [...task.events].reverse().find((event) => event.type === "user_message" && !event.reverted);
-  if (latestUser) facts.add(`Latest user message: ${truncate(latestUser.summary, 600)}`);
   const latestPlan = [...task.events].reverse().find((event) => event.type.startsWith("plan_") && !event.reverted);
   if (latestPlan) facts.add(`Latest plan state: ${truncate(latestPlan.summary, 300)}`);
   const tools = summarizedEvents
@@ -660,6 +686,18 @@ function buildRetainedFacts(task: TaskDetail, summarizedEvents: TaskEvent[]): st
   const blocked = [...task.events].reverse().find((event) => event.type === "plan_step_blocked");
   if (blocked) facts.add(`Latest blocked step: ${truncate(blocked.summary, 160)}`);
   return [...facts];
+}
+
+function latestUserEvent(task: TaskDetail): TaskEvent | undefined {
+  return [...task.events].reverse().find((event) =>
+    (event.type === "user_message" || event.type === "guidance_pending" || event.type === "guidance_consumed") && !event.reverted
+  );
+}
+
+function isTrivialHistoryLine(line: string): boolean {
+  const userPrefix = "**User**:";
+  if (!line.startsWith(userPrefix)) return false;
+  return isTrivialUserMessage(line.slice(userPrefix.length));
 }
 
 function formatToolArgsForContext(args: unknown): string {
@@ -756,7 +794,7 @@ function trimMiddleToTokenBudget(text: string, maxTokens: number, protectedBlock
     return truncateToTokenBudget(block, protectedBlockBudget);
   }).join("\n\n");
   const contentBudget = Math.max(20, maxTokens - estimateTokens(notice) - estimateTokens(protectedText));
-  const headBudget = Math.max(10, Math.floor(contentBudget * 0.58));
+  const headBudget = Math.max(10, Math.floor(contentBudget * 0.25));
   const tailBudget = Math.max(10, contentBudget - headBudget);
   const head = trimHeadToTokenBudget(remainingText.trim(), headBudget);
   const tail = trimTailToTokenBudget(remainingText.trim(), tailBudget);

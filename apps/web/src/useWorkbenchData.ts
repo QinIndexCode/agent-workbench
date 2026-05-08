@@ -114,30 +114,10 @@ export function useWorkbenchData(): WorkbenchData {
   const wsEventQueueRef = useRef<TaskEvent[]>([]);
   const wsFlushTimerRef = useRef<number | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const backgroundPollRef = useRef(0);
 
   async function refresh(nextId?: string | null) {
-    const [
-      list,
-      nextTaskFolders,
-      nextMemories,
-      nextPatterns,
-      nextSkills,
-      nextSkillConflicts,
-      nextSkillCurator,
-      nextSkillDuplicates,
-      nextPermissions,
-      nextPreferences,
-      nextReflections,
-      nextProjectMemories,
-      nextKnowledgeItems,
-      nextPromptCacheStats,
-      nextIntegrations,
-      nextModelProviders,
-      nextMcpServers,
-      nextMcpTools,
-      nextScheduledTasks,
-      nextWebSearchProviders
-    ] = await Promise.all([
+    const results = await Promise.allSettled([
       api.listTasks(),
       api.listTaskFolders(),
       api.listTaskMemories(),
@@ -159,22 +139,29 @@ export function useWorkbenchData(): WorkbenchData {
       api.listScheduledTasks(),
       api.listWebSearchProviders()
     ]);
+    const list = settledValue<TaskDetail[]>(results[0]) ?? [];
+    const nextTaskFolders = settledValue<TaskFolderRecord[]>(results[1]) ?? [];
+    const nextMemories = settledValue<TaskMemory[]>(results[2]) ?? [];
+    const nextPatterns = settledValue<PatternRecord[]>(results[3]) ?? [];
+    const nextSkills = settledValue<SkillRecord[]>(results[4]) ?? [];
+    const nextSkillConflicts = settledValue<SkillConflict[]>(results[5]) ?? [];
+    const nextSkillCurator = settledValue<SkillCuratorItem[]>(results[6]) ?? [];
+    const nextSkillDuplicates = settledValue<SkillDuplicateGroup[]>(results[7]) ?? [];
+    const nextPermissions = settledValue<GlobalPermissionGrant[]>(results[8]) ?? [];
+    const nextPreferences = settledValue<UserPreferences>(results[9]) ?? null;
+    const nextReflections = settledValue<ReflectionSession[]>(results[10]) ?? [];
+    const nextProjectMemories = settledValue<ProjectMemory[]>(results[11]) ?? [];
+    const nextKnowledgeItems = settledValue<KnowledgeItem[]>(results[12]) ?? [];
+    const nextPromptCacheStats = settledValue<PromptCacheStats[]>(results[13]) ?? [];
+    const nextIntegrations = settledValue<IntegrationProviderConfig[]>(results[14]) ?? [];
+    const nextModelProviders = settledValue<ModelProviderRecord[]>(results[15]) ?? [];
+    const nextMcpServers = settledValue<Array<McpServerConfig & { status: McpServerStatus }>>(results[16]) ?? [];
+    const nextMcpTools = settledValue<McpToolSummary[]>(results[17]) ?? [];
+    const nextScheduledTasks = settledValue<ScheduledTask[]>(results[18]) ?? [];
+    const nextWebSearchProviders = settledValue<WebSearchProviderConfig[]>(results[19]) ?? [];
     setTasks(list);
     setTaskFolders(nextTaskFolders);
-    const hasExplicitNext = nextId !== undefined;
-    const preferredId = hasExplicitNext ? nextId : selectedIdRef.current;
-    const preferredExists = preferredId ? list.some((task) => task.id === preferredId) : false;
-    const id = preferredExists ? preferredId : newTaskModeRef.current && !hasExplicitNext ? null : list[0]?.id ?? null;
-    selectedIdRef.current = id;
-    setSelectedId(id);
-    if (id) {
-      const [nextSelected, nextTranscript] = await Promise.all([api.getTask(id), api.listTaskTranscript(id)]);
-      setSelected(nextSelected);
-      setSelectedTranscript(nextTranscript);
-    } else {
-      setSelected(null);
-      setSelectedTranscript([]);
-    }
+    await syncSelectionFromTaskList(list, nextId, true);
     setMemories(nextMemories);
     setPatterns(nextPatterns);
     setSkills(nextSkills);
@@ -195,12 +182,48 @@ export function useWorkbenchData(): WorkbenchData {
     setWebSearchProviders(nextWebSearchProviders);
   }
 
+  async function refreshTaskShell(nextId?: string | null, loadTranscript = false) {
+    const list = await api.listTasks();
+    setTasks(list);
+    await syncSelectionFromTaskList(list, nextId, loadTranscript);
+  }
+
+  async function syncSelectionFromTaskList(list: TaskDetail[], nextId?: string | null, loadTranscript = false) {
+    const hasExplicitNext = nextId !== undefined;
+    const preferredId = hasExplicitNext ? nextId : selectedIdRef.current;
+    const preferredExists = preferredId ? list.some((task) => task.id === preferredId) : false;
+    const id = preferredExists ? preferredId : newTaskModeRef.current && !hasExplicitNext ? null : list[0]?.id ?? null;
+    selectedIdRef.current = id;
+    setSelectedId(id);
+    if (!id) {
+      setSelected(null);
+      setSelectedTranscript([]);
+      return;
+    }
+    if (!loadTranscript) {
+      const nextSelected = list.find((task) => task.id === id) ?? null;
+      if (nextSelected) setSelected(nextSelected);
+      return;
+    }
+    const [nextSelected, nextTranscript] = await Promise.all([api.getTask(id), api.listTaskTranscript(id)]);
+    setSelected(nextSelected);
+    setSelectedTranscript(nextTranscript);
+  }
+
   useEffect(() => {
     void refresh();
     if (refreshTimerRef.current !== null) {
       window.clearInterval(refreshTimerRef.current);
     }
-    refreshTimerRef.current = window.setInterval(() => void refresh(), realtimeConnected ? 6000 : 2000);
+    refreshTimerRef.current = window.setInterval(() => {
+      backgroundPollRef.current += 1;
+      const shouldFullRefresh = backgroundPollRef.current % (realtimeConnected ? 10 : 5) === 0;
+      if (shouldFullRefresh) {
+        void refresh();
+        return;
+      }
+      void refreshTaskShell(undefined, !realtimeConnected);
+    }, realtimeConnected ? 8000 : 2500);
     return () => {
       if (refreshTimerRef.current !== null) {
         window.clearInterval(refreshTimerRef.current);
@@ -231,9 +254,12 @@ export function useWorkbenchData(): WorkbenchData {
       window.clearTimeout(wsFlushTimerRef.current);
       wsFlushTimerRef.current = null;
     }
-    const connectTimer = window.setTimeout(() => {
+    let reconnectAttempt = 0;
+    let reconnectTimer: number | null = null;
+
+    function connect() {
       if (wsCancelRef.current) return;
-      const ws = new WebSocket(api.taskEventsWebSocketUrl(selectedId));
+      const ws = new WebSocket(api.taskEventsWebSocketUrl(selectedId!));
       wsRef.current = ws;
       ws.onopen = () => {
         if (wsCancelRef.current) {
@@ -241,12 +267,17 @@ export function useWorkbenchData(): WorkbenchData {
           return;
         }
         setRealtimeConnected(true);
+        reconnectAttempt = 0;
       };
       ws.onclose = () => {
-        if (!wsCancelRef.current) setRealtimeConnected(false);
+        if (wsCancelRef.current) return;
+        setRealtimeConnected(false);
+        scheduleReconnect();
       };
       ws.onerror = () => {
-        if (!wsCancelRef.current) setRealtimeConnected(false);
+        if (wsCancelRef.current) return;
+        setRealtimeConnected(false);
+        ws.close();
       };
       ws.onmessage = (message) => {
         if (wsCancelRef.current) return;
@@ -265,19 +296,32 @@ export function useWorkbenchData(): WorkbenchData {
           if (parsed.transcript) {
             setSelectedTranscript(parsed.transcript);
           } else {
-            void api.listTaskTranscript(selectedId).then((transcript) => {
+            void api.listTaskTranscript(selectedId!).then((transcript) => {
               if (!wsCancelRef.current && selectedIdRef.current === selectedId) setSelectedTranscript(transcript);
             }).catch(() => undefined);
           }
           return;
         }
         wsEventQueueRef.current.push(parsed.event);
-        scheduleRealtimeFlush(selectedId);
+        scheduleRealtimeFlush(selectedId!);
       };
-    }, 50);
+    }
+
+    function scheduleReconnect() {
+      if (wsCancelRef.current) return;
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempt), 30_000);
+      reconnectAttempt++;
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    }
+
+    const connectTimer = window.setTimeout(connect, 50);
     return () => {
       wsCancelRef.current = true;
       window.clearTimeout(connectTimer);
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       wsEventQueueRef.current = [];
       if (wsFlushTimerRef.current !== null) {
         window.clearTimeout(wsFlushTimerRef.current);
@@ -491,6 +535,10 @@ export function useWorkbenchData(): WorkbenchData {
     runSideAction,
     cancelBusy
   };
+}
+
+function settledValue<T>(result: PromiseSettledResult<T>): T | undefined {
+  return result.status === "fulfilled" ? result.value : undefined;
 }
 
 function approvalFromEvent(event: TaskEvent, approvals: ToolApproval[]): ToolApproval[] {

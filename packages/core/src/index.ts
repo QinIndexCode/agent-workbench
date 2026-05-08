@@ -8,6 +8,7 @@ export * from "./openai-model.js";
 export * from "./permission-engine.js";
 export * from "./secrets.js";
 export * from "./store.js";
+export * from "./task-intent.js";
 export * from "./tools.js";
 export * from "./web-search.js";
 export * from "./workbench.js";

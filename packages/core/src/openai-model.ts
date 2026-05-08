@@ -6,6 +6,7 @@ import type { ContextAssembler } from "./context-assembler.js";
 import { createId } from "./ids.js";
 import type { ModelClient, ModelStreamHandlers, ModelTurn, ModelUsage } from "./fallback-model.js";
 import { ConfiguredToolModelClient, FallbackModelClient } from "./fallback-model.js";
+import { classifyTaskIntent, shouldLoadDynamicTools, type TaskIntent } from "./task-intent.js";
 
 export interface OpenAIModelClientOptions {
   apiKey?: string;
@@ -43,6 +44,7 @@ export class OpenAIModelClient implements ModelClient {
   private readonly apiKey: string;
   private readonly defaultBaseURL: string | undefined;
   private readonly defaultModel: string;
+  private readonly modelTimeoutMs: number;
   private readonly clientCache = new Map<string, OpenAI>();
   private readonly contextAssembler: ContextAssembler | undefined;
   private readonly toolProvider: ModelToolProvider | undefined;
@@ -53,6 +55,7 @@ export class OpenAIModelClient implements ModelClient {
     this.apiKey = options.apiKey ?? "";
     this.defaultBaseURL = options.baseURL;
     this.defaultModel = options.model ?? process.env["SCC_MODEL"] ?? "gpt-5.4-mini";
+    this.modelTimeoutMs = Number(process.env["SCC_MODEL_TIMEOUT_MS"] ?? 300_000);
     this.contextAssembler = options.contextAssembler;
     this.toolProvider = options.toolProvider;
     this.preferenceProvider = options.preferenceProvider;
@@ -66,8 +69,10 @@ export class OpenAIModelClient implements ModelClient {
   private async nextWithSkillRetries(task: TaskDetail, skillRetryCount: number, stream?: ModelStreamHandlers): Promise<ModelTurn> {
     const context = this.contextAssembler ? await this.contextAssembler.assemble(task) : null;
     const preferences = await this.preferenceProvider?.();
-    const dynamicTools = (await this.toolProvider?.listModelTools()) ?? [];
-    const turn = await this.nextWithProviderFallbacks(task, context, preferences, dynamicTools, stream);
+    const intent = classifyTaskIntent(task);
+    const dynamicTools = shouldLoadDynamicTools(intent, task) ? (await this.toolProvider?.listModelTools()) ?? [] : [];
+    const modelTools = selectModelToolsForIntent(intent, dynamicTools);
+    const turn = await this.nextWithProviderFallbacks(task, context, preferences, modelTools, stream);
     if (turn.kind !== "tool_calls") return turn;
 
     const skillCall = turn.calls.find((call) => call.toolName === "use_skill");
@@ -102,7 +107,7 @@ export class OpenAIModelClient implements ModelClient {
     task: TaskDetail,
     context: Awaited<ReturnType<ContextAssembler["assemble"]>> | null,
     preferences: UserPreferences | undefined,
-    dynamicTools: ModelToolDefinition[],
+    modelTools: ModelToolDefinition[],
     stream?: ModelStreamHandlers
   ): Promise<ModelTurn> {
     const resolved = await this.providerResolver?.();
@@ -111,7 +116,7 @@ export class OpenAIModelClient implements ModelClient {
     for (let index = 0; index < providers.length; index++) {
       const provider = providers[index];
       try {
-        return await this.nextSingleProvider(task, context, preferences, dynamicTools, provider, stream);
+        return await this.nextSingleProvider(task, context, preferences, modelTools, provider, stream);
       } catch (error) {
         lastError = error;
         const nextProvider = providers[index + 1];
@@ -133,12 +138,12 @@ export class OpenAIModelClient implements ModelClient {
     task: TaskDetail,
     context: Awaited<ReturnType<ContextAssembler["assemble"]>> | null,
     preferences: UserPreferences | undefined,
-    dynamicTools: ModelToolDefinition[],
+    modelTools: ModelToolDefinition[],
     provider: ResolvedModelProviderConfig | undefined,
     stream?: ModelStreamHandlers
   ): Promise<ModelTurn> {
-    if (provider?.protocol === "anthropic_messages") return this.nextAnthropic(task, context, provider, dynamicTools, stream);
-    if (provider?.protocol === "gemini") return this.nextGemini(task, context, provider, dynamicTools, stream);
+    if (provider?.protocol === "anthropic_messages") return this.nextAnthropic(task, context, provider, modelTools, stream);
+    if (provider?.protocol === "gemini") return this.nextGemini(task, context, provider, modelTools, stream);
 
     const preferenceModel =
       preferences?.activeModelProviderId || preferences?.providerBaseUrl?.trim()
@@ -151,19 +156,23 @@ export class OpenAIModelClient implements ModelClient {
       return { kind: "final", message: "No model provider is configured. Add a model provider with an API key in Settings." };
     }
     const client = this.clientFor(baseURL, apiKey);
+    const callSignal = this.createCallSignal(stream?.signal);
+    const request: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
+      model,
+      messages: [
+        { role: "system", content: context?.systemPrompt ?? fallbackInstructions() },
+        { role: "user", content: context?.input ?? buildInput(task) }
+      ],
+      stream: true,
+      stream_options: { include_usage: true }
+    };
+    if (modelTools.length > 0) {
+      request.tool_choice = "auto";
+      request.tools = modelTools as OpenAI.Chat.Completions.ChatCompletionTool[];
+    }
     const response = await client.chat.completions.create(
-      {
-        model,
-        messages: [
-          { role: "system", content: context?.systemPrompt ?? fallbackInstructions() },
-          { role: "user", content: context?.input ?? buildInput(task) }
-        ],
-        stream: true,
-        stream_options: { include_usage: true },
-        tool_choice: "auto" as const,
-        tools: [...toolDefinitions(), ...dynamicTools] as OpenAI.Chat.Completions.ChatCompletionTool[]
-      },
-      stream?.signal ? { signal: stream.signal } : undefined
+      request,
+      { signal: callSignal }
     );
 
     const streamed = await consumeChatCompletionStream(response, stream);
@@ -190,12 +199,12 @@ export class OpenAIModelClient implements ModelClient {
     task: TaskDetail,
     context: Awaited<ReturnType<ContextAssembler["assemble"]>> | null,
     provider: ResolvedModelProviderConfig,
-    dynamicTools: ModelToolDefinition[],
+    modelTools: ModelToolDefinition[],
     stream?: ModelStreamHandlers
   ): Promise<ModelTurn> {
     const response = await fetch(`${provider.baseURL || "https://api.anthropic.com"}/v1/messages`, {
       method: "POST",
-      ...(stream?.signal ? { signal: stream.signal } : {}),
+      signal: this.createCallSignal(stream?.signal),
       headers: {
         "content-type": "application/json",
         "x-api-key": provider.apiKey,
@@ -206,7 +215,7 @@ export class OpenAIModelClient implements ModelClient {
         max_tokens: 4096,
         system: context?.systemPrompt ?? fallbackInstructions(),
         messages: [{ role: "user", content: context?.input ?? buildInput(task) }],
-        tools: [...toolDefinitions(), ...dynamicTools].map(toAnthropicTool)
+        ...(modelTools.length > 0 ? { tools: modelTools.map(toAnthropicTool) } : {})
       })
     });
     if (!response.ok) throw new Error(await response.text());
@@ -225,18 +234,18 @@ export class OpenAIModelClient implements ModelClient {
     task: TaskDetail,
     context: Awaited<ReturnType<ContextAssembler["assemble"]>> | null,
     provider: ResolvedModelProviderConfig,
-    dynamicTools: ModelToolDefinition[],
+    modelTools: ModelToolDefinition[],
     stream?: ModelStreamHandlers
   ): Promise<ModelTurn> {
     const base = provider.baseURL || "https://generativelanguage.googleapis.com/v1beta";
     const response = await fetch(`${base}/models/${encodeURIComponent(provider.model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`, {
       method: "POST",
-      ...(stream?.signal ? { signal: stream.signal } : {}),
+      signal: this.createCallSignal(stream?.signal),
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: context?.systemPrompt ?? fallbackInstructions() }] },
         contents: [{ role: "user", parts: [{ text: context?.input ?? buildInput(task) }] }],
-        tools: [{ functionDeclarations: [...toolDefinitions(), ...dynamicTools].map(toGeminiTool) }]
+        ...(modelTools.length > 0 ? { tools: [{ functionDeclarations: modelTools.map(toGeminiTool) }] } : {})
       })
     });
     if (!response.ok) throw new Error(await response.text());
@@ -251,10 +260,29 @@ export class OpenAIModelClient implements ModelClient {
       : { kind: "final", message: text || "No response returned.", ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) };
   }
 
+  private createCallSignal(existingSignal?: AbortSignal): AbortSignal {
+    const timeoutSignal = AbortSignal.timeout(this.modelTimeoutMs);
+    if (!existingSignal) return timeoutSignal;
+    if (typeof AbortSignal.any === "function") return AbortSignal.any([existingSignal, timeoutSignal]);
+    if (existingSignal.aborted) return existingSignal;
+    const controller = new AbortController();
+    existingSignal.addEventListener("abort", () => {
+      controller.abort(existingSignal.reason);
+    }, { once: true });
+    timeoutSignal.addEventListener("abort", () => {
+      controller.abort(timeoutSignal.reason);
+    }, { once: true });
+    return controller.signal;
+  }
+
   private clientFor(baseURL: string | undefined, apiKey: string): OpenAI {
     const key = `${baseURL || "__default__"}:${apiKey.slice(-8)}`;
     const cached = this.clientCache.get(key);
     if (cached) return cached;
+    if (this.clientCache.size >= 20) {
+      const firstKey = this.clientCache.keys().next().value;
+      if (firstKey) this.clientCache.delete(firstKey);
+    }
     const client = new OpenAI({
       apiKey,
       ...(baseURL ? { baseURL } : {})
@@ -353,6 +381,8 @@ function fallbackInstructions(): string {
     "When a tool needs user approval, the application will ask the user; do not assume the current authorization state.",
     "Do not emit fixed machine-readable wrappers, diagnostic files, or scripted review reports unless explicitly requested.",
     "When using side-effect-free state tools such as plan_update or use_skill, do not narrate the tool mechanics, tool JSON, or success status to the user; continue with the actual task.",
+    "For greetings, thanks, simple chat, and capability questions, answer directly without calling tools.",
+    "When asked to test or list tools, treat it as a safe capability check; do not create files, edit memory, edit skills, or run persistent side-effect tools unless the user explicitly authorizes that scope.",
     "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
     "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
     "If you need a file but are unsure it exists, list or search first instead of guessing paths such as README.md.",
@@ -364,6 +394,38 @@ function fallbackInstructions(): string {
     "Use Markdown for readable structure when helpful: short headings, bullets, tables, and code blocks are supported."
   ].join("\n");
 }
+
+export function selectModelToolsForTask(task: TaskDetail, dynamicTools: ModelToolDefinition[] = []): ModelToolDefinition[] {
+  const intent = classifyTaskIntent(task);
+  return selectModelToolsForIntent(intent, shouldLoadDynamicTools(intent, task) ? dynamicTools : []);
+}
+
+function selectModelToolsForIntent(intent: TaskIntent, dynamicTools: ModelToolDefinition[]): ModelToolDefinition[] {
+  const builtIns = toolDefinitions();
+  const stableDynamicTools = [...dynamicTools].sort((left, right) => left.function.name.localeCompare(right.function.name));
+  if (intent === "direct_chat") return [];
+  if (intent === "tool_inventory") return builtIns.filter((tool) => readOnlyToolNames.has(tool.function.name));
+  if (intent === "read_only_evidence") return [...builtIns.filter((tool) => readOnlyToolNames.has(tool.function.name)), ...stableDynamicTools];
+  if (intent === "memory_skill_admin") {
+    return [...builtIns.filter((tool) => readOnlyToolNames.has(tool.function.name) || memorySkillToolNames.has(tool.function.name)), ...stableDynamicTools];
+  }
+  return [...builtIns, ...stableDynamicTools];
+}
+
+const readOnlyToolNames = new Set(["read_file", "search_files", "list_files", "web_search", "knowledge_search"]);
+const memorySkillToolNames = new Set([
+  "use_skill",
+  "user_memory_add",
+  "user_memory_edit",
+  "user_memory_delete",
+  "project_memory_add",
+  "project_memory_edit",
+  "project_memory_delete",
+  "skill_create",
+  "skill_edit",
+  "skill_delete",
+  "plan_update"
+]);
 
 export interface OpenAIProviderConfig {
   apiKey?: string;

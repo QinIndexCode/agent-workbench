@@ -119,6 +119,13 @@ export class ShellToolExecutor implements ToolExecutor {
         stderr = appendLimited(stderr, String(chunk), maxBuffer);
       });
 
+      child.on("error", (err) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolveResult(this.result(call, false, `Failed to start command: ${err.message}`));
+      });
+
       const timeout = setTimeout(() => {
         timedOut = true;
         child.kill();

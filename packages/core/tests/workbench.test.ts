@@ -32,6 +32,7 @@ import {
   loadOpenAiProviderConfig,
   nowIso,
   promoteExperience,
+  selectModelToolsForTask,
   shouldPromoteExperienceToSkill
 } from "../src/index.js";
 import { defaultTaskWorkRoot } from "../src/workspace-root.js";
@@ -67,6 +68,30 @@ describe("ContextAssembler", () => {
     expect(context.systemPrompt).toContain("do not inspect files first");
     expect(context.systemPrompt).toContain("Do not claim the project name");
     expect(context.systemPrompt).toContain("Use Markdown for readable structure");
+  });
+
+  it("does not keep a trivial greeting as the original goal after a later real request", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const task: TaskDetail = {
+      id: "task_greeting_followup",
+      title: "Greeting follow-up",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_hello", taskId: "task_greeting_followup", type: "user_message", createdAt: nowIso(), summary: "你好", payload: {} },
+        { id: "event_agent", taskId: "task_greeting_followup", type: "assistant_message", createdAt: nowIso(), summary: "你好！有什么可以帮你的？", payload: {} },
+        { id: "event_request", taskId: "task_greeting_followup", type: "user_message", createdAt: nowIso(), summary: "测试所有你能调用的工具", payload: {} }
+      ]
+    };
+
+    const context = await assembler.assemble(task);
+
+    expect(context.input).toContain("## Current Turn");
+    expect(context.input).toContain("测试所有你能调用的工具");
+    expect(context.input).not.toContain("Original user goal: 你好");
   });
 
   it("keeps the latest user message when a long history is truncated", () => {
@@ -284,7 +309,8 @@ describe("ContextAssembler", () => {
     expect(summaries[0]?.summary).toContain("older event");
     expect(context.input).toContain("Conversation Summary");
     expect(context.input).toContain("Active Task Continuity");
-    expect(context.input).toContain("Original user goal");
+    expect(context.input).toContain("## Current Turn");
+    expect(context.input).not.toContain("Original user goal");
     expect(context.input).toContain("LATEST_DECISION_MARKER");
   });
 
@@ -369,7 +395,6 @@ describe("ContextAssembler", () => {
     const context = await assembler.assemble(task);
 
     expect(context.usedTokens).toBeLessThanOrEqual(10000);
-    expect(context.input).toContain("Context Budget Notice");
     expect(context.input).toContain("LATEST_BUDGET_MARKER");
   });
 
@@ -518,6 +543,35 @@ describe("Task title generation", () => {
   });
 });
 
+describe("Tool surface selection", () => {
+  it("keeps greetings tool-free and tool inventory requests on a safe read-only surface", () => {
+    const directTask: TaskDetail = {
+      id: "task_direct_chat",
+      title: "你好",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [{ id: "event_direct", taskId: "task_direct_chat", type: "user_message", createdAt: nowIso(), summary: "你好", payload: {} }]
+    };
+    const inventoryTask: TaskDetail = {
+      id: "task_tool_inventory",
+      title: "测试工具",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [{ id: "event_inventory", taskId: "task_tool_inventory", type: "user_message", createdAt: nowIso(), summary: "测试所有你能调用的工具", payload: {} }]
+    };
+
+    expect(selectModelToolsForTask(directTask)).toHaveLength(0);
+    const toolNames = selectModelToolsForTask(inventoryTask).map((tool) => tool.function.name);
+    expect(toolNames).toEqual(["read_file", "search_files", "list_files", "web_search", "knowledge_search"]);
+  });
+});
+
 class StubToolExecutor {
   calls: ToolCall[] = [];
 
@@ -539,6 +593,27 @@ class ThrowingToolExecutor {
   async execute(call: ToolCall): Promise<ToolResult> {
     this.calls.push(call);
     throw new Error("simulated tool crash with sk-testsecret123456");
+  }
+}
+
+class ParallelProbeToolExecutor {
+  calls: ToolCall[] = [];
+  active = 0;
+  peakActive = 0;
+
+  async execute(call: ToolCall): Promise<ToolResult> {
+    this.calls.push(call);
+    this.active += 1;
+    this.peakActive = Math.max(this.peakActive, this.active);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    this.active -= 1;
+    return {
+      id: createId("tool_result"),
+      toolCallId: call.id,
+      ok: true,
+      createdAt: nowIso(),
+      output: JSON.stringify({ toolName: call.toolName, ok: true })
+    };
   }
 }
 
@@ -610,6 +685,34 @@ class ContextAwarePlanModel implements ModelClient {
           toolName: "plan_update",
           args: { context: "Planning visible progress.", status: "running", steps: [{ title: "Inspect continuity", status: "running" }] }
         }
+      ]
+    };
+  }
+}
+
+class RepeatingPlanOnlyModel implements ModelClient {
+  async next(): Promise<ModelTurn> {
+    return {
+      kind: "tool_calls",
+      calls: [{
+        id: createId("tool_call"),
+        toolName: "plan_update",
+        args: { context: "Still planning", status: "running", steps: [{ title: "Looping", status: "running" }] }
+      }]
+    };
+  }
+}
+
+class MultiReadOnlyTurnModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    const results = task.events.filter((event) => event.type === "tool_result");
+    if (results.length >= 3) return { kind: "final", message: "Read-only batch finished." };
+    return {
+      kind: "tool_calls",
+      calls: [
+        { id: createId("tool_call"), toolName: "list_files", args: { path: "." } },
+        { id: createId("tool_call"), toolName: "search_files", args: { query: "package" } },
+        { id: createId("tool_call"), toolName: "read_file", args: { path: "package.json" } }
       ]
     };
   }
@@ -826,6 +929,37 @@ describe("AgentWorkbench", () => {
     expect(result?.payload["ok"]).toBe(false);
     expect(String(result?.payload["output"])).toContain("Tool execution failed");
     expect(String(result?.payload["output"])).not.toContain("sk-testsecret");
+  });
+
+  it("pauses repeated state-only tool turns before they spin forever", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new RepeatingPlanOnlyModel()
+    });
+
+    const paused = await workbench.createTask("keep updating the plan forever");
+    const planResults = paused.events.filter((event) => event.type === "tool_result" && event.payload["toolName"] === "plan_update");
+
+    expect(paused.status).toBe("paused");
+    expect(planResults).toHaveLength(2);
+    expect(paused.events.some((event) => event.type === "assistant_message" && event.summary.includes("no-progress loop"))).toBe(true);
+  });
+
+  it("executes fully read-only multi-tool turns concurrently", async () => {
+    const tools = new ParallelProbeToolExecutor();
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools,
+      model: new MultiReadOnlyTurnModel()
+    });
+    await workbench.grantGlobalPermission("workspace_read", "parallel read batch");
+
+    const completed = await workbench.createTask("inspect several read-only surfaces at once");
+
+    expect(completed.status).toBe("completed");
+    expect(tools.calls).toHaveLength(3);
+    expect(tools.peakActive).toBeGreaterThan(1);
+    expect(completed.events.filter((event) => event.type === "tool_result")).toHaveLength(3);
   });
 
   it("auto-approves non-MCP tools according to autoApprove without bypassing destructive tools", async () => {

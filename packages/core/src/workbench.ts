@@ -113,6 +113,16 @@ export interface AgentWorkbenchOptions {
   onEvent?: (event: TaskEvent) => void;
 }
 
+interface PreparedToolCall {
+  call: ToolCall;
+  assessment: RiskAssessment;
+}
+
+const MAX_MODEL_TURNS_PER_TASK = 24;
+const MAX_TOOL_CALLS_PER_TURN = 8;
+const MAX_STATE_ONLY_TOOL_TURNS = 2;
+const MAX_PARALLEL_READ_ONLY_TOOLS = 4;
+
 export class AgentWorkbench {
   private readonly store: WorkbenchStore;
   private readonly model: ModelClient;
@@ -124,8 +134,9 @@ export class AgentWorkbench {
   private readonly secretBox = new LocalSecretBox();
   private readonly permissionState = new Map<string, PermissionState>();
   private readonly taskQueues = new Map<string, Promise<void>>();
+  private readonly deltaLocks = new Map<string, Promise<void>>();
   private readonly runningModelControllers = new Map<string, AbortController>();
-  private readonly runningToolControllers = new Map<string, AbortController>();
+  private readonly runningToolControllers = new Map<string, Set<AbortController>>();
 
   constructor(options: AgentWorkbenchOptions = {}) {
     this.store = options.store ?? new InMemoryWorkbenchStore();
@@ -144,7 +155,7 @@ export class AgentWorkbench {
   async startTask(goal: string, title?: string, folderId = "default", attachmentIds: string[] = []): Promise<TaskDetail> {
     const task = await this.initializeTask(goal, await this.resolveTaskTitle(goal, title), folderId, attachmentIds);
     void this.runTaskExclusive(task.id, () => this.step(task.id)).catch((error) => {
-      void this.failBackgroundRun(task.id, error);
+      this.safeBackgroundCatch(task.id, error);
     });
     return task;
   }
@@ -377,6 +388,7 @@ export class AgentWorkbench {
       this.permissionState.delete(taskId);
       this.runningModelControllers.delete(taskId);
       this.runningToolControllers.delete(taskId);
+      this.cleanupToolOutputs(task);
 
       const result: TaskDeleteResult = {
         taskId,
@@ -1293,7 +1305,7 @@ export class AgentWorkbench {
           this.addEvent(task, "scheduled_task_created", scheduled.title, { scheduledTaskId: scheduled.id });
           await this.store.saveTask(task);
           void this.runTaskExclusive(task.id, () => this.step(task.id)).catch((error) => {
-            void this.failBackgroundRun(task.id, error);
+            this.safeBackgroundCatch(task.id, error);
           });
           next = advanceScheduledTask(scheduled, task.id, now, `Created task ${task.id}`);
         }
@@ -1688,24 +1700,82 @@ export class AgentWorkbench {
   private async step(taskId: string): Promise<TaskDetail> {
     const task = await this.requiredTask(taskId);
     if (task.status !== "running") return task;
+    let modelTurns = 0;
+    let stateOnlyTurns = 0;
 
-    this.consumePendingGuidance(task);
-    await this.store.saveTask(task);
-    const modelTurn = await this.safeModelNext(task);
-    this.addLoadedSkillEvents(task);
-    if (!modelTurn) return task;
-    const stoppedAfterModel = await this.stoppedTask(task.id);
-    if (stoppedAfterModel) return stoppedAfterModel;
-    const turn = this.normalizeInlineToolMarkupTurn(task, modelTurn);
-    if (turn.kind === "final") {
-      this.addEvent(task, "assistant_message", turn.message, turn.streamId ? { streamId: turn.streamId } : {});
-      this.setStatus(task, "completed");
-      await this.recordExperience(task);
+    while (task.status === "running") {
+      if (modelTurns >= MAX_MODEL_TURNS_PER_TASK) {
+        await this.pauseTaskForLoop(task, `Paused after ${MAX_MODEL_TURNS_PER_TASK} model turns in one task run. Ask for guidance or continue with a narrower step.`);
+        return task;
+      }
+
+      this.consumePendingGuidance(task);
       await this.store.saveTask(task);
-      return task;
+      const modelTurn = await this.safeModelNext(task);
+      this.addLoadedSkillEvents(task);
+      if (!modelTurn) return task;
+      modelTurns += 1;
+
+      const stoppedAfterModel = await this.stoppedTask(task.id);
+      if (stoppedAfterModel) return stoppedAfterModel;
+      const turn = this.normalizeInlineToolMarkupTurn(task, modelTurn);
+      if (turn.kind === "final") {
+        this.addEvent(task, "assistant_message", turn.message, turn.streamId ? { streamId: turn.streamId } : {});
+        this.setStatus(task, "completed");
+        await this.recordExperience(task);
+        await this.store.saveTask(task);
+        return task;
+      }
+
+      const { executable, skipped } = limitToolCallsPerTurn(turn.calls);
+      for (const skippedCall of skipped) {
+        await this.addToolResultEvent(task, skippedCall, failedToolResult(skippedCall, `Tool not executed: exceeded the per-turn limit of ${MAX_TOOL_CALLS_PER_TURN} tool calls.`));
+      }
+      if (skipped.length > 0) await this.store.saveTask(task);
+
+      const stateOnlyBatch = executable.length > 0 && executable.every((call) => isManagedStateTool(call.toolName));
+      stateOnlyTurns = stateOnlyBatch ? stateOnlyTurns + 1 : 0;
+      if (stateOnlyTurns > MAX_STATE_ONLY_TOOL_TURNS) {
+        await this.pauseTaskForLoop(task, `Paused after ${MAX_STATE_ONLY_TOOL_TURNS} repeated state-only tool turns to avoid a no-progress loop.`);
+        return task;
+      }
+
+      const latest = await this.processToolCalls(task, executable);
+      if (!latest) return task;
+      Object.assign(task, latest);
     }
 
-    for (const call of turn.calls) {
+    return task;
+  }
+
+  private normalizeInlineToolMarkupTurn(task: TaskDetail, turn: Awaited<ReturnType<ModelClient["next"]>>): Awaited<ReturnType<ModelClient["next"]>> {
+    if (turn.kind !== "final") return turn;
+    const calls = extractInlineToolCallsFromMessage(turn.message);
+    if (calls.length === 0) return turn;
+    if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId);
+    return {
+      kind: "tool_calls",
+      calls,
+      ...(turn.streamId ? { streamId: turn.streamId } : {}),
+      ...(turn.usage ? { usage: turn.usage } : {})
+    };
+  }
+
+  private hideAssistantStreamDeltas(task: TaskDetail, streamId: string): void {
+    for (const event of task.events) {
+      if (event.type !== "assistant_delta") continue;
+      if (String(event.payload["streamId"] ?? "") !== streamId) continue;
+      event.payload = { ...event.payload, uiHidden: true };
+    }
+  }
+
+  private async processToolCalls(task: TaskDetail, calls: ToolCall[]): Promise<TaskDetail | null> {
+    if (calls.length === 0) return task;
+    const preferences = await this.store.getPreferences();
+    const globalGrants = await this.store.listGlobalPermissions();
+    const prepared: PreparedToolCall[] = [];
+
+    for (const call of calls) {
       const stoppedBeforeTool = await this.stoppedTask(task.id);
       if (stoppedBeforeTool) return stoppedBeforeTool;
 
@@ -1720,7 +1790,6 @@ export class AgentWorkbench {
 
       const assessment = (await this.toolRiskProvider?.assessTool(call)) ?? this.permissions.assess(call.toolName, call.args);
       const metadata = await this.describeToolCall(task, call, assessment);
-      const preferences = await this.store.getPreferences();
       const eventArgs = this.sanitizeForPreferences(call.args, preferences);
       const eventMetadata = this.sanitizeForPreferences(metadata, preferences);
       this.addEvent(task, "tool_requested", call.toolName, {
@@ -1731,7 +1800,6 @@ export class AgentWorkbench {
         ...eventMetadata
       });
 
-      const globalGrants = await this.store.listGlobalPermissions();
       if (this.permissions.isGloballyAllowed(assessment.category, globalGrants)) {
         this.addEvent(task, "approval_auto_granted", `${assessment.category}: global permission`, {
           toolCallId: call.id,
@@ -1762,39 +1830,45 @@ export class AgentWorkbench {
         }
       }
 
-      await this.createCheckpointForTool(task, call, assessment);
+      prepared.push({ call, assessment });
+    }
+
+    await this.store.saveTask(task);
+    const canRunInParallel =
+      prepared.length > 1 &&
+      prepared.every(({ call, assessment }) => isParallelSafeToolCall(call, assessment.category));
+
+    if (canRunInParallel) {
+      const results = await runWithConcurrency(prepared, MAX_PARALLEL_READ_ONLY_TOOLS, async ({ call }) => this.executeTool(task.id, call));
+      for (const [index, result] of results.entries()) {
+        const latest = await this.requiredTask(task.id);
+        const item = prepared[index];
+        if (!item) continue;
+        await this.addToolResultEvent(latest, item.call, result);
+        await this.store.saveTask(latest);
+        if (latest.status !== "running") return latest;
+      }
+      return this.requiredTask(task.id);
+    }
+
+    for (const item of prepared) {
+      await this.createCheckpointForTool(task, item.call, item.assessment);
       await this.store.saveTask(task);
-      const result = await this.executeTool(task.id, call);
+      const result = await this.executeTool(task.id, item.call);
       const latest = await this.requiredTask(task.id);
-      await this.addToolResultEvent(latest, call, result);
+      await this.addToolResultEvent(latest, item.call, result);
       await this.store.saveTask(latest);
       if (latest.status !== "running") return latest;
       Object.assign(task, latest);
     }
 
+    return task;
+  }
+
+  private async pauseTaskForLoop(task: TaskDetail, message: string): Promise<void> {
+    this.addEvent(task, "assistant_message", message);
+    this.setStatus(task, "paused");
     await this.store.saveTask(task);
-    return this.step(task.id);
-  }
-
-  private normalizeInlineToolMarkupTurn(task: TaskDetail, turn: Awaited<ReturnType<ModelClient["next"]>>): Awaited<ReturnType<ModelClient["next"]>> {
-    if (turn.kind !== "final") return turn;
-    const calls = extractInlineToolCallsFromMessage(turn.message);
-    if (calls.length === 0) return turn;
-    if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId);
-    return {
-      kind: "tool_calls",
-      calls,
-      ...(turn.streamId ? { streamId: turn.streamId } : {}),
-      ...(turn.usage ? { usage: turn.usage } : {})
-    };
-  }
-
-  private hideAssistantStreamDeltas(task: TaskDetail, streamId: string): void {
-    for (const event of task.events) {
-      if (event.type !== "assistant_delta") continue;
-      if (String(event.payload["streamId"] ?? "") !== streamId) continue;
-      event.payload = { ...event.payload, uiHidden: true };
-    }
   }
 
   private async recordExperience(task: TaskDetail): Promise<void> {
@@ -1917,12 +1991,26 @@ export class AgentWorkbench {
     signal: AbortSignal
   ): Promise<void> {
     if (signal.aborted) return;
-    const current = await this.store.getTask(task.id);
-    if (!current || current.status !== "running" || signal.aborted) return;
-    this.addEvent(current, type, delta, { streamId, delta });
-    if (signal.aborted) return;
-    await this.store.saveTask(current);
-    Object.assign(task, current);
+    const previous = this.deltaLocks.get(task.id) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.catch(() => undefined).then(() => gate);
+    this.deltaLocks.set(task.id, queued);
+    await previous.catch(() => undefined);
+    try {
+      if (signal.aborted) return;
+      const current = await this.store.getTask(task.id);
+      if (!current || current.status !== "running" || signal.aborted) return;
+      this.addEvent(current, type, delta, { streamId, delta });
+      if (signal.aborted) return;
+      await this.store.saveTask(current);
+      Object.assign(task, current);
+    } finally {
+      release();
+      if (this.deltaLocks.get(task.id) === queued) this.deltaLocks.delete(task.id);
+    }
   }
 
   private async saveSkillWithConflicts(skill: SkillRecord): Promise<SkillRecord> {
@@ -1937,14 +2025,22 @@ export class AgentWorkbench {
     return saved;
   }
 
+  private safeBackgroundCatch(taskId: string, error: unknown): void {
+    void this.failBackgroundRun(taskId, error).catch(() => undefined);
+  }
+
   private async failBackgroundRun(taskId: string, error: unknown): Promise<void> {
-    const task = await this.store.getTask(taskId);
-    if (!task || task.status !== "running") return;
-    const message = sanitizeProviderError(error instanceof Error ? error.message : String(error));
-    this.addEvent(task, "assistant_message", `Runtime failed: ${message}`);
-    this.setStatus(task, "failed");
-    await this.updateLoadedSkillStats(task, false);
-    await this.store.saveTask(task);
+    try {
+      const task = await this.store.getTask(taskId);
+      if (!task || task.status !== "running") return;
+      const message = sanitizeProviderError(error instanceof Error ? error.message : String(error));
+      this.addEvent(task, "assistant_message", `Runtime failed: ${message}`);
+      this.setStatus(task, "failed");
+      try { await this.updateLoadedSkillStats(task, false); } catch { /* best-effort */ }
+      try { await this.store.saveTask(task); } catch { /* best-effort */ }
+    } catch {
+      // final safety net — never let an error here become unhandled
+    }
   }
 
   private emptyTask(title: string): TaskDetail {
@@ -1984,7 +2080,9 @@ export class AgentWorkbench {
   private async executeTool(taskId: string, call: ToolCall): Promise<ToolResult> {
     const task = await this.requiredTask(taskId);
     const controller = new AbortController();
-    this.runningToolControllers.set(taskId, controller);
+    const controllers = this.runningToolControllers.get(taskId) ?? new Set<AbortController>();
+    controllers.add(controller);
+    this.runningToolControllers.set(taskId, controllers);
     try {
       const managed = await this.executeManagedTool(task, call);
       if (managed) {
@@ -1999,8 +2097,12 @@ export class AgentWorkbench {
       const message = `${prefix}: ${rawMessage || "Unknown error."}`;
       return failedToolResult(call, preferences?.sanitizeSensitiveData === false ? message : sanitizeSensitiveText(message));
     } finally {
-      if (this.runningToolControllers.get(taskId) === controller) {
-        this.runningToolControllers.delete(taskId);
+      const current = this.runningToolControllers.get(taskId);
+      if (current) {
+        current.delete(controller);
+        if (current.size === 0) {
+          this.runningToolControllers.delete(taskId);
+        }
       }
     }
   }
@@ -2378,8 +2480,24 @@ export class AgentWorkbench {
     await rm(root, { recursive: true, force: true }).catch(() => undefined);
   }
 
+  private cleanupToolOutputs(task: TaskDetail): void {
+    const dir = resolve(task.workRoot || defaultTaskWorkRoot(), "data", "tool-output");
+    const resultIds = new Set<string>();
+    for (const event of task.events) {
+      if (event.type === "tool_result" && typeof event.payload["id"] === "string") {
+        resultIds.add(event.payload["id"]);
+      }
+    }
+    for (const id of resultIds) {
+      void rm(resolve(dir, `${id}.txt`), { force: true }).catch(() => undefined);
+    }
+  }
+
   private cancelRunningTool(taskId: string): void {
-    this.runningToolControllers.get(taskId)?.abort();
+    const controllers = this.runningToolControllers.get(taskId);
+    if (!controllers) return;
+    for (const controller of controllers) controller.abort();
+    this.runningToolControllers.delete(taskId);
   }
 
   private cancelRunningTask(taskId: string): void {
@@ -2404,6 +2522,7 @@ export class AgentWorkbench {
     const output = this.sanitizeForPreferences(result.output, preferences);
     const args = this.sanitizeForPreferences(call.args, preferences);
     this.addEvent(task, "tool_result", result.ok ? "Tool completed" : "Tool failed", {
+      id: result.id,
       toolCallId: result.toolCallId,
       toolName: call.toolName,
       args,
@@ -3239,6 +3358,39 @@ function isManagedStateTool(toolName: string): boolean {
     toolName === "skill_delete" ||
     toolName === "plan_update"
   );
+}
+
+function isParallelSafeToolCall(call: ToolCall, category: RiskCategory): boolean {
+  if (isManagedStateTool(call.toolName)) return false;
+  return category === "host_observation" || category === "workspace_read" || category === "network";
+}
+
+function limitToolCallsPerTurn(calls: ToolCall[]): { executable: ToolCall[]; skipped: ToolCall[] } {
+  return {
+    executable: calls.slice(0, MAX_TOOL_CALLS_PER_TURN),
+    skipped: calls.slice(MAX_TOOL_CALLS_PER_TURN)
+  };
+}
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  maxParallel: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(maxParallel, items.length));
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        results[currentIndex] = await worker(items[currentIndex]!, currentIndex);
+      }
+    })
+  );
+  return results;
 }
 
 function extractInlineToolCallsFromMessage(message: string): ToolCall[] {
