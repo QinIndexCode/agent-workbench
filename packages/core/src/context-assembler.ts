@@ -12,7 +12,7 @@ import {
   taskGraphFromEvents,
   type AttentionPacket
 } from "./task-graph.js";
-import { classifyTaskIntent, isLeanContextIntent, isTrivialUserMessage, latestUserText } from "./task-intent.js";
+import { classifyTaskIntent, currentTurnForbidsToolUse, isLeanContextIntent, isTrivialUserMessage, latestUserText } from "./task-intent.js";
 import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
 
 const DEFAULT_MAX_RESERVED_RESPONSE_TOKENS = 16000;
@@ -338,6 +338,7 @@ export class ContextAssembler {
       "Use USER.md and MEMORY.md tools only for durable memories the user wants kept; do not store transient task outputs, secrets, or speculative guesses.",
       "Use skill_create or skill_delete only when the user explicitly asks or when a reviewed reusable pattern is ready; normal task completion should create memory, not a skill.",
       "When using side-effect-free state tools such as plan_update or use_skill, do not narrate the tool mechanics, tool JSON, or success status to the user; continue with the actual task.",
+      "Role-ordered assistant/tool history is SCC's own execution record. Treat prior tool results as the agent's evidence, not as user-provided examples.",
       "For greetings, thanks, simple chat, and capability questions, answer directly without calling tools or loading more context.",
       "When asked to test or list tools, treat it as a safe capability check; do not create files, edit memory, edit skills, or run persistent side-effect tools unless the user explicitly authorizes that scope.",
       "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
@@ -438,8 +439,9 @@ export class ContextAssembler {
     return [
       "## Current Turn",
       `Latest user request: ${truncate(latestUser.summary, 2200)}`,
-      "Treat this as the active objective. Earlier messages are background unless this request explicitly depends on them."
-    ].join("\n");
+      "Treat this as the active objective. Earlier messages are background unless this request explicitly depends on them.",
+      currentTurnForbidsToolUse(task) ? "Current turn constraint: do not call or simulate new tools; answer from existing conversation and tool evidence only." : ""
+    ].filter(Boolean).join("\n");
   }
 
   private buildTaskContinuityLayer(task: TaskDetail): string {
@@ -891,7 +893,7 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
 }
 
 function isModelHistoryEvent(event: TaskEvent): boolean {
-  if (["status_changed", "task_created", "task_memory_created", "task_graph_created", "task_graph_node_started", "pattern_discovered", "reflection_completed"].includes(event.type)) return false;
+  if (["status_changed", "task_created", "task_memory_created", "task_title_updated", "task_graph_created", "task_graph_node_started", "pattern_discovered", "reflection_completed"].includes(event.type)) return false;
   if (event.type.startsWith("plan_")) return false;
   if (["prompt_cache_stats", "conversation_summary_created", "context_overflow_recovered"].includes(event.type)) return false;
   if (event.payload["uiHidden"] === true && event.type !== "tool_result") return false;
@@ -899,7 +901,7 @@ function isModelHistoryEvent(event: TaskEvent): boolean {
 }
 
 function isSummarizableContextEvent(event: TaskEvent): boolean {
-  if (["assistant_delta", "thinking_delta", "conversation_summary_created", "context_overflow_recovered", "prompt_cache_stats", "task_graph_created", "task_graph_node_started"].includes(event.type)) return false;
+  if (["assistant_delta", "thinking_delta", "conversation_summary_created", "context_overflow_recovered", "prompt_cache_stats", "task_title_updated", "task_graph_created", "task_graph_node_started"].includes(event.type)) return false;
   if (event.type.startsWith("plan_")) return false;
   if (event.payload["uiHidden"] === true && event.type !== "tool_result") return false;
   return true;

@@ -19,6 +19,7 @@ import { Timeline } from "./components/Timeline.js";
 
 afterEach(() => {
   cleanup();
+  window.history.replaceState(null, "", "/");
   vi.unstubAllGlobals();
 });
 
@@ -1332,13 +1333,17 @@ describe("Workbench components", () => {
     expect(await screen.findByText("Model: not configured")).toBeInTheDocument();
     expect(screen.queryByText("gpt-5.4-mini")).not.toBeInTheDocument();
     fireEvent.click(await screen.findByText("Settings"));
-    expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/settings/providers");
     fireEvent.click(screen.getByText("Permissions"));
-    expect(screen.getByText("Permissions and preferences")).toBeInTheDocument();
+    expect(await screen.findByText("Permissions and preferences")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/settings/permissions");
     fireEvent.click(screen.getByText("Scheduled tasks"));
-    expect(screen.getByRole("heading", { name: "Scheduled tasks" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Scheduled tasks" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/settings/scheduled");
     fireEvent.click(screen.getByText("Web search"));
-    expect(screen.getByRole("heading", { name: "Web search" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Web search" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/settings/search");
   });
 });
 

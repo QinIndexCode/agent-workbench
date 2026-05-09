@@ -112,6 +112,7 @@ export const TaskEventSchema = z.object({
     "tool_result",
     "status_changed",
     "task_memory_created",
+    "task_title_updated",
     "conversation_summary_created",
     "context_overflow_recovered",
     "provider_fallback",

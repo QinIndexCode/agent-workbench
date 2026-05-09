@@ -50,6 +50,10 @@ export function explicitlyAvoidsToolUse(text: string): boolean {
   return /(不要|无需|不用|别|禁止|不必|不再).{0,16}(新增|重新|再次|再)?(.{0,8})(调用|使用|运行|执行).{0,12}(工具|命令|tool|command)|(不要|无需|不用|别|禁止|不必|不再).{0,16}(新增|重新|再次|再)?(.{0,8})(工具|命令|tool|command).{0,12}(调用|使用|运行|执行)|without\s+(calling|using|running).{0,16}(tools?|commands?)|do\s+not\s+(call|use|run).{0,16}(tools?|commands?)/iu.test(text);
 }
 
+export function currentTurnForbidsToolUse(task: Pick<TaskDetail, "events">): boolean {
+  return explicitlyAvoidsToolUse(latestUserText(task));
+}
+
 function isCurrentUserEvent(event: TaskEvent): boolean {
   return (event.type === "user_message" || event.type === "guidance_pending" || event.type === "guidance_consumed") && !event.reverted;
 }

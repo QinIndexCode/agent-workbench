@@ -1,40 +1,40 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup, TaskAttachment } from "@scc/shared";
+import { type AppRoute, useAppRoute } from "./app-router.js";
 import { api } from "./api.js";
-import { DocsView } from "./components/DocsView.js";
-import { HistoryPage } from "./components/HistoryPage.js";
-import { IntegrationsPanel } from "./components/IntegrationsPanel.js";
-import { KnowledgePanel } from "./components/KnowledgePanel.js";
-import { LibraryView, type LibrarySection } from "./components/LibraryView.js";
-import { McpPanel } from "./components/McpPanel.js";
-import { ModelProvidersPanel } from "./components/ModelProvidersPanel.js";
-import { PermissionsPanel } from "./components/PermissionsPanel.js";
 import { ProviderBrandIcon } from "./components/ProviderBrandIcon.js";
-import { ReflectionPanel } from "./components/ReflectionPanel.js";
-import { SettingsView, type SettingsSection } from "./components/SettingsView.js";
-import { ScheduledTasksPanel } from "./components/ScheduledTasksPanel.js";
-import { SkillCuratorPanel } from "./components/SkillCuratorPanel.js";
-import { SkillPanel } from "./components/SkillPanel.js";
 import { SupportDialog } from "./components/SupportDialog.js";
 import { TaskList } from "./components/TaskList.js";
-import { TaskThread } from "./components/TaskThread.js";
-import { WebSearchPanel } from "./components/WebSearchPanel.js";
 import type { ComposerMode, ComposerPermissionMode, PermissionPreset } from "./components/Composer.js";
+import type { LibrarySection } from "./components/LibraryView.js";
+import type { SettingsSection } from "./components/SettingsView.js";
 import { useWorkbenchData } from "./useWorkbenchData.js";
 
-type ActiveView = "tasks" | "history" | "library" | "docs" | "settings";
+const DocsView = lazy(() => import("./components/DocsView.js").then((module) => ({ default: module.DocsView })));
+const HistoryPage = lazy(() => import("./components/HistoryPage.js").then((module) => ({ default: module.HistoryPage })));
+const IntegrationsPanel = lazy(() => import("./components/IntegrationsPanel.js").then((module) => ({ default: module.IntegrationsPanel })));
+const KnowledgePanel = lazy(() => import("./components/KnowledgePanel.js").then((module) => ({ default: module.KnowledgePanel })));
+const LibraryView = lazy(() => import("./components/LibraryView.js").then((module) => ({ default: module.LibraryView })));
+const McpPanel = lazy(() => import("./components/McpPanel.js").then((module) => ({ default: module.McpPanel })));
+const ModelProvidersPanel = lazy(() => import("./components/ModelProvidersPanel.js").then((module) => ({ default: module.ModelProvidersPanel })));
+const PermissionsPanel = lazy(() => import("./components/PermissionsPanel.js").then((module) => ({ default: module.PermissionsPanel })));
+const ReflectionPanel = lazy(() => import("./components/ReflectionPanel.js").then((module) => ({ default: module.ReflectionPanel })));
+const SettingsView = lazy(() => import("./components/SettingsView.js").then((module) => ({ default: module.SettingsView })));
+const ScheduledTasksPanel = lazy(() => import("./components/ScheduledTasksPanel.js").then((module) => ({ default: module.ScheduledTasksPanel })));
+const SkillCuratorPanel = lazy(() => import("./components/SkillCuratorPanel.js").then((module) => ({ default: module.SkillCuratorPanel })));
+const SkillPanel = lazy(() => import("./components/SkillPanel.js").then((module) => ({ default: module.SkillPanel })));
+const TaskThread = lazy(() => import("./components/TaskThread.js").then((module) => ({ default: module.TaskThread })));
+const WebSearchPanel = lazy(() => import("./components/WebSearchPanel.js").then((module) => ({ default: module.WebSearchPanel })));
 
 const allRiskCategories: RiskCategory[] = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
 const readOnlyRiskCategories: RiskCategory[] = ["host_observation", "workspace_read"];
 
 export function App() {
   const data = useWorkbenchData();
+  const [route, navigateRoute] = useAppRoute();
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
-  const [activeView, setActiveView] = useState<ActiveView>("tasks");
-  const [previousView, setPreviousView] = useState<Exclude<ActiveView, "docs">>("tasks");
+  const [previousNonDocsRoute, setPreviousNonDocsRoute] = useState<AppRoute>({ view: "tasks" });
   const [supportOpen, setSupportOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>("providers");
-  const [librarySection, setLibrarySection] = useState<LibrarySection>("skills");
   const [libraryQuery, setLibraryQuery] = useState("");
   const [activeTaskFolderId, setActiveTaskFolderId] = useState("default");
   const [titleIssue, setTitleIssue] = useState<{ goal: string; error: string } | null>(null);
@@ -45,6 +45,12 @@ export function App() {
   const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">("dark");
   const language = data.preferences?.language ?? "zh-CN";
   const theme = data.preferences?.theme ?? "dark";
+  const activeView = route.view;
+  const activeTask = route.view === "tasks" && route.newTask ? null : data.selected;
+  const activeTranscript = route.view === "tasks" && route.newTask ? [] : data.selectedTranscript;
+  const selectedId = route.view === "tasks" && route.newTask ? null : data.selectedId;
+  const settingsSection: SettingsSection = route.view === "settings" ? route.section : "providers";
+  const librarySection: LibrarySection = route.view === "library" ? route.section : "skills";
   const engineStatus = data.backendHealthy === false ? "attention" : data.error ? "attention" : data.realtimeConnected ? "streaming" : "running";
   const activeProvider = data.modelProviders.find((provider) => provider.id === data.preferences?.activeModelProviderId) ?? data.modelProviders.find((provider) => provider.enabled);
   const activeModel = activeProvider?.models.find((model) => model.id === activeProvider.defaultModelId) ?? activeProvider?.models[0];
@@ -89,6 +95,12 @@ export function App() {
     if (html.lang !== lang) html.lang = lang;
   }, [language]);
 
+  useEffect(() => {
+    if (route.view !== "docs") setPreviousNonDocsRoute(route);
+    if (route.view === "tasks" && route.newTask) data.clearSelection();
+    if (route.view === "tasks" && route.taskId && route.taskId !== data.selectedId) void data.selectTask(route.taskId);
+  }, [route]);
+
   return (
     <main className={activeView === "docs" ? "shell docsShell" : "shell"}>
       {activeView !== "docs" ? (
@@ -100,26 +112,25 @@ export function App() {
           open={taskDrawerOpen}
           tasks={data.tasks}
           folders={data.taskFolders}
-          selectedId={data.selectedId}
+          selectedId={selectedId}
           activeFolderId={activeTaskFolderId}
           onClose={() => setTaskDrawerOpen(false)}
           onNewTask={() => {
-            setActiveView("tasks");
+            navigateRoute({ view: "tasks", newTask: true });
             setTaskDrawerOpen(false);
             data.clearSelection();
           }}
           onOpenDocs={() => openDocs()}
           onOpenHistory={() => {
-            setActiveView("history");
+            navigateRoute({ view: "history" });
             setTaskDrawerOpen(false);
           }}
           onOpenLibrary={() => {
-            setLibrarySection("skills");
-            setActiveView("library");
+            navigateRoute({ view: "library", section: "skills" });
             setTaskDrawerOpen(false);
           }}
           onOpenSettings={() => {
-            setActiveView("settings");
+            navigateRoute({ view: "settings", section: "providers" });
             setTaskDrawerOpen(false);
           }}
           onOpenSupport={() => {
@@ -136,17 +147,18 @@ export function App() {
           onUpdateTask={(taskId, input) => data.patchTask(taskId, input)}
           onUpdateFolder={(folderId, name, rootPath) => data.runSideAction(() => api.patchTaskFolder(folderId, { name, rootPath }))}
           onSelect={(taskId) => {
-            setActiveView("tasks");
+            navigateRoute({ view: "tasks", taskId });
             setTaskDrawerOpen(false);
             void data.selectTask(taskId);
           }}
         />
       ) : null}
 
+      <Suspense fallback={<div className="empty">{language === "zh-CN" ? "正在加载..." : "Loading..."}</div>}>
       {activeView === "tasks" ? (
         <TaskThread
-          task={data.selected}
-          transcriptEvents={data.selectedTranscript}
+          task={activeTask}
+          transcriptEvents={activeTranscript}
           busy={data.busy}
           busySince={data.busySince}
           attachments={pendingAttachments}
@@ -167,17 +179,14 @@ export function App() {
           onRemoveAttachment={(attachmentId) => removeComposerAttachment(attachmentId)}
           onFolderChange={(folderId) => setActiveTaskFolderId(folderId)}
           onOpenConnect={() => {
-            setSettingsSection("providers");
-            setActiveView("settings");
+            navigateRoute({ view: "settings", section: "providers" });
           }}
           onOpenPermissionSettings={() => {
-            setSettingsSection("permissions");
-            setActiveView("settings");
+            navigateRoute({ view: "settings", section: "permissions" });
           }}
           onOpenCustomPermissions={() => {
             setSettingsStartCustom(true);
-            setSettingsSection("permissions");
-            setActiveView("settings");
+            navigateRoute({ view: "settings", section: "permissions" });
           }}
           onRestoreCustomPermissions={() => restoreCustomPermissions()}
           hasCustomSnapshot={hasCustomSnapshot}
@@ -203,7 +212,7 @@ export function App() {
           onOpenTasks={() => setTaskDrawerOpen(true)}
           onDelete={(taskId, options) => data.deleteTask(taskId, options)}
           onOpenTask={(taskId) => {
-            setActiveView("tasks");
+            navigateRoute({ view: "tasks", taskId });
             void data.selectTask(taskId);
           }}
         />
@@ -213,7 +222,7 @@ export function App() {
           language={language}
           query={libraryQuery}
           onQuery={setLibraryQuery}
-          onSection={(section) => setLibrarySection(section)}
+          onSection={(section) => navigateRoute({ view: "library", section })}
           onOpenTasks={() => setTaskDrawerOpen(true)}
         >
           {{
@@ -269,13 +278,13 @@ export function App() {
           }}
         </LibraryView>
       ) : activeView === "docs" ? (
-        <DocsView language={language} onBack={() => setActiveView(previousView)} />
+        <DocsView language={language} onBack={() => navigateRoute(previousNonDocsRoute)} />
       ) : (
         <SettingsView
           activeSection={settingsSection}
           language={language}
           onOpenTasks={() => setTaskDrawerOpen(true)}
-          onSection={(section) => setSettingsSection(section)}
+          onSection={(section) => navigateRoute({ view: "settings", section })}
         >
           {{
             providers: (
@@ -362,13 +371,14 @@ export function App() {
           }}
         </SettingsView>
       )}
+      </Suspense>
       <SupportDialog language={language} open={supportOpen} onClose={() => setSupportOpen(false)} onOpenDocs={() => openDocs()} />
     </main>
   );
 
   function openDocs() {
-    if (activeView !== "docs") setPreviousView(activeView);
-    setActiveView("docs");
+    if (activeView !== "docs") setPreviousNonDocsRoute(route);
+    navigateRoute({ view: "docs" });
     setTaskDrawerOpen(false);
   }
 
@@ -377,7 +387,7 @@ export function App() {
     if (mode === "guidance" || mode === "continue") {
       setTitleIssue(null);
       void data.runTaskAction(async () => {
-        const task = data.selected ? await api.sendMessage(data.selected.id, text, attachmentIds) : await submitNewTaskAction(text, false, attachmentIds);
+        const task = activeTask ? await api.sendMessage(activeTask.id, text, attachmentIds) : await submitNewTaskAction(text, false, attachmentIds);
         setPendingAttachments([]);
         return task;
       });
@@ -405,7 +415,9 @@ export function App() {
       }
     }
     setTitleIssue(null);
-    return api.createTask(goal, title, activeTaskFolderId, attachmentIds);
+    const task = await api.createTask(goal, title, activeTaskFolderId, attachmentIds);
+    navigateRoute({ view: "tasks", taskId: task.id });
+    return task;
   }
 
   function approve(approvalId: string, decision: ApprovalDecision) {

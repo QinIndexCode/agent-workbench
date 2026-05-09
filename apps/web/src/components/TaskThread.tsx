@@ -252,7 +252,8 @@ function TaskPlanPanel({
   const [cacheStats, setCacheStats] = useState<PromptCacheStats[]>([]);
   const [collapsed, setCollapsed] = useState(() => {
     try {
-      const stored = window.localStorage.getItem("scc.planPanel.collapsed");
+      const storage = safeBrowserLocalStorage();
+      const stored = storage?.getItem("scc.planPanel.collapsed");
       if (stored === "1") return true;
       if (stored === "0") return false;
       return window.matchMedia?.("(max-width: 760px)").matches ?? false;
@@ -262,7 +263,7 @@ function TaskPlanPanel({
   });
   useEffect(() => {
     try {
-      window.localStorage.setItem("scc.planPanel.collapsed", collapsed ? "1" : "0");
+      safeBrowserLocalStorage()?.setItem("scc.planPanel.collapsed", collapsed ? "1" : "0");
     } catch {
       // Ignore storage failures; the panel remains usable for the current session.
     }
@@ -418,6 +419,15 @@ function TaskPlanPanel({
     setRollbackPreview(null);
     setRollbackError(null);
     setRollbackResult(null);
+  }
+}
+
+function safeBrowserLocalStorage(): Storage | null {
+  if (typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent)) return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
   }
 }
 

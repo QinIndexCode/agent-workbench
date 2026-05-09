@@ -10,6 +10,10 @@ import type { TaskDetail, TaskEvent, ToolCall, ToolResult } from "@scc/shared";
 import { createApp } from "../src/server.js";
 import { SqliteWorkbenchStore } from "../src/sqlite-store.js";
 
+function createTestApp(options: Parameters<typeof createApp>[0] = {}) {
+  return createApp({ logger: false, ...options });
+}
+
 class StubToolExecutor {
   async execute(call: ToolCall): Promise<ToolResult> {
     return {
@@ -50,7 +54,7 @@ describe("server API", () => {
       pendingGuidance: [],
       events
     });
-    const app = await createApp({ workbench: new AgentWorkbench({ store }) });
+    const app = await createTestApp({ workbench: new AgentWorkbench({ store }) });
 
     const listTask = (await app.inject("/api/tasks")).json()[0];
     expect(listTask.events).toHaveLength(0);
@@ -142,7 +146,7 @@ describe("server API", () => {
       pendingGuidance: [],
       events
     });
-    const app = await createApp({ workbench: new AgentWorkbench({ store }) });
+    const app = await createTestApp({ workbench: new AgentWorkbench({ store }) });
 
     const detail = (await app.inject("/api/tasks/task_windowed?eventLimit=50")).json();
     const eventWindow = (await app.inject("/api/tasks/task_windowed/events?eventLimit=50")).json();
@@ -168,7 +172,7 @@ describe("server API", () => {
   });
 
   it("creates a task and exposes an approval", async () => {
-    const app = await createApp({
+    const app = await createTestApp({
       workbench: new AgentWorkbench({
         store: new InMemoryWorkbenchStore(),
         model: new ConfiguredToolModelClient("Get-Process")
@@ -190,7 +194,7 @@ describe("server API", () => {
   });
 
   it("rejects unknown request fields through strict schemas", async () => {
-    const app = await createApp({
+    const app = await createTestApp({
       workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ConfiguredToolModelClient("Get-Process") })
     });
 
@@ -205,7 +209,7 @@ describe("server API", () => {
   });
 
   it("lets the backend create a task title when the client omits one", async () => {
-    const app = await createApp({
+    const app = await createTestApp({
       workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ConfiguredToolModelClient("Get-Process") })
     });
 
@@ -221,7 +225,7 @@ describe("server API", () => {
   });
 
   it("generates local fallback titles and manages task folders", async () => {
-    const app = await createApp({
+    const app = await createTestApp({
       workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ConfiguredToolModelClient("Get-Process") })
     });
 
@@ -318,7 +322,7 @@ describe("server API", () => {
   });
 
   it("serves task, approval, guidance, and learning endpoints", async () => {
-    const app = await createApp({
+    const app = await createTestApp({
       workbench: new AgentWorkbench({
         store: new InMemoryWorkbenchStore(),
         tools: new StubToolExecutor(),
@@ -482,7 +486,7 @@ describe("server API", () => {
   });
 
   it("deletes tasks with optional learning cleanup", async () => {
-    const app = await createApp({
+    const app = await createTestApp({
       workbench: new AgentWorkbench({
         store: new InMemoryWorkbenchStore(),
         tools: new StubToolExecutor(),
@@ -521,7 +525,7 @@ describe("server API", () => {
   it("serves MCP management endpoints", async () => {
     const store = new InMemoryWorkbenchStore();
     const mcpRegistry = new McpRegistry(store);
-    const app = await createApp({
+    const app = await createTestApp({
       workbench: new AgentWorkbench({ store }),
       mcpRegistry
     });
@@ -571,7 +575,7 @@ describe("server API", () => {
       delete process.env["SCC_API_PROVIDER"];
       delete process.env["OPENAI_PROVIDER"];
 
-      const app = await createApp();
+      const app = await createTestApp();
       const providers = (await app.inject("/api/model-providers")).json();
       const preferences = (await app.inject("/api/preferences")).json();
 
@@ -598,7 +602,7 @@ describe("server API", () => {
   });
 
   it("serves SCC tools through a real MCP streamable HTTP client", async () => {
-    const app = await createApp({
+    const app = await createTestApp({
       workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ConfiguredToolModelClient("Get-Process") })
     });
     const address = await app.listen({ port: 0, host: "127.0.0.1" });

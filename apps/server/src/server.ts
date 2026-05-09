@@ -229,10 +229,11 @@ function stripToolEvidenceBoilerplate(value: string): string {
 export interface AppOptions {
   workbench?: AgentWorkbench;
   mcpRegistry?: McpRegistry;
+  logger?: boolean;
 }
 
 export async function createApp(options: AppOptions = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: true });
+  const app = Fastify({ logger: options.logger ?? true });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ZodError) {
       return reply.code(400).send({ error: "Invalid request", issues: error.issues });

@@ -166,6 +166,38 @@ describe("ContextAssembler", () => {
     expect(latest && "content" in latest ? latest.content : "").toContain("编写一个完整的博客页面");
   });
 
+  it("keeps task title update metadata out of model context", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const task: TaskDetail = {
+      id: "task_title_metadata",
+      title: "Auto Rename Leaked Title",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_hello", taskId: "task_title_metadata", type: "user_message", createdAt: nowIso(), summary: "你好", payload: {} },
+        {
+          id: "event_title",
+          taskId: "task_title_metadata",
+          type: "task_title_updated",
+          createdAt: nowIso(),
+          summary: "Auto Rename Leaked Title",
+          payload: { source: "auto", uiHidden: true }
+        },
+        { id: "event_current", taskId: "task_title_metadata", type: "user_message", createdAt: nowIso(), summary: "请基于现有内容继续回答", payload: {} }
+      ]
+    };
+
+    const context = await assembler.assemble(task);
+    const serialized = JSON.stringify(context.messages) + "\n" + context.systemPrompt + "\n" + context.input;
+
+    expect(serialized).not.toContain("Auto Rename Leaked Title");
+    expect(serialized).not.toContain("task_title_updated");
+    expect(context.messages.at(-1)?.role).toBe("user");
+  });
+
   it("keeps the latest user message when a long history is truncated", () => {
     const task: TaskDetail = {
       id: "task_long_history",
@@ -1016,6 +1048,24 @@ class StreamingFinalModel implements ModelClient {
   }
 }
 
+class LongFinalModel implements ModelClient {
+  async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    const message = "基于当前任务，我会给出完整、可追踪、可验证的工程结论。".repeat(12);
+    await stream?.onAssistantDelta(message);
+    return { kind: "final", message, ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+}
+
+class ToolDespiteForbiddenModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (task.events.some((event) => event.type === "tool_result")) return { kind: "final", message: "Answered from existing evidence." };
+    return {
+      kind: "tool_calls",
+      calls: [{ id: createId("tool_call"), toolName: "list_files", args: { path: "." } }]
+    };
+  }
+}
+
 class InlineToolMarkupModel implements ModelClient {
   async next(task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
     if (task.events.some((event) => event.type === "tool_result")) {
@@ -1218,6 +1268,54 @@ describe("Attention-first task graph runtime", () => {
     expect(memories[0]?.goal).toContain("桌面运行的软件");
   });
 
+  it("auto-renames a weak greeting title once after a meaningful long response", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new LongFinalModel()
+    });
+    const greeting = await workbench.createTask("你好");
+
+    const renamed = await workbench.appendMessage(greeting.id, "帮我检查项目中的上下文问题并总结修复建议");
+    const titleEvents = renamed.events.filter((event) => event.type === "task_title_updated");
+
+    expect(renamed.title).not.toBe("你好");
+    expect(renamed.title).toContain("检查项目中的上下文问题");
+    expect(titleEvents).toHaveLength(1);
+    expect(titleEvents[0]?.payload["source"]).toBe("auto");
+
+    const repeated = await workbench.appendMessage(renamed.id, "继续补充说明");
+    expect(repeated.events.filter((event) => event.type === "task_title_updated")).toHaveLength(1);
+  });
+
+  it("does not auto-rename a user-supplied title", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new LongFinalModel()
+    });
+
+    const completed = await workbench.createTask("帮我检查项目中的上下文问题并总结修复建议", "手动标题");
+
+    expect(completed.title).toBe("手动标题");
+    expect(completed.events.some((event) => event.type === "task_title_updated")).toBe(false);
+  });
+
+  it("turns forbidden tool attempts into explicit skipped results without executing tools", async () => {
+    const tools = new StubToolExecutor();
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new ToolDespiteForbiddenModel(),
+      tools
+    });
+
+    const completed = await workbench.createTask("不要调用工具，直接根据已有内容回答");
+    const result = completed.events.find((event) => event.type === "tool_result");
+
+    expect(completed.status).toBe("completed");
+    expect(tools.calls).toHaveLength(0);
+    expect(result?.payload["ok"]).toBe(false);
+    expect(String(result?.payload["output"] ?? "")).toContain("forbids new tool calls");
+  });
+
   it("pauses a React code-change task when the model tries to finish without verification evidence", async () => {
     const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
 
@@ -1406,7 +1504,7 @@ describe("AgentWorkbench", () => {
     await workbench.grantGlobalPermission("workspace_read", "trace logging");
 
     const completed = await workbench.createTask("trace the full request-response loop", undefined, folder.id);
-    const tracePath = join(workRoot, "data", "logs", "model-traces", `${completed.id}.jsonl`);
+    const tracePath = join(workRoot, "data", "logs", "model-traces", completed.id, "trace.jsonl");
 
     expect(existsSync(tracePath)).toBe(true);
     const entries = readFileSync(tracePath, "utf8")
@@ -1487,7 +1585,7 @@ describe("AgentWorkbench", () => {
       await workbench.grantGlobalPermission("workspace_read", "manual trace fixture");
 
       const completed = await workbench.createTask("Trace the full request-response loop by listing files.", undefined, folder.id);
-      const tracePath = join(workRoot, "data", "logs", "model-traces", `${completed.id}.jsonl`);
+      const tracePath = join(workRoot, "data", "logs", "model-traces", completed.id, "trace.jsonl");
       const traceEntries = readFileSync(tracePath, "utf8")
         .trim()
         .split("\n")

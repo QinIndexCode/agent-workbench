@@ -6,7 +6,7 @@ import type { CanonicalModelMessage, ContextAssembler } from "./context-assemble
 import { createId, nowIso } from "./ids.js";
 import type { ModelClient, ModelStreamHandlers, ModelTraceEvent, ModelTurn, ModelUsage } from "./fallback-model.js";
 import { ConfiguredToolModelClient, FallbackModelClient } from "./fallback-model.js";
-import { classifyTaskIntent, shouldLoadDynamicTools, type TaskIntent } from "./task-intent.js";
+import { classifyTaskIntent, currentTurnForbidsToolUse, shouldLoadDynamicTools, type TaskIntent } from "./task-intent.js";
 import { toolAllowedByTaskGraph } from "./task-graph.js";
 
 export interface OpenAIModelClientOptions {
@@ -71,7 +71,7 @@ export class OpenAIModelClient implements ModelClient {
     const context = this.contextAssembler ? await this.contextAssembler.assemble(task) : null;
     const preferences = await this.preferenceProvider?.();
     const intent = classifyTaskIntent(task);
-    const dynamicTools = shouldLoadDynamicTools(intent, task) ? (await this.toolProvider?.listModelTools()) ?? [] : [];
+    const dynamicTools = !currentTurnForbidsToolUse(task) && shouldLoadDynamicTools(intent, task) ? (await this.toolProvider?.listModelTools()) ?? [] : [];
     const modelTools = filterToolsForTaskGraph(task, selectModelToolsForIntent(intent, dynamicTools));
     const turn = await this.nextWithProviderFallbacks(task, context, preferences, modelTools, stream);
     if (turn.kind !== "tool_calls") return turn;
@@ -714,6 +714,7 @@ function serializeTraceError(error: unknown): Record<string, unknown> {
 }
 
 export function selectModelToolsForTask(task: TaskDetail, dynamicTools: ModelToolDefinition[] = []): ModelToolDefinition[] {
+  if (currentTurnForbidsToolUse(task)) return [];
   const intent = classifyTaskIntent(task);
   return filterToolsForTaskGraph(task, selectModelToolsForIntent(intent, shouldLoadDynamicTools(intent, task) ? dynamicTools : []));
 }

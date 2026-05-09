@@ -96,7 +96,7 @@ import { PermissionEngine, type PermissionState, type RiskAssessment } from "./p
 import { LocalSecretBox, maskSecret, sanitizeSensitiveText, sanitizeSensitiveValue } from "./secrets.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
 import { compileTaskGraph, completionBlocker, taskGraphFromEvents, verificationResultFromToolEvent } from "./task-graph.js";
-import { explicitlyAvoidsToolUse, isTrivialUserMessage, latestUserText } from "./task-intent.js";
+import { currentTurnForbidsToolUse, explicitlyAvoidsToolUse, isTrivialUserMessage, latestUserText } from "./task-intent.js";
 import { ShellToolExecutor, type ToolExecutor } from "./tools.js";
 import { createWebSearchApiKeyRef } from "./web-search.js";
 import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
@@ -124,6 +124,14 @@ const MAX_MODEL_TURNS_PER_TASK = 24;
 const MAX_TOOL_CALLS_PER_TURN = 8;
 const MAX_STATE_ONLY_TOOL_TURNS = 2;
 const MAX_PARALLEL_READ_ONLY_TOOLS = 4;
+const AUTO_RENAME_ASSISTANT_CHARS = 240;
+
+type TaskTitleSource = "explicit" | "model" | "local_fallback";
+
+interface TaskTitleResolution {
+  title: string;
+  source: TaskTitleSource;
+}
 
 export class AgentWorkbench {
   private readonly store: WorkbenchStore;
@@ -163,22 +171,26 @@ export class AgentWorkbench {
     return task;
   }
 
-  private async resolveTaskTitle(goal: string, title?: string, language?: string): Promise<string> {
+  private async resolveTaskTitle(goal: string, title?: string, language?: string): Promise<TaskTitleResolution> {
     const explicit = title?.trim();
-    if (explicit) return explicit;
+    if (explicit) return { title: explicit, source: "explicit" };
     try {
-      return (await this.generateTaskTitle({ goal, useLocalFallback: false, ...(language ? { language } : {}) })).title;
+      const result = await this.generateTaskTitle({ goal, useLocalFallback: false, ...(language ? { language } : {}) });
+      return { title: result.title, source: result.source };
     } catch {
-      return createLocalTaskTitle(goal, language);
+      return { title: createLocalTaskTitle(goal, language), source: "local_fallback" };
     }
   }
 
-  private async initializeTask(goal: string, title: string, folderId: string, attachmentIds: string[] = []): Promise<TaskDetail> {
+  private async initializeTask(goal: string, titleResolution: TaskTitleResolution, folderId: string, attachmentIds: string[] = []): Promise<TaskDetail> {
     const folder = await this.resolveTaskFolder(folderId);
-    const task = this.emptyTask(title);
+    const task = this.emptyTask(titleResolution.title);
     task.folderId = folder.id;
     task.workRoot = folder.rootPath;
-    this.addEvent(task, "task_created", "Task created");
+    this.addEvent(task, "task_created", "Task created", {
+      titleSource: titleResolution.source,
+      initialTitle: titleResolution.title
+    });
     await this.beginTaskTurn(task, goal, "user_message");
     this.ensureTaskGraph(task);
     await this.attachUploadedFiles(task, attachmentIds);
@@ -365,6 +377,14 @@ export class AgentWorkbench {
         folderId,
         updatedAt: nowIso()
       };
+      if (title && title !== task.title) {
+        this.addEvent(updated, "task_title_updated", title, {
+          source: "manual",
+          previousTitle: task.title,
+          newTitle: title,
+          uiHidden: true
+        });
+      }
       await this.store.saveTask(updated);
       return updated;
     });
@@ -1327,7 +1347,7 @@ export class AgentWorkbench {
           const scheduledPrompt = scheduled.folderId
             ? scheduled.prompt
             : `${scheduled.prompt}\n\nNo work folder was selected for this automation. Do not write files unless the user explicitly assigns a work folder.`;
-          const task = await this.initializeTask(scheduledPrompt, scheduled.title, scheduled.folderId ?? "default");
+          const task = await this.initializeTask(scheduledPrompt, { title: scheduled.title, source: "explicit" }, scheduled.folderId ?? "default");
           this.addEvent(task, "scheduled_task_created", scheduled.title, { scheduledTaskId: scheduled.id });
           await this.store.saveTask(task);
           void this.runTaskExclusive(task.id, () => this.step(task.id)).catch((error) => {
@@ -1746,6 +1766,7 @@ export class AgentWorkbench {
       if (stoppedAfterModel) return stoppedAfterModel;
       const turn = this.normalizeInlineToolMarkupTurn(task, modelTurn);
       if (turn.kind === "final") {
+        await this.maybeAutoRenameTask(task, { reason: "assistant_output", text: turn.message });
         const blocker = completionBlocker(task);
         if (blocker) {
           this.addEvent(task, "assistant_message", blocker, {
@@ -1762,6 +1783,14 @@ export class AgentWorkbench {
         await this.recordExperience(task);
         await this.store.saveTask(task);
         return task;
+      }
+
+      if (currentTurnForbidsToolUse(task)) {
+        for (const call of turn.calls) {
+          await this.addToolResultEvent(task, call, failedToolResult(call, "Tool not executed: the latest user request forbids new tool calls."));
+        }
+        await this.store.saveTask(task);
+        continue;
       }
 
       const { executable, skipped } = limitToolCallsPerTurn(turn.calls);
@@ -2698,6 +2727,7 @@ export class AgentWorkbench {
       });
     }
     this.contextAssembler.getFileStateTracker(task.id).updateFromToolResult(toolEvent);
+    await this.maybeAutoRenameTask(task, { reason: "tool_result", toolName: call.toolName });
   }
 
   private async safeAppendModelTrace(task: TaskDetail, event: ModelTraceEvent): Promise<void> {
@@ -2707,6 +2737,43 @@ export class AgentWorkbench {
       streamId: event.streamId,
       ...(event.provider ? { provider: event.provider } : {}),
       payload: event.payload
+    });
+  }
+
+  private async maybeAutoRenameTask(
+    task: TaskDetail,
+    trigger: { reason: "assistant_output"; text: string } | { reason: "tool_result"; toolName: string }
+  ): Promise<void> {
+    const goal = latestUserText(task);
+    if (!shouldAutoRenameTask(task, goal, trigger)) return;
+    const previousTitle = task.title;
+    let result: TaskTitleResponse;
+    try {
+      result = await this.generateTaskTitle({ goal, useLocalFallback: false });
+    } catch {
+      result = { title: createLocalTaskTitle(goal), source: "local_fallback" };
+    }
+    const nextTitle = result.title.trim() || createLocalTaskTitle(goal);
+    const changed = normalizeTitleKey(nextTitle) !== normalizeTitleKey(previousTitle);
+    if (changed) task.title = nextTitle;
+    this.addEvent(task, "task_title_updated", changed ? nextTitle : previousTitle, {
+      source: "auto",
+      titleSource: result.source,
+      trigger,
+      previousTitle,
+      newTitle: changed ? nextTitle : previousTitle,
+      changed,
+      uiHidden: true
+    });
+    await this.safeAppendTaskTrace(task, {
+      kind: "task_title_updated",
+      timestamp: nowIso(),
+      source: "auto",
+      titleSource: result.source,
+      trigger,
+      previousTitle,
+      newTitle: changed ? nextTitle : previousTitle,
+      changed
     });
   }
 
@@ -2728,7 +2795,7 @@ export class AgentWorkbench {
     this.traceLocks.set(task.id, queued);
     await previous.catch(() => undefined);
     try {
-      const tracePath = resolve(task.workRoot || defaultTaskWorkRoot(), "data", "logs", "model-traces", `${task.id}.jsonl`);
+      const tracePath = resolve(task.workRoot || defaultTaskWorkRoot(), "data", "logs", "model-traces", task.id, "trace.jsonl");
       await mkdir(dirname(tracePath), { recursive: true });
       await appendFile(tracePath, `${JSON.stringify({
         taskId: task.id,
@@ -3008,6 +3075,35 @@ export class AgentWorkbench {
 
 function isMcpToolName(toolName: string): boolean {
   return toolName.startsWith("mcp__");
+}
+
+function shouldAutoRenameTask(
+  task: TaskDetail,
+  goal: string,
+  trigger: { reason: "assistant_output"; text: string } | { reason: "tool_result"; toolName: string }
+): boolean {
+  if (!goal.trim() || isTrivialUserMessage(goal)) return false;
+  if (task.events.some((event) => event.type === "task_title_updated" && !event.reverted)) return false;
+  const created = task.events.find((event) => event.type === "task_created" && !event.reverted);
+  if (created?.payload["titleSource"] === "explicit") return false;
+  if (trigger.reason === "assistant_output" && trigger.text.trim().length < AUTO_RENAME_ASSISTANT_CHARS) return false;
+  if (created?.payload["titleSource"] === "local_fallback") return true;
+  return isWeakTaskTitle(task.title, task);
+}
+
+function isWeakTaskTitle(title: string, task: TaskDetail): boolean {
+  const normalized = normalizeTitleKey(title);
+  if (!normalized || ["新任务", "newtask", "새작업"].includes(normalized)) return true;
+  if (isTrivialUserMessage(title)) return true;
+  const firstUser = task.events.find((event) => event.type === "user_message" && !event.reverted);
+  if (!firstUser || !isTrivialUserMessage(firstUser.summary)) return false;
+  const firstTitle = normalizeTitleKey(firstUser.summary);
+  const firstLocalTitle = normalizeTitleKey(createLocalTaskTitle(firstUser.summary));
+  return normalized === firstTitle || normalized === firstLocalTitle;
+}
+
+function normalizeTitleKey(value: string): string {
+  return value.replace(/[\s"'“”‘’`.,，。!！?？:：;；\-_/\\()[\]{}]+/gu, "").trim().toLowerCase();
 }
 
 function autoApproveAllows(level: UserPreferences["autoApprove"], category: RiskCategory): boolean {
