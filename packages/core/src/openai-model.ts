@@ -7,6 +7,7 @@ import { createId, nowIso } from "./ids.js";
 import type { ModelClient, ModelStreamHandlers, ModelTraceEvent, ModelTurn, ModelUsage } from "./fallback-model.js";
 import { ConfiguredToolModelClient, FallbackModelClient } from "./fallback-model.js";
 import { classifyTaskIntent, shouldLoadDynamicTools, type TaskIntent } from "./task-intent.js";
+import { toolAllowedByTaskGraph } from "./task-graph.js";
 
 export interface OpenAIModelClientOptions {
   apiKey?: string;
@@ -71,7 +72,7 @@ export class OpenAIModelClient implements ModelClient {
     const preferences = await this.preferenceProvider?.();
     const intent = classifyTaskIntent(task);
     const dynamicTools = shouldLoadDynamicTools(intent, task) ? (await this.toolProvider?.listModelTools()) ?? [] : [];
-    const modelTools = selectModelToolsForIntent(intent, dynamicTools);
+    const modelTools = filterToolsForTaskGraph(task, selectModelToolsForIntent(intent, dynamicTools));
     const turn = await this.nextWithProviderFallbacks(task, context, preferences, modelTools, stream);
     if (turn.kind !== "tool_calls") return turn;
 
@@ -191,6 +192,7 @@ export class OpenAIModelClient implements ModelClient {
         taskTitle: task.title,
         taskStatus: task.status,
         eventCount: task.events.length,
+        attention: attentionTraceMeta(context),
         request
       }
     });
@@ -280,6 +282,7 @@ export class OpenAIModelClient implements ModelClient {
         taskTitle: task.title,
         taskStatus: task.status,
         eventCount: task.events.length,
+        attention: attentionTraceMeta(context),
         request: requestBody
       }
     });
@@ -350,6 +353,7 @@ export class OpenAIModelClient implements ModelClient {
         taskTitle: task.title,
         taskStatus: task.status,
         eventCount: task.events.length,
+        attention: attentionTraceMeta(context),
         request: requestBody
       }
     });
@@ -714,7 +718,7 @@ function serializeTraceError(error: unknown): Record<string, unknown> {
 
 export function selectModelToolsForTask(task: TaskDetail, dynamicTools: ModelToolDefinition[] = []): ModelToolDefinition[] {
   const intent = classifyTaskIntent(task);
-  return selectModelToolsForIntent(intent, shouldLoadDynamicTools(intent, task) ? dynamicTools : []);
+  return filterToolsForTaskGraph(task, selectModelToolsForIntent(intent, shouldLoadDynamicTools(intent, task) ? dynamicTools : []));
 }
 
 function selectModelToolsForIntent(intent: TaskIntent, dynamicTools: ModelToolDefinition[]): ModelToolDefinition[] {
@@ -727,6 +731,27 @@ function selectModelToolsForIntent(intent: TaskIntent, dynamicTools: ModelToolDe
     return [...builtIns.filter((tool) => readOnlyToolNames.has(tool.function.name) || memorySkillToolNames.has(tool.function.name)), ...stableDynamicTools];
   }
   return [...builtIns, ...stableDynamicTools];
+}
+
+function filterToolsForTaskGraph(task: TaskDetail, tools: ModelToolDefinition[]): ModelToolDefinition[] {
+  return tools.filter((tool) => toolAllowedByTaskGraph(task, tool.function.name, tool.function.description ?? ""));
+}
+
+function attentionTraceMeta(context: Awaited<ReturnType<ContextAssembler["assemble"]>> | null): Record<string, unknown> | undefined {
+  const packet = context?.attentionPacket;
+  if (!packet) return undefined;
+  return {
+    ...(packet.activeNode ? {
+      activeNode: {
+        id: packet.activeNode.id,
+        role: packet.activeNode.role,
+        objective: packet.activeNode.objective,
+        verification: packet.activeNode.verification
+      }
+    } : {}),
+    evidenceRefs: packet.evidenceRefs,
+    tokenBudget: packet.tokenBudget
+  };
 }
 
 const readOnlyToolNames = new Set(["read_file", "search_files", "list_files", "web_search", "knowledge_search"]);

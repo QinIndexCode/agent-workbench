@@ -95,6 +95,7 @@ import type { ResolvedModelProviderConfig } from "./openai-model.js";
 import { PermissionEngine, type PermissionState, type RiskAssessment } from "./permission-engine.js";
 import { LocalSecretBox, maskSecret, sanitizeSensitiveText, sanitizeSensitiveValue } from "./secrets.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
+import { compileTaskGraph, completionBlocker, taskGraphFromEvents, verificationResultFromToolEvent } from "./task-graph.js";
 import { ShellToolExecutor, type ToolExecutor } from "./tools.js";
 import { createWebSearchApiKeyRef } from "./web-search.js";
 import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
@@ -178,6 +179,7 @@ export class AgentWorkbench {
     task.workRoot = folder.rootPath;
     this.addEvent(task, "task_created", "Task created");
     await this.beginTaskTurn(task, goal, "user_message");
+    this.ensureTaskGraph(task);
     await this.attachUploadedFiles(task, attachmentIds);
     this.setStatus(task, "running");
     await this.store.saveTask(task);
@@ -586,6 +588,7 @@ export class AgentWorkbench {
         return task;
       }
       await this.beginTaskTurn(task, content, "user_message");
+      this.ensureTaskGraph(task);
       this.setStatus(task, "running");
       await this.store.saveTask(task);
       return this.step(task.id);
@@ -602,6 +605,7 @@ export class AgentWorkbench {
       const task = await this.requiredTask(taskId);
       await this.attachUploadedFiles(task, input.attachmentIds ?? []);
       await this.beginTaskTurn(task, input.content, "user_message");
+      this.ensureTaskGraph(task);
       this.addEvent(task, "turn_edit_submitted", "Edited user turn submitted", { previousTurnId: turnId });
       this.setStatus(task, "running");
       await this.store.saveTask(task);
@@ -631,6 +635,26 @@ export class AgentWorkbench {
     };
     await this.store.saveTaskTurn(turn);
     return turn;
+  }
+
+  private ensureTaskGraph(task: TaskDetail): void {
+    if (taskGraphFromEvents(task)) return;
+    const graph = compileTaskGraph(task);
+    if (!graph) return;
+    const activeNode = graph.nodes.find((node) => node.id === graph.activeNodeId);
+    this.addEvent(task, "task_graph_created", "Task graph created", {
+      graph
+    });
+    if (activeNode) {
+      this.addEvent(task, "task_graph_node_started", `${activeNode.role}: ${activeNode.objective}`, {
+        nodeId: activeNode.id,
+        role: activeNode.role,
+        objective: activeNode.objective,
+        allowedToolClasses: activeNode.allowedToolClasses,
+        acceptanceCriteria: activeNode.acceptanceCriteria,
+        verification: activeNode.verification
+      });
+    }
   }
 
   private async revertTaskTurnUnlocked(taskId: string, turnId: string): Promise<TaskTurnRevertResult> {
@@ -1721,6 +1745,17 @@ export class AgentWorkbench {
       if (stoppedAfterModel) return stoppedAfterModel;
       const turn = this.normalizeInlineToolMarkupTurn(task, modelTurn);
       if (turn.kind === "final") {
+        const blocker = completionBlocker(task);
+        if (blocker) {
+          this.addEvent(task, "assistant_message", blocker, {
+            ...(turn.streamId ? { streamId: turn.streamId } : {}),
+            completionBlocked: true,
+            blockedFinalMessage: turn.message
+          });
+          this.setStatus(task, "paused");
+          await this.store.saveTask(task);
+          return task;
+        }
         this.addEvent(task, "assistant_message", turn.message, turn.streamId ? { streamId: turn.streamId } : {});
         this.setStatus(task, "completed");
         await this.recordExperience(task);
@@ -2615,6 +2650,15 @@ export class AgentWorkbench {
         toolCallId: result.toolCallId,
         ok: result.ok,
         output
+      });
+    }
+    const verification = verificationResultFromToolEvent(task, toolEvent);
+    if (verification) {
+      this.addEvent(task, "verification_result_recorded", verification.summary, {
+        nodeId: verification.nodeId,
+        status: verification.status,
+        evidenceRef: verification.evidenceRef,
+        toolName: verification.toolName
       });
     }
     this.contextAssembler.getFileStateTracker(task.id).updateFromToolResult(toolEvent);

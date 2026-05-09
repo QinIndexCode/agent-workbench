@@ -5,6 +5,13 @@ import { resolve } from "node:path";
 import { findRelevantSkills } from "./experience.js";
 import { createId, nowIso } from "./ids.js";
 import type { WorkbenchStore } from "./store.js";
+import {
+  buildActiveNodeUserMessage,
+  buildTaskGraphSystemLayer,
+  taskGraphEvidenceRefs,
+  taskGraphFromEvents,
+  type AttentionPacket
+} from "./task-graph.js";
 import { classifyTaskIntent, isLeanContextIntent, isTrivialUserMessage } from "./task-intent.js";
 import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
 
@@ -17,6 +24,7 @@ export interface AssembledContext {
   systemPrompt: string;
   input: string;
   messages: CanonicalModelMessage[];
+  attentionPacket: Omit<AttentionPacket, "messages"> & { messages: CanonicalModelMessage[] };
   usedTokens: number;
 }
 
@@ -77,6 +85,13 @@ export class ContextAssembler {
     const workingFolderLayer = this.buildWorkingFolderLayer(task);
     systemLayers.push(workingFolderLayer);
     usedTokens += estimateTokens(workingFolderLayer);
+
+    const taskGraph = taskGraphFromEvents(task);
+    const taskGraphLayer = buildTaskGraphSystemLayer(taskGraph);
+    if (taskGraphLayer) {
+      systemLayers.push(taskGraphLayer);
+      usedTokens += estimateTokens(taskGraphLayer);
+    }
 
     const currentTurnLayer = this.buildCurrentTurnLayer(task);
     if (currentTurnLayer) {
@@ -148,11 +163,26 @@ export class ContextAssembler {
       maxTokens: inputBudget,
       tracker: fileLayerIncluded ? tracker : undefined
     });
+    const activeNodeMessage = buildActiveNodeUserMessage(taskGraph);
+    if (activeNodeMessage) messages.push({ role: "user", content: activeNodeMessage });
+    const activeNode = taskGraph?.nodes.find((node) => node.id === taskGraph.activeNodeId);
+    const messageTokens = estimateCanonicalMessages(messages);
     return {
       systemPrompt,
       input,
       messages,
-      usedTokens: estimateTokens([systemPrompt, input].filter(Boolean).join("\n\n"))
+      attentionPacket: {
+        system: systemPrompt,
+        messages,
+        ...(activeNode ? { activeNode } : {}),
+        evidenceRefs: taskGraphEvidenceRefs(task),
+        tokenBudget: {
+          maxTotal: tokenBudget.maxTotal,
+          reservedForResponse: tokenBudget.reservedForResponse,
+          usedTokens: messageTokens
+        }
+      },
+      usedTokens: messageTokens
     };
   }
 
@@ -803,13 +833,15 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
       return `**Plan**: ${event.summary}`;
     case "web_search_result":
       return `**Web Search**: ${event.summary}`;
+    case "verification_result_recorded":
+      return `**Verification**: ${event.summary}`;
     default:
       return `**${event.type}**: ${event.summary}`;
   }
 }
 
 function isModelHistoryEvent(event: TaskEvent): boolean {
-  if (["status_changed", "task_created", "task_memory_created", "pattern_discovered", "reflection_completed"].includes(event.type)) return false;
+  if (["status_changed", "task_created", "task_memory_created", "task_graph_created", "task_graph_node_started", "pattern_discovered", "reflection_completed"].includes(event.type)) return false;
   if (event.type.startsWith("plan_")) return false;
   if (["prompt_cache_stats", "conversation_summary_created", "context_overflow_recovered"].includes(event.type)) return false;
   if (event.payload["uiHidden"] === true && event.type !== "tool_result") return false;
@@ -817,7 +849,7 @@ function isModelHistoryEvent(event: TaskEvent): boolean {
 }
 
 function isSummarizableContextEvent(event: TaskEvent): boolean {
-  if (["assistant_delta", "thinking_delta", "conversation_summary_created", "context_overflow_recovered", "prompt_cache_stats"].includes(event.type)) return false;
+  if (["assistant_delta", "thinking_delta", "conversation_summary_created", "context_overflow_recovered", "prompt_cache_stats", "task_graph_created", "task_graph_node_started"].includes(event.type)) return false;
   if (event.type.startsWith("plan_")) return false;
   if (event.payload["uiHidden"] === true && event.type !== "tool_result") return false;
   return true;

@@ -34,11 +34,38 @@ import {
   nowIso,
   promoteExperience,
   selectModelToolsForTask,
+  compileTaskGraph,
+  taskGraphFromEvents,
   shouldPromoteExperienceToSkill
 } from "../src/index.js";
 import { defaultTaskWorkRoot } from "../src/workspace-root.js";
 
 const hostObservationModel = new ConfiguredToolModelClient("Get-Process | Sort-Object CPU");
+
+function attachCompiledTaskGraph(task: TaskDetail): ReturnType<typeof compileTaskGraph> {
+  const graph = compileTaskGraph(task);
+  if (!graph) return null;
+  const activeNode = graph.nodes.find((node) => node.id === graph.activeNodeId);
+  task.events.push({
+    id: createId("event"),
+    taskId: task.id,
+    type: "task_graph_created",
+    createdAt: nowIso(),
+    summary: "Task graph created",
+    payload: { graph }
+  });
+  if (activeNode) {
+    task.events.push({
+      id: createId("event"),
+      taskId: task.id,
+      type: "task_graph_node_started",
+      createdAt: nowIso(),
+      summary: `${activeNode.role}: ${activeNode.objective}`,
+      payload: { nodeId: activeNode.id, role: activeNode.role, objective: activeNode.objective }
+    });
+  }
+  return graph;
+}
 
 describe("ContextAssembler", () => {
   it("keeps capability questions direct and evidence-grounded", async () => {
@@ -98,6 +125,43 @@ describe("ContextAssembler", () => {
     const latest = context.messages.at(-1);
     expect(latest?.role).toBe("user");
     expect(latest && "content" in latest ? latest.content : "").toContain("测试所有你能调用的工具");
+  });
+
+  it("adds the active task graph node as an attention packet without using the task title as context", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const task: TaskDetail = {
+      id: "task_attention_graph",
+      title: "你好",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_hello", taskId: "task_attention_graph", type: "user_message", createdAt: nowIso(), summary: "你好", payload: {} },
+        { id: "event_agent", taskId: "task_attention_graph", type: "assistant_message", createdAt: nowIso(), summary: "你好！有什么可以帮你的？", payload: {} },
+        {
+          id: "event_request",
+          taskId: "task_attention_graph",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑",
+          payload: {}
+        }
+      ]
+    };
+    const graph = attachCompiledTaskGraph(task);
+
+    const context = await assembler.assemble(task);
+    const latest = context.messages.at(-1);
+
+    expect(graph?.nodes.some((node) => node.role === "implement")).toBe(true);
+    expect(context.systemPrompt).toContain("## Task Graph");
+    expect(`${context.systemPrompt}\n${context.input}`).not.toContain("Task title: 你好");
+    expect(context.attentionPacket.activeNode?.role).toBe("implement");
+    expect(latest?.role).toBe("user");
+    expect(latest && "content" in latest ? latest.content : "").toContain("## Active Node");
+    expect(latest && "content" in latest ? latest.content : "").toContain("编写一个完整的博客页面");
   });
 
   it("keeps the latest user message when a long history is truncated", () => {
@@ -705,6 +769,48 @@ describe("Tool surface selection", () => {
     expect(selectModelToolsForTask(buildTask).some((tool) => tool.function.name === "write_file")).toBe(true);
     expect(selectModelToolsForTask(buildTask).some((tool) => tool.function.name === "edit_file")).toBe(true);
   });
+
+  it("uses the task graph role policy to keep capability checks read-only and code tasks out of memory tools", () => {
+    const inventoryTask: TaskDetail = {
+      id: "task_tool_inventory_graph",
+      title: "测试工具",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [{ id: "event_inventory", taskId: "task_tool_inventory_graph", type: "user_message", createdAt: nowIso(), summary: "测试所有你能调用的工具", payload: {} }]
+    };
+    const buildTask: TaskDetail = {
+      id: "task_build_blog_graph",
+      title: "构建博客页面",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [{
+        id: "event_build",
+        taskId: "task_build_blog_graph",
+        type: "user_message",
+        createdAt: nowIso(),
+        summary: "帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑",
+        payload: {}
+      }]
+    };
+    attachCompiledTaskGraph(inventoryTask);
+    attachCompiledTaskGraph(buildTask);
+
+    const inventoryNames = selectModelToolsForTask(inventoryTask).map((tool) => tool.function.name);
+    const buildNames = selectModelToolsForTask(buildTask).map((tool) => tool.function.name);
+
+    expect(inventoryNames).toEqual(["read_file", "search_files", "list_files", "web_search", "knowledge_search"]);
+    expect(buildNames).toContain("write_file");
+    expect(buildNames).toContain("run_command");
+    expect(buildNames).toContain("plan_update");
+    expect(buildNames).not.toContain("user_memory_add");
+    expect(buildNames).not.toContain("skill_create");
+  });
 });
 
 class StubToolExecutor {
@@ -718,6 +824,21 @@ class StubToolExecutor {
       ok: true,
       createdAt: nowIso(),
       output: JSON.stringify([{ ProcessName: "node", Id: 42, CPU: 100, WorkingSet64: 1024 * 1024 * 200 }])
+    };
+  }
+}
+
+class FailingVerificationExecutor {
+  calls: ToolCall[] = [];
+
+  async execute(call: ToolCall): Promise<ToolResult> {
+    this.calls.push(call);
+    return {
+      id: createId("tool_result"),
+      toolCallId: call.id,
+      ok: false,
+      createdAt: nowIso(),
+      output: "npm ERR! build failed"
     };
   }
 }
@@ -1007,6 +1128,61 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 1000): Pro
   }
   throw new Error("Timed out waiting for condition");
 }
+
+describe("Attention-first task graph runtime", () => {
+  it("does not create a task graph for a greeting", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+
+    const task = await workbench.createTask("你好");
+
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "task_graph_created")).toBe(false);
+  });
+
+  it("pauses a React code-change task when the model tries to finish without verification evidence", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+
+    const task = await workbench.createTask("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
+
+    expect(task.status).toBe("paused");
+    expect(task.events.some((event) => event.type === "task_graph_created")).toBe(true);
+    expect(task.events.some((event) => event.type === "task_memory_created")).toBe(false);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.payload["completionBlocked"] === true)).toBe(true);
+  });
+
+  it("records verification command evidence and permits completion after it passes", async () => {
+    const store = new InMemoryWorkbenchStore();
+    await store.savePreferences({ ...(await store.getPreferences()), autoApprove: "all", updatedAt: nowIso() });
+    const workbench = new AgentWorkbench({
+      store,
+      model: new SequenceToolModel([{ toolName: "run_command", args: { command: "npm.cmd run build" } }]),
+      tools: new StubToolExecutor()
+    });
+
+    const task = await workbench.createTask("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
+    const graph = taskGraphFromEvents(task);
+
+    expect(task.status).toBe("completed");
+    expect(graph?.nodes.some((node) => node.role === "verify" && node.verification.status === "passed")).toBe(true);
+    expect(task.events.some((event) => event.type === "verification_result_recorded" && event.payload["status"] === "passed")).toBe(true);
+  });
+
+  it("keeps a failed verification result as evidence instead of completing", async () => {
+    const store = new InMemoryWorkbenchStore();
+    await store.savePreferences({ ...(await store.getPreferences()), autoApprove: "all", updatedAt: nowIso() });
+    const workbench = new AgentWorkbench({
+      store,
+      model: new SequenceToolModel([{ toolName: "run_command", args: { command: "npm.cmd run build" } }]),
+      tools: new FailingVerificationExecutor()
+    });
+
+    const task = await workbench.createTask("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
+
+    expect(task.status).toBe("paused");
+    expect(task.events.some((event) => event.type === "verification_result_recorded" && event.payload["status"] === "failed")).toBe(true);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.payload["completionBlocked"] === true)).toBe(true);
+  });
+});
 
 describe("PermissionEngine", () => {
   it("classifies Get-Process as host observation", () => {
@@ -2368,6 +2544,7 @@ describe("OpenAIModelClient", () => {
         model: "trace-role-model",
         contextAssembler: assembler
       });
+      const traces: Array<Record<string, unknown>> = [];
       const task: TaskDetail = {
         id: "task_openai_roles",
         title: "你好",
@@ -2405,21 +2582,33 @@ describe("OpenAIModelClient", () => {
           }
         ]
       };
+      attachCompiledTaskGraph(task);
 
-      const turn = await client.next(task);
+      const turn = await client.next(task, {
+        streamId: "stream_openai_roles",
+        onAssistantDelta: async () => undefined,
+        onTrace: async (event) => { traces.push(event as unknown as Record<string, unknown>); }
+      });
       const request = capturedRequests[0];
       const messages = request?.["messages"] as Array<Record<string, unknown>>;
+      const requestTrace = traces.find((event) => event["kind"] === "request");
+      const attention = (requestTrace?.["payload"] as Record<string, unknown> | undefined)?.["attention"] as Record<string, unknown> | undefined;
 
       expect(turn.kind).toBe("final");
       expect(messages[0]?.["role"]).toBe("system");
       expect(String(messages[0]?.["content"] ?? "")).toContain("Stable Memory Files");
       expect(String(messages[0]?.["content"] ?? "")).not.toContain("Task title:");
-      expect(messages.map((message) => message["role"])).toEqual(["system", "user", "assistant", "user", "assistant", "tool"]);
+      expect(messages.map((message) => message["role"])).toEqual(["system", "user", "assistant", "user", "assistant", "tool", "user"]);
       expect(messages[3]?.["content"]).toBe("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
       expect(messages[4]?.["tool_calls"]).toEqual([
         { id: "call_list", type: "function", function: { name: "list_files", arguments: "{\"path\":\".\"}" } }
       ]);
       expect(messages[5]?.["tool_call_id"]).toBe("call_list");
+      expect(String(messages[6]?.["content"] ?? "")).toContain("## Active Node");
+      expect(String(messages[6]?.["content"] ?? "")).toContain("编写一个完整的博客页面");
+      expect(String(messages[6]?.["content"] ?? "")).toContain("event_tool_result:list_files:ok");
+      expect((attention?.["activeNode"] as Record<string, unknown> | undefined)?.["role"]).toBe("implement");
+      expect(attention?.["evidenceRefs"]).toContain("event_tool_result:list_files:ok");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
