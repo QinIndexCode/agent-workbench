@@ -18,6 +18,7 @@ import {
   InMemoryWorkbenchStore,
   KnowledgeSearchToolExecutor,
   McpRegistry,
+  OpenAIModelClient,
   WebSearchToolExecutor,
   type ModelClient,
   type ModelStreamHandlers,
@@ -92,6 +93,11 @@ describe("ContextAssembler", () => {
     expect(context.input).toContain("## Current Turn");
     expect(context.input).toContain("测试所有你能调用的工具");
     expect(context.input).not.toContain("Original user goal: 你好");
+    expect(`${context.systemPrompt}\n${context.input}`).not.toContain("Task title:");
+    expect(context.messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "user"]);
+    const latest = context.messages.at(-1);
+    expect(latest?.role).toBe("user");
+    expect(latest && "content" in latest ? latest.content : "").toContain("测试所有你能调用的工具");
   });
 
   it("keeps the latest user message when a long history is truncated", () => {
@@ -251,6 +257,115 @@ describe("ContextAssembler", () => {
     expect(combined.match(/UNIQUE_READ_FILE_CONTENT/g)).toHaveLength(1);
   });
 
+  it("rebuilds tool calls and results as role messages for the next model turn", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const task: TaskDetail = {
+      id: "task_tool_roles",
+      title: "你好",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_user", taskId: "task_tool_roles", type: "user_message", createdAt: nowIso(), summary: "检查并修复上下文", payload: {} },
+        {
+          id: "event_request_1",
+          taskId: "task_tool_roles",
+          type: "tool_requested",
+          createdAt: nowIso(),
+          summary: "list_files",
+          payload: { toolCallId: "call_1", toolName: "list_files", args: { path: "." } }
+        },
+        {
+          id: "event_request_2",
+          taskId: "task_tool_roles",
+          type: "tool_requested",
+          createdAt: nowIso(),
+          summary: "read_file",
+          payload: { toolCallId: "call_2", toolName: "read_file", args: { path: "src/a.ts" } }
+        },
+        {
+          id: "event_result_1",
+          taskId: "task_tool_roles",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool completed",
+          payload: { toolCallId: "call_1", toolName: "list_files", args: { path: "." }, ok: true, output: "[]" }
+        },
+        {
+          id: "event_result_2",
+          taskId: "task_tool_roles",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool failed",
+          payload: { toolCallId: "call_2", toolName: "read_file", args: { path: "src/a.ts" }, ok: false, output: "Tool request denied by user." }
+        },
+        {
+          id: "event_plan_result",
+          taskId: "task_tool_roles",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Plan updated",
+          payload: { toolCallId: "call_plan", toolName: "plan_update", args: { status: "running" }, ok: true, uiHidden: true, output: "{\"action\":\"plan_updated\"}" }
+        }
+      ]
+    };
+
+    const context = await assembler.assemble(task);
+    const roleMessages = context.messages.filter((message) => message.role !== "system");
+
+    expect(roleMessages[0]?.role).toBe("user");
+    expect(roleMessages[1]?.role).toBe("assistant");
+    expect(roleMessages[1]?.role === "assistant" ? roleMessages[1].toolCalls?.map((call) => call.id) : []).toEqual(["call_1", "call_2"]);
+    expect(roleMessages[2]?.role).toBe("tool");
+    expect(roleMessages[3]?.role).toBe("tool");
+    expect(roleMessages[3]?.role === "tool" ? roleMessages[3].content : "").toContain("\"status\":\"denied\"");
+    expect(roleMessages[4]?.role).toBe("assistant");
+    expect(roleMessages[4]?.role === "assistant" ? roleMessages[4].toolCalls?.[0]?.toolName : "").toBe("plan_update");
+    expect(roleMessages[5]?.role).toBe("tool");
+    expect(roleMessages[5]?.role === "tool" ? roleMessages[5].content : "").toContain("plan_updated");
+  });
+
+  it("keeps read_file role results compact when file content is already in Known Files", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const content = "ROLE_READ_FILE_CONTENT";
+    const task: TaskDetail = {
+      id: "task_file_role_dedupe",
+      title: "File role dedupe",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_read",
+          taskId: "task_file_role_dedupe",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool completed",
+          payload: {
+            toolCallId: "call_read",
+            toolName: "read_file",
+            args: { path: "src/example.ts" },
+            ok: true,
+            output: JSON.stringify({ path: "src/example.ts", content, hash: "hash_1", partial: false })
+          }
+        }
+      ]
+    };
+    assembler.getFileStateTracker(task.id).updateFromToolResult(task.events[0]!);
+
+    const context = await assembler.assemble(task);
+    const toolMessage = context.messages.find((message) => message.role === "tool");
+
+    expect(context.systemPrompt).toContain(content);
+    expect(toolMessage?.role).toBe("tool");
+    expect(toolMessage?.role === "tool" ? toolMessage.content : "").toContain("Known Files");
+    expect(toolMessage?.role === "tool" ? toolMessage.content : "").not.toContain(content);
+  });
+
   it("does not compact ordinary small messages by event count alone", async () => {
     const store = new InMemoryWorkbenchStore();
     const assembler = new ContextAssembler(store);
@@ -307,8 +422,8 @@ describe("ContextAssembler", () => {
 
     expect(summaries).toHaveLength(1);
     expect(summaries[0]?.summary).toContain("older event");
-    expect(context.input).toContain("Conversation Summary");
-    expect(context.input).toContain("Active Task Continuity");
+    expect(context.systemPrompt).toContain("Conversation Summary");
+    expect(context.systemPrompt).toContain("Active Task Continuity");
     expect(context.input).toContain("## Current Turn");
     expect(context.input).not.toContain("Original user goal");
     expect(context.input).toContain("LATEST_DECISION_MARKER");
@@ -425,12 +540,13 @@ describe("ContextAssembler", () => {
 
       const context = await assembler.assemble(task);
 
-      expect(context.input).toContain("### Global USER.md");
-      expect(context.input).toContain("Prefer concise Chinese engineering updates.");
-      expect(context.input).toContain("### Global MEMORY.md");
-      expect(context.input).toContain("Global memory marker for all SCC tasks.");
-      expect(context.input).toContain("### Project MEMORY.md");
-      expect(context.input).toContain("Project scoped memory marker.");
+      expect(context.systemPrompt).toContain("### Global USER.md");
+      expect(context.systemPrompt).toContain("Prefer concise Chinese engineering updates.");
+      expect(context.systemPrompt).toContain("### Global MEMORY.md");
+      expect(context.systemPrompt).toContain("Global memory marker for all SCC tasks.");
+      expect(context.systemPrompt).toContain("### Project MEMORY.md");
+      expect(context.systemPrompt).toContain("Project scoped memory marker.");
+      expect(context.input).not.toContain("### Global USER.md");
     } finally {
       if (previousMemoryDir === undefined) delete process.env["SCC_MEMORY_DIR"];
       else process.env["SCC_MEMORY_DIR"] = previousMemoryDir;
@@ -493,11 +609,11 @@ describe("ContextAssembler", () => {
       events: []
     });
 
-    expect(context.input).toContain("## Runtime Metadata");
-    expect(context.input).toContain("Active model: Mimo / mimo-v2.5");
-    expect(context.input).toContain("Web search: built-in DuckDuckGo fallback is available");
-    expect(context.input).toContain("mock_mcp: Mock MCP");
-    expect(context.input).toContain("integration_discord: Discord");
+    expect(context.systemPrompt).toContain("## Runtime Metadata");
+    expect(context.systemPrompt).toContain("Active model: Mimo / mimo-v2.5");
+    expect(context.systemPrompt).toContain("Web search: built-in DuckDuckGo fallback is available");
+    expect(context.systemPrompt).toContain("mock_mcp: Mock MCP");
+    expect(context.systemPrompt).toContain("integration_discord: Discord");
     expect(context.systemPrompt).not.toContain("Auto approval preference");
     expect(context.input).not.toContain("Auto approval preference");
   });
@@ -793,6 +909,48 @@ class ProviderFallbackEventModel implements ModelClient {
   }
 }
 
+class TraceEmittingToolRoundTripModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    const streamId = stream?.streamId ?? createId("model_stream");
+    await stream?.onTrace?.({
+      kind: "request",
+      timestamp: nowIso(),
+      streamId,
+      provider: { protocol: "openai_compatible", model: "trace-test-model", baseURL: "http://trace.local" },
+      payload: {
+        request: {
+          messages: [{ role: "user", content: task.title }],
+          eventCount: task.events.length
+        }
+      }
+    });
+    if (!task.events.some((event) => event.type === "tool_result")) {
+      const response: ModelTurn = {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "list_files", args: { path: "." } }],
+        ...(stream?.streamId ? { streamId: stream.streamId } : {})
+      };
+      await stream?.onTrace?.({
+        kind: "response",
+        timestamp: nowIso(),
+        streamId,
+        provider: { protocol: "openai_compatible", model: "trace-test-model", baseURL: "http://trace.local" },
+        payload: { response }
+      });
+      return response;
+    }
+    const response: ModelTurn = { kind: "final", message: "Trace complete.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+    await stream?.onTrace?.({
+      kind: "response",
+      timestamp: nowIso(),
+      streamId,
+      provider: { protocol: "openai_compatible", model: "trace-test-model", baseURL: "http://trace.local" },
+      payload: { response }
+    });
+    return response;
+  }
+}
+
 class UsageModel implements ModelClient {
   async next(): Promise<ModelTurn> {
     return {
@@ -979,6 +1137,38 @@ describe("AgentWorkbench", () => {
     expect(tools.calls).toHaveLength(3);
     expect(tools.peakActive).toBeGreaterThan(1);
     expect(completed.events.filter((event) => event.type === "tool_result")).toHaveLength(3);
+  });
+
+  it("writes per-task model trace logs across model requests and tool results", async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), "scc-model-trace-"));
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({
+      store,
+      tools: new StubToolExecutor(),
+      model: new TraceEmittingToolRoundTripModel()
+    });
+    const folder = await workbench.createTaskFolder({ name: "trace-folder", rootPath: workRoot });
+    await workbench.grantGlobalPermission("workspace_read", "trace logging");
+
+    const completed = await workbench.createTask("trace the full request-response loop", undefined, folder.id);
+    const tracePath = join(workRoot, "data", "logs", "model-traces", `${completed.id}.jsonl`);
+
+    expect(existsSync(tracePath)).toBe(true);
+    const entries = readFileSync(tracePath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const kinds = entries.map((entry) => String(entry["kind"] ?? ""));
+
+    expect(kinds).toContain("model_turn_started");
+    expect(kinds).toContain("model_request");
+    expect(kinds).toContain("model_response");
+    expect(kinds).toContain("tool_requested");
+    expect(kinds).toContain("tool_result");
+    expect(kinds.filter((kind) => kind === "model_turn_started")).toHaveLength(2);
+
+    rmSync(workRoot, { recursive: true, force: true });
   });
 
   it("auto-approves non-MCP tools according to autoApprove without bypassing destructive tools", async () => {
@@ -1303,8 +1493,8 @@ describe("AgentWorkbench", () => {
     expect(linked[0]?.taskId).toBe(task.id);
     expect(existsSync(uploaded.storagePath)).toBe(true);
     expect(task.events.some((event) => event.type === "attachment_added")).toBe(true);
-    expect(context.input).toContain("notes.md (markdown");
-    expect(context.input).toContain("Important fixture content");
+    expect(context.systemPrompt).toContain("notes.md (markdown");
+    expect(context.systemPrompt).toContain("Important fixture content");
   });
 
   it("runs due scheduled tasks through the normal task pipeline", async () => {
@@ -2146,6 +2336,93 @@ describe("AgentWorkbench", () => {
     expect(completed.events.some((event) => event.type === "skill_loaded")).toBe(true);
     expect(skill?.stats.totalUses).toBe(1);
     expect(skill?.stats.successUses).toBe(1);
+  });
+});
+
+describe("OpenAIModelClient", () => {
+  it("serializes assembled context with native chat roles and tool results", async () => {
+    const capturedRequests: Array<Record<string, unknown>> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        capturedRequests.push(JSON.parse(body) as Record<string, unknown>);
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "done" } }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 42, completion_tokens: 3 } })}\n\n`);
+        response.write("data: [DONE]\n\n");
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      const assembler = new ContextAssembler(store);
+      const client = new OpenAIModelClient({
+        apiKey: "test-key",
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        model: "trace-role-model",
+        contextAssembler: assembler
+      });
+      const task: TaskDetail = {
+        id: "task_openai_roles",
+        title: "你好",
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [
+          { id: "event_hello", taskId: "task_openai_roles", type: "user_message", createdAt: nowIso(), summary: "你好", payload: {} },
+          { id: "event_answer", taskId: "task_openai_roles", type: "assistant_message", createdAt: nowIso(), summary: "你好！有什么可以帮你的？", payload: {} },
+          {
+            id: "event_request",
+            taskId: "task_openai_roles",
+            type: "user_message",
+            createdAt: nowIso(),
+            summary: "帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑",
+            payload: {}
+          },
+          {
+            id: "event_tool_requested",
+            taskId: "task_openai_roles",
+            type: "tool_requested",
+            createdAt: nowIso(),
+            summary: "list_files",
+            payload: { toolCallId: "call_list", toolName: "list_files", args: { path: "." } }
+          },
+          {
+            id: "event_tool_result",
+            taskId: "task_openai_roles",
+            type: "tool_result",
+            createdAt: nowIso(),
+            summary: "Tool completed",
+            payload: { toolCallId: "call_list", toolName: "list_files", args: { path: "." }, ok: true, output: "[]" }
+          }
+        ]
+      };
+
+      const turn = await client.next(task);
+      const request = capturedRequests[0];
+      const messages = request?.["messages"] as Array<Record<string, unknown>>;
+
+      expect(turn.kind).toBe("final");
+      expect(messages[0]?.["role"]).toBe("system");
+      expect(String(messages[0]?.["content"] ?? "")).toContain("Stable Memory Files");
+      expect(String(messages[0]?.["content"] ?? "")).not.toContain("Task title:");
+      expect(messages.map((message) => message["role"])).toEqual(["system", "user", "assistant", "user", "assistant", "tool"]);
+      expect(messages[3]?.["content"]).toBe("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
+      expect(messages[4]?.["tool_calls"]).toEqual([
+        { id: "call_list", type: "function", function: { name: "list_files", arguments: "{\"path\":\".\"}" } }
+      ]);
+      expect(messages[5]?.["tool_call_id"]).toBe("call_list");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

@@ -2,9 +2,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import OpenAI from "openai";
 import type { TaskDetail, ToolCall, UserPreferences } from "@scc/shared";
-import type { ContextAssembler } from "./context-assembler.js";
-import { createId } from "./ids.js";
-import type { ModelClient, ModelStreamHandlers, ModelTurn, ModelUsage } from "./fallback-model.js";
+import type { CanonicalModelMessage, ContextAssembler } from "./context-assembler.js";
+import { createId, nowIso } from "./ids.js";
+import type { ModelClient, ModelStreamHandlers, ModelTraceEvent, ModelTurn, ModelUsage } from "./fallback-model.js";
 import { ConfiguredToolModelClient, FallbackModelClient } from "./fallback-model.js";
 import { classifyTaskIntent, shouldLoadDynamicTools, type TaskIntent } from "./task-intent.js";
 
@@ -121,6 +121,20 @@ export class OpenAIModelClient implements ModelClient {
         lastError = error;
         const nextProvider = providers[index + 1];
         if (!nextProvider || !isFallbackableModelError(error)) throw error;
+        await emitModelTrace(stream, {
+          kind: "provider_fallback",
+          timestamp: nowIso(),
+          streamId: stream?.streamId ?? createId("model_stream"),
+          provider: providerTraceMeta(provider?.providerId, provider?.protocol, provider?.model, provider?.baseURL),
+          payload: {
+            fromProviderId: provider?.providerId,
+            fromModel: provider?.model,
+            toProviderId: nextProvider.providerId,
+            toModel: nextProvider.model,
+            category: classifyModelError(error),
+            reason: error instanceof Error ? error.message : String(error)
+          }
+        });
         await stream?.onProviderFallback?.({
           ...(provider?.providerId ? { fromProviderId: provider.providerId } : {}),
           ...(provider?.model ? { fromModel: provider.model } : {}),
@@ -157,12 +171,10 @@ export class OpenAIModelClient implements ModelClient {
     }
     const client = this.clientFor(baseURL, apiKey);
     const callSignal = this.createCallSignal(stream?.signal);
+    const messages = toOpenAIChatMessages(contextMessages(context, task));
     const request: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
       model,
-      messages: [
-        { role: "system", content: context?.systemPrompt ?? fallbackInstructions() },
-        { role: "user", content: context?.input ?? buildInput(task) }
-      ],
+      messages,
       stream: true,
       stream_options: { include_usage: true }
     };
@@ -170,29 +182,78 @@ export class OpenAIModelClient implements ModelClient {
       request.tool_choice = "auto";
       request.tools = modelTools as OpenAI.Chat.Completions.ChatCompletionTool[];
     }
-    const response = await client.chat.completions.create(
-      request,
-      { signal: callSignal }
-    );
+    await emitModelTrace(stream, {
+      kind: "request",
+      timestamp: nowIso(),
+      streamId: stream?.streamId ?? createId("model_stream"),
+      provider: providerTraceMeta(provider?.providerId, "openai_compatible", model, baseURL),
+      payload: {
+        taskTitle: task.title,
+        taskStatus: task.status,
+        eventCount: task.events.length,
+        request
+      }
+    });
+    try {
+      const response = await client.chat.completions.create(
+        request,
+        { signal: callSignal }
+      );
 
-    const streamed = await consumeChatCompletionStream(response, stream);
-    const calls = streamed.calls;
-    if (calls.length > 0) {
+      const streamed = await consumeChatCompletionStream(response, stream);
+      const calls = streamed.calls;
+      if (calls.length > 0) {
+        await emitModelTrace(stream, {
+          kind: "response",
+          timestamp: nowIso(),
+          streamId: stream?.streamId ?? createId("model_stream"),
+          provider: providerTraceMeta(provider?.providerId, "openai_compatible", model, baseURL),
+          payload: {
+            response: {
+              kind: "tool_calls",
+              calls,
+              ...(streamed.usage ? { usage: streamed.usage } : {})
+            }
+          }
+        });
+        return {
+          kind: "tool_calls",
+          calls,
+          ...(stream?.streamId ? { streamId: stream.streamId } : {}),
+          ...(streamed.usage ? { usage: streamed.usage } : {})
+        };
+      }
+
+      const content = streamed.content.trim();
+      await emitModelTrace(stream, {
+        kind: "response",
+        timestamp: nowIso(),
+        streamId: stream?.streamId ?? createId("model_stream"),
+        provider: providerTraceMeta(provider?.providerId, "openai_compatible", model, baseURL),
+        payload: {
+          response: {
+            kind: "final",
+            message: content || "I could not produce a result from the model response.",
+            ...(streamed.usage ? { usage: streamed.usage } : {})
+          }
+        }
+      });
       return {
-        kind: "tool_calls",
-        calls,
+        kind: "final",
+        message: content || "I could not produce a result from the model response.",
         ...(stream?.streamId ? { streamId: stream.streamId } : {}),
         ...(streamed.usage ? { usage: streamed.usage } : {})
       };
+    } catch (error) {
+      await emitModelTrace(stream, {
+        kind: "error",
+        timestamp: nowIso(),
+        streamId: stream?.streamId ?? createId("model_stream"),
+        provider: providerTraceMeta(provider?.providerId, "openai_compatible", model, baseURL),
+        payload: serializeTraceError(error)
+      });
+      throw error;
     }
-
-    const content = streamed.content.trim();
-    return {
-      kind: "final",
-      message: content || "I could not produce a result from the model response.",
-      ...(stream?.streamId ? { streamId: stream.streamId } : {}),
-      ...(streamed.usage ? { usage: streamed.usage } : {})
-    };
   }
 
   private async nextAnthropic(
@@ -202,32 +263,68 @@ export class OpenAIModelClient implements ModelClient {
     modelTools: ModelToolDefinition[],
     stream?: ModelStreamHandlers
   ): Promise<ModelTurn> {
-    const response = await fetch(`${provider.baseURL || "https://api.anthropic.com"}/v1/messages`, {
-      method: "POST",
-      signal: this.createCallSignal(stream?.signal),
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": provider.apiKey,
-        "anthropic-version": "2023-06-01"
-      },
-      body: JSON.stringify({
-        model: provider.model,
-        max_tokens: 4096,
-        system: context?.systemPrompt ?? fallbackInstructions(),
-        messages: [{ role: "user", content: context?.input ?? buildInput(task) }],
-        ...(modelTools.length > 0 ? { tools: modelTools.map(toAnthropicTool) } : {})
-      })
+    const canonicalMessages = contextMessages(context, task);
+    const requestBody = {
+      model: provider.model,
+      max_tokens: 4096,
+      system: systemTextFromMessages(canonicalMessages),
+      messages: toAnthropicMessages(canonicalMessages),
+      ...(modelTools.length > 0 ? { tools: modelTools.map(toAnthropicTool) } : {})
+    };
+    await emitModelTrace(stream, {
+      kind: "request",
+      timestamp: nowIso(),
+      streamId: stream?.streamId ?? createId("model_stream"),
+      provider: providerTraceMeta(provider.providerId, "anthropic_messages", provider.model, provider.baseURL || "https://api.anthropic.com"),
+      payload: {
+        taskTitle: task.title,
+        taskStatus: task.status,
+        eventCount: task.events.length,
+        request: requestBody
+      }
     });
-    if (!response.ok) throw new Error(await response.text());
-    const payload = (await response.json()) as Record<string, unknown>;
-    const parts = Array.isArray(payload["content"]) ? payload["content"] : [];
-    const text = parts.map(extractText).filter(Boolean).join("\n").trim();
-    if (text) await stream?.onAssistantDelta(text);
-    const calls = parts.map(toAnthropicToolCall).filter((call): call is ToolCall => Boolean(call));
-    const usage = anthropicUsage(payload);
-    return calls.length > 0
-      ? { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) }
-      : { kind: "final", message: text || "No response returned.", ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) };
+    try {
+      const response = await fetch(`${provider.baseURL || "https://api.anthropic.com"}/v1/messages`, {
+        method: "POST",
+        signal: this.createCallSignal(stream?.signal),
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": provider.apiKey,
+          "anthropic-version": "2023-06-01"
+        },
+        body: JSON.stringify(requestBody)
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const payload = (await response.json()) as Record<string, unknown>;
+      const parts = Array.isArray(payload["content"]) ? payload["content"] : [];
+      const text = parts.map(extractText).filter(Boolean).join("\n").trim();
+      if (text) await stream?.onAssistantDelta(text);
+      const calls = parts.map(toAnthropicToolCall).filter((call): call is ToolCall => Boolean(call));
+      const usage = anthropicUsage(payload);
+      await emitModelTrace(stream, {
+        kind: "response",
+        timestamp: nowIso(),
+        streamId: stream?.streamId ?? createId("model_stream"),
+        provider: providerTraceMeta(provider.providerId, "anthropic_messages", provider.model, provider.baseURL || "https://api.anthropic.com"),
+        payload: {
+          response: calls.length > 0
+            ? { kind: "tool_calls", calls, ...(usage ? { usage } : {}), rawPayload: payload }
+            : { kind: "final", message: text || "No response returned.", ...(usage ? { usage } : {}), rawPayload: payload }
+        }
+      });
+      return calls.length > 0
+        ? { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) }
+        : { kind: "final", message: text || "No response returned.", ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) };
+    } catch (error) {
+      await emitModelTrace(stream, {
+        kind: "error",
+        timestamp: nowIso(),
+        streamId: stream?.streamId ?? createId("model_stream"),
+        provider: providerTraceMeta(provider.providerId, "anthropic_messages", provider.model, provider.baseURL || "https://api.anthropic.com"),
+        payload: serializeTraceError(error)
+      });
+      throw error;
+    }
   }
 
   private async nextGemini(
@@ -238,26 +335,62 @@ export class OpenAIModelClient implements ModelClient {
     stream?: ModelStreamHandlers
   ): Promise<ModelTurn> {
     const base = provider.baseURL || "https://generativelanguage.googleapis.com/v1beta";
-    const response = await fetch(`${base}/models/${encodeURIComponent(provider.model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`, {
-      method: "POST",
-      signal: this.createCallSignal(stream?.signal),
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: context?.systemPrompt ?? fallbackInstructions() }] },
-        contents: [{ role: "user", parts: [{ text: context?.input ?? buildInput(task) }] }],
-        ...(modelTools.length > 0 ? { tools: [{ functionDeclarations: modelTools.map(toGeminiTool) }] } : {})
-      })
+    const canonicalMessages = contextMessages(context, task);
+    const requestBody = {
+      systemInstruction: { parts: [{ text: systemTextFromMessages(canonicalMessages) }] },
+      contents: toGeminiContents(canonicalMessages),
+      ...(modelTools.length > 0 ? { tools: [{ functionDeclarations: modelTools.map(toGeminiTool) }] } : {})
+    };
+    await emitModelTrace(stream, {
+      kind: "request",
+      timestamp: nowIso(),
+      streamId: stream?.streamId ?? createId("model_stream"),
+      provider: providerTraceMeta(provider.providerId, "gemini", provider.model, base),
+      payload: {
+        taskTitle: task.title,
+        taskStatus: task.status,
+        eventCount: task.events.length,
+        request: requestBody
+      }
     });
-    if (!response.ok) throw new Error(await response.text());
-    const payload = (await response.json()) as Record<string, unknown>;
-    const parts = geminiParts(payload);
-    const text = parts.map(extractText).filter(Boolean).join("\n").trim();
-    if (text) await stream?.onAssistantDelta(text);
-    const calls = parts.map(toGeminiToolCall).filter((call): call is ToolCall => Boolean(call));
-    const usage = geminiUsage(payload);
-    return calls.length > 0
-      ? { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) }
-      : { kind: "final", message: text || "No response returned.", ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) };
+    try {
+      const response = await fetch(`${base}/models/${encodeURIComponent(provider.model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`, {
+        method: "POST",
+        signal: this.createCallSignal(stream?.signal),
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(requestBody)
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const payload = (await response.json()) as Record<string, unknown>;
+      const parts = geminiParts(payload);
+      const text = parts.map(extractText).filter(Boolean).join("\n").trim();
+      if (text) await stream?.onAssistantDelta(text);
+      const calls = parts.map(toGeminiToolCall).filter((call): call is ToolCall => Boolean(call));
+      const usage = geminiUsage(payload);
+      await emitModelTrace(stream, {
+        kind: "response",
+        timestamp: nowIso(),
+        streamId: stream?.streamId ?? createId("model_stream"),
+        provider: providerTraceMeta(provider.providerId, "gemini", provider.model, base),
+        payload: {
+          response: calls.length > 0
+            ? { kind: "tool_calls", calls, ...(usage ? { usage } : {}), rawPayload: payload }
+            : { kind: "final", message: text || "No response returned.", ...(usage ? { usage } : {}), rawPayload: payload }
+        }
+      });
+      return calls.length > 0
+        ? { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) }
+        : { kind: "final", message: text || "No response returned.", ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) };
+    } catch (error) {
+      await emitModelTrace(stream, {
+        kind: "error",
+        timestamp: nowIso(),
+        streamId: stream?.streamId ?? createId("model_stream"),
+        provider: providerTraceMeta(provider.providerId, "gemini", provider.model, base),
+        payload: serializeTraceError(error)
+      });
+      throw error;
+    }
   }
 
   private createCallSignal(existingSignal?: AbortSignal): AbortSignal {
@@ -373,6 +506,161 @@ export function createModelClientFromEnvironment(
     : new FallbackModelClient();
 }
 
+function contextMessages(
+  context: Awaited<ReturnType<ContextAssembler["assemble"]>> | null,
+  task: TaskDetail
+): CanonicalModelMessage[] {
+  if (context?.messages && context.messages.length > 0) return context.messages;
+  return fallbackCanonicalMessages(task);
+}
+
+function fallbackCanonicalMessages(task: TaskDetail): CanonicalModelMessage[] {
+  const system = fallbackInstructions();
+  const input = buildInput(task);
+  return [
+    { role: "system", content: system },
+    { role: "user", content: input || task.title }
+  ];
+}
+
+function systemTextFromMessages(messages: CanonicalModelMessage[]): string {
+  return messages
+    .filter((message): message is Extract<CanonicalModelMessage, { role: "system" }> => message.role === "system")
+    .map((message) => message.content)
+    .filter(Boolean)
+    .join("\n\n") || fallbackInstructions();
+}
+
+function toOpenAIChatMessages(
+  messages: CanonicalModelMessage[]
+): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+  return messages.flatMap((message): OpenAI.Chat.Completions.ChatCompletionMessageParam[] => {
+    if (message.role === "system") return [{ role: "system", content: message.content }];
+    if (message.role === "user") return [{ role: "user", content: message.content }];
+    if (message.role === "tool") {
+      return [{
+        role: "tool",
+        tool_call_id: message.toolCallId,
+        content: message.content
+      }];
+    }
+    const toolCalls = message.toolCalls ?? [];
+    if (toolCalls.length === 0) return [{ role: "assistant", content: message.content ?? "" }];
+    return [{
+      role: "assistant",
+      content: message.content ?? null,
+      tool_calls: toolCalls.map((call) => ({
+        id: call.id,
+        type: "function",
+        function: {
+          name: call.toolName,
+          arguments: JSON.stringify(call.args ?? {})
+        }
+      }))
+    }];
+  });
+}
+
+function toAnthropicMessages(messages: CanonicalModelMessage[]): Array<Record<string, unknown>> {
+  const converted: Array<Record<string, unknown>> = [];
+  for (const message of messages) {
+    if (message.role === "system") continue;
+    if (message.role === "user") {
+      converted.push({ role: "user", content: message.content });
+      continue;
+    }
+    if (message.role === "tool") {
+      appendAnthropicToolResult(converted, message);
+      continue;
+    }
+      const content: Array<Record<string, unknown>> = [];
+      if (message.content) content.push({ type: "text", text: message.content });
+      for (const call of message.toolCalls ?? []) {
+        content.push({
+          type: "tool_use",
+          id: call.id,
+          name: call.toolName,
+          input: call.args ?? {}
+        });
+      }
+    converted.push({ role: "assistant", content: content.length > 0 ? content : [{ type: "text", text: "" }] });
+  }
+  return converted.length > 0 ? converted : [{ role: "user", content: "Continue." }];
+}
+
+function toGeminiContents(messages: CanonicalModelMessage[]): Array<Record<string, unknown>> {
+  const contents: Array<Record<string, unknown>> = [];
+  for (const message of messages) {
+    if (message.role === "system") continue;
+    if (message.role === "user") {
+      contents.push({ role: "user", parts: [{ text: message.content }] });
+      continue;
+    }
+    if (message.role === "tool") {
+      appendGeminiToolResponse(contents, message);
+      continue;
+    }
+    const parts: Array<Record<string, unknown>> = [];
+    if (message.content) parts.push({ text: message.content });
+    for (const call of message.toolCalls ?? []) {
+      parts.push({ functionCall: { name: call.toolName, args: call.args ?? {} } });
+    }
+    contents.push({ role: "model", parts: parts.length > 0 ? parts : [{ text: "" }] });
+  }
+  return contents.length > 0 ? contents : [{ role: "user", parts: [{ text: "Continue." }] }];
+}
+
+function appendAnthropicToolResult(target: Array<Record<string, unknown>>, message: Extract<CanonicalModelMessage, { role: "tool" }>): void {
+  const block = {
+    type: "tool_result",
+    tool_use_id: message.toolCallId,
+    content: message.content,
+    is_error: toolContentIsError(message.content)
+  };
+  const last = target.at(-1);
+  const lastContent = Array.isArray(last?.["content"]) ? last["content"] as Array<Record<string, unknown>> : null;
+  if (last?.["role"] === "user" && lastContent?.every((item) => item["type"] === "tool_result")) {
+    lastContent.push(block);
+    return;
+  }
+  target.push({ role: "user", content: [block] });
+}
+
+function appendGeminiToolResponse(target: Array<Record<string, unknown>>, message: Extract<CanonicalModelMessage, { role: "tool" }>): void {
+  const part = {
+    functionResponse: {
+      name: message.toolName,
+      response: toolContentAsGeminiResponse(message.content)
+    }
+  };
+  const last = target.at(-1);
+  const lastParts = Array.isArray(last?.["parts"]) ? last["parts"] as Array<Record<string, unknown>> : null;
+  if (last?.["role"] === "user" && lastParts?.every((item) => "functionResponse" in item)) {
+    lastParts.push(part);
+    return;
+  }
+  target.push({ role: "user", parts: [part] });
+}
+
+function toolContentIsError(content: string): boolean {
+  const parsed = parseJsonRecord(content);
+  return parsed ? parsed["ok"] === false : /failed|denied|cancelled|canceled|error/i.test(content);
+}
+
+function toolContentAsGeminiResponse(content: string): Record<string, unknown> {
+  const parsed = parseJsonRecord(content);
+  return parsed ?? { output: content };
+}
+
+function parseJsonRecord(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function fallbackInstructions(): string {
   return [
     "You are the SCC workbench agent.",
@@ -393,6 +681,35 @@ function fallbackInstructions(): string {
     "Avoid hype, decorative openings, and marketing-style introductions unless the user asks for that tone.",
     "Use Markdown for readable structure when helpful: short headings, bullets, tables, and code blocks are supported."
   ].join("\n");
+}
+
+async function emitModelTrace(stream: ModelStreamHandlers | undefined, event: ModelTraceEvent): Promise<void> {
+  await stream?.onTrace?.(event);
+}
+
+function providerTraceMeta(
+  providerId: string | undefined,
+  protocol: ResolvedModelProviderConfig["protocol"] | "openai_compatible" | undefined,
+  model: string | undefined,
+  baseURL: string | undefined
+): ModelTraceEvent["provider"] {
+  if (!providerId && !protocol && !model && !baseURL) return undefined;
+  return {
+    ...(providerId ? { providerId } : {}),
+    ...(protocol ? { protocol } : {}),
+    ...(model ? { model } : {}),
+    ...(baseURL ? { baseURL } : {})
+  };
+}
+
+function serializeTraceError(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      ...(error.stack ? { stack: error.stack } : {})
+    };
+  }
+  return { message: String(error) };
 }
 
 export function selectModelToolsForTask(task: TaskDetail, dynamicTools: ModelToolDefinition[] = []): ModelToolDefinition[] {
@@ -589,19 +906,21 @@ function resolveApiKeyPath(filePath: string): string {
 }
 
 function buildInput(task: TaskDetail): string {
-  const lines = [`Task: ${task.title}`, ""];
+  const lines: string[] = [];
   for (const event of task.events) {
     if (event.type === "status_changed" || event.type === "task_created") continue;
     if (event.type.startsWith("plan_")) continue;
     if (event.type === "conversation_summary_created" || event.type === "context_overflow_recovered" || event.type === "prompt_cache_stats") continue;
     if (event.type === "tool_result") {
       const toolName = String(event.payload["toolName"] ?? "tool");
-      lines.push(`tool_result ${toolName}: ${String(event.payload["output"] ?? "").slice(0, 6000)}`);
+      const ok = event.payload["ok"] !== false;
+      lines.push(`tool_result ${toolName}: ${JSON.stringify({ ok, output: String(event.payload["output"] ?? "").slice(0, 6000) })}`);
       continue;
     }
     if (event.payload["uiHidden"] === true) continue;
     lines.push(`${event.type}: ${event.summary}`);
   }
+  if (lines.length === 0 && task.title.trim()) lines.push(`user_message: ${task.title}`);
   return lines.join("\n");
 }
 

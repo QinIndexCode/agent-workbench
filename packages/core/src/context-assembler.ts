@@ -16,8 +16,15 @@ export interface TokenBudget {
 export interface AssembledContext {
   systemPrompt: string;
   input: string;
+  messages: CanonicalModelMessage[];
   usedTokens: number;
 }
+
+export type CanonicalModelMessage =
+  | { role: "system"; content: string }
+  | { role: "user"; content: string; eventId?: string }
+  | { role: "assistant"; content?: string; toolCalls?: ToolCall[]; eventId?: string }
+  | { role: "tool"; toolCallId: string; toolName: string; content: string; eventId?: string };
 
 export interface LoadedSkillSession {
   loadedSkills: Set<string>;
@@ -41,60 +48,61 @@ export class ContextAssembler {
     const maxTotal = budget?.maxTotal ?? preferences.maxTokensPerRequest;
     const reservedForResponse = budget?.reservedForResponse ?? Math.min(16000, Math.round(maxTotal * 0.15));
     const tokenBudget = { maxTotal, reservedForResponse };
-    const layers: string[] = [];
+    const systemLayers: string[] = [];
+    const inputLayers: string[] = [];
     let usedTokens = 0;
 
     const systemLayer = this.buildSystemLayer(preferences);
-    layers.push(systemLayer);
+    systemLayers.push(systemLayer);
     usedTokens += estimateTokens(systemLayer);
 
-    const memoryFileLayer = leanContext ? "" : await this.buildMemoryFileLayer(task);
+    const memoryFileLayer = await this.buildMemoryFileLayer(task, { compact: leanContext });
     if (memoryFileLayer) {
-      layers.push(memoryFileLayer);
+      systemLayers.push(memoryFileLayer);
       usedTokens += estimateTokens(memoryFileLayer);
     }
 
     const runtimeLayer = leanContext ? "" : await this.buildRuntimeMetadataLayer(preferences);
     if (runtimeLayer) {
-      layers.push(runtimeLayer);
+      systemLayers.push(runtimeLayer);
       usedTokens += estimateTokens(runtimeLayer);
     }
 
     const loadedSkills = leanContext ? "" : this.loadedSkillPrompt(task.id);
     if (loadedSkills) {
-      layers.push(loadedSkills);
+      systemLayers.push(loadedSkills);
       usedTokens += estimateTokens(loadedSkills);
     }
 
     const workingFolderLayer = this.buildWorkingFolderLayer(task);
-    layers.push(workingFolderLayer);
+    systemLayers.push(workingFolderLayer);
     usedTokens += estimateTokens(workingFolderLayer);
 
     const currentTurnLayer = this.buildCurrentTurnLayer(task);
     if (currentTurnLayer) {
-      layers.push(currentTurnLayer);
+      inputLayers.push(currentTurnLayer);
       usedTokens += estimateTokens(currentTurnLayer);
     }
 
     const continuityLayer = this.buildTaskContinuityLayer(task);
-    layers.push(continuityLayer);
+    systemLayers.push(continuityLayer);
     usedTokens += estimateTokens(continuityLayer);
 
     const skillLayer = leanContext ? "" : await this.buildSkillMetaLayer(task, preferences);
     if (skillLayer) {
-      layers.push(skillLayer);
+      systemLayers.push(skillLayer);
       usedTokens += estimateTokens(skillLayer);
     }
 
     const projectLayer = leanContext ? "" : await this.buildProjectLayer(task);
     if (projectLayer) {
-      layers.push(projectLayer);
+      systemLayers.push(projectLayer);
       usedTokens += estimateTokens(projectLayer);
     }
 
     const attachmentLayer = leanContext ? "" : await this.buildAttachmentLayer(task.id);
     if (attachmentLayer) {
-      layers.push(attachmentLayer);
+      systemLayers.push(attachmentLayer);
       usedTokens += estimateTokens(attachmentLayer);
     }
 
@@ -103,7 +111,7 @@ export class ContextAssembler {
     const fileTokens = estimateTokens(fileLayer);
     let fileLayerIncluded = false;
     if (fileLayer && usedTokens + fileTokens < tokenBudget.maxTotal * 0.2) {
-      layers.push(fileLayer);
+      systemLayers.push(fileLayer);
       usedTokens += fileTokens;
       fileLayerIncluded = true;
     }
@@ -119,31 +127,31 @@ export class ContextAssembler {
     });
     if (summary) {
       const summaryLayer = `## Conversation Summary\n${summary.summary}`;
-      layers.push(summaryLayer);
+      systemLayers.push(summaryLayer);
       usedTokens += estimateTokens(summaryLayer);
     }
 
     const remaining = tokenBudget.maxTotal - usedTokens - tokenBudget.reservedForResponse;
-    layers.push(buildHistoryLayer(task, Math.max(160, remaining), fileLayerIncluded ? tracker : undefined, summary?.rangeEndEventId));
+    const historyLayer = buildHistoryLayer(task, Math.max(160, remaining), fileLayerIncluded ? tracker : undefined, summary?.rangeEndEventId);
+    if (historyLayer) inputLayers.push(historyLayer);
 
-    const nonEmpty = layers.filter((layer) => layer.trim().length > 0);
-    const systemPrompt = nonEmpty[0] ?? "";
-    const rawInput = nonEmpty.slice(1).join("\n\n");
+    const systemPrompt = systemLayers.filter((layer) => layer.trim().length > 0).join("\n\n");
+    const rawInput = inputLayers.filter((layer) => layer.trim().length > 0).join("\n\n");
     const inputBudget = Math.max(120, tokenBudget.maxTotal - tokenBudget.reservedForResponse - estimateTokens(systemPrompt));
     const protectedLayers = [
-      [
-        "## Current Working Folder",
-        `Tool root: ${task.workRoot || "(default workbench root)"}`,
-        `Task folder ID: ${task.folderId || "default"}`
-      ].join("\n"),
       currentTurnLayer,
-      continuityLayer,
       buildRecentUserContextLayer(task, summary?.rangeEndEventId),
     ].filter(Boolean);
     const input = trimMiddleToTokenBudget(rawInput, inputBudget, protectedLayers);
+    const messages = buildCanonicalModelMessages(task, systemPrompt, {
+      afterEventId: summary?.rangeEndEventId,
+      maxTokens: inputBudget,
+      tracker: fileLayerIncluded ? tracker : undefined
+    });
     return {
       systemPrompt,
       input,
+      messages,
       usedTokens: estimateTokens([systemPrompt, input].filter(Boolean).join("\n\n"))
     };
   }
@@ -269,13 +277,16 @@ export class ContextAssembler {
     return lines.join("\n");
   }
 
-  private async buildMemoryFileLayer(task: TaskDetail): Promise<string> {
+  private async buildMemoryFileLayer(task: TaskDetail, options: { compact?: boolean } = {}): Promise<string> {
     const baseDir = memoryBaseDir();
-    const user = await readMemoryFile(resolve(baseDir, "USER.md"), 6000, defaultUserMemoryContent());
-    const globalMemory = await readMemoryFile(resolve(baseDir, "MEMORY.md"), 12000, defaultGlobalMemoryContent());
+    const limits = options.compact
+      ? { user: 3000, global: 5000, project: 5000 }
+      : { user: 6000, global: 12000, project: 12000 };
+    const user = await readMemoryFile(resolve(baseDir, "USER.md"), limits.user, defaultUserMemoryContent());
+    const globalMemory = await readMemoryFile(resolve(baseDir, "MEMORY.md"), limits.global, defaultGlobalMemoryContent());
     const project = await readMemoryFile(
       resolve(baseDir, "projects", memoryPathHash(task.workRoot || defaultTaskWorkRoot()), "MEMORY.md"),
-      12000,
+      limits.project,
       defaultProjectMemoryContent(task.workRoot || defaultTaskWorkRoot())
     );
     return [
@@ -352,19 +363,13 @@ export class ContextAssembler {
   }
 
   private buildTaskContinuityLayer(task: TaskDetail): string {
-    const firstUser = task.events.find((event) => event.type === "user_message" && !event.reverted);
-    const latestUser = latestUserEvent(task);
     const latestPlan = [...task.events].reverse().find((event) => event.type.startsWith("plan_") && !event.reverted);
-    const currentGoalIsOriginal = Boolean(firstUser && latestUser && firstUser.id === latestUser.id && !isTrivialUserMessage(firstUser.summary));
     return [
       "## Active Task Continuity",
       `Task ID: ${task.id}`,
-      `Task title: ${task.title}`,
       `Task status: ${task.status}`,
-      latestUser && latestUser.id !== firstUser?.id ? `Latest user constraint: ${truncate(latestUser.summary, 1800)}` : "",
-      currentGoalIsOriginal ? `Original user goal: ${truncate(firstUser!.summary, 900)}` : "",
       latestPlan ? `Latest visible plan state: ${truncate(latestPlan.summary, 1000)}` : "",
-      "Do not restart the task or reread already summarized files unless fresh evidence is needed."
+      "Use the role-ordered conversation below for the active objective; do not infer the user's current goal from the task title."
     ].filter(Boolean).join("\n");
   }
 
@@ -574,6 +579,187 @@ function buildRecentUserContextLayer(task: TaskDetail, afterEventId?: string): s
     "## Recent User Messages",
     ...recent.map((event) => `- ${event.type}: ${truncate(event.summary, 4000)}`)
   ].join("\n");
+}
+
+function buildCanonicalModelMessages(
+  task: TaskDetail,
+  systemPrompt: string,
+  options: { afterEventId?: string | undefined; maxTokens: number; tracker?: FileStateTracker | undefined }
+): CanonicalModelMessage[] {
+  const messages: CanonicalModelMessage[] = [];
+  if (systemPrompt.trim()) messages.push({ role: "system", content: systemPrompt });
+  messages.push(...buildCanonicalHistoryMessages(task, options));
+  if (messages.length === 1) {
+    const latestUser = latestUserEvent(task);
+    if (latestUser) messages.push({ role: "user", content: latestUser.summary, eventId: latestUser.id });
+  }
+  return messages;
+}
+
+function buildCanonicalHistoryMessages(
+  task: TaskDetail,
+  options: { afterEventId?: string | undefined; maxTokens: number; tracker?: FileStateTracker | undefined }
+): CanonicalModelMessage[] {
+  const events = task.events.filter(isModelHistoryEvent);
+  const startIndex = options.afterEventId ? events.findIndex((event) => event.id === options.afterEventId) + 1 : 0;
+  const visibleEvents = startIndex > 0 ? events.slice(startIndex) : events;
+  const messages: CanonicalModelMessage[] = [];
+  let pendingToolCalls: ToolCall[] = [];
+  const emittedToolCallIds = new Set<string>();
+
+  const flushToolCalls = (): void => {
+    if (pendingToolCalls.length === 0) return;
+    const eventId = pendingToolCalls[0]?.id;
+    messages.push({ role: "assistant", toolCalls: pendingToolCalls, ...(eventId ? { eventId } : {}) });
+    for (const call of pendingToolCalls) emittedToolCallIds.add(call.id);
+    pendingToolCalls = [];
+  };
+
+  const discardPendingToolCalls = (): void => {
+    pendingToolCalls = [];
+  };
+
+  for (const event of visibleEvents) {
+    if (event.reverted) continue;
+    switch (event.type) {
+      case "user_message":
+      case "guidance_pending":
+      case "guidance_consumed":
+        discardPendingToolCalls();
+        messages.push({ role: "user", content: event.summary, eventId: event.id });
+        break;
+      case "assistant_message":
+        discardPendingToolCalls();
+        messages.push({ role: "assistant", content: event.summary, eventId: event.id });
+        break;
+      case "tool_requested": {
+        const call = toolCallFromRequestedEvent(event);
+        if (call) pendingToolCalls.push(call);
+        break;
+      }
+      case "tool_result": {
+        const call = toolCallFromResultEvent(event);
+        if (!emittedToolCallIds.has(call.id)) {
+          const hasPendingCall = pendingToolCalls.some((pending) => pending.id === call.id);
+          if (hasPendingCall) flushToolCalls();
+          else {
+            messages.push({ role: "assistant", toolCalls: [call], eventId: event.id });
+            emittedToolCallIds.add(call.id);
+          }
+        }
+        messages.push({
+          role: "tool",
+          toolCallId: call.id,
+          toolName: call.toolName,
+          content: toolResultContentForRole(event, options.tracker),
+          eventId: event.id
+        });
+        break;
+      }
+      case "attachment_added":
+        discardPendingToolCalls();
+        messages.push({ role: "user", content: `Attachment added: ${event.summary}`, eventId: event.id });
+        break;
+      case "web_search_result":
+        discardPendingToolCalls();
+        messages.push({ role: "assistant", content: `Web search result: ${event.summary}`, eventId: event.id });
+        break;
+      default:
+        break;
+    }
+  }
+
+  return trimCanonicalHistoryMessages(messages, options.maxTokens);
+}
+
+function toolCallFromRequestedEvent(event: TaskEvent): ToolCall | null {
+  const toolCallId = String(event.payload["toolCallId"] ?? event.payload["id"] ?? "").trim();
+  const toolName = String(event.payload["toolName"] ?? "").trim();
+  if (!toolCallId || !toolName) return null;
+  return { id: toolCallId, toolName, args: recordFromUnknown(event.payload["args"]) };
+}
+
+function toolCallFromResultEvent(event: TaskEvent): ToolCall {
+  const toolCallId = String(event.payload["toolCallId"] ?? event.payload["id"] ?? createId("tool_call")).trim();
+  const toolName = String(event.payload["toolName"] ?? "tool").trim() || "tool";
+  return { id: toolCallId || createId("tool_call"), toolName, args: recordFromUnknown(event.payload["args"]) };
+}
+
+function toolResultContentForRole(event: TaskEvent, tracker?: FileStateTracker): string {
+  const toolName = String(event.payload["toolName"] ?? "tool").trim() || "tool";
+  const ok = event.payload["ok"] !== false;
+  const output = String(event.payload["output"] ?? "");
+  const status = ok ? "completed" : inferToolFailureStatus(output);
+  if (tracker && isFileContentInTracker(event, tracker)) {
+    const parsed = parseJson(output);
+    return stableJson({
+      ok,
+      status,
+      toolName,
+      path: parsed["path"],
+      hash: parsed["hash"],
+      partial: Boolean(parsed["partial"]),
+      output: "read_file content recorded in Known Files; use that file state instead of repeating the body here."
+    });
+  }
+  return stableJson({
+    ok,
+    status,
+    toolName,
+    output: formatToolOutput(output)
+  });
+}
+
+function inferToolFailureStatus(output: string): "denied" | "cancelled" | "failed" {
+  if (/denied by user|request denied|approval denied/i.test(output)) return "denied";
+  if (/cancelled|canceled|aborted/i.test(output)) return "cancelled";
+  return "failed";
+}
+
+function trimCanonicalHistoryMessages(messages: CanonicalModelMessage[], maxTokens: number): CanonicalModelMessage[] {
+  if (maxTokens <= 0) return messages.slice(-1);
+  const kept = [...messages];
+  while (kept.length > 1 && estimateCanonicalMessages(kept) > maxTokens) {
+    kept.shift();
+  }
+  return repairOrphanToolMessages(kept);
+}
+
+function repairOrphanToolMessages(messages: CanonicalModelMessage[]): CanonicalModelMessage[] {
+  const repaired: CanonicalModelMessage[] = [];
+  const knownToolCalls = new Set<string>();
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      for (const call of message.toolCalls ?? []) knownToolCalls.add(call.id);
+      repaired.push(message);
+      continue;
+    }
+    if (message.role === "tool" && !knownToolCalls.has(message.toolCallId)) {
+      const call = { id: message.toolCallId, toolName: message.toolName, args: {} };
+      repaired.push({ role: "assistant", toolCalls: [call], ...(message.eventId ? { eventId: message.eventId } : {}) });
+      knownToolCalls.add(message.toolCallId);
+    }
+    repaired.push(message);
+  }
+  return repaired;
+}
+
+function estimateCanonicalMessages(messages: CanonicalModelMessage[]): number {
+  return messages.reduce((sum, message) => {
+    if (message.role === "assistant" && message.toolCalls?.length) {
+      return sum + estimateTokens(JSON.stringify(message.toolCalls));
+    }
+    const content = "content" in message && typeof message.content === "string" ? message.content : "";
+    return sum + estimateTokens(content);
+  }, 0);
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function stableJson(value: Record<string, unknown>): string {
+  return JSON.stringify(value, (_key, nested) => (nested === undefined ? undefined : nested));
 }
 
 export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): string {

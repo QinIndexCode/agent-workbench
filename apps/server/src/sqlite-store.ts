@@ -73,16 +73,26 @@ type EncryptedRecordEnvelope = {
 export class SqliteWorkbenchStore implements WorkbenchStore {
   private readonly db: Database.Database;
   private secretBox: LocalSecretBox | undefined;
+  private checkpointInterval: ReturnType<typeof setInterval> | undefined;
 
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
     this.db = new Database(filePath);
     this.db.pragma("journal_mode = WAL");
+    this.db.pragma("busy_timeout = 5000");
     this.db
       .prepare(
         "CREATE TABLE IF NOT EXISTS records (namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(namespace, key))"
       )
       .run();
+    this.checkpointInterval = setInterval(() => {
+      try {
+        this.db.pragma("wal_checkpoint(TRUNCATE)");
+      } catch {
+        // checkpoint is best-effort
+      }
+    }, 60_000);
+    if (this.checkpointInterval.unref) this.checkpointInterval.unref();
   }
 
   async saveTask(task: TaskDetail): Promise<void> {
@@ -505,14 +515,34 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   }
 
   close(): void {
+    if (this.checkpointInterval) {
+      clearInterval(this.checkpointInterval);
+      this.checkpointInterval = undefined;
+    }
+    try { this.db.pragma("wal_checkpoint(TRUNCATE)"); } catch { /* best-effort */ }
     this.db.close();
   }
 
   private upsert(namespace: Namespace, key: string, value: unknown): void {
     const stored = namespace !== "preferences" && this.isStorageEncryptionEnabled() ? this.encryptRecordValue(value) : value;
-    this.db
-      .prepare("INSERT INTO records(namespace, key, value) VALUES (?, ?, ?) ON CONFLICT(namespace, key) DO UPDATE SET value=excluded.value")
-      .run(namespace, key, JSON.stringify(stored));
+    this.retryWrite(() => {
+      this.db
+        .prepare("INSERT INTO records(namespace, key, value) VALUES (?, ?, ?) ON CONFLICT(namespace, key) DO UPDATE SET value=excluded.value")
+        .run(namespace, key, JSON.stringify(stored));
+    });
+  }
+
+  private retryWrite(op: () => void, maxRetries = 3): void {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        op();
+        return;
+      } catch (error) {
+        if (attempt === maxRetries) throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        if (!message.includes("BUSY") && !message.includes("LOCK")) throw error;
+      }
+    }
   }
 
   private get<T>(namespace: Namespace, key: string): T | undefined {

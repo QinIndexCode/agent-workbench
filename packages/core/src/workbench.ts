@@ -74,7 +74,7 @@ import type {
   WebSearchProviderPatchRequest
 } from "@scc/shared";
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { ContextAssembler } from "./context-assembler.js";
 import {
@@ -88,7 +88,7 @@ import {
   normalizeSkillRecord,
   reflectMemories
 } from "./experience.js";
-import { FallbackModelClient, type ModelClient, type ModelUsage } from "./fallback-model.js";
+import { FallbackModelClient, type ModelClient, type ModelTraceEvent, type ModelUsage } from "./fallback-model.js";
 import { createId, nowIso } from "./ids.js";
 import { indexKnowledgeItem, searchKnowledge } from "./knowledge-rag.js";
 import type { ResolvedModelProviderConfig } from "./openai-model.js";
@@ -135,6 +135,7 @@ export class AgentWorkbench {
   private readonly permissionState = new Map<string, PermissionState>();
   private readonly taskQueues = new Map<string, Promise<void>>();
   private readonly deltaLocks = new Map<string, Promise<void>>();
+  private readonly traceLocks = new Map<string, Promise<void>>();
   private readonly runningModelControllers = new Map<string, AbortController>();
   private readonly runningToolControllers = new Map<string, Set<AbortController>>();
 
@@ -1799,6 +1800,15 @@ export class AgentWorkbench {
         riskCategory: assessment.category,
         ...eventMetadata
       });
+      await this.safeAppendTaskTrace(task, {
+        kind: "tool_requested",
+        timestamp: nowIso(),
+        toolCallId: call.id,
+        toolName: call.toolName,
+        args: call.args,
+        riskCategory: assessment.category,
+        metadata
+      });
 
       if (this.permissions.isGloballyAllowed(assessment.category, globalGrants)) {
         this.addEvent(task, "approval_auto_granted", `${assessment.category}: global permission`, {
@@ -1806,6 +1816,14 @@ export class AgentWorkbench {
           toolName: call.toolName,
           riskCategory: assessment.category,
           ...eventMetadata
+        });
+        await this.safeAppendTaskTrace(task, {
+          kind: "approval_auto_granted",
+          timestamp: nowIso(),
+          toolCallId: call.id,
+          toolName: call.toolName,
+          source: "global_permission",
+          riskCategory: assessment.category
         });
       } else {
         const preferenceGrant = this.preferenceAutoApproval(call, assessment.category, preferences);
@@ -1817,6 +1835,15 @@ export class AgentWorkbench {
             approvalSource: preferenceGrant.source,
             ...eventMetadata
           });
+          await this.safeAppendTaskTrace(task, {
+            kind: "approval_auto_granted",
+            timestamp: nowIso(),
+            toolCallId: call.id,
+            toolName: call.toolName,
+            source: preferenceGrant.source,
+            reason: preferenceGrant.reason,
+            riskCategory: assessment.category
+          });
         } else if (
           preferenceGrant.forceApproval ||
           this.permissions.needsApproval(assessment.category, this.stateFor(task.id, task))
@@ -1824,6 +1851,14 @@ export class AgentWorkbench {
           const approval = this.permissions.createApproval({ taskId: task.id, toolCall: call, assessment, metadata: eventMetadata });
           task.approvals.push(approval);
           await this.addApprovalPendingEvent(task, approval);
+          await this.safeAppendTaskTrace(task, {
+            kind: "approval_pending",
+            timestamp: nowIso(),
+            toolCallId: call.id,
+            toolName: call.toolName,
+            approvalId: approval.id,
+            riskCategory: assessment.category
+          });
           this.setStatus(task, "waiting_approval");
           await this.store.saveTask(task);
           return task;
@@ -1933,6 +1968,16 @@ export class AgentWorkbench {
       const controller = new AbortController();
       this.runningModelControllers.set(task.id, controller);
       try {
+        await this.safeAppendTaskTrace(task, {
+          kind: "model_turn_started",
+          timestamp: nowIso(),
+          streamId,
+          modelClient: this.model.constructor.name,
+          taskTitle: task.title,
+          taskStatus: task.status,
+          eventCount: task.events.length,
+          latestEvent: summarizeEventForTrace(task.events.at(-1))
+        });
         const turn = await this.model.next(task, {
           streamId,
           signal: controller.signal,
@@ -1950,14 +1995,38 @@ export class AgentWorkbench {
             });
             await this.store.saveTask(current);
             Object.assign(task, current);
+            await this.safeAppendTaskTrace(current, {
+              kind: "provider_fallback",
+              timestamp: nowIso(),
+              streamId,
+              ...event
+            });
+          },
+          onTrace: async (event) => {
+            const current = (await this.store.getTask(task.id)) ?? task;
+            await this.safeAppendModelTrace(current, event);
           }
         });
         await this.recordPromptCacheStats(task, turn.usage);
         this.addConversationSummaryEvents(task);
+        await this.safeAppendTaskTrace(task, {
+          kind: "model_turn_completed",
+          timestamp: nowIso(),
+          streamId,
+          resultKind: turn.kind,
+          ...(turn.kind === "final" ? { message: turn.message } : { toolCalls: turn.calls }),
+          ...(turn.usage ? { usage: turn.usage } : {})
+        });
         return turn;
       } catch (error) {
         if (controller.signal.aborted) return null;
         const message = sanitizeProviderError(error instanceof Error ? error.message : String(error));
+        await this.safeAppendTaskTrace(task, {
+          kind: "model_turn_failed",
+          timestamp: nowIso(),
+          streamId,
+          error: message
+        });
         if (!retriedAfterOverflow && isContextOverflowError(message)) {
           retriedAfterOverflow = true;
           this.addEvent(task, "context_overflow_recovered", "Context exceeded the active model window; older context was compacted and the request was retried once.", {
@@ -2530,6 +2599,16 @@ export class AgentWorkbench {
       output,
       ...(call.toolName === "plan_update" ? { uiHidden: true } : {})
     });
+    await this.safeAppendTaskTrace(task, {
+      kind: "tool_result",
+      timestamp: nowIso(),
+      toolCallId: result.toolCallId,
+      toolName: call.toolName,
+      args: call.args,
+      ok: result.ok,
+      output: result.output,
+      ...(call.toolName === "plan_update" ? { uiHidden: true } : {})
+    });
     const toolEvent = task.events[task.events.length - 1]!;
     if (call.toolName === "web_search") {
       this.addEvent(task, "web_search_result", result.ok ? "Search evidence returned" : "Search failed", {
@@ -2539,6 +2618,48 @@ export class AgentWorkbench {
       });
     }
     this.contextAssembler.getFileStateTracker(task.id).updateFromToolResult(toolEvent);
+  }
+
+  private async safeAppendModelTrace(task: TaskDetail, event: ModelTraceEvent): Promise<void> {
+    await this.safeAppendTaskTrace(task, {
+      kind: `model_${event.kind}`,
+      timestamp: event.timestamp,
+      streamId: event.streamId,
+      ...(event.provider ? { provider: event.provider } : {}),
+      payload: event.payload
+    });
+  }
+
+  private async safeAppendTaskTrace(task: TaskDetail, entry: Record<string, unknown>): Promise<void> {
+    try {
+      await this.appendTaskTrace(task, entry);
+    } catch {
+      // debugging output must never break the task runtime
+    }
+  }
+
+  private async appendTaskTrace(task: TaskDetail, entry: Record<string, unknown>): Promise<void> {
+    const previous = this.traceLocks.get(task.id) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.catch(() => undefined).then(() => gate);
+    this.traceLocks.set(task.id, queued);
+    await previous.catch(() => undefined);
+    try {
+      const tracePath = resolve(task.workRoot || defaultTaskWorkRoot(), "data", "logs", "model-traces", `${task.id}.jsonl`);
+      await mkdir(dirname(tracePath), { recursive: true });
+      await appendFile(tracePath, `${JSON.stringify({
+        taskId: task.id,
+        taskTitle: task.title,
+        taskStatus: task.status,
+        ...entry
+      })}\n`, "utf8");
+    } finally {
+      release();
+      if (this.traceLocks.get(task.id) === queued) this.traceLocks.delete(task.id);
+    }
   }
 
   private async addApprovalPendingEvent(task: TaskDetail, approval: ToolApproval): Promise<void> {
@@ -3358,6 +3479,16 @@ function isManagedStateTool(toolName: string): boolean {
     toolName === "skill_delete" ||
     toolName === "plan_update"
   );
+}
+
+function summarizeEventForTrace(event: TaskEvent | undefined): Record<string, unknown> | undefined {
+  if (!event) return undefined;
+  return {
+    id: event.id,
+    type: event.type,
+    summary: event.summary,
+    createdAt: event.createdAt
+  };
 }
 
 function isParallelSafeToolCall(call: ToolCall, category: RiskCategory): boolean {

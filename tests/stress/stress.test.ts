@@ -141,9 +141,10 @@ describe("stress matrix", () => {
     expect(assembled.usedTokens).toBeLessThanOrEqual(10000);
     expect(assembled.input).toContain("Context Budget Notice");
     expect(assembled.input).toContain("Current Turn");
-    expect(assembled.input).toContain("Active Task Continuity");
-    expect(assembled.input).toContain("Latest user constraint");
-    expect(assembled.input).toContain(task.workRoot);
+    expect(assembled.systemPrompt).toContain("Active Task Continuity");
+    expect(assembled.systemPrompt).toContain("Use the role-ordered conversation");
+    expect(assembled.systemPrompt).toContain(task.workRoot);
+    expect(assembled.systemPrompt).not.toContain("Task title:");
     expect(summaries.length).toBeLessThanOrEqual(1);
     recordPass("long context compaction", task, {
       summaryCount: summaries.length,

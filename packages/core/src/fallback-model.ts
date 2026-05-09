@@ -1,11 +1,24 @@
 import type { TaskDetail, ToolCall } from "@scc/shared";
-import { createId } from "./ids.js";
+import { createId, nowIso } from "./ids.js";
 
 export interface ModelUsage {
   inputTokens?: number;
   outputTokens?: number;
   cachedTokens?: number;
   raw?: Record<string, unknown>;
+}
+
+export interface ModelTraceEvent {
+  kind: "request" | "response" | "error" | "provider_fallback";
+  timestamp: string;
+  streamId: string;
+  provider?: {
+    providerId?: string;
+    protocol?: string;
+    model?: string;
+    baseURL?: string;
+  } | undefined;
+  payload: Record<string, unknown>;
 }
 
 export type ModelTurn =
@@ -18,6 +31,7 @@ export interface ModelStreamHandlers {
   onAssistantDelta: (delta: string) => Promise<void>;
   onThinkingDelta: (delta: string) => Promise<void>;
   onProviderFallback?: (event: { fromProviderId?: string; toProviderId?: string; fromModel?: string; toModel?: string; category: string; reason: string }) => Promise<void>;
+  onTrace?: (event: ModelTraceEvent) => Promise<void>;
 }
 
 export interface ModelClient {
@@ -46,19 +60,40 @@ export class FallbackModelClient implements ModelClient {
 export class ConfiguredToolModelClient implements ModelClient {
   constructor(private readonly command: string) {}
 
-  async next(task: TaskDetail): Promise<ModelTurn> {
+  async next(task: TaskDetail, stream?: ModelStreamHandlers): Promise<ModelTurn> {
     const lastToolResultIndex = findLastEventIndex(task, "tool_result");
     const lastAssistantIndex = findLastEventIndex(task, "assistant_message");
     const lastToolResult = lastToolResultIndex >= 0 ? task.events[lastToolResultIndex] : undefined;
     if (lastToolResult && lastToolResultIndex > lastAssistantIndex) {
       const output = String(lastToolResult.payload["output"] ?? "");
-      return { kind: "final", message: output ? summarizeToolEvidence(output) : "Tool completed with no output." };
+      const message = output ? summarizeToolEvidence(output) : "Tool completed with no output.";
+      await stream?.onTrace?.({
+        kind: "response",
+        timestamp: nowIso(),
+        streamId: stream.streamId,
+        payload: {
+          response: {
+            kind: "final",
+            message
+          }
+        }
+      });
+      return { kind: "final", message };
     }
 
-    return {
+    const turn = {
       kind: "tool_calls",
       calls: [{ id: createId("tool_call"), toolName: "run_command", args: { command: this.command } }]
-    };
+    } satisfies ModelTurn;
+    await stream?.onTrace?.({
+      kind: "response",
+      timestamp: nowIso(),
+      streamId: stream?.streamId ?? createId("model_stream"),
+      payload: {
+        response: turn
+      }
+    });
+    return turn;
   }
 }
 
