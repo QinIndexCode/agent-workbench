@@ -2,8 +2,9 @@ import type { TaskDetail, TaskEvent } from "@scc/shared";
 
 export type TaskIntent = "direct_chat" | "tool_inventory" | "read_only_evidence" | "code_change" | "memory_skill_admin";
 
-export function classifyTaskIntent(task: Pick<TaskDetail, "title" | "events">): TaskIntent {
-  const text = latestUserText(task) || task.title || "";
+export function classifyTaskIntent(task: Pick<TaskDetail, "events">): TaskIntent {
+  const text = latestUserText(task);
+  if (!text) return "direct_chat";
   if (isToolInventoryRequest(text)) return "tool_inventory";
   if (isDirectChatRequest(text)) return "direct_chat";
   if (isMemorySkillAdminRequest(text)) return "memory_skill_admin";
@@ -35,14 +36,18 @@ export function isTrivialUserMessage(text: string): boolean {
   ].includes(normalized);
 }
 
-export function shouldLoadDynamicTools(intent: TaskIntent, task: Pick<TaskDetail, "title" | "events">): boolean {
+export function shouldLoadDynamicTools(intent: TaskIntent, task: Pick<TaskDetail, "events">): boolean {
   if (intent === "direct_chat" || intent === "tool_inventory") return false;
   if (intent === "code_change" || intent === "memory_skill_admin") return true;
-  return mentionsExternalToolSurface(latestUserText(task) || task.title || "");
+  return mentionsExternalToolSurface(latestUserText(task));
 }
 
 export function isLeanContextIntent(intent: TaskIntent): boolean {
   return intent === "direct_chat" || intent === "tool_inventory";
+}
+
+export function explicitlyAvoidsToolUse(text: string): boolean {
+  return /(不要|无需|不用|别|禁止|不必|不再).{0,16}(新增|重新|再次|再)?(.{0,8})(调用|使用|运行|执行).{0,12}(工具|命令|tool|command)|(不要|无需|不用|别|禁止|不必|不再).{0,16}(新增|重新|再次|再)?(.{0,8})(工具|命令|tool|command).{0,12}(调用|使用|运行|执行)|without\s+(calling|using|running).{0,16}(tools?|commands?)|do\s+not\s+(call|use|run).{0,16}(tools?|commands?)/iu.test(text);
 }
 
 function isCurrentUserEvent(event: TaskEvent): boolean {

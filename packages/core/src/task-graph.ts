@@ -63,7 +63,7 @@ export interface VerificationResultRecord {
 export function compileTaskGraph(task: TaskDetail): TaskGraph | null {
   const intent = classifyTaskIntent(task);
   if (intent === "direct_chat") return null;
-  const objective = latestUserText(task) || task.title;
+  const objective = latestUserText(task);
   if (!objective.trim()) return null;
   const now = nowIso();
   const nodes = nodesForIntent(intent, task.id, objective.trim());
@@ -126,7 +126,7 @@ export function buildTaskGraphSystemLayer(graph: TaskGraph | null): string {
   });
   return [
     "## Task Graph",
-    "Use this graph as durable task state. It is not a conversation title and must not override the latest user request.",
+    "Use this graph as durable task state. It must not override the latest user request.",
     `Status: ${graph.status}`,
     `Active node: ${graph.activeNodeId}`,
     ...nodeLines
@@ -149,7 +149,7 @@ export function buildActiveNodeUserMessage(graph: TaskGraph | null): string {
     `Verification required: ${node.verification.required ? "yes" : "no"}`,
     `Verification status: ${node.verification.status}`,
     `Evidence refs: ${node.evidenceRefs.length > 0 ? node.evidenceRefs.join(", ") : "none"}`,
-    "Continue from this active node. Treat previous task titles or greetings as history, not as the current goal."
+    "Continue from this active node. Earlier greetings are history, not the current goal."
   ].join("\n");
 }
 

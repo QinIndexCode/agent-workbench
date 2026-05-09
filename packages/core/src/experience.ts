@@ -1,8 +1,9 @@
 import { SkillRecordSchema, type ExperienceRecord, type PatternRecord, type ReflectionSession, type SkillConflict, type SkillDuplicateGroup, type SkillRecord, type TaskDetail, type TaskMemory } from "@scc/shared";
 import { createId, nowIso } from "./ids.js";
+import { isTrivialUserMessage } from "./task-intent.js";
 
 export function createTaskMemory(task: TaskDetail): TaskMemory {
-  const userGoal = task.events.find((event) => event.type === "user_message")?.summary ?? task.title;
+  const userGoal = latestMeaningfulUserGoal(task) ?? "Untitled task";
   const assistantResult = [...task.events].reverse().find((event) => event.type === "assistant_message")?.summary ?? "";
   const toolEvents = task.events.filter((event) => event.type === "tool_requested");
   const resultEvents = task.events.filter((event) => event.type === "tool_result");
@@ -23,7 +24,7 @@ export function createTaskMemory(task: TaskDetail): TaskMemory {
   return {
     id: createId("memory"),
     taskId: task.id,
-    title: task.title,
+    title: taskMemoryTitle(userGoal),
     goal: sanitizeSensitiveText(userGoal),
     toolsUsed,
     result: sanitizeSensitiveText(assistantResult),
@@ -46,6 +47,19 @@ export function createTaskMemory(task: TaskDetail): TaskMemory {
     reflectionStatus: "pending",
     createdAt: nowIso()
   };
+}
+
+function latestMeaningfulUserGoal(task: TaskDetail): string | undefined {
+  return [...task.events]
+    .reverse()
+    .filter((event) => event.type === "user_message" && !event.reverted)
+    .map((event) => event.summary.trim())
+    .find((summary) => summary && !isTrivialUserMessage(summary));
+}
+
+function taskMemoryTitle(goal: string): string {
+  const title = sanitizeSensitiveText(goal.split(/\r?\n/, 1)[0]?.trim() || "Untitled task");
+  return title.length <= 120 ? title : `${title.slice(0, 117)}...`;
 }
 
 export function createExperience(task: TaskDetail): ExperienceRecord {
@@ -362,7 +376,7 @@ export function mergeSkillRecords(target: SkillRecord, source: SkillRecord): Ski
   };
 }
 
-export function findRelevantSkills(taskTitle: string, skills: SkillRecord[], limit = 3): SkillRecord[] {
+export function findRelevantSkills(queryText: string, skills: SkillRecord[], limit = 3): SkillRecord[] {
   return skills
     .map(normalizeSkillRecord)
     .filter(
@@ -372,7 +386,7 @@ export function findRelevantSkills(taskTitle: string, skills: SkillRecord[], lim
         skill.body.length > 20 &&
         !/could not be loaded|model provider failed|no provider is configured/i.test(skill.body)
     )
-    .map((skill) => ({ skill, relevance: calculateRelevance(taskTitle, skill) }))
+    .map((skill) => ({ skill, relevance: calculateRelevance(queryText, skill) }))
     .filter((item) => item.relevance > 0.3)
     .sort((a, b) => compositeScore(b.skill, b.relevance) - compositeScore(a.skill, a.relevance))
     .slice(0, limit)
@@ -423,14 +437,14 @@ export function exportSkill(skill: SkillRecord): { markdown: string; manifest: R
   };
 }
 
-export function calculateRelevance(taskTitle: string, skill: SkillRecord): number {
+export function calculateRelevance(queryText: string, skill: SkillRecord): number {
   skill = normalizeSkillRecord(skill);
-  const titleWords = new Set(tokenize(taskTitle));
+  const titleWords = new Set(tokenize(queryText));
   const keywordWords = new Set(skill.applicability.keywords.flatMap(tokenize));
   const intersection = [...titleWords].filter((word) => keywordWords.has(word)).length;
   const union = new Set([...titleWords, ...keywordWords]).size;
   const keywordScore = union > 0 ? intersection / union : 0;
-  const title = taskTitle.toLowerCase();
+  const title = queryText.toLowerCase();
   const domainScore = skill.applicability.requiredContext.some((context) => title.includes(context.toLowerCase())) ? 0.3 : 0;
   const toolScore = skill.applicability.requiredTools.some((tool) => title.includes(tool.toLowerCase())) ? 0.2 : 0;
   const exactScore = skill.applicability.keywords.some((keyword) => title.includes(keyword.toLowerCase())) ? 0.2 : 0;

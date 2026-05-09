@@ -216,8 +216,9 @@ export function useWorkbenchData(): WorkbenchData {
       window.clearInterval(refreshTimerRef.current);
     }
     refreshTimerRef.current = window.setInterval(() => {
-      backgroundPollRef.current += 1;
-      const shouldFullRefresh = backgroundPollRef.current % (realtimeConnected ? 10 : 5) === 0;
+      const cycleLength = realtimeConnected ? 10 : 5;
+      backgroundPollRef.current = (backgroundPollRef.current + 1) % cycleLength;
+      const shouldFullRefresh = backgroundPollRef.current === 0;
       if (shouldFullRefresh) {
         void refresh();
         return;
@@ -248,6 +249,7 @@ export function useWorkbenchData(): WorkbenchData {
 
   useEffect(() => {
     if (!selectedId) return;
+    const currentTaskId = selectedId;
     wsCancelRef.current = false;
     wsEventQueueRef.current = [];
     if (wsFlushTimerRef.current !== null) {
@@ -259,52 +261,61 @@ export function useWorkbenchData(): WorkbenchData {
 
     function connect() {
       if (wsCancelRef.current) return;
-      const ws = new WebSocket(api.taskEventsWebSocketUrl(selectedId!));
-      wsRef.current = ws;
-      ws.onopen = () => {
-        if (wsCancelRef.current) {
-          ws.close();
-          return;
-        }
-        setRealtimeConnected(true);
-        reconnectAttempt = 0;
-      };
-      ws.onclose = () => {
-        if (wsCancelRef.current) return;
-        setRealtimeConnected(false);
+      try {
+        const ws = new WebSocket(api.taskEventsWebSocketUrl(currentTaskId));
+        wsRef.current = ws;
+        ws.onopen = () => {
+          if (wsCancelRef.current) {
+            ws.close();
+            return;
+          }
+          setRealtimeConnected(true);
+          reconnectAttempt = 0;
+        };
+        ws.onclose = () => {
+          if (wsCancelRef.current) return;
+          setRealtimeConnected(false);
+          scheduleReconnect();
+        };
+        ws.onerror = () => {
+          if (wsCancelRef.current) return;
+          setRealtimeConnected(false);
+          try { ws.close(); } catch { /* ignore */ }
+        };
+        ws.onmessage = (message) => {
+          if (wsCancelRef.current) return;
+          try {
+            const parsed = parseRealtimeMessage(message.data);
+            if (!parsed) return;
+            if (parsed.type === "snapshot") {
+              wsEventQueueRef.current = [];
+              if (wsFlushTimerRef.current !== null) {
+                window.clearTimeout(wsFlushTimerRef.current);
+                wsFlushTimerRef.current = null;
+              }
+              setSelected((current) => {
+                if (!current || current.id !== currentTaskId) return current;
+                return { ...current, events: parsed.events };
+              });
+              if (parsed.transcript) {
+                setSelectedTranscript(parsed.transcript);
+              } else {
+                void api.listTaskTranscript(currentTaskId).then((transcript) => {
+                  if (!wsCancelRef.current && selectedIdRef.current === currentTaskId) setSelectedTranscript(transcript);
+                }).catch(() => undefined);
+              }
+              return;
+            }
+            wsEventQueueRef.current.push(parsed.event);
+            scheduleRealtimeFlush(currentTaskId);
+          } catch (e) {
+            console.warn("Failed to handle WebSocket message:", e);
+          }
+        };
+      } catch (e) {
+        console.warn("Failed to create WebSocket:", e);
         scheduleReconnect();
-      };
-      ws.onerror = () => {
-        if (wsCancelRef.current) return;
-        setRealtimeConnected(false);
-        ws.close();
-      };
-      ws.onmessage = (message) => {
-        if (wsCancelRef.current) return;
-        const parsed = parseRealtimeMessage(message.data);
-        if (!parsed) return;
-        if (parsed.type === "snapshot") {
-          wsEventQueueRef.current = [];
-          if (wsFlushTimerRef.current !== null) {
-            window.clearTimeout(wsFlushTimerRef.current);
-            wsFlushTimerRef.current = null;
-          }
-          setSelected((current) => {
-            if (!current || current.id !== selectedId) return current;
-            return { ...current, events: parsed.events };
-          });
-          if (parsed.transcript) {
-            setSelectedTranscript(parsed.transcript);
-          } else {
-            void api.listTaskTranscript(selectedId!).then((transcript) => {
-              if (!wsCancelRef.current && selectedIdRef.current === selectedId) setSelectedTranscript(transcript);
-            }).catch(() => undefined);
-          }
-          return;
-        }
-        wsEventQueueRef.current.push(parsed.event);
-        scheduleRealtimeFlush(selectedId!);
-      };
+      }
     }
 
     function scheduleReconnect() {
@@ -313,7 +324,7 @@ export function useWorkbenchData(): WorkbenchData {
       reconnectAttempt++;
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
-        connect();
+        if (!wsCancelRef.current) connect();
       }, delay);
     }
 
@@ -327,9 +338,11 @@ export function useWorkbenchData(): WorkbenchData {
         window.clearTimeout(wsFlushTimerRef.current);
         wsFlushTimerRef.current = null;
       }
-      if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
-        wsRef.current.close();
-      }
+      try {
+        if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+          wsRef.current.close();
+        }
+      } catch { /* ignore */ }
       wsRef.current = null;
     };
   }, [selectedId]);
@@ -553,11 +566,16 @@ function parseRealtimeMessage(value: unknown):
   | { type: "event"; event: TaskEvent }
   | null {
   try {
-    const parsed = JSON.parse(String(value)) as Record<string, unknown>;
+    const strValue = String(value ?? "");
+    if (!strValue.trim()) return null;
+    const parsed = JSON.parse(strValue) as Record<string, unknown>;
     if (parsed["type"] === "snapshot" && Array.isArray(parsed["events"])) {
+      const events = parsed["events"].filter(
+        (e): e is TaskEvent => typeof e === "object" && e !== null
+      );
       return {
         type: "snapshot",
-        events: parsed["events"] as TaskEvent[],
+        events,
         ...(Array.isArray(parsed["transcript"]) ? { transcript: parsed["transcript"] as TaskTranscriptItem[] } : {})
       };
     }
@@ -625,7 +643,8 @@ function normalizeTranscriptTruncationMarker(value: string): string {
   );
 }
 
-function isClientTranscriptEvent(event: TaskEvent): boolean {
+function isClientTranscriptEvent(event: TaskEvent | null | undefined): boolean {
+  if (!event) return false;
   return (
     event.type === "user_message" ||
     event.type === "attachment_added" ||
@@ -643,13 +662,14 @@ function isClientTranscriptEvent(event: TaskEvent): boolean {
   );
 }
 
-function isInlineToolMarkupEvent(event: TaskEvent): boolean {
+function isInlineToolMarkupEvent(event: TaskEvent | null | undefined): boolean {
+  if (!event) return false;
   if (event.type !== "assistant_message" && event.type !== "assistant_delta") return false;
   const text = [
-    event.summary,
-    typeof event.payload["message"] === "string" ? event.payload["message"] : "",
-    typeof event.payload["delta"] === "string" ? event.payload["delta"] : "",
-    typeof event.payload["text"] === "string" ? event.payload["text"] : ""
+    event.summary ?? "",
+    typeof event?.payload?.["message"] === "string" ? event.payload["message"] : "",
+    typeof event?.payload?.["delta"] === "string" ? event.payload["delta"] : "",
+    typeof event?.payload?.["text"] === "string" ? event.payload["text"] : ""
   ]
     .filter(Boolean)
     .join("\n");

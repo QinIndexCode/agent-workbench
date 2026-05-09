@@ -7,13 +7,22 @@ import type { ToolCall, ToolResult } from "@scc/shared";
 import { createId, nowIso } from "./ids.js";
 import { defaultTaskWorkRoot } from "./workspace-root.js";
 
-export interface ToolExecutor {
-  execute(call: ToolCall, options?: ToolExecutionOptions): Promise<ToolResult>;
-}
+const DEFAULT_READ_RANGE_LINES = 200;
+const READ_FILE_FULL_INLINE_BYTES = 256 * 1024;
+const READ_FILE_RESULT_INLINE_CHARS = 320 * 1024;
+const LARGE_FILE_HEAD_LINES = 220;
+const LARGE_FILE_TAIL_LINES = 120;
+const WRITE_CHUNK_CHARS = 64 * 1024;
+const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 
 export interface ToolExecutionOptions {
   signal?: AbortSignal;
   workRoot?: string;
+  timeoutMs?: number;
+}
+
+export interface ToolExecutor {
+  execute(call: ToolCall, options?: ToolExecutionOptions): Promise<ToolResult>;
 }
 
 export interface ToolExecutorDelegate extends ToolExecutor {
@@ -32,18 +41,13 @@ export class CompositeToolExecutor implements ToolExecutor {
   }
 }
 
-const DEFAULT_READ_RANGE_LINES = 200;
-const READ_FILE_FULL_INLINE_BYTES = 256 * 1024;
-const READ_FILE_RESULT_INLINE_CHARS = 320 * 1024;
-const LARGE_FILE_HEAD_LINES = 220;
-const LARGE_FILE_TAIL_LINES = 120;
-const WRITE_CHUNK_CHARS = 64 * 1024;
-
 export class ShellToolExecutor implements ToolExecutor {
   private readonly workspaceRoot: string;
+  private readonly defaultTimeoutMs: number;
 
-  constructor(workspaceRoot = defaultTaskWorkRoot()) {
+  constructor(workspaceRoot = defaultTaskWorkRoot(), defaultTimeoutMs = DEFAULT_COMMAND_TIMEOUT_MS) {
     this.workspaceRoot = workspaceRoot;
+    this.defaultTimeoutMs = defaultTimeoutMs;
   }
 
   async execute(call: ToolCall, options: ToolExecutionOptions = {}): Promise<ToolResult> {
@@ -85,6 +89,7 @@ export class ShellToolExecutor implements ToolExecutor {
         : ["-lc", command];
     const root = this.rootFor(options);
     const cwd = this.resolveWorkspacePath(String(call.args["cwd"] ?? "."), root);
+    const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
 
     return new Promise<ToolResult>((resolveResult) => {
       let stdout = "";
@@ -102,7 +107,7 @@ export class ShellToolExecutor implements ToolExecutor {
           return;
         }
         if (timedOut) {
-          resolveResult(await this.result(call, false, "Command timed out after 30000ms and was terminated."));
+          resolveResult(await this.result(call, false, `Command timed out after ${timeoutMs}ms and was terminated.`));
           return;
         }
         if (error) {
@@ -129,7 +134,7 @@ export class ShellToolExecutor implements ToolExecutor {
       const timeout = setTimeout(() => {
         timedOut = true;
         child.kill();
-      }, 30_000);
+      }, timeoutMs);
 
       const onAbort = () => {
         cancelled = true;
@@ -212,22 +217,35 @@ export class ShellToolExecutor implements ToolExecutor {
     }
   }
 
+  private async validateAndPrepareFileWrite(
+    call: ToolCall,
+    options: ToolExecutionOptions
+  ): Promise<{ path: string; current: string } | ToolResult> {
+    const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
+    const expectedHash = String(call.args["expectedHash"] ?? "");
+    if (!expectedHash) {
+      return this.result(call, false, "Missing expectedHash. Read the file first, or use __new__ when creating a new file.");
+    }
+
+    const fileExists = existsSync(path);
+    const current = fileExists ? await readFile(path, "utf8") : "";
+    const isNewFileIntent = !fileExists && expectedHash === "__new__";
+
+    if (!isNewFileIntent && expectedHash !== hash(current)) {
+      return this.result(call, false, `File changed before write. Expected ${expectedHash}, actual ${hash(current)}.`);
+    }
+
+    return { path, current };
+  }
+
   private async editFile(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     try {
-      const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
       const edits = Array.isArray(call.args["edits"]) ? call.args["edits"] : [];
       if (edits.length === 0) return this.result(call, false, "No edits provided.");
 
-      const fileExists = existsSync(path);
-      const current = fileExists ? await readFile(path, "utf8") : "";
-      const expectedHash = String(call.args["expectedHash"] ?? "");
-      if (!expectedHash) {
-        return this.result(call, false, "Missing expectedHash. Read the file first, or use __new__ when creating a new file.");
-      }
-      const isNewFileIntent = !fileExists && expectedHash === "__new__";
-      if (!isNewFileIntent && expectedHash !== hash(current)) {
-        return this.result(call, false, `File changed before edit. Expected ${expectedHash}, actual ${hash(current)}.`);
-      }
+      const validation = await this.validateAndPrepareFileWrite(call, options);
+      if (!("path" in validation)) return validation;
+      const { path, current } = validation;
 
       const lines = current.split(/\r?\n/);
       const normalized = edits
@@ -260,18 +278,10 @@ export class ShellToolExecutor implements ToolExecutor {
 
   private async writeFileDirect(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     try {
-      const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
       const content = String(call.args["content"] ?? "");
-      const fileExists = existsSync(path);
-      const current = fileExists ? await readFile(path, "utf8") : "";
-      const expectedHash = String(call.args["expectedHash"] ?? "");
-      if (!expectedHash) {
-        return this.result(call, false, "Missing expectedHash. Read the file first, or use __new__ when creating a new file.");
-      }
-      const isNewFileIntent = !fileExists && expectedHash === "__new__";
-      if (!isNewFileIntent && expectedHash !== hash(current)) {
-        return this.result(call, false, `File changed before write. Expected ${expectedHash}, actual ${hash(current)}.`);
-      }
+      const validation = await this.validateAndPrepareFileWrite(call, options);
+      if (!("path" in validation)) return validation;
+      const { path, current } = validation;
 
       await writeTextFileInChunks(path, content);
       return this.result(
@@ -402,7 +412,7 @@ function isTextFile(path: string): boolean {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function appendLimited(current: string, chunk: string, maxChars: number): string {

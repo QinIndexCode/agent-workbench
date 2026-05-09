@@ -12,8 +12,58 @@ import {
   taskGraphFromEvents,
   type AttentionPacket
 } from "./task-graph.js";
-import { classifyTaskIntent, isLeanContextIntent, isTrivialUserMessage } from "./task-intent.js";
+import { classifyTaskIntent, isLeanContextIntent, isTrivialUserMessage, latestUserText } from "./task-intent.js";
 import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
+
+const DEFAULT_MAX_RESERVED_RESPONSE_TOKENS = 16000;
+const RESPONSE_TOKEN_RATIO = 0.15;
+const FILE_LAYER_BUDGET_RATIO = 0.2;
+const MIN_HISTORY_TOKENS = 160;
+const MIN_INPUT_TOKENS = 120;
+const MAX_SKILL_LOADS = 3;
+const SKILL_CONTENT_TRUNCATE = 1200;
+const MAX_PROJECT_MEMORIES = 5;
+const PROJECT_MEMORY_TRUNCATE = 1000;
+const MAX_MCP_SERVERS_DISPLAY = 12;
+const MAX_INTEGRATIONS_DISPLAY = 12;
+const MAX_USER_SUMMARY_TRUNCATE = 2200;
+const MAX_PLAN_SUMMARY_TRUNCATE = 1000;
+const MAX_FILE_TRACKER_FILES = 8;
+const MAX_FILE_CONTENT_LENGTH = 6000;
+const SUMMARY_HIGH_PRESSURE_RATIO = 0.9;
+const LOW_BUDGET_THRESHOLD = 3000;
+const LOW_BUDGET_EVENT_THRESHOLD = 60;
+const SUMMARY_FORCE_RECENT = 6;
+const SUMMARY_HIGH_PRESSURE_RECENT = 12;
+const SUMMARY_NORMAL_RECENT = 18;
+const SUMMARY_MIN_EVENTS = 12;
+const SUMMARY_FORCE_MIN_EVENTS = 1;
+const MAX_RECENT_USER_MESSAGES = 2;
+const MAX_RECENT_USER_TRUNCATE = 4000;
+const COMPACT_HISTORY_LIMIT = 24;
+const COMPACT_LINE_TRUNCATE = 700;
+const MAX_LARGE_STRING_NORMAL = 180;
+const MAX_LARGE_STRING_HEAD = 140;
+const MAX_LARGE_STRING_TAIL = 40;
+const MAX_JSON_VALUE = 220;
+const MAX_TOOL_OUTPUT = 4000;
+const MAX_TOOL_OUTPUT_HEAD = 2000;
+const MAX_TOOL_OUTPUT_TAIL = 2000;
+const MAX_READ_FILE_CONTENT = 24000;
+const MAX_READ_FILE_HEAD = 16000;
+const MAX_READ_FILE_TAIL = 6000;
+const MAX_ATTACHMENT_PREVIEW = 1200;
+const PROTECTED_BUDGET_RATIO = 0.5;
+const MIN_PROTECTED_BUDGET = 96;
+const MIN_PROTECTED_BLOCK_BUDGET = 24;
+const CONTENT_HEAD_RATIO = 0.25;
+const MIN_CONTENT_HEAD = 10;
+const MIN_CONTENT_TAIL = 10;
+const WORD_BREAK_BUFFER = 96;
+const EXTRA_TOKEN_BUFFER = 8;
+
+const MEMORY_LIMITS_COMPACT = { user: 3000, global: 5000, project: 5000 };
+const MEMORY_LIMITS_NORMAL = { user: 6000, global: 12000, project: 12000 };
 
 export interface TokenBudget {
   maxTotal: number;
@@ -256,7 +306,7 @@ export class ContextAssembler {
     const allSkills = (await this.store.listSkills())
       .filter((skill) => skill.status === "active" || skill.status === "candidate")
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    const relevant = findRelevantSkills(task.title, allSkills, preferences.maxInjectedSkills);
+    const relevant = findRelevantSkills(latestUserText(task), allSkills, preferences.maxInjectedSkills);
     const skills = uniqueSkills([...relevant, ...allSkills]).slice(0, preferences.maxInjectedSkills);
     if (skills.length === 0) return "";
     return [
@@ -399,7 +449,7 @@ export class ContextAssembler {
       `Task ID: ${task.id}`,
       `Task status: ${task.status}`,
       latestPlan ? `Latest visible plan state: ${truncate(latestPlan.summary, 1000)}` : "",
-      "Use the role-ordered conversation below for the active objective; do not infer the user's current goal from the task title."
+      "Use the role-ordered conversation below for the active objective. The latest user request is authoritative."
     ].filter(Boolean).join("\n");
   }
 

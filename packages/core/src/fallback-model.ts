@@ -1,5 +1,7 @@
 import type { TaskDetail, ToolCall } from "@scc/shared";
 import { createId, nowIso } from "./ids.js";
+import { PermissionEngine } from "./permission-engine.js";
+import { explicitlyAvoidsToolUse, isTrivialUserMessage, latestUserText } from "./task-intent.js";
 
 export interface ModelUsage {
   inputTokens?: number;
@@ -61,12 +63,16 @@ export class ConfiguredToolModelClient implements ModelClient {
   constructor(private readonly command: string) {}
 
   async next(task: TaskDetail, stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    const latestUser = latestUserText(task);
     const lastToolResultIndex = findLastEventIndex(task, "tool_result");
     const lastAssistantIndex = findLastEventIndex(task, "assistant_message");
     const lastToolResult = lastToolResultIndex >= 0 ? task.events[lastToolResultIndex] : undefined;
+    const previousEvidence = lastToolResult ? String(lastToolResult.payload["output"] ?? "") : "";
+    if (isTrivialUserMessage(latestUser)) {
+      return { kind: "final", message: "你好！有什么可以帮你的？" };
+    }
     if (lastToolResult && lastToolResultIndex > lastAssistantIndex) {
-      const output = String(lastToolResult.payload["output"] ?? "");
-      const message = output ? summarizeToolEvidence(output) : "Tool completed with no output.";
+      const message = previousEvidence ? summarizeToolEvidence(previousEvidence) : "Tool completed with no output.";
       await stream?.onTrace?.({
         kind: "response",
         timestamp: nowIso(),
@@ -79,6 +85,17 @@ export class ConfiguredToolModelClient implements ModelClient {
         }
       });
       return { kind: "final", message };
+    }
+    if (explicitlyAvoidsToolUse(latestUser)) {
+      return {
+        kind: "final",
+        message: previousEvidence
+          ? `基于已有工具证据直接回答，不再重新调用工具。\n\n${summarizeToolEvidence(previousEvidence)}`
+          : "我会基于当前对话直接回答，不调用工具。"
+      };
+    }
+    if (!shouldRunConfiguredCommand(this.command, relevantUserText(task))) {
+      return { kind: "final", message: "我会直接回答当前请求，不调用工具。" };
     }
 
     const turn = {
@@ -95,6 +112,24 @@ export class ConfiguredToolModelClient implements ModelClient {
     });
     return turn;
   }
+}
+
+function relevantUserText(task: TaskDetail): string {
+  return task.events
+    .filter((event) => event.type === "user_message" || event.type === "guidance_consumed" || event.type === "guidance_pending")
+    .filter((event) => !event.reverted)
+    .map((event) => event.summary)
+    .join("\n");
+}
+
+function shouldRunConfiguredCommand(command: string, text: string): boolean {
+  if (!text.trim()) return true;
+  if (!isHostObservationCommand(command)) return true;
+  return /(软件|应用|桌面|运行|cpu|内存|资源|占用|process|processes|apps?|desktop|performance|memory)/iu.test(text);
+}
+
+function isHostObservationCommand(command: string): boolean {
+  return new PermissionEngine().assess("run_command", { command }).category === "host_observation";
 }
 
 function summarizeToolEvidence(output: string): string {

@@ -96,6 +96,7 @@ import { PermissionEngine, type PermissionState, type RiskAssessment } from "./p
 import { LocalSecretBox, maskSecret, sanitizeSensitiveText, sanitizeSensitiveValue } from "./secrets.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
 import { compileTaskGraph, completionBlocker, taskGraphFromEvents, verificationResultFromToolEvent } from "./task-graph.js";
+import { explicitlyAvoidsToolUse, isTrivialUserMessage, latestUserText } from "./task-intent.js";
 import { ShellToolExecutor, type ToolExecutor } from "./tools.js";
 import { createWebSearchApiKeyRef } from "./web-search.js";
 import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
@@ -1815,7 +1816,23 @@ export class AgentWorkbench {
       const stoppedBeforeTool = await this.stoppedTask(task.id);
       if (stoppedBeforeTool) return stoppedBeforeTool;
 
-      if (call.toolName === "plan_update") {
+      if (isApprovalBypassedStateTool(call.toolName)) {
+        this.addEvent(task, "tool_requested", call.toolName, {
+          toolCallId: call.id,
+          toolName: call.toolName,
+          args: this.sanitizeForPreferences(call.args, preferences),
+          riskCategory: "none",
+          uiHidden: true
+        });
+        await this.safeAppendTaskTrace(task, {
+          kind: "tool_requested",
+          timestamp: nowIso(),
+          toolCallId: call.id,
+          toolName: call.toolName,
+          args: call.args,
+          riskCategory: "none",
+          uiHidden: true
+        });
         const result = await this.executeTool(task.id, call);
         const latest = await this.requiredTask(task.id);
         await this.addToolResultEvent(latest, call, result);
@@ -1943,12 +1960,32 @@ export class AgentWorkbench {
 
   private async recordExperience(task: TaskDetail): Promise<void> {
     await this.updateLoadedSkillStats(task, true);
+    if (!this.shouldRecordExperience(task)) {
+      this.contextAssembler.cleanupTask(task.id);
+      return;
+    }
     const experience = createExperience(task);
     const memory = createTaskMemory(task);
     await this.store.saveExperience(experience);
     await this.store.saveTaskMemory(memory);
     this.addEvent(task, "task_memory_created", memory.title, { memoryId: memory.id });
     this.contextAssembler.cleanupTask(task.id);
+  }
+
+  private shouldRecordExperience(task: TaskDetail): boolean {
+    const latestUser = latestUserText(task);
+    if (isTrivialUserMessage(latestUser)) return false;
+    const events = task.events.filter((event) => !event.reverted);
+    const lastMemoryIndex = findLastEventIndexByType(events, "task_memory_created");
+    const afterLastMemory = lastMemoryIndex >= 0 ? events.slice(lastMemoryIndex + 1) : events;
+    const hasNewEvidence = afterLastMemory.some((event) =>
+      event.type === "tool_result" ||
+      event.type === "verification_result_recorded" ||
+      event.type === "task_checkpoint_created"
+    );
+    if (lastMemoryIndex >= 0 && !hasNewEvidence) return false;
+    if (explicitlyAvoidsToolUse(latestUser) && !hasNewEvidence) return false;
+    return true;
   }
 
   private async recordPromptCacheStats(task: TaskDetail, usage?: ModelUsage): Promise<void> {
@@ -2008,7 +2045,6 @@ export class AgentWorkbench {
           timestamp: nowIso(),
           streamId,
           modelClient: this.model.constructor.name,
-          taskTitle: task.title,
           taskStatus: task.status,
           eventCount: task.events.length,
           latestEvent: summarizeEventForTrace(task.events.at(-1))
@@ -2696,7 +2732,6 @@ export class AgentWorkbench {
       await mkdir(dirname(tracePath), { recursive: true });
       await appendFile(tracePath, `${JSON.stringify({
         taskId: task.id,
-        taskTitle: task.title,
         taskStatus: task.status,
         ...entry
       })}\n`, "utf8");
@@ -2729,7 +2764,10 @@ export class AgentWorkbench {
     category: RiskCategory,
     preferences: UserPreferences
   ): { allowed: boolean; forceApproval: boolean; reason?: string; source?: "mcpApprovalMode" | "autoApprove" } {
-    if (category === "destructive") return { allowed: false, forceApproval: false };
+    // Destructive operations are never auto-approved, always require explicit approval
+    if (category === "destructive") {
+      return { allowed: false, forceApproval: true };
+    }
     if (isMcpToolName(call.toolName)) {
       if (preferences.mcpApprovalMode === "confirm_each") {
         return { allowed: false, forceApproval: true };
@@ -3415,6 +3453,13 @@ function isIrreversibleTurnEvent(event: TaskEvent): boolean {
   );
 }
 
+function findLastEventIndexByType(events: TaskEvent[], type: TaskEvent["type"]): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.type === type) return index;
+  }
+  return -1;
+}
+
 function memoryDescriptor(scope: "user" | "project", folder?: TaskFolderRecord): { path: string; fileName: string; charLimit: number; entryCharLimit: number } {
   const baseDir = memoryBaseDir();
   if (scope === "user") {
@@ -3523,6 +3568,10 @@ function isManagedStateTool(toolName: string): boolean {
     toolName === "skill_delete" ||
     toolName === "plan_update"
   );
+}
+
+function isApprovalBypassedStateTool(toolName: string): boolean {
+  return toolName === "plan_update";
 }
 
 function summarizeEventForTrace(event: TaskEvent | undefined): Record<string, unknown> | undefined {

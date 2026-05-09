@@ -49,25 +49,27 @@ export function Timeline({
   const items = useMemo(
     () =>
       buildTimelineItems(
-        task?.events.filter((event) => {
-          if (!visibleEventTypes.has(event.type)) return false;
+        (Array.isArray(task?.events) ? task.events : []).filter((event) => {
+          if (!event || !visibleEventTypes.has(event.type)) return false;
           if (!showThinking && event.type === "thinking_delta") return false;
-          if (event.payload["uiHidden"] === true) return false;
+          if (event?.payload?.["uiHidden"] === true) return false;
           if (isInlineToolMarkupEvent(event)) return false;
           if (event.type !== "approval_pending") return true;
-          const approvalId = String(event.payload["approvalId"] ?? "");
-          return task.approvals.some((approval) => approval.id === approvalId && approval.status === "pending");
-        }) ?? []
+          const approvalId = String(event?.payload?.["approvalId"] ?? "");
+          const safeApprovals = Array.isArray(task?.approvals) ? task.approvals : [];
+          return safeApprovals.some((approval) => approval?.id === approvalId && approval?.status === "pending");
+        })
       ),
-    [task]
+    [task, showThinking]
   );
-  const lastEventId = task?.events[task.events.length - 1]?.id ?? "empty";
+  const safeEvents = Array.isArray(task?.events) ? task.events : [];
+  const lastEventId = safeEvents[safeEvents.length - 1]?.id ?? "empty";
   const timelineVersion = useMemo(() => getTimelineVersion(items), [items]);
   const displayItems = useMemo(() => limitTimelineItems(items, language, visibleLimit), [items, language, visibleLimit]);
   const latestUserEventId = useMemo(() => {
-    const latest = [...(task?.events ?? [])].reverse().find((event) => event.type === "user_message" && !event.reverted);
+    const latest = [...safeEvents].reverse().find((event) => event?.type === "user_message" && !event?.reverted);
     return latest?.id ?? null;
-  }, [task?.events]);
+  }, [safeEvents]);
   const latestVisibleAgentBodyKey = useMemo(() => {
     const latest = displayItems[displayItems.length - 1];
     return latest && isAgentMessageItem(latest) ? latest.key : null;
@@ -478,17 +480,19 @@ function stripPlaceholderToolEvidence(value: string): string {
     .trim();
 }
 
-function isInlineToolMarkupEvent(event: TaskEvent): boolean {
+function isInlineToolMarkupEvent(event: TaskEvent | null | undefined): boolean {
+  if (!event) return false;
   if (event.type !== "assistant_message" && event.type !== "assistant_delta") return false;
   return containsInlineToolMarkup(formatRawEventText(event));
 }
 
-function formatRawEventText(event: TaskEvent): string {
+function formatRawEventText(event: TaskEvent | null | undefined): string {
+  if (!event) return "";
   return [
-    event.summary,
-    typeof event.payload["message"] === "string" ? event.payload["message"] : "",
-    typeof event.payload["delta"] === "string" ? event.payload["delta"] : "",
-    typeof event.payload["text"] === "string" ? event.payload["text"] : ""
+    event.summary ?? "",
+    typeof event?.payload?.["message"] === "string" ? event.payload["message"] : "",
+    typeof event?.payload?.["delta"] === "string" ? event.payload["delta"] : "",
+    typeof event?.payload?.["text"] === "string" ? event.payload["text"] : ""
   ]
     .filter(Boolean)
     .join("\n");

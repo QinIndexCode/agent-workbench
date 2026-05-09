@@ -121,6 +121,7 @@ describe("ContextAssembler", () => {
     expect(context.input).toContain("测试所有你能调用的工具");
     expect(context.input).not.toContain("Original user goal: 你好");
     expect(`${context.systemPrompt}\n${context.input}`).not.toContain("Task title:");
+    expect(`${context.systemPrompt}\n${context.input}`).not.toMatch(/task title/i);
     expect(context.messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "user"]);
     const latest = context.messages.at(-1);
     expect(latest?.role).toBe("user");
@@ -158,6 +159,7 @@ describe("ContextAssembler", () => {
     expect(graph?.nodes.some((node) => node.role === "implement")).toBe(true);
     expect(context.systemPrompt).toContain("## Task Graph");
     expect(`${context.systemPrompt}\n${context.input}`).not.toContain("Task title: 你好");
+    expect(`${context.systemPrompt}\n${context.input}`).not.toMatch(/task title/i);
     expect(context.attentionPacket.activeNode?.role).toBe("implement");
     expect(latest?.role).toBe("user");
     expect(latest && "content" in latest ? latest.content : "").toContain("## Active Node");
@@ -404,6 +406,14 @@ describe("ContextAssembler", () => {
       pendingGuidance: [],
       events: [
         {
+          id: "event_user",
+          taskId: "task_file_role_dedupe",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "Read src/example.ts",
+          payload: {}
+        },
+        {
           id: "event_read",
           taskId: "task_file_role_dedupe",
           type: "tool_result",
@@ -419,7 +429,7 @@ describe("ContextAssembler", () => {
         }
       ]
     };
-    assembler.getFileStateTracker(task.id).updateFromToolResult(task.events[0]!);
+    assembler.getFileStateTracker(task.id).updateFromToolResult(task.events.find((event) => event.type === "tool_result")!);
 
     const context = await assembler.assemble(task);
     const toolMessage = context.messages.find((message) => message.role === "tool");
@@ -670,7 +680,16 @@ describe("ContextAssembler", () => {
       updatedAt: now,
       approvals: [],
       pendingGuidance: [],
-      events: []
+      events: [
+        {
+          id: "event_runtime_user",
+          taskId: "task_runtime_metadata",
+          type: "user_message",
+          createdAt: now,
+          summary: "Inspect runtime metadata",
+          payload: {}
+        }
+      ]
     });
 
     expect(context.systemPrompt).toContain("## Runtime Metadata");
@@ -1040,7 +1059,7 @@ class TraceEmittingToolRoundTripModel implements ModelClient {
       provider: { protocol: "openai_compatible", model: "trace-test-model", baseURL: "http://trace.local" },
       payload: {
         request: {
-          messages: [{ role: "user", content: task.title }],
+          messages: [{ role: "user", content: task.events.find((event) => event.type === "user_message")?.summary ?? "" }],
           eventCount: task.events.length
         }
       }
@@ -1137,6 +1156,66 @@ describe("Attention-first task graph runtime", () => {
 
     expect(task.status).toBe("completed");
     expect(task.events.some((event) => event.type === "task_graph_created")).toBe(false);
+    expect(task.events.some((event) => event.type === "task_memory_created")).toBe(false);
+  });
+
+  it("keeps the configured local tool model from calling tools for greetings", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new ConfiguredToolModelClient("Get-Process"),
+      tools: new StubToolExecutor()
+    });
+
+    const task = await workbench.createTask("你好");
+
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "tool_requested")).toBe(false);
+    expect(task.events.some((event) => event.type === "tool_result")).toBe(false);
+  });
+
+  it("does not repeat a configured local tool when the follow-up forbids tool use", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new ConfiguredToolModelClient("Get-Process"),
+      tools: new StubToolExecutor()
+    });
+    const created = await workbench.createTask("check running processes");
+    const approval = created.approvals[0];
+    if (!approval) throw new Error("expected approval");
+    const completed = await workbench.decideApproval(created.id, approval.id, "allow_for_task");
+    const firstToolRequests = completed.events.filter((event) => event.type === "tool_requested").length;
+
+    const followed = await workbench.appendMessage(completed.id, "基于刚才工具结果总结，不要重新调用工具。");
+    const longFollowed = await workbench.appendMessage(
+      completed.id,
+      "请继续基于已有工具结果做审计式总结，不要新增工具调用，不要把最早的问候当成当前目标。"
+    );
+
+    expect(followed.status).toBe("completed");
+    expect(longFollowed.status).toBe("completed");
+    expect(longFollowed.events.filter((event) => event.type === "tool_requested")).toHaveLength(firstToolRequests);
+    expect(longFollowed.events.filter((event) => event.type === "task_memory_created")).toHaveLength(1);
+    expect(followed.events.some((event) => event.type === "assistant_message" && event.summary.includes("不再重新调用工具"))).toBe(true);
+  });
+
+  it("records task memory from the latest meaningful request instead of a greeting title", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new ConfiguredToolModelClient("Get-Process"),
+      tools: new StubToolExecutor()
+    });
+    const greeting = await workbench.createTask("你好");
+    const waiting = await workbench.appendMessage(greeting.id, "帮我看一下当前桌面运行的软件有哪些，性能占用最高的是哪些");
+    const approval = waiting.approvals[0];
+    if (!approval) throw new Error("expected approval");
+
+    const completed = await workbench.decideApproval(waiting.id, approval.id, "allow_for_task");
+    const memories = await workbench.listTaskMemories();
+
+    expect(completed.events.filter((event) => event.type === "task_memory_created")).toHaveLength(1);
+    expect(memories).toHaveLength(1);
+    expect(memories[0]?.title).toContain("桌面运行的软件");
+    expect(memories[0]?.goal).toContain("桌面运行的软件");
   });
 
   it("pauses a React code-change task when the model tries to finish without verification evidence", async () => {

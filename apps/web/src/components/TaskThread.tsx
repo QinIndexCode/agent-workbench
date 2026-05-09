@@ -423,18 +423,25 @@ function TaskPlanPanel({
 
 function ContextAuditView({ language, summaries, cacheStats, task }: { language?: string | null; summaries: ConversationSummary[]; cacheStats: PromptCacheStats[]; task: TaskDetail }) {
   const zh = language === "zh-CN";
-  const latestSummary = [...summaries].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  const latestCache = [...cacheStats].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  const fallbackEvents = task.events.filter((event) => event.type === "provider_fallback");
+  const safeSummaries = Array.isArray(summaries) ? summaries : [];
+  const safeCacheStats = Array.isArray(cacheStats) ? cacheStats : [];
+  const safeEvents = Array.isArray(task?.events) ? task.events : [];
+  const latestSummary = [...safeSummaries].sort((a, b) => {
+    try { return b.createdAt.localeCompare(a.createdAt); } catch { return 0; }
+  })[0];
+  const latestCache = [...safeCacheStats].sort((a, b) => {
+    try { return b.createdAt.localeCompare(a.createdAt); } catch { return 0; }
+  })[0];
+  const fallbackEvents = safeEvents.filter((event) => event?.type === "provider_fallback");
   return (
     <section className="contextAuditPanel" aria-label={zh ? "上下文审计" : "Context audit"}>
       {latestSummary ? (
         <details open>
           <summary>{zh ? "压缩摘要" : "Compaction summary"}</summary>
-          <p>{latestSummary.summary}</p>
+          <p>{latestSummary.summary ?? ""}</p>
           <div className="auditMeta">
-            <span>{zh ? "保留事实" : "Retained"}: {latestSummary.retainedFacts.length}</span>
-            <span>{zh ? "丢弃范围" : "Dropped"}: {latestSummary.droppedRanges.length}</span>
+            <span>{zh ? "保留事实" : "Retained"}: {Array.isArray(latestSummary.retainedFacts) ? latestSummary.retainedFacts.length : 0}</span>
+            <span>{zh ? "丢弃范围" : "Dropped"}: {Array.isArray(latestSummary.droppedRanges) ? latestSummary.droppedRanges.length : 0}</span>
             {latestSummary.tokenBudget ? <span>{zh ? "预算" : "Budget"}: {latestSummary.tokenBudget.maxTotal}</span> : null}
           </div>
         </details>
@@ -445,10 +452,10 @@ function ContextAuditView({ language, summaries, cacheStats, task }: { language?
         <details>
           <summary>{zh ? "缓存成本" : "Prompt cache"}</summary>
           <div className="auditMeta">
-            <span>{latestCache.model}</span>
-            <span>{Math.round(latestCache.cacheHitRatio * 100)}% hit</span>
-            <span>{latestCache.cachedTokens}/{latestCache.inputTokens} cached</span>
-            <span>{latestCache.source}</span>
+            <span>{latestCache.model ?? ""}</span>
+            <span>{Math.round((latestCache.cacheHitRatio ?? 0) * 100)}% hit</span>
+            <span>{latestCache.cachedTokens ?? 0}/{latestCache.inputTokens ?? 0} cached</span>
+            <span>{latestCache.source ?? ""}</span>
           </div>
         </details>
       ) : null}
@@ -456,7 +463,7 @@ function ContextAuditView({ language, summaries, cacheStats, task }: { language?
         <details>
           <summary>{zh ? "模型故障转移" : "Provider fallback"}</summary>
           {fallbackEvents.slice(-3).map((event) => (
-            <p key={event.id}>{String(event.payload["fromModel"] ?? "primary")} → {String(event.payload["toModel"] ?? "fallback")} · {String(event.payload["category"] ?? "")}</p>
+            <p key={event.id}>{String(event?.payload?.["fromModel"] ?? "primary")} → {String(event?.payload?.["toModel"] ?? "fallback")} · {String(event?.payload?.["category"] ?? "")}</p>
           ))}
         </details>
       ) : null}
@@ -465,10 +472,11 @@ function ContextAuditView({ language, summaries, cacheStats, task }: { language?
 }
 
 function derivePlanSteps(task: TaskDetail): Array<{ id: string; title: string; status: "pending" | "running" | "completed" | "blocked"; detail?: string }> {
-  const revised = [...task.events].reverse().find((event) => event.type === "plan_revised" && Array.isArray(event.payload["steps"]));
-  const initial = revised ?? task.events.find((event) => event.type === "plan_created");
-  const rawSteps = Array.isArray(initial?.payload["steps"]) ? initial.payload["steps"] : [];
-  if (initial?.payload["status"] === "empty") return [];
+  const safeEvents = Array.isArray(task?.events) ? task.events : [];
+  const revised = [...safeEvents].reverse().find((event) => event?.type === "plan_revised" && Array.isArray(event?.payload?.["steps"]));
+  const initial = revised ?? safeEvents.find((event) => event?.type === "plan_created");
+  const rawSteps = Array.isArray(initial?.payload?.["steps"]) ? initial.payload["steps"] : [];
+  if (initial?.payload?.["status"] === "empty") return [];
   const steps: Array<{ id: string; title: string; status: "pending" | "running" | "completed" | "blocked"; detail?: string }> = rawSteps
     .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
     .map((item) => ({
@@ -477,9 +485,9 @@ function derivePlanSteps(task: TaskDetail): Array<{ id: string; title: string; s
       status: normalizeStepStatus(item["status"]),
       ...(typeof item["detail"] === "string" ? { detail: item["detail"] } : {})
     }));
-  for (const event of task.events) {
-    if (!event.type.startsWith("plan_step_")) continue;
-    const toolCallId = String(event.payload["toolCallId"] ?? event.id);
+  for (const event of safeEvents) {
+    if (!event?.type?.startsWith("plan_step_")) continue;
+    const toolCallId = String(event?.payload?.["toolCallId"] ?? event.id);
     const existing = steps.find((step) => step.id === toolCallId);
     const status = event.type === "plan_step_completed" ? "completed" : event.type === "plan_step_blocked" ? "blocked" : "running";
     if (existing) {

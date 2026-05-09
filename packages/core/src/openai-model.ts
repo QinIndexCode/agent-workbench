@@ -189,7 +189,6 @@ export class OpenAIModelClient implements ModelClient {
       streamId: stream?.streamId ?? createId("model_stream"),
       provider: providerTraceMeta(provider?.providerId, "openai_compatible", model, baseURL),
       payload: {
-        taskTitle: task.title,
         taskStatus: task.status,
         eventCount: task.events.length,
         attention: attentionTraceMeta(context),
@@ -279,7 +278,6 @@ export class OpenAIModelClient implements ModelClient {
       streamId: stream?.streamId ?? createId("model_stream"),
       provider: providerTraceMeta(provider.providerId, "anthropic_messages", provider.model, provider.baseURL || "https://api.anthropic.com"),
       payload: {
-        taskTitle: task.title,
         taskStatus: task.status,
         eventCount: task.events.length,
         attention: attentionTraceMeta(context),
@@ -350,7 +348,6 @@ export class OpenAIModelClient implements ModelClient {
       streamId: stream?.streamId ?? createId("model_stream"),
       provider: providerTraceMeta(provider.providerId, "gemini", provider.model, base),
       payload: {
-        taskTitle: task.title,
         taskStatus: task.status,
         eventCount: task.events.length,
         attention: attentionTraceMeta(context),
@@ -523,7 +520,7 @@ function fallbackCanonicalMessages(task: TaskDetail): CanonicalModelMessage[] {
   const input = buildInput(task);
   return [
     { role: "system", content: system },
-    { role: "user", content: input || task.title }
+    { role: "user", content: input || "No current user message is available." }
   ];
 }
 
@@ -945,7 +942,6 @@ function buildInput(task: TaskDetail): string {
     if (event.payload["uiHidden"] === true) continue;
     lines.push(`${event.type}: ${event.summary}`);
   }
-  if (lines.length === 0 && task.title.trim()) lines.push(`user_message: ${task.title}`);
   return lines.join("\n");
 }
 
