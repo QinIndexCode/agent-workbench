@@ -6,13 +6,12 @@ import { findRelevantSkills } from "./experience.js";
 import { createId, nowIso } from "./ids.js";
 import type { WorkbenchStore } from "./store.js";
 import {
-  buildActiveNodeUserMessage,
   buildTaskGraphSystemLayer,
   taskGraphEvidenceRefs,
   taskGraphFromEvents,
   type AttentionPacket
 } from "./task-graph.js";
-import { classifyTaskIntent, currentTurnForbidsToolUse, isLeanContextIntent, isTrivialUserMessage, latestUserText } from "./task-intent.js";
+import { latestUserText } from "./task-events.js";
 import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
 
 const DEFAULT_MAX_RESERVED_RESPONSE_TOKENS = 16000;
@@ -101,8 +100,6 @@ export class ContextAssembler {
 
   async assemble(task: TaskDetail, budget?: Partial<TokenBudget>): Promise<AssembledContext> {
     const preferences = await this.store.getPreferences();
-    const intent = classifyTaskIntent(task);
-    const leanContext = isLeanContextIntent(intent);
     const maxTotal = budget?.maxTotal ?? preferences.maxTokensPerRequest;
     const reservedForResponse = budget?.reservedForResponse ?? Math.min(16000, Math.round(maxTotal * 0.15));
     const tokenBudget = { maxTotal, reservedForResponse };
@@ -114,19 +111,19 @@ export class ContextAssembler {
     systemLayers.push(systemLayer);
     usedTokens += estimateTokens(systemLayer);
 
-    const memoryFileLayer = await this.buildMemoryFileLayer(task, { compact: leanContext });
+    const memoryFileLayer = await this.buildMemoryFileLayer(task, { compact: false });
     if (memoryFileLayer) {
       systemLayers.push(memoryFileLayer);
       usedTokens += estimateTokens(memoryFileLayer);
     }
 
-    const runtimeLayer = leanContext ? "" : await this.buildRuntimeMetadataLayer(preferences);
+    const runtimeLayer = await this.buildRuntimeMetadataLayer(preferences);
     if (runtimeLayer) {
       systemLayers.push(runtimeLayer);
       usedTokens += estimateTokens(runtimeLayer);
     }
 
-    const loadedSkills = leanContext ? "" : this.loadedSkillPrompt(task.id);
+    const loadedSkills = this.loadedSkillPrompt(task.id);
     if (loadedSkills) {
       systemLayers.push(loadedSkills);
       usedTokens += estimateTokens(loadedSkills);
@@ -153,26 +150,26 @@ export class ContextAssembler {
     systemLayers.push(continuityLayer);
     usedTokens += estimateTokens(continuityLayer);
 
-    const skillLayer = leanContext ? "" : await this.buildSkillMetaLayer(task, preferences);
+    const skillLayer = await this.buildSkillMetaLayer(task, preferences);
     if (skillLayer) {
       systemLayers.push(skillLayer);
       usedTokens += estimateTokens(skillLayer);
     }
 
-    const projectLayer = leanContext ? "" : await this.buildProjectLayer(task);
+    const projectLayer = await this.buildProjectLayer(task);
     if (projectLayer) {
       systemLayers.push(projectLayer);
       usedTokens += estimateTokens(projectLayer);
     }
 
-    const attachmentLayer = leanContext ? "" : await this.buildAttachmentLayer(task.id);
+    const attachmentLayer = await this.buildAttachmentLayer(task.id);
     if (attachmentLayer) {
       systemLayers.push(attachmentLayer);
       usedTokens += estimateTokens(attachmentLayer);
     }
 
     const tracker = this.getFileStateTracker(task.id);
-    const fileLayer = leanContext ? "" : tracker.buildFileStateTable();
+    const fileLayer = tracker.buildFileStateTable();
     const fileTokens = estimateTokens(fileLayer);
     let fileLayerIncluded = false;
     if (fileLayer && usedTokens + fileTokens < tokenBudget.maxTotal * 0.2) {
@@ -185,7 +182,7 @@ export class ContextAssembler {
       .reverse()
       .find((event) => event.type === "context_overflow_recovered" || event.type === "conversation_summary_created");
     const forceSummary = latestContextControlEvent?.type === "context_overflow_recovered";
-    const summary = leanContext ? undefined : await this.ensureConversationSummary(task, {
+    const summary = await this.ensureConversationSummary(task, {
       force: forceSummary,
       tokenBudget,
       usedBefore: usedTokens
@@ -213,8 +210,6 @@ export class ContextAssembler {
       maxTokens: inputBudget,
       tracker: fileLayerIncluded ? tracker : undefined
     });
-    const activeNodeMessage = buildActiveNodeUserMessage(taskGraph);
-    if (activeNodeMessage) messages.push({ role: "user", content: activeNodeMessage });
     const activeNode = taskGraph?.nodes.find((node) => node.id === taskGraph.activeNodeId);
     const messageTokens = estimateCanonicalMessages(messages);
     return {
@@ -439,8 +434,7 @@ export class ContextAssembler {
     return [
       "## Current Turn",
       `Latest user request: ${truncate(latestUser.summary, 2200)}`,
-      "Treat this as the active objective. Earlier messages are background unless this request explicitly depends on them.",
-      currentTurnForbidsToolUse(task) ? "Current turn constraint: do not call or simulate new tools; answer from existing conversation and tool evidence only." : ""
+      "Treat this as the active objective. Earlier messages are background unless this request explicitly depends on them."
     ].filter(Boolean).join("\n");
   }
 
@@ -576,8 +570,6 @@ export class FileStateTracker {
       return;
     }
 
-    const inferred = inferFilePathFromOutput(output);
-    if (inferred && looksLikeFileContent(output, inferred)) this.set(inferred, output, event.createdAt, output.length > this.maxContentLength);
   }
 
   hasFile(path: string): boolean {
@@ -922,7 +914,6 @@ function buildRollingConversationSummary(task: TaskDetail, events: TaskEvent[]):
     .map((event) => formatEvent(event))
     .filter(Boolean)
     .filter((line) => !line.includes("UI preview truncated"))
-    .filter((line) => !isTrivialHistoryLine(line))
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter(Boolean);
   const compact = lines.slice(-24).map((line) => `- ${line.slice(0, 700)}`).join("\n");
@@ -937,12 +928,8 @@ function buildRollingConversationSummary(task: TaskDetail, events: TaskEvent[]):
 
 function buildRetainedFacts(task: TaskDetail, summarizedEvents: TaskEvent[]): string[] {
   const facts = new Set<string>();
-  const firstUser = task.events.find((event) => event.type === "user_message");
   const latestUser = latestUserEvent(task);
   if (latestUser) facts.add(`Current user request: ${truncate(latestUser.summary, 600)}`);
-  if (firstUser && latestUser?.id === firstUser.id && !isTrivialUserMessage(firstUser.summary)) {
-    facts.add(`Original goal: ${truncate(firstUser.summary, 600)}`);
-  }
   if (task.workRoot) facts.add(`Work root: ${task.workRoot}`);
   const latestGuidance = [...task.events].reverse().find((event) => event.type === "guidance_pending" || event.type === "guidance_consumed");
   if (latestGuidance) facts.add(`Latest guidance: ${truncate(latestGuidance.summary, 300)}`);
@@ -962,12 +949,6 @@ function latestUserEvent(task: TaskDetail): TaskEvent | undefined {
   return [...task.events].reverse().find((event) =>
     (event.type === "user_message" || event.type === "guidance_pending" || event.type === "guidance_consumed") && !event.reverted
   );
-}
-
-function isTrivialHistoryLine(line: string): boolean {
-  const userPrefix = "**User**:";
-  if (!line.startsWith(userPrefix)) return false;
-  return isTrivialUserMessage(line.slice(userPrefix.length));
 }
 
 function formatToolArgsForContext(args: unknown): string {
@@ -1182,24 +1163,6 @@ function looksLikeBinary(output: string): boolean {
     return code < 32 && code !== 9 && code !== 10 && code !== 13;
   }).length;
   return output.length > 0 && nonPrintable > output.length * 0.1;
-}
-
-function inferFilePathFromOutput(output: string): string | null {
-  for (const line of output.split("\n").slice(0, 20)) {
-    const match = line.match(/[\w\-./\\]+\.(js|ts|jsx|tsx|py|java|go|rs|cpp|c|h|md|json|yaml|yml|txt|html|css|scss)[\s:"']/i);
-    if (match?.[0]) return match[0].replace(/[\s:"']$/, "");
-  }
-  return null;
-}
-
-function looksLikeFileContent(output: string, inferredPath: string): boolean {
-  const extension = inferredPath.split(".").pop()?.toLowerCase() ?? "";
-  if (["js", "ts", "jsx", "tsx", "py", "md", "json", "yaml", "yml", "txt", "html", "css"].includes(extension)) return true;
-  const printable = [...output].filter((char) => {
-    const code = char.charCodeAt(0);
-    return (code >= 32 && code <= 126) || code === 9 || code === 10 || code === 13;
-  }).length;
-  return output.length > 0 && printable > output.length * 0.85;
 }
 
 function parseJson(output: string): Record<string, unknown> {

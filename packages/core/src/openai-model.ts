@@ -6,7 +6,6 @@ import type { CanonicalModelMessage, ContextAssembler } from "./context-assemble
 import { createId, nowIso } from "./ids.js";
 import type { ModelClient, ModelStreamHandlers, ModelTraceEvent, ModelTurn, ModelUsage } from "./fallback-model.js";
 import { ConfiguredToolModelClient, FallbackModelClient } from "./fallback-model.js";
-import { classifyTaskIntent, currentTurnForbidsToolUse, shouldLoadDynamicTools, type TaskIntent } from "./task-intent.js";
 import { toolAllowedByTaskGraph } from "./task-graph.js";
 
 export interface OpenAIModelClientOptions {
@@ -70,9 +69,8 @@ export class OpenAIModelClient implements ModelClient {
   private async nextWithSkillRetries(task: TaskDetail, skillRetryCount: number, stream?: ModelStreamHandlers): Promise<ModelTurn> {
     const context = this.contextAssembler ? await this.contextAssembler.assemble(task) : null;
     const preferences = await this.preferenceProvider?.();
-    const intent = classifyTaskIntent(task);
-    const dynamicTools = !currentTurnForbidsToolUse(task) && shouldLoadDynamicTools(intent, task) ? (await this.toolProvider?.listModelTools()) ?? [] : [];
-    const modelTools = filterToolsForTaskGraph(task, selectModelToolsForIntent(intent, dynamicTools));
+    const dynamicTools = (await this.toolProvider?.listModelTools()) ?? [];
+    const modelTools = selectModelToolsForTask(task, dynamicTools);
     const turn = await this.nextWithProviderFallbacks(task, context, preferences, modelTools, stream);
     if (turn.kind !== "tool_calls") return turn;
 
@@ -714,21 +712,9 @@ function serializeTraceError(error: unknown): Record<string, unknown> {
 }
 
 export function selectModelToolsForTask(task: TaskDetail, dynamicTools: ModelToolDefinition[] = []): ModelToolDefinition[] {
-  if (currentTurnForbidsToolUse(task)) return [];
-  const intent = classifyTaskIntent(task);
-  return filterToolsForTaskGraph(task, selectModelToolsForIntent(intent, shouldLoadDynamicTools(intent, task) ? dynamicTools : []));
-}
-
-function selectModelToolsForIntent(intent: TaskIntent, dynamicTools: ModelToolDefinition[]): ModelToolDefinition[] {
   const builtIns = toolDefinitions();
   const stableDynamicTools = [...dynamicTools].sort((left, right) => left.function.name.localeCompare(right.function.name));
-  if (intent === "direct_chat") return [];
-  if (intent === "tool_inventory") return builtIns.filter((tool) => readOnlyToolNames.has(tool.function.name));
-  if (intent === "read_only_evidence") return [...builtIns.filter((tool) => readOnlyToolNames.has(tool.function.name)), ...stableDynamicTools];
-  if (intent === "memory_skill_admin") {
-    return [...builtIns.filter((tool) => readOnlyToolNames.has(tool.function.name) || memorySkillToolNames.has(tool.function.name)), ...stableDynamicTools];
-  }
-  return [...builtIns, ...stableDynamicTools];
+  return filterToolsForTaskGraph(task, [...builtIns, ...stableDynamicTools]);
 }
 
 function filterToolsForTaskGraph(task: TaskDetail, tools: ModelToolDefinition[]): ModelToolDefinition[] {
@@ -751,21 +737,6 @@ function attentionTraceMeta(context: Awaited<ReturnType<ContextAssembler["assemb
     tokenBudget: packet.tokenBudget
   };
 }
-
-const readOnlyToolNames = new Set(["read_file", "search_files", "list_files", "web_search", "knowledge_search"]);
-const memorySkillToolNames = new Set([
-  "use_skill",
-  "user_memory_add",
-  "user_memory_edit",
-  "user_memory_delete",
-  "project_memory_add",
-  "project_memory_edit",
-  "project_memory_delete",
-  "skill_create",
-  "skill_edit",
-  "skill_delete",
-  "plan_update"
-]);
 
 export interface OpenAIProviderConfig {
   apiKey?: string;

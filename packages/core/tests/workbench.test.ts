@@ -34,17 +34,44 @@ import {
   nowIso,
   promoteExperience,
   selectModelToolsForTask,
-  compileTaskGraph,
   taskGraphFromEvents,
-  shouldPromoteExperienceToSkill
+  shouldPromoteExperienceToSkill,
+  type TaskGraph,
+  type TaskGraphNode
 } from "../src/index.js";
 import { defaultTaskWorkRoot } from "../src/workspace-root.js";
 
 const hostObservationModel = new ConfiguredToolModelClient("Get-Process | Sort-Object CPU");
 
-function attachCompiledTaskGraph(task: TaskDetail): ReturnType<typeof compileTaskGraph> {
-  const graph = compileTaskGraph(task);
-  if (!graph) return null;
+function attachExplicitTaskGraph(task: TaskDetail, overrides: Partial<TaskGraphNode> = {}): TaskGraph {
+  const objective = [...task.events].reverse().find((event) => event.type === "user_message" && !event.reverted)?.summary ?? "Use recorded task state.";
+  const node: TaskGraphNode = {
+    id: createId("node"),
+    role: "implement",
+    objective,
+    allowedToolClasses: ["workspace_read", "workspace_write", "shell", "network", "state"],
+    contextHints: [`task:${task.id}`, "recent_tool_evidence"],
+    acceptanceCriteria: ["Use the recorded objective and preserve tool evidence."],
+    verification: {
+      kind: "manual",
+      method: "Record tool evidence or manual review before completion when required.",
+      required: false,
+      status: "not_applicable",
+      evidenceRefs: []
+    },
+    risk: "workspace_write",
+    status: "running",
+    evidenceRefs: [],
+    ...overrides
+  };
+  const graph: TaskGraph = {
+    taskId: task.id,
+    nodes: [node],
+    activeNodeId: node.id,
+    status: "active",
+    createdAt: nowIso(),
+    updatedAt: nowIso()
+  };
   const activeNode = graph.nodes.find((node) => node.id === graph.activeNodeId);
   task.events.push({
     id: createId("event"),
@@ -65,6 +92,39 @@ function attachCompiledTaskGraph(task: TaskDetail): ReturnType<typeof compileTas
     });
   }
   return graph;
+}
+
+function attachReadOnlyTaskGraph(task: TaskDetail): TaskGraph {
+  return attachExplicitTaskGraph(task, {
+    role: "research",
+    allowedToolClasses: ["workspace_read", "network"],
+    risk: "workspace_read",
+    acceptanceCriteria: ["Use only read-only tool evidence."],
+    verification: {
+      kind: "read_only",
+      method: "Use read-only evidence when useful.",
+      required: false,
+      status: "not_applicable",
+      evidenceRefs: []
+    }
+  });
+}
+
+function attachVerificationTaskGraph(task: TaskDetail): TaskGraph {
+  const implement = attachExplicitTaskGraph(task, {
+    role: "verify",
+    allowedToolClasses: ["workspace_read", "shell", "network"],
+    risk: "shell",
+    verification: {
+      kind: "tests",
+      method: "Use command output as verification evidence.",
+      required: true,
+      status: "pending",
+      evidenceRefs: [],
+      commands: ["npm.cmd run build"]
+    }
+  });
+  return implement;
 }
 
 describe("ContextAssembler", () => {
@@ -128,7 +188,7 @@ describe("ContextAssembler", () => {
     expect(latest && "content" in latest ? latest.content : "").toContain("测试所有你能调用的工具");
   });
 
-  it("adds the active task graph node as an attention packet without using the task title as context", async () => {
+  it("keeps explicit task graph state in system context without impersonating the user", async () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
     const task: TaskDetail = {
       id: "task_attention_graph",
@@ -151,7 +211,7 @@ describe("ContextAssembler", () => {
         }
       ]
     };
-    const graph = attachCompiledTaskGraph(task);
+    const graph = attachExplicitTaskGraph(task);
 
     const context = await assembler.assemble(task);
     const latest = context.messages.at(-1);
@@ -162,8 +222,8 @@ describe("ContextAssembler", () => {
     expect(`${context.systemPrompt}\n${context.input}`).not.toMatch(/task title/i);
     expect(context.attentionPacket.activeNode?.role).toBe("implement");
     expect(latest?.role).toBe("user");
-    expect(latest && "content" in latest ? latest.content : "").toContain("## Active Node");
     expect(latest && "content" in latest ? latest.content : "").toContain("编写一个完整的博客页面");
+    expect(latest && "content" in latest ? latest.content : "").not.toContain("## Active Node");
   });
 
   it("keeps task title update metadata out of model context", async () => {
@@ -775,7 +835,7 @@ describe("Task title generation", () => {
 });
 
 describe("Tool surface selection", () => {
-  it("keeps greetings tool-free, tool inventory requests read-only, and build requests writable", () => {
+  it("exposes the stable tool surface without classifying user language", () => {
     const directTask: TaskDetail = {
       id: "task_direct_chat",
       title: "你好",
@@ -814,14 +874,17 @@ describe("Tool surface selection", () => {
       }]
     };
 
-    expect(selectModelToolsForTask(directTask)).toHaveLength(0);
-    const toolNames = selectModelToolsForTask(inventoryTask).map((tool) => tool.function.name);
-    expect(toolNames).toEqual(["read_file", "search_files", "list_files", "web_search", "knowledge_search"]);
-    expect(selectModelToolsForTask(buildTask).some((tool) => tool.function.name === "write_file")).toBe(true);
-    expect(selectModelToolsForTask(buildTask).some((tool) => tool.function.name === "edit_file")).toBe(true);
+    const directNames = selectModelToolsForTask(directTask).map((tool) => tool.function.name);
+    const inventoryNames = selectModelToolsForTask(inventoryTask).map((tool) => tool.function.name);
+    const buildNames = selectModelToolsForTask(buildTask).map((tool) => tool.function.name);
+
+    expect(directNames).toContain("read_file");
+    expect(directNames).toContain("write_file");
+    expect(inventoryNames).toEqual(directNames);
+    expect(buildNames).toEqual(directNames);
   });
 
-  it("uses the task graph role policy to keep capability checks read-only and code tasks out of memory tools", () => {
+  it("uses explicit task graph role policy to restrict tools without parsing user text", () => {
     const inventoryTask: TaskDetail = {
       id: "task_tool_inventory_graph",
       title: "测试工具",
@@ -849,8 +912,8 @@ describe("Tool surface selection", () => {
         payload: {}
       }]
     };
-    attachCompiledTaskGraph(inventoryTask);
-    attachCompiledTaskGraph(buildTask);
+    attachReadOnlyTaskGraph(inventoryTask);
+    attachExplicitTaskGraph(buildTask);
 
     const inventoryNames = selectModelToolsForTask(inventoryTask).map((tool) => tool.function.name);
     const buildNames = selectModelToolsForTask(buildTask).map((tool) => tool.function.name);
@@ -1048,6 +1111,12 @@ class StreamingFinalModel implements ModelClient {
   }
 }
 
+class PlainFinalModel implements ModelClient {
+  async next(): Promise<ModelTurn> {
+    return { kind: "final", message: "Done." };
+  }
+}
+
 class LongFinalModel implements ModelClient {
   async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
     const message = "基于当前任务，我会给出完整、可追踪、可验证的工程结论。".repeat(12);
@@ -1063,6 +1132,18 @@ class ToolDespiteForbiddenModel implements ModelClient {
       kind: "tool_calls",
       calls: [{ id: createId("tool_call"), toolName: "list_files", args: { path: "." } }]
     };
+  }
+}
+
+class GraphInjectingModel implements ModelClient {
+  constructor(
+    private readonly inner: ModelClient,
+    private readonly attachGraph: (task: TaskDetail) => TaskGraph
+  ) {}
+
+  async next(task: TaskDetail, stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    if (!taskGraphFromEvents(task)) this.attachGraph(task);
+    return this.inner.next(task, stream);
   }
 }
 
@@ -1209,21 +1290,21 @@ describe("Attention-first task graph runtime", () => {
     expect(task.events.some((event) => event.type === "task_memory_created")).toBe(false);
   });
 
-  it("keeps the configured local tool model from calling tools for greetings", async () => {
+  it("routes configured local tool attempts through permission instead of user-text filters", async () => {
     const workbench = new AgentWorkbench({
       store: new InMemoryWorkbenchStore(),
       model: new ConfiguredToolModelClient("Get-Process"),
       tools: new StubToolExecutor()
     });
 
-    const task = await workbench.createTask("你好");
+    const task = await workbench.createTask("请直接回答当前对话内容");
 
-    expect(task.status).toBe("completed");
-    expect(task.events.some((event) => event.type === "tool_requested")).toBe(false);
+    expect(task.status).toBe("waiting_approval");
+    expect(task.events.some((event) => event.type === "tool_requested")).toBe(true);
     expect(task.events.some((event) => event.type === "tool_result")).toBe(false);
   });
 
-  it("does not repeat a configured local tool when the follow-up forbids tool use", async () => {
+  it("keeps follow-up tool execution governed by approval grants, not natural-language denial", async () => {
     const workbench = new AgentWorkbench({
       store: new InMemoryWorkbenchStore(),
       model: new ConfiguredToolModelClient("Get-Process"),
@@ -1235,17 +1316,13 @@ describe("Attention-first task graph runtime", () => {
     const completed = await workbench.decideApproval(created.id, approval.id, "allow_for_task");
     const firstToolRequests = completed.events.filter((event) => event.type === "tool_requested").length;
 
-    const followed = await workbench.appendMessage(completed.id, "基于刚才工具结果总结，不要重新调用工具。");
-    const longFollowed = await workbench.appendMessage(
-      completed.id,
-      "请继续基于已有工具结果做审计式总结，不要新增工具调用，不要把最早的问候当成当前目标。"
-    );
+    const followed = await workbench.appendMessage(completed.id, "基于刚才结果再整理一版。");
+    const longFollowed = await workbench.appendMessage(completed.id, "再补充一版简短结论。");
 
     expect(followed.status).toBe("completed");
     expect(longFollowed.status).toBe("completed");
-    expect(longFollowed.events.filter((event) => event.type === "tool_requested")).toHaveLength(firstToolRequests);
-    expect(longFollowed.events.filter((event) => event.type === "task_memory_created")).toHaveLength(1);
-    expect(followed.events.some((event) => event.type === "assistant_message" && event.summary.includes("不再重新调用工具"))).toBe(true);
+    expect(longFollowed.events.filter((event) => event.type === "tool_requested")).toHaveLength(firstToolRequests + 2);
+    expect(longFollowed.events.filter((event) => event.type === "task_memory_created")).toHaveLength(3);
   });
 
   it("records task memory from the latest meaningful request instead of a greeting title", async () => {
@@ -1268,17 +1345,14 @@ describe("Attention-first task graph runtime", () => {
     expect(memories[0]?.goal).toContain("桌面运行的软件");
   });
 
-  it("auto-renames a weak greeting title once after a meaningful long response", async () => {
+  it("auto-renames a local fallback title at most once after a long response", async () => {
     const workbench = new AgentWorkbench({
       store: new InMemoryWorkbenchStore(),
       model: new LongFinalModel()
     });
-    const greeting = await workbench.createTask("你好");
-
-    const renamed = await workbench.appendMessage(greeting.id, "帮我检查项目中的上下文问题并总结修复建议");
+    const renamed = await workbench.createTask("帮我检查项目中的上下文问题并总结修复建议");
     const titleEvents = renamed.events.filter((event) => event.type === "task_title_updated");
 
-    expect(renamed.title).not.toBe("你好");
     expect(renamed.title).toContain("检查项目中的上下文问题");
     expect(titleEvents).toHaveLength(1);
     expect(titleEvents[0]?.payload["source"]).toBe("auto");
@@ -1299,7 +1373,7 @@ describe("Attention-first task graph runtime", () => {
     expect(completed.events.some((event) => event.type === "task_title_updated")).toBe(false);
   });
 
-  it("turns forbidden tool attempts into explicit skipped results without executing tools", async () => {
+  it("sends direct-answer tool attempts into the normal permission path", async () => {
     const tools = new StubToolExecutor();
     const workbench = new AgentWorkbench({
       store: new InMemoryWorkbenchStore(),
@@ -1307,17 +1381,23 @@ describe("Attention-first task graph runtime", () => {
       tools
     });
 
-    const completed = await workbench.createTask("不要调用工具，直接根据已有内容回答");
-    const result = completed.events.find((event) => event.type === "tool_result");
+    const pending = await workbench.createTask("直接根据当前对话回答就行");
+    const approval = pending.approvals[0];
+    if (!approval) throw new Error("expected approval");
 
-    expect(completed.status).toBe("completed");
+    expect(pending.status).toBe("waiting_approval");
     expect(tools.calls).toHaveLength(0);
-    expect(result?.payload["ok"]).toBe(false);
-    expect(String(result?.payload["output"] ?? "")).toContain("forbids new tool calls");
+    expect(pending.events.some((event) => event.type === "tool_requested")).toBe(true);
+    expect(pending.events.some((event) => event.type === "tool_result")).toBe(false);
+
+    const completed = await workbench.decideApproval(pending.id, approval.id, "allow_once");
+    expect(completed.status).toBe("completed");
+    expect(tools.calls).toHaveLength(1);
+    expect(completed.events.some((event) => event.type === "tool_result" && event.payload["ok"] === true)).toBe(true);
   });
 
   it("pauses a React code-change task when the model tries to finish without verification evidence", async () => {
-    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new GraphInjectingModel(new PlainFinalModel(), attachVerificationTaskGraph) });
 
     const task = await workbench.createTask("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
 
@@ -1332,7 +1412,7 @@ describe("Attention-first task graph runtime", () => {
     await store.savePreferences({ ...(await store.getPreferences()), autoApprove: "all", updatedAt: nowIso() });
     const workbench = new AgentWorkbench({
       store,
-      model: new SequenceToolModel([{ toolName: "run_command", args: { command: "npm.cmd run build" } }]),
+      model: new GraphInjectingModel(new SequenceToolModel([{ toolName: "run_command", args: { command: "npm.cmd run build" } }]), attachVerificationTaskGraph),
       tools: new StubToolExecutor()
     });
 
@@ -1349,7 +1429,7 @@ describe("Attention-first task graph runtime", () => {
     await store.savePreferences({ ...(await store.getPreferences()), autoApprove: "all", updatedAt: nowIso() });
     const workbench = new AgentWorkbench({
       store,
-      model: new SequenceToolModel([{ toolName: "run_command", args: { command: "npm.cmd run build" } }]),
+      model: new GraphInjectingModel(new SequenceToolModel([{ toolName: "run_command", args: { command: "npm.cmd run build" } }]), attachVerificationTaskGraph),
       tools: new FailingVerificationExecutor()
     });
 
@@ -1598,11 +1678,13 @@ describe("AgentWorkbench", () => {
       expect(existsSync(tracePath)).toBe(true);
       expect(traceEntries.some((entry) => entry["kind"] === "model_request")).toBe(true);
       expect(requestMessages[0]?.at(-1)?.["role"]).toBe("user");
-      expect(String(requestMessages[0]?.at(-1)?.["content"] ?? "")).toContain("Active Node");
+      expect(String(requestMessages[0]?.at(-1)?.["content"] ?? "")).toContain("Trace the full request-response loop");
+      expect(String(requestMessages[0]?.at(-1)?.["content"] ?? "")).not.toContain("Active Node");
       expect(requestMessages[1]?.some((message) => message["role"] === "tool")).toBe(true);
       expect(String(requestMessages[1]?.find((message) => message["role"] === "tool")?.["content"] ?? "")).toContain("README.md");
-      expect(requestMessages[1]?.at(-1)?.["role"]).toBe("user");
-      expect(String(requestMessages[1]?.at(-1)?.["content"] ?? "")).toContain("list_files:ok");
+      expect(String(requestMessages[1]?.[0]?.["content"] ?? "")).not.toContain("## Known Files");
+      const lastUser = requestMessages[1]?.filter((message) => message["role"] === "user").at(-1);
+      expect(String(lastUser?.["content"] ?? "")).toContain("Trace the full request-response loop");
 
       writeFileSync(join(outDir, "captured-requests.json"), JSON.stringify(capturedRequests, null, 2), "utf8");
       writeFileSync(join(outDir, "task-events.json"), JSON.stringify(completed.events, null, 2), "utf8");
@@ -1615,9 +1697,9 @@ describe("AgentWorkbench", () => {
           `Status: ${completed.status}`,
           `Trace: ${tracePath}`,
           "",
-          "- Request 1 ends with the active task node user message.",
-          "- Request 2 includes the tool role result before the active task node.",
-          "- Task events include task graph, tool request, tool result, and assistant final message."
+          "- Request 1 ends with the real user message.",
+          "- Request 2 includes the tool role result while keeping the last user message real.",
+          "- Task events include tool request, tool result, and assistant final message."
         ].join("\n"),
         "utf8"
       );
@@ -2430,8 +2512,15 @@ describe("AgentWorkbench", () => {
   });
 
   it("surfaces skill curator explanations for candidates and low-value memories", async () => {
-    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
-    await workbench.createTask("brief answer only");
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new StubToolExecutor(),
+      model: new ConfiguredToolModelClient("Get-Process")
+    });
+    const created = await workbench.createTask("check running processes");
+    const approval = created.approvals[0];
+    if (!approval) throw new Error("expected approval");
+    await workbench.decideApproval(created.id, approval.id, "allow_once");
     await workbench.createSkill({
       title: "Reusable repository triage",
       body: "# Reusable repository triage\nUse current evidence and summarize reusable risks.",
@@ -2861,7 +2950,7 @@ describe("OpenAIModelClient", () => {
           }
         ]
       };
-      attachCompiledTaskGraph(task);
+      attachExplicitTaskGraph(task);
 
       const turn = await client.next(task, {
         streamId: "stream_openai_roles",
@@ -2877,15 +2966,15 @@ describe("OpenAIModelClient", () => {
       expect(messages[0]?.["role"]).toBe("system");
       expect(String(messages[0]?.["content"] ?? "")).toContain("Stable Memory Files");
       expect(String(messages[0]?.["content"] ?? "")).not.toContain("Task title:");
-      expect(messages.map((message) => message["role"])).toEqual(["system", "user", "assistant", "user", "assistant", "tool", "user"]);
+      expect(messages.map((message) => message["role"])).toEqual(["system", "user", "assistant", "user", "assistant", "tool"]);
       expect(messages[3]?.["content"]).toBe("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
       expect(messages[4]?.["tool_calls"]).toEqual([
         { id: "call_list", type: "function", function: { name: "list_files", arguments: "{\"path\":\".\"}" } }
       ]);
       expect(messages[5]?.["tool_call_id"]).toBe("call_list");
-      expect(String(messages[6]?.["content"] ?? "")).toContain("## Active Node");
-      expect(String(messages[6]?.["content"] ?? "")).toContain("编写一个完整的博客页面");
-      expect(String(messages[6]?.["content"] ?? "")).toContain("event_tool_result:list_files:ok");
+      const lastUser = messages.filter((message) => message["role"] === "user").at(-1);
+      expect(lastUser?.["content"]).toBe("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
+      expect(String(messages.map((message) => message["content"] ?? "").join("\n"))).not.toContain("## Active Node");
       expect((attention?.["activeNode"] as Record<string, unknown> | undefined)?.["role"]).toBe("implement");
       expect(attention?.["evidenceRefs"]).toContain("event_tool_result:list_files:ok");
     } finally {

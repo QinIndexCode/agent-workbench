@@ -1,6 +1,4 @@
 import type { RiskCategory, TaskDetail, TaskEvent } from "@scc/shared";
-import { createId, nowIso } from "./ids.js";
-import { classifyTaskIntent, latestUserText, type TaskIntent } from "./task-intent.js";
 
 export type TaskGraphRole = "research" | "implement" | "verify" | "review" | "final";
 export type TaskGraphStatus = "active" | "completed" | "blocked";
@@ -61,22 +59,8 @@ export interface VerificationResultRecord {
 }
 
 export function compileTaskGraph(task: TaskDetail): TaskGraph | null {
-  const intent = classifyTaskIntent(task);
-  if (intent === "direct_chat") return null;
-  const objective = latestUserText(task);
-  if (!objective.trim()) return null;
-  const now = nowIso();
-  const nodes = nodesForIntent(intent, task.id, objective.trim());
-  const active = nodes.find((node) => node.status === "running") ?? nodes[0];
-  if (!active) return null;
-  return {
-    taskId: task.id,
-    nodes,
-    activeNodeId: active.id,
-    status: "active",
-    createdAt: now,
-    updatedAt: now
-  };
+  void task;
+  return null;
 }
 
 export function taskGraphFromEvents(task: TaskDetail): TaskGraph | null {
@@ -133,26 +117,6 @@ export function buildTaskGraphSystemLayer(graph: TaskGraph | null): string {
   ].join("\n");
 }
 
-export function buildActiveNodeUserMessage(graph: TaskGraph | null): string {
-  if (!graph) return "";
-  const node = graph.nodes.find((item) => item.id === graph.activeNodeId);
-  if (!node) return "";
-  return [
-    "## Active Node",
-    `Role: ${node.role}`,
-    `Objective: ${node.objective}`,
-    `Allowed tool classes: ${node.allowedToolClasses.join(", ") || "none"}`,
-    `Risk: ${node.risk}`,
-    "Acceptance criteria:",
-    ...node.acceptanceCriteria.map((item) => `- ${item}`),
-    `Verification: ${node.verification.method}`,
-    `Verification required: ${node.verification.required ? "yes" : "no"}`,
-    `Verification status: ${node.verification.status}`,
-    `Evidence refs: ${node.evidenceRefs.length > 0 ? node.evidenceRefs.join(", ") : "none"}`,
-    "Continue from this active node. Earlier greetings are history, not the current goal."
-  ].join("\n");
-}
-
 export function taskGraphEvidenceRefs(task: TaskDetail): string[] {
   return collectEvidenceRefs(task);
 }
@@ -204,115 +168,6 @@ export function completionBlocker(task: TaskDetail): string | null {
   const commands = uniqueStrings(required.flatMap((node) => node.verification.commands ?? []));
   const commandText = commands.length > 0 ? ` Expected verification: ${commands.join(" && ")}.` : "";
   return `Verification evidence is required before this task can be marked completed.${commandText}`;
-}
-
-function nodesForIntent(intent: TaskIntent, taskId: string, objective: string): TaskGraphNode[] {
-  if (intent === "tool_inventory") {
-    return [
-      node(taskId, "research", objective, ["workspace_read", "network"], [
-        "Explain callable capabilities from the available safe tool surface.",
-        "Do not create files, edit memory, edit skills, or run persistent side-effect tools."
-      ], {
-        kind: "read_only",
-        method: "Use only read-only evidence or answer directly if no evidence is needed.",
-        required: false
-      }, "workspace_read", "running"),
-      node(taskId, "final", "Report the safe capability check outcome.", [], [
-        "Mention that write, memory, and skill mutation require explicit user authorization."
-      ], { kind: "none", method: "No external verification required.", required: false }, "none")
-    ];
-  }
-  if (intent === "code_change") {
-    const runtimeVerification = needsRuntimeVerification(objective);
-    return [
-      node(taskId, "implement", objective, ["workspace_read", "workspace_write", "shell", "network", "state"], [
-        "Read only the files needed for the active change.",
-        "Make scoped edits and keep every tool result as evidence."
-      ], {
-        kind: runtimeVerification ? "build" : "manual",
-        method: runtimeVerification
-          ? "Run the relevant typecheck, test, build, or smoke command before final completion."
-          : "Record file changes and any manual verification or explicit unverified item.",
-        required: runtimeVerification,
-        ...(runtimeVerification ? { commands: ["npm.cmd run typecheck", "npm.cmd test", "npm.cmd run build"] } : {})
-      }, "workspace_write", "running"),
-      node(taskId, "verify", `Verify: ${objective}`, ["workspace_read", "shell", "network"], [
-        "Run the narrowest meaningful command first, then broader gates when the change touches shared behavior.",
-        "If verification fails, record the failure and return to implementation with evidence."
-      ], {
-        kind: runtimeVerification ? "tests" : "manual",
-        method: runtimeVerification ? "Use command output as verification evidence." : "Manual verification may be enough for tiny text-only edits.",
-        required: runtimeVerification,
-        ...(runtimeVerification ? { commands: ["npm.cmd run typecheck", "npm.cmd test", "npm.cmd run build"] } : {})
-      }, "shell"),
-      node(taskId, "review", `Review diff and evidence for: ${objective}`, ["workspace_read", "shell"], [
-        "Check changed-file scope, evidence, and remaining risk before final response."
-      ], { kind: "manual", method: "Review diff and evidence pack.", required: false }, "workspace_read"),
-      node(taskId, "final", `Summarize outcome for: ${objective}`, [], [
-        "Final answer includes changed files, verification evidence, and any unverified items."
-      ], { kind: "none", method: "No tool use in final node.", required: false }, "none")
-    ];
-  }
-  if (intent === "memory_skill_admin") {
-    return [
-      node(taskId, "implement", objective, ["workspace_read", "memory", "state"], [
-        "Only mutate memory or skills when the user explicitly requested that mutation.",
-        "Keep outputs compact and auditable."
-      ], { kind: "manual", method: "Confirm the memory or skill mutation result event.", required: false }, "workspace_write", "running"),
-      node(taskId, "final", `Report memory or skill admin outcome for: ${objective}`, [], [
-        "State exactly what changed or why no mutation was made."
-      ], { kind: "none", method: "No external verification required.", required: false }, "none")
-    ];
-  }
-  return [
-    node(taskId, "research", objective, ["workspace_read", "network"], [
-      "Gather only evidence needed for the current question.",
-      "Prefer source and local project evidence over stale summaries."
-    ], { kind: "read_only", method: "Use read-only tool evidence where needed.", required: false }, "workspace_read", "running"),
-    node(taskId, "final", `Answer from evidence: ${objective}`, [], [
-      "Answer with evidence and call out uncertainty."
-    ], { kind: "none", method: "No external verification required.", required: false }, "none")
-  ];
-}
-
-function node(
-  taskId: string,
-  role: TaskGraphRole,
-  objective: string,
-  allowedToolClasses: TaskToolClass[],
-  acceptanceCriteria: string[],
-  verification: Omit<TaskGraphVerification, "status" | "evidenceRefs">,
-  risk: RiskCategory | "none",
-  status: TaskGraphNodeStatus = "pending"
-): TaskGraphNode {
-  return {
-    id: createId(`node_${role}`),
-    role,
-    objective,
-    allowedToolClasses,
-    contextHints: contextHintsForRole(role, taskId),
-    acceptanceCriteria,
-    verification: {
-      ...verification,
-      status: verification.required ? "pending" : "not_applicable",
-      evidenceRefs: []
-    },
-    risk,
-    status,
-    evidenceRefs: []
-  };
-}
-
-function contextHintsForRole(role: TaskGraphRole, taskId: string): string[] {
-  if (role === "implement") return [`task:${taskId}`, "recent_file_state", "recent_tool_evidence"];
-  if (role === "verify") return [`task:${taskId}`, "verification_commands", "recent_tool_evidence"];
-  if (role === "review") return [`task:${taskId}`, "diff_summary", "evidence_pack"];
-  if (role === "research") return [`task:${taskId}`, "recent_role_history", "read_only_evidence"];
-  return [`task:${taskId}`, "evidence_pack"];
-}
-
-function needsRuntimeVerification(objective: string): boolean {
-  return /(react|vite|next|前端|页面|博客|网站|应用|组件|界面|修复|实现|优化|重构|测试|构建|build|test|typecheck|typescript|javascript|frontend|backend|ui)/iu.test(objective);
 }
 
 function latestActiveNodeId(task: TaskDetail): string | undefined {

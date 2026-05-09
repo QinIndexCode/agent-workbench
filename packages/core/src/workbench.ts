@@ -95,8 +95,8 @@ import type { ResolvedModelProviderConfig } from "./openai-model.js";
 import { PermissionEngine, type PermissionState, type RiskAssessment } from "./permission-engine.js";
 import { LocalSecretBox, maskSecret, sanitizeSensitiveText, sanitizeSensitiveValue } from "./secrets.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
-import { compileTaskGraph, completionBlocker, taskGraphFromEvents, verificationResultFromToolEvent } from "./task-graph.js";
-import { currentTurnForbidsToolUse, explicitlyAvoidsToolUse, isTrivialUserMessage, latestUserText } from "./task-intent.js";
+import { completionBlocker, verificationResultFromToolEvent } from "./task-graph.js";
+import { hasUserTurn, latestUserText } from "./task-events.js";
 import { ShellToolExecutor, type ToolExecutor } from "./tools.js";
 import { createWebSearchApiKeyRef } from "./web-search.js";
 import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
@@ -192,7 +192,6 @@ export class AgentWorkbench {
       initialTitle: titleResolution.title
     });
     await this.beginTaskTurn(task, goal, "user_message");
-    this.ensureTaskGraph(task);
     await this.attachUploadedFiles(task, attachmentIds);
     this.setStatus(task, "running");
     await this.store.saveTask(task);
@@ -609,7 +608,6 @@ export class AgentWorkbench {
         return task;
       }
       await this.beginTaskTurn(task, content, "user_message");
-      this.ensureTaskGraph(task);
       this.setStatus(task, "running");
       await this.store.saveTask(task);
       return this.step(task.id);
@@ -626,7 +624,6 @@ export class AgentWorkbench {
       const task = await this.requiredTask(taskId);
       await this.attachUploadedFiles(task, input.attachmentIds ?? []);
       await this.beginTaskTurn(task, input.content, "user_message");
-      this.ensureTaskGraph(task);
       this.addEvent(task, "turn_edit_submitted", "Edited user turn submitted", { previousTurnId: turnId });
       this.setStatus(task, "running");
       await this.store.saveTask(task);
@@ -656,26 +653,6 @@ export class AgentWorkbench {
     };
     await this.store.saveTaskTurn(turn);
     return turn;
-  }
-
-  private ensureTaskGraph(task: TaskDetail): void {
-    if (taskGraphFromEvents(task)) return;
-    const graph = compileTaskGraph(task);
-    if (!graph) return;
-    const activeNode = graph.nodes.find((node) => node.id === graph.activeNodeId);
-    this.addEvent(task, "task_graph_created", "Task graph created", {
-      graph
-    });
-    if (activeNode) {
-      this.addEvent(task, "task_graph_node_started", `${activeNode.role}: ${activeNode.objective}`, {
-        nodeId: activeNode.id,
-        role: activeNode.role,
-        objective: activeNode.objective,
-        allowedToolClasses: activeNode.allowedToolClasses,
-        acceptanceCriteria: activeNode.acceptanceCriteria,
-        verification: activeNode.verification
-      });
-    }
   }
 
   private async revertTaskTurnUnlocked(taskId: string, turnId: string): Promise<TaskTurnRevertResult> {
@@ -1785,14 +1762,6 @@ export class AgentWorkbench {
         return task;
       }
 
-      if (currentTurnForbidsToolUse(task)) {
-        for (const call of turn.calls) {
-          await this.addToolResultEvent(task, call, failedToolResult(call, "Tool not executed: the latest user request forbids new tool calls."));
-        }
-        await this.store.saveTask(task);
-        continue;
-      }
-
       const { executable, skipped } = limitToolCallsPerTurn(turn.calls);
       for (const skippedCall of skipped) {
         await this.addToolResultEvent(task, skippedCall, failedToolResult(skippedCall, `Tool not executed: exceeded the per-turn limit of ${MAX_TOOL_CALLS_PER_TURN} tool calls.`));
@@ -2002,8 +1971,7 @@ export class AgentWorkbench {
   }
 
   private shouldRecordExperience(task: TaskDetail): boolean {
-    const latestUser = latestUserText(task);
-    if (isTrivialUserMessage(latestUser)) return false;
+    if (!hasUserTurn(task)) return false;
     const events = task.events.filter((event) => !event.reverted);
     const lastMemoryIndex = findLastEventIndexByType(events, "task_memory_created");
     const afterLastMemory = lastMemoryIndex >= 0 ? events.slice(lastMemoryIndex + 1) : events;
@@ -2012,9 +1980,10 @@ export class AgentWorkbench {
       event.type === "verification_result_recorded" ||
       event.type === "task_checkpoint_created"
     );
-    if (lastMemoryIndex >= 0 && !hasNewEvidence) return false;
-    if (explicitlyAvoidsToolUse(latestUser) && !hasNewEvidence) return false;
-    return true;
+    const hasSubstantiveAssistantOutput = afterLastMemory.some((event) =>
+      event.type === "assistant_message" && event.summary.trim().length >= 40
+    );
+    return hasNewEvidence || hasSubstantiveAssistantOutput;
   }
 
   private async recordPromptCacheStats(task: TaskDetail, usage?: ModelUsage): Promise<void> {
@@ -3082,24 +3051,12 @@ function shouldAutoRenameTask(
   goal: string,
   trigger: { reason: "assistant_output"; text: string } | { reason: "tool_result"; toolName: string }
 ): boolean {
-  if (!goal.trim() || isTrivialUserMessage(goal)) return false;
+  if (!goal.trim()) return false;
   if (task.events.some((event) => event.type === "task_title_updated" && !event.reverted)) return false;
   const created = task.events.find((event) => event.type === "task_created" && !event.reverted);
   if (created?.payload["titleSource"] === "explicit") return false;
   if (trigger.reason === "assistant_output" && trigger.text.trim().length < AUTO_RENAME_ASSISTANT_CHARS) return false;
-  if (created?.payload["titleSource"] === "local_fallback") return true;
-  return isWeakTaskTitle(task.title, task);
-}
-
-function isWeakTaskTitle(title: string, task: TaskDetail): boolean {
-  const normalized = normalizeTitleKey(title);
-  if (!normalized || ["新任务", "newtask", "새작업"].includes(normalized)) return true;
-  if (isTrivialUserMessage(title)) return true;
-  const firstUser = task.events.find((event) => event.type === "user_message" && !event.reverted);
-  if (!firstUser || !isTrivialUserMessage(firstUser.summary)) return false;
-  const firstTitle = normalizeTitleKey(firstUser.summary);
-  const firstLocalTitle = normalizeTitleKey(createLocalTaskTitle(firstUser.summary));
-  return normalized === firstTitle || normalized === firstLocalTitle;
+  return created?.payload["titleSource"] === "local_fallback";
 }
 
 function normalizeTitleKey(value: string): string {

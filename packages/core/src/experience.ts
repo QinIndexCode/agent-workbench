@@ -1,6 +1,5 @@
 import { SkillRecordSchema, type ExperienceRecord, type PatternRecord, type ReflectionSession, type SkillConflict, type SkillDuplicateGroup, type SkillRecord, type TaskDetail, type TaskMemory } from "@scc/shared";
 import { createId, nowIso } from "./ids.js";
-import { isTrivialUserMessage } from "./task-intent.js";
 
 export function createTaskMemory(task: TaskDetail): TaskMemory {
   const userGoal = latestMeaningfulUserGoal(task) ?? "Untitled task";
@@ -52,9 +51,9 @@ export function createTaskMemory(task: TaskDetail): TaskMemory {
 function latestMeaningfulUserGoal(task: TaskDetail): string | undefined {
   return [...task.events]
     .reverse()
-    .filter((event) => event.type === "user_message" && !event.reverted)
+    .filter((event) => (event.type === "user_message" || event.type === "guidance_consumed" || event.type === "guidance_pending") && !event.reverted)
     .map((event) => event.summary.trim())
-    .find((summary) => summary && !isTrivialUserMessage(summary));
+    .find(Boolean);
 }
 
 function taskMemoryTitle(goal: string): string {
