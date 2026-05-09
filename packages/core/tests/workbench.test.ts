@@ -1347,6 +1347,108 @@ describe("AgentWorkbench", () => {
     rmSync(workRoot, { recursive: true, force: true });
   });
 
+  it("persists an attention trace fixture for manual audit", async () => {
+    const outDir = resolve("data", "test-reports", "attention-first-trace");
+    const workRoot = join(outDir, "workroot");
+    rmSync(outDir, { recursive: true, force: true });
+    mkdirSync(workRoot, { recursive: true });
+    writeFileSync(join(workRoot, "README.md"), "# Trace Fixture\n", "utf8");
+    const capturedRequests: Array<Record<string, unknown>> = [];
+    let requestCount = 0;
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        requestCount += 1;
+        capturedRequests.push(JSON.parse(body) as Record<string, unknown>);
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        if (requestCount === 1) {
+          response.write(`data: ${JSON.stringify({
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: "call_trace_list",
+                  function: { name: "list_files", arguments: "{\"path\":\".\"}" }
+                }]
+              }
+            }]
+          })}\n\n`);
+          response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 120, completion_tokens: 8 } })}\n\n`);
+        } else {
+          response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "Trace audit completed from tool evidence." } }] })}\n\n`);
+          response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 160, completion_tokens: 9 } })}\n\n`);
+        }
+        response.write("data: [DONE]\n\n");
+        response.end();
+      });
+    });
+    await new Promise<void>((resolveServer) => server.listen(0, "127.0.0.1", resolveServer));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      const assembler = new ContextAssembler(store);
+      const model = new OpenAIModelClient({
+        apiKey: "test-key",
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        model: "attention-trace-fixture",
+        contextAssembler: assembler
+      });
+      const workbench = new AgentWorkbench({
+        store,
+        contextAssembler: assembler,
+        model,
+        tools: new ShellToolExecutor()
+      });
+      const folder = await workbench.createTaskFolder({ name: "attention-trace", rootPath: workRoot });
+      await workbench.grantGlobalPermission("workspace_read", "manual trace fixture");
+
+      const completed = await workbench.createTask("Trace the full request-response loop by listing files.", undefined, folder.id);
+      const tracePath = join(workRoot, "data", "logs", "model-traces", `${completed.id}.jsonl`);
+      const traceEntries = readFileSync(tracePath, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const requestMessages = capturedRequests.map((item) => item["messages"] as Array<Record<string, unknown>>);
+
+      expect(completed.status).toBe("completed");
+      expect(capturedRequests).toHaveLength(2);
+      expect(existsSync(tracePath)).toBe(true);
+      expect(traceEntries.some((entry) => entry["kind"] === "model_request")).toBe(true);
+      expect(requestMessages[0]?.at(-1)?.["role"]).toBe("user");
+      expect(String(requestMessages[0]?.at(-1)?.["content"] ?? "")).toContain("Active Node");
+      expect(requestMessages[1]?.some((message) => message["role"] === "tool")).toBe(true);
+      expect(String(requestMessages[1]?.find((message) => message["role"] === "tool")?.["content"] ?? "")).toContain("README.md");
+      expect(requestMessages[1]?.at(-1)?.["role"]).toBe("user");
+      expect(String(requestMessages[1]?.at(-1)?.["content"] ?? "")).toContain("list_files:ok");
+
+      writeFileSync(join(outDir, "captured-requests.json"), JSON.stringify(capturedRequests, null, 2), "utf8");
+      writeFileSync(join(outDir, "task-events.json"), JSON.stringify(completed.events, null, 2), "utf8");
+      writeFileSync(
+        join(outDir, "audit-summary.md"),
+        [
+          "# Attention Trace Fixture",
+          "",
+          `Task: ${completed.id}`,
+          `Status: ${completed.status}`,
+          `Trace: ${tracePath}`,
+          "",
+          "- Request 1 ends with the active task node user message.",
+          "- Request 2 includes the tool role result before the active task node.",
+          "- Task events include task graph, tool request, tool result, and assistant final message."
+        ].join("\n"),
+        "utf8"
+      );
+    } finally {
+      await new Promise<void>((resolveServer) => server.close(() => resolveServer()));
+    }
+  });
+
   it("auto-approves non-MCP tools according to autoApprove without bypassing destructive tools", async () => {
     const store = new InMemoryWorkbenchStore();
     const preferences = await store.getPreferences();
