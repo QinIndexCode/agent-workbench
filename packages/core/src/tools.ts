@@ -220,7 +220,7 @@ export class ShellToolExecutor implements ToolExecutor {
   private async validateAndPrepareFileWrite(
     call: ToolCall,
     options: ToolExecutionOptions
-  ): Promise<{ path: string; current: string } | ToolResult> {
+  ): Promise<{ path: string; current: string; currentHash: string; existed: boolean } | ToolResult> {
     const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
     const expectedHash = String(call.args["expectedHash"] ?? "");
     if (!expectedHash) {
@@ -229,13 +229,14 @@ export class ShellToolExecutor implements ToolExecutor {
 
     const fileExists = existsSync(path);
     const current = fileExists ? await readFile(path, "utf8") : "";
+    const currentHash = hash(current);
     const isNewFileIntent = !fileExists && expectedHash === "__new__";
 
-    if (!isNewFileIntent && expectedHash !== hash(current)) {
-      return this.result(call, false, `File changed before write. Expected ${expectedHash}, actual ${hash(current)}.`);
+    if (!isNewFileIntent && expectedHash !== currentHash) {
+      return this.conflictResult(call, path, expectedHash, currentHash, "File changed before write. The file may have been modified by another user or agent; read it again before editing.");
     }
 
-    return { path, current };
+    return { path, current, currentHash, existed: fileExists };
   }
 
   private async editFile(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
@@ -245,7 +246,7 @@ export class ShellToolExecutor implements ToolExecutor {
 
       const validation = await this.validateAndPrepareFileWrite(call, options);
       if (!("path" in validation)) return validation;
-      const { path, current } = validation;
+      const { path, current, existed } = validation;
 
       const lines = current.split(/\r?\n/);
       const normalized = edits
@@ -254,7 +255,8 @@ export class ShellToolExecutor implements ToolExecutor {
           return {
             startLine: Number(edit["startLine"]),
             endLine: Number(edit["endLine"]),
-            newText: String(edit["newText"] ?? "")
+            newText: String(edit["newText"] ?? ""),
+            expectedText: typeof edit["expectedText"] === "string" ? String(edit["expectedText"]) : undefined
           };
         })
         .sort((a, b) => b.startLine - a.startLine);
@@ -264,13 +266,32 @@ export class ShellToolExecutor implements ToolExecutor {
           throw new Error("Edit line ranges must be positive integers.");
         }
         if (edit.endLine < edit.startLine - 1) throw new Error("Invalid edit range.");
+        if (edit.startLine > lines.length + 1 || edit.endLine > lines.length) {
+          return this.conflictResult(call, path, String(call.args["expectedHash"] ?? ""), hash(current), `Edit range ${edit.startLine}-${edit.endLine} no longer matches the file. The file may have been modified by another user or agent; read it again before editing.`);
+        }
+        if (edit.expectedText !== undefined) {
+          const existingText = lines.slice(edit.startLine - 1, edit.endLine).join("\n");
+          if (normalizeNewlines(existingText) !== normalizeNewlines(edit.expectedText)) {
+            return this.conflictResult(call, path, String(call.args["expectedHash"] ?? ""), hash(current), `Expected text for lines ${edit.startLine}-${edit.endLine} did not match current file content. The file may have been modified by another user or agent; read it again before editing.`);
+          }
+        }
         const replacement = edit.newText.length > 0 ? edit.newText.split(/\r?\n/) : [];
         lines.splice(edit.startLine - 1, edit.endLine - edit.startLine + 1, ...replacement);
       }
 
       const next = lines.join("\n");
       await writeTextFileInChunks(path, next);
-      return this.result(call, true, JSON.stringify({ path, hash: hash(next), changed: current !== next }, null, 2));
+      return this.result(
+        call,
+        true,
+        JSON.stringify({
+          status: "success",
+          path,
+          hash: hash(next),
+          changed: current !== next,
+          changes: lineChangeSummary(path, current, next, existed ? "edit" : "create", existed)
+        }, null, 2)
+      );
     } catch (error) {
       return this.result(call, false, error instanceof Error ? error.message : String(error));
     }
@@ -281,7 +302,7 @@ export class ShellToolExecutor implements ToolExecutor {
       const content = String(call.args["content"] ?? "");
       const validation = await this.validateAndPrepareFileWrite(call, options);
       if (!("path" in validation)) return validation;
-      const { path, current } = validation;
+      const { path, current, existed } = validation;
 
       await writeTextFileInChunks(path, content);
       return this.result(
@@ -289,9 +310,11 @@ export class ShellToolExecutor implements ToolExecutor {
         true,
         JSON.stringify(
           {
+            status: "success",
             path,
             hash: hash(content),
             changed: current !== content,
+            changes: lineChangeSummary(path, current, content, existed ? "write" : "create", existed),
             sizeBytes: Buffer.byteLength(content, "utf8"),
             totalLines: content.split(/\r?\n/).length
           },
@@ -361,6 +384,24 @@ export class ShellToolExecutor implements ToolExecutor {
   private resolveWorkspacePath(input: string, root: string): string {
     return resolveWorkspacePath(root, input);
   }
+
+  private async conflictResult(call: ToolCall, path: string, expectedHash: string, actualHash: string, reason: string): Promise<ToolResult> {
+    return this.result(
+      call,
+      false,
+      JSON.stringify(
+        {
+          status: "conflict",
+          path,
+          expectedHash,
+          actualHash,
+          output: reason
+        },
+        null,
+        2
+      )
+    );
+  }
 }
 
 function resolveWorkspacePath(root: string, input: string): string {
@@ -377,6 +418,49 @@ function resolveWorkspacePath(root: string, input: string): string {
 
 function hash(content: string): string {
   return createHash("sha256").update(content).digest("hex").slice(0, 16);
+}
+
+function normalizeNewlines(value: string): string {
+  return value.replace(/\r\n/g, "\n");
+}
+
+function lineChangeSummary(
+  path: string,
+  before: string,
+  after: string,
+  operation: "create" | "edit" | "write",
+  existed: boolean
+): { path: string; addedLines: number; removedLines: number; operation: "create" | "edit" | "write" } {
+  if (!existed) {
+    return { path, addedLines: countContentLines(after), removedLines: 0, operation: "create" };
+  }
+  const beforeLines = splitComparableLines(before);
+  const afterLines = splitComparableLines(after);
+  let prefix = 0;
+  while (prefix < beforeLines.length && prefix < afterLines.length && beforeLines[prefix] === afterLines[prefix]) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < beforeLines.length - prefix &&
+    suffix < afterLines.length - prefix &&
+    beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  return {
+    path,
+    addedLines: Math.max(0, afterLines.length - prefix - suffix),
+    removedLines: Math.max(0, beforeLines.length - prefix - suffix),
+    operation
+  };
+}
+
+function splitComparableLines(value: string): string[] {
+  if (!value) return [];
+  return normalizeNewlines(value).split("\n");
+}
+
+function countContentLines(value: string): number {
+  return value.length === 0 ? 0 : splitComparableLines(value).length;
 }
 
 async function list(root: string): Promise<string[]> {

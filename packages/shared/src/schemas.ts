@@ -3,6 +3,7 @@ import { z } from "zod";
 export const TaskStatusSchema = z.enum([
   "idle",
   "running",
+  "waiting_for_user",
   "waiting_approval",
   "paused",
   "completed",
@@ -111,6 +112,8 @@ export const TaskEventSchema = z.object({
     "approval_auto_granted",
     "tool_result",
     "status_changed",
+    "user_input_requested",
+    "user_input_answered",
     "task_memory_created",
     "task_title_updated",
     "conversation_summary_created",
@@ -127,6 +130,9 @@ export const TaskEventSchema = z.object({
     "task_graph_created",
     "task_graph_node_started",
     "verification_result_recorded",
+    "token_usage_recorded",
+    "project_memory_version_created",
+    "project_memory_rollback_completed",
     "prompt_cache_stats",
     "plan_created",
     "plan_step_started",
@@ -177,6 +183,8 @@ export const TaskTurnRevertResultSchema = z.object({
 export const TaskTurnEditRequestSchema = z
   .object({
     content: z.string().min(1),
+    rollbackFiles: z.boolean().default(true),
+    rollbackProjectMemory: z.boolean().default(true),
     attachmentIds: z.array(z.string().min(1)).default([])
   })
   .strict();
@@ -324,6 +332,14 @@ export const TaskDetailSchema = z.object({
   folderId: z.string().default("default"),
   workRoot: z.string().default(""),
   status: TaskStatusSchema,
+  runMode: z.enum(["normal", "target"]).optional(),
+  targetLimits: z
+    .object({
+      maxModelTurns: z.number().int().positive().default(80),
+      maxToolCalls: z.number().int().positive().default(240),
+      maxWallTimeMs: z.number().int().positive().default(7_200_000)
+    })
+    .optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   events: z.array(TaskEventSchema),
@@ -336,6 +352,14 @@ export const CreateTaskRequestSchema = z
     goal: z.string().min(1),
     title: z.string().min(1).optional(),
     folderId: z.string().min(1).optional(),
+    runMode: z.enum(["normal", "target"]).default("normal"),
+    targetLimits: z
+      .object({
+        maxModelTurns: z.number().int().positive().optional(),
+        maxToolCalls: z.number().int().positive().optional(),
+        maxWallTimeMs: z.number().int().positive().optional()
+      })
+      .optional(),
     attachmentIds: z.array(z.string().min(1)).default([])
   })
   .strict();
@@ -494,6 +518,7 @@ export const UserPreferencesSchema = z.object({
   agentTone: z.enum(["concise", "balanced", "warm", "formal"]).default("balanced"),
   agentRole: z.string().default("Pragmatic engineering assistant"),
   responseDetail: z.enum(["brief", "normal", "detailed"]).default("normal"),
+  startupView: z.enum(["last_task", "last_folder", "new_task"]).optional(),
   skillAutoInject: z.boolean().default(true),
   maxInjectedSkills: z.number().int().positive().default(3),
   mcpApprovalMode: z.enum(["confirm_each", "confirm_dangerous", "auto"]).default("confirm_dangerous"),
@@ -523,6 +548,8 @@ export const PromptCacheStatsSchema = z.object({
   policy: PromptCachePolicySchema.default("auto_savings"),
   source: z.enum(["provider", "estimated"]).default("estimated"),
   inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative().optional(),
+  totalTokens: z.number().int().nonnegative().optional(),
   cachedTokens: z.number().int().nonnegative(),
   cacheHitRatio: z.number().min(0).max(1),
   estimatedSavings: z.number().nonnegative(),

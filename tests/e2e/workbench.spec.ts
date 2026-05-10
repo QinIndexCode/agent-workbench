@@ -54,6 +54,7 @@ test("creates a host observation task and shows approval", async ({ page, reques
 
   await page.locator(".toolResultSummary").first().click();
   await expect(page.locator(".toolResultDetails.open").first()).toBeVisible();
+  await expect.poll(async () => (await timelineMetrics(page)).toolDetailsHeight).toBeGreaterThan(collapsedMetrics.toolDetailsHeight);
   const expandedMetrics = await timelineMetrics(page);
   expect(expandedMetrics.toolDetailsHeight).toBeGreaterThan(collapsedMetrics.toolDetailsHeight);
   await testInfo.attach("timeline-tool-expanded", {

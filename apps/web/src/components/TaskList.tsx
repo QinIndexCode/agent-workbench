@@ -520,7 +520,7 @@ export function TaskList({
         }}
       >
         <div className="deleteOptions">
-          <p>{confirmingTask?.status === "running" || confirmingTask?.status === "waiting_approval" ? text.deleteRunning : text.deleteThread}</p>
+          <p>{confirmingTask?.status === "running" || confirmingTask?.status === "waiting_approval" || confirmingTask?.status === "waiting_for_user" ? text.deleteRunning : text.deleteThread}</p>
           <label>
             <input
               checked={deleteLearningData}

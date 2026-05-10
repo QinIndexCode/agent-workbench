@@ -150,6 +150,8 @@ function isTranscriptVisibleEvent(event: TaskEvent): boolean {
     event.type === "assistant_message" ||
     event.type === "thinking_delta" ||
     event.type === "guidance_pending" ||
+    event.type === "user_input_requested" ||
+    event.type === "user_input_answered" ||
     event.type === "approval_pending" ||
     event.type === "tool_result" ||
     event.type === "task_checkpoint_created" ||
@@ -289,7 +291,10 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   app.post("/api/tasks", async (request, reply) => {
     const input = CreateTaskRequestSchema.parse(request.body);
     try {
-      const task = await workbench.startTask(input.goal, input.title, input.folderId, input.attachmentIds);
+      const task = await workbench.startTask(input.goal, input.title, input.folderId, input.attachmentIds, {
+        runMode: input.runMode,
+        ...(input.targetLimits ? { targetLimits: input.targetLimits } : {})
+      });
       return reply.code(201).send(task);
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });

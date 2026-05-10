@@ -603,7 +603,8 @@ export function normalizeTaskDetail(task: TaskDetail): TaskDetail {
   return {
     ...task,
     folderId: task.folderId || "default",
-    workRoot: task.workRoot || defaultTaskWorkRoot()
+    workRoot: task.workRoot || defaultTaskWorkRoot(),
+    runMode: task.runMode ?? "normal"
   };
 }
 
@@ -637,6 +638,7 @@ export function defaultPreferences(): UserPreferences {
     agentTone: "balanced",
     agentRole: "Pragmatic engineering assistant",
     responseDetail: "normal",
+    startupView: "last_task",
     skillAutoInject: true,
     maxInjectedSkills: 3,
     mcpApprovalMode: "confirm_dangerous",

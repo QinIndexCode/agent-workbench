@@ -74,6 +74,7 @@ export interface WorkbenchData {
   previewRollbackTask: (taskId: string, input?: TaskRollbackRequest) => Promise<TaskRollbackPreview>;
   rollbackTask: (taskId: string, input?: TaskRollbackRequest) => Promise<TaskRollbackResult>;
   revertLatestTurn: (taskId: string) => Promise<string>;
+  revertTaskTurn: (taskId: string, turnId: string) => Promise<string>;
   deleteTask: (taskId: string, options: TaskDeleteRequest) => Promise<void>;
   deleteTaskFolder: (folderId: string, options: TaskFolderDeleteRequest) => Promise<void>;
   runTaskAction: (action: () => Promise<TaskDetail>) => Promise<void>;
@@ -494,6 +495,18 @@ export function useWorkbenchData(): WorkbenchData {
     return draft;
   }
 
+  async function revertTaskTurn(taskId: string, turnId: string): Promise<string> {
+    let draft = "";
+    await run(async () => {
+      const result = await api.revertTaskTurn(taskId, turnId);
+      draft = result.draft;
+      setSelected(result.task);
+      setSelectedTranscript(await api.listTaskTranscript(taskId));
+      await refresh(taskId);
+    });
+    return draft;
+  }
+
   async function deleteTaskFolder(folderId: string, options: TaskFolderDeleteRequest) {
     await run(async () => {
       const affectsSelected = Boolean(selected && (selected.folderId || "default") === folderId);
@@ -638,6 +651,7 @@ export function useWorkbenchData(): WorkbenchData {
     previewRollbackTask,
     rollbackTask,
     revertLatestTurn,
+    revertTaskTurn,
     deleteTask,
     deleteTaskFolder,
     runTaskAction,

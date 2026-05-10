@@ -46,6 +46,7 @@ export function App() {
   const [optimisticPermissionPreset, setOptimisticPermissionPreset] = useState<ComposerPermissionMode | null>(null);
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [permissionError, setPermissionError] = useState<string | null>(null);
+  const [targetConfirmation, setTargetConfirmation] = useState<{ goal: string; attachmentIds: string[] } | null>(null);
   const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">("dark");
   const permissionMutationRef = useRef<Promise<void> | null>(null);
   const language = data.preferences?.language ?? "zh-CN";
@@ -114,6 +115,34 @@ export function App() {
     }
   }, [data.permissions, optimisticPermissionPreset, permissionBusy]);
 
+  useEffect(() => {
+    if (activeTask?.folderId && activeTask.folderId !== activeTaskFolderId) {
+      setActiveTaskFolderId(activeTask.folderId);
+      safeLocalStorageSet("scc.lastTaskFolderId", activeTask.folderId);
+    }
+  }, [activeTask?.id, activeTask?.folderId]);
+
+  useEffect(() => {
+    if (activeTaskFolderId) safeLocalStorageSet("scc.lastTaskFolderId", activeTaskFolderId);
+  }, [activeTaskFolderId]);
+
+  useEffect(() => {
+    if (route.view !== "tasks" || route.taskId || route.newTask || data.tasks.length === 0) return;
+    const startupView = data.preferences?.startupView ?? "last_task";
+    if (startupView === "new_task") {
+      navigateRoute({ view: "tasks", newTask: true }, { replace: true });
+      return;
+    }
+    if (startupView === "last_folder") {
+      const folderId = safeLocalStorageGet("scc.lastTaskFolderId");
+      if (folderId && data.taskFolders.some((folder) => folder.id === folderId)) setActiveTaskFolderId(folderId);
+      return;
+    }
+    const lastTaskId = safeLocalStorageGet("scc.lastTaskId");
+    const task = data.tasks.find((item) => item.id === lastTaskId) ?? data.tasks[0];
+    if (task) navigateRoute({ view: "tasks", taskId: task.id }, { replace: true });
+  }, [route, data.tasks, data.taskFolders, data.preferences?.startupView]);
+
   return (
     <main className={activeView === "docs" ? "shell docsShell" : "shell"}>
       {activeView !== "docs" ? (
@@ -160,6 +189,7 @@ export function App() {
           onUpdateTask={(taskId, input) => data.patchTask(taskId, input)}
           onUpdateFolder={(folderId, name, rootPath) => data.runSideAction(() => api.patchTaskFolder(folderId, { name, rootPath }))}
           onSelect={(taskId) => {
+            safeLocalStorageSet("scc.lastTaskId", taskId);
             navigateRoute({ view: "tasks", taskId });
             setTaskDrawerOpen(false);
             void data.selectTask(taskId);
@@ -212,7 +242,7 @@ export function App() {
           onCancelBusy={() => data.cancelBusy()}
           onPreviewRollback={(input) => data.selected ? data.previewRollbackTask(data.selected.id, input) : Promise.reject(new Error("No task selected"))}
           onRollback={(input) => data.selected ? data.rollbackTask(data.selected.id, input) : Promise.reject(new Error("No task selected"))}
-          onRevertLatestTurn={() => data.selected ? data.revertLatestTurn(data.selected.id) : Promise.reject(new Error("No task selected"))}
+          onRevertTurn={(turnId) => data.selected ? data.revertTaskTurn(data.selected.id, turnId) : Promise.reject(new Error("No task selected"))}
           onLoadContextSummaries={() => data.selected ? api.listConversationSummaries(data.selected.id) : Promise.resolve([])}
           onLoadPromptCacheStats={() => data.selected ? api.listPromptCacheStats(data.selected.id) : Promise.resolve([])}
           titleIssue={titleIssue}
@@ -227,6 +257,7 @@ export function App() {
           onOpenTasks={() => setTaskDrawerOpen(true)}
           onDelete={(taskId, options) => data.deleteTask(taskId, options)}
           onOpenTask={(taskId) => {
+            safeLocalStorageSet("scc.lastTaskId", taskId);
             navigateRoute({ view: "tasks", taskId });
             void data.selectTask(taskId);
           }}
@@ -403,6 +434,13 @@ export function App() {
         </SettingsView>
       )}
       </Suspense>
+      <TargetModeDialog
+        busy={permissionBusy || data.busy}
+        language={language}
+        open={Boolean(targetConfirmation)}
+        onCancel={() => setTargetConfirmation(null)}
+        onConfirm={(preset) => confirmTargetMode(preset)}
+      />
       <SupportDialog language={language} open={supportOpen} onClose={() => setSupportOpen(false)} onOpenDocs={() => openDocs()} />
     </main>
   );
@@ -420,10 +458,15 @@ export function App() {
   async function submitComposerAfterPermissionSync(mode: ComposerMode, text: string) {
     if (!(await waitForPermissionMutation())) return;
     const attachmentIds = pendingAttachments.map((attachment) => attachment.id);
+    const target = parseTargetCommand(text);
+    if (target.runMode === "target") {
+      setTargetConfirmation({ goal: target.goal, attachmentIds });
+      return;
+    }
     if (mode === "guidance" || mode === "continue") {
       setTitleIssue(null);
       void data.runTaskAction(async () => {
-        const task = activeTask ? await api.sendMessage(activeTask.id, text, attachmentIds) : await submitNewTaskAction(text, false, attachmentIds);
+        const task = activeTask ? await api.sendMessage(activeTask.id, text, attachmentIds) : await submitNewTaskAction(target.goal, false, attachmentIds, target.runMode);
         setPendingAttachments([]);
         return task;
       });
@@ -431,7 +474,19 @@ export function App() {
     }
     setTitleIssue(null);
     void data.runTaskAction(async () => {
-      const task = await submitNewTaskAction(text, false, attachmentIds);
+      const task = await submitNewTaskAction(target.goal, false, attachmentIds, target.runMode);
+      setPendingAttachments([]);
+      return task;
+    });
+  }
+
+  async function confirmTargetMode(preset: PermissionPreset) {
+    const confirmation = targetConfirmation;
+    if (!confirmation) return;
+    if (!(await runPermissionPresetMutation(preset))) return;
+    setTargetConfirmation(null);
+    await data.runTaskAction(async () => {
+      const task = await submitNewTaskAction(confirmation.goal, false, confirmation.attachmentIds, "target");
       setPendingAttachments([]);
       return task;
     });
@@ -448,7 +503,7 @@ export function App() {
     })();
   }
 
-  async function submitNewTaskAction(goal: string, useLocalFallback: boolean, attachmentIds = pendingAttachments.map((attachment) => attachment.id)) {
+  async function submitNewTaskAction(goal: string, useLocalFallback: boolean, attachmentIds = pendingAttachments.map((attachment) => attachment.id), runMode: "normal" | "target" = "normal") {
     let title: string | undefined;
     if (useLocalFallback) {
       try {
@@ -459,7 +514,8 @@ export function App() {
       }
     }
     setTitleIssue(null);
-    const task = await api.createTask(goal, title, activeTaskFolderId, attachmentIds);
+    const task = await api.createTask(goal, title, activeTaskFolderId, attachmentIds, runMode === "target" ? { runMode: "target" } : {});
+    safeLocalStorageSet("scc.lastTaskId", task.id);
     navigateRoute({ view: "tasks", taskId: task.id });
     return task;
   }
@@ -488,13 +544,18 @@ export function App() {
   }
 
   function applyPermissionPreset(preset: PermissionPreset) {
+    void runPermissionPresetMutation(preset);
+  }
+
+  async function runPermissionPresetMutation(preset: PermissionPreset): Promise<boolean> {
     setOptimisticPermissionPreset(preset);
     setPermissionError(null);
     setPermissionBusy(true);
+    const previousPreset = permissionPreset;
     const mutation = (async () => {
       const granted = new Set(data.permissions.map((permission) => permission.riskCategory));
 
-      if (permissionPreset === "custom") {
+      if (previousPreset === "custom") {
         const snapshot = allRiskCategories.filter((risk) => granted.has(risk));
         await api.updatePreferences({ customPermissionSnapshot: snapshot });
       }
@@ -513,17 +574,19 @@ export function App() {
       await data.refresh(data.selectedId);
     })();
     permissionMutationRef.current = mutation;
-    void mutation
-      .catch((error) => {
-        setPermissionError(error instanceof Error ? error.message : String(error));
-        setOptimisticPermissionPreset(null);
-      })
-      .finally(() => {
-        if (permissionMutationRef.current === mutation) {
-          permissionMutationRef.current = null;
-          setPermissionBusy(false);
-        }
-      });
+    try {
+      await mutation;
+      return true;
+    } catch (error) {
+      setPermissionError(error instanceof Error ? error.message : String(error));
+      setOptimisticPermissionPreset(null);
+      return false;
+    } finally {
+      if (permissionMutationRef.current === mutation) {
+        permissionMutationRef.current = null;
+        setPermissionBusy(false);
+      }
+    }
   }
 
   function restoreCustomPermissions() {
@@ -626,8 +689,106 @@ export function App() {
   }
 }
 
+function TargetModeDialog({
+  busy,
+  language,
+  open,
+  onCancel,
+  onConfirm
+}: {
+  busy: boolean;
+  language: string;
+  open: boolean;
+  onCancel: () => void;
+  onConfirm: (preset: PermissionPreset) => Promise<void> | void;
+}) {
+  const [selected, setSelected] = useState<PermissionPreset | null>(null);
+  const zh = language === "zh-CN";
+  useEffect(() => {
+    if (open) setSelected(null);
+  }, [open]);
+  if (!open) return null;
+  const options: Array<{ value: PermissionPreset; label: string; detail: string }> = zh
+    ? [
+        { value: "ask", label: "Ask", detail: "每次高风险工具调用前询问。" },
+        { value: "read_only", label: "Read only", detail: "允许只读观察与工作区读取，写入仍需审批。" },
+        { value: "all", label: "All", detail: "允许完整权限预设；破坏性操作仍需权限系统约束。" }
+      ]
+    : [
+        { value: "ask", label: "Ask", detail: "Ask before each higher-risk tool call." },
+        { value: "read_only", label: "Read only", detail: "Allow observation and workspace reads; writes still require approval." },
+        { value: "all", label: "All", detail: "Use the full preset; destructive actions remain governed by permissions." }
+      ];
+  return (
+    <div className="modalBackdrop stdBackdrop" role="presentation" onClick={(event) => { if (event.currentTarget === event.target && !busy) onCancel(); }}>
+      <section aria-modal="true" aria-labelledby="target-mode-title" className="stdModal stdModalNarrow targetModeDialog" role="dialog">
+        <div className="stdHeader">
+          <h3 id="target-mode-title">{zh ? "启动 /target" : "Start /target"}</h3>
+          <button aria-label={zh ? "取消" : "Cancel"} className="stdClose" disabled={busy} type="button" onClick={onCancel}>×</button>
+        </div>
+        <div className="stdBody">
+          <p className="stdDialogHelp">
+            {zh
+              ? "/target 是实验功能，会消耗更多 token、运行更久，且可能不可控。启动前必须显式选择权限范围，可随时暂停或取消。"
+              : "/target is experimental. It may use more tokens, run longer, and be less predictable. Choose a permission preset before starting; you can pause or cancel anytime."}
+          </p>
+          <div className="targetPermissionGrid" role="radiogroup" aria-label={zh ? "选择权限范围" : "Choose permission preset"}>
+            {options.map((option) => (
+              <button
+                aria-checked={selected === option.value}
+                className={selected === option.value ? "targetPermissionOption selected" : "targetPermissionOption"}
+                disabled={busy}
+                key={option.value}
+                role="radio"
+                type="button"
+                onClick={() => setSelected(option.value)}
+              >
+                <strong>{option.label}</strong>
+                <span>{option.detail}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="stdFooter">
+          <button className="stdCancelBtn" disabled={busy} type="button" onClick={onCancel}>
+            {zh ? "取消" : "Cancel"}
+          </button>
+          <button className="primaryInlineButton" disabled={!selected || busy} type="button" onClick={() => selected && onConfirm(selected)}>
+            {busy ? (zh ? "正在启动..." : "Starting...") : (zh ? "启动目标模式" : "Start target mode")}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function getDefaultFolderLabel(language: string | null | undefined): string {
   return language === "zh-CN" ? "默认文件夹" : "Default";
+}
+
+function parseTargetCommand(text: string): { goal: string; runMode: "normal" | "target" } {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("/target")) return { goal: text, runMode: "normal" };
+  const boundary = trimmed.length === "/target".length || /\s/.test(trimmed.charAt("/target".length));
+  if (!boundary) return { goal: text, runMode: "normal" };
+  const goal = trimmed.slice("/target".length).trim();
+  return { goal: goal || trimmed, runMode: "target" };
+}
+
+function safeLocalStorageGet(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeLocalStorageSet(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage failures; current in-memory UI state remains authoritative.
+  }
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {

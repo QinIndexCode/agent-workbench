@@ -125,12 +125,26 @@ const MAX_TOOL_CALLS_PER_TURN = 8;
 const MAX_STATE_ONLY_TOOL_TURNS = 2;
 const MAX_PARALLEL_READ_ONLY_TOOLS = 4;
 const AUTO_RENAME_ASSISTANT_CHARS = 240;
+const DEFAULT_TARGET_LIMITS = {
+  maxModelTurns: 80,
+  maxToolCalls: 240,
+  maxWallTimeMs: 7_200_000
+};
 
 type TaskTitleSource = "explicit" | "model" | "local_fallback";
 
 interface TaskTitleResolution {
   title: string;
   source: TaskTitleSource;
+}
+
+interface TaskRunOptions {
+  runMode?: "normal" | "target";
+  targetLimits?: {
+    maxModelTurns?: number | undefined;
+    maxToolCalls?: number | undefined;
+    maxWallTimeMs?: number | undefined;
+  };
 }
 
 export class AgentWorkbench {
@@ -158,13 +172,13 @@ export class AgentWorkbench {
     this.onEvent = options.onEvent;
   }
 
-  async createTask(goal: string, title?: string, folderId = "default", attachmentIds: string[] = []): Promise<TaskDetail> {
-    const task = await this.initializeTask(goal, await this.resolveTaskTitle(goal, title), folderId, attachmentIds);
+  async createTask(goal: string, title?: string, folderId = "default", attachmentIds: string[] = [], options: TaskRunOptions = {}): Promise<TaskDetail> {
+    const task = await this.initializeTask(goal, await this.resolveTaskTitle(goal, title), folderId, attachmentIds, options);
     return this.runTaskExclusive(task.id, () => this.step(task.id));
   }
 
-  async startTask(goal: string, title?: string, folderId = "default", attachmentIds: string[] = []): Promise<TaskDetail> {
-    const task = await this.initializeTask(goal, this.resolveImmediateTaskTitle(goal, title), folderId, attachmentIds);
+  async startTask(goal: string, title?: string, folderId = "default", attachmentIds: string[] = [], options: TaskRunOptions = {}): Promise<TaskDetail> {
+    const task = await this.initializeTask(goal, this.resolveImmediateTaskTitle(goal, title), folderId, attachmentIds, options);
     void this.runTaskExclusive(task.id, () => this.step(task.id)).catch((error) => {
       this.safeBackgroundCatch(task.id, error);
     });
@@ -188,14 +202,20 @@ export class AgentWorkbench {
     }
   }
 
-  private async initializeTask(goal: string, titleResolution: TaskTitleResolution, folderId: string, attachmentIds: string[] = []): Promise<TaskDetail> {
+  private async initializeTask(goal: string, titleResolution: TaskTitleResolution, folderId: string, attachmentIds: string[] = [], options: TaskRunOptions = {}): Promise<TaskDetail> {
     const folder = await this.resolveTaskFolder(folderId);
     const task = this.emptyTask(titleResolution.title);
     task.folderId = folder.id;
     task.workRoot = folder.rootPath;
+    task.runMode = options.runMode === "target" ? "target" : "normal";
+    if (task.runMode === "target") {
+      task.targetLimits = normalizeTargetLimits(options.targetLimits);
+    }
     this.addEvent(task, "task_created", "Task created", {
       titleSource: titleResolution.source,
-      initialTitle: titleResolution.title
+      initialTitle: titleResolution.title,
+      runMode: task.runMode,
+      ...(task.targetLimits ? { targetLimits: task.targetLimits } : {})
     });
     await this.beginTaskTurn(task, goal, "user_message");
     await this.attachUploadedFiles(task, attachmentIds);
@@ -426,7 +446,7 @@ export class AgentWorkbench {
         deletedTaskMemories: 0,
         deletedSkills: 0,
         updatedSkills: 0,
-        cancelledRun: task.status === "running" || task.status === "waiting_approval"
+        cancelledRun: task.status === "running" || task.status === "waiting_approval" || task.status === "waiting_for_user"
       };
 
       if (options.deleteLearningData) {
@@ -621,6 +641,18 @@ export class AgentWorkbench {
     return this.runTaskExclusive(taskId, async () => {
       const task = await this.requiredTask(taskId);
       await this.attachUploadedFiles(task, attachmentIds);
+      if (task.status === "waiting_for_user") {
+        const answered = await this.answerPendingUserInput(task, content);
+        if (answered) {
+          this.setStatus(task, "running");
+          await this.store.saveTask(task);
+          if (continuation === "background") {
+            this.scheduleTaskStep(task.id);
+            return task;
+          }
+          return this.step(task.id);
+        }
+      }
       if (task.status === "running" || task.status === "waiting_approval") {
         await this.beginTaskTurn(task, content, "guidance_pending", { status: "pending" });
         await this.store.saveTask(task);
@@ -638,12 +670,15 @@ export class AgentWorkbench {
   }
 
   async revertTaskTurn(taskId: string, turnId: string): Promise<TaskTurnRevertResult> {
-    return this.runTaskExclusive(taskId, async () => this.revertTaskTurnUnlocked(taskId, turnId));
+    return this.runTaskExclusive(taskId, async () => this.revertTaskTurnUnlocked(taskId, turnId, { rollbackFiles: true, rollbackProjectMemory: true }));
   }
 
   async editTaskTurn(taskId: string, turnId: string, input: TaskTurnEditRequest): Promise<TaskDetail> {
     return this.runTaskExclusive(taskId, async () => {
-      await this.revertTaskTurnUnlocked(taskId, turnId);
+      await this.revertTaskTurnUnlocked(taskId, turnId, {
+        rollbackFiles: input.rollbackFiles !== false,
+        rollbackProjectMemory: input.rollbackProjectMemory !== false
+      });
       const task = await this.requiredTask(taskId);
       await this.attachUploadedFiles(task, input.attachmentIds ?? []);
       await this.beginTaskTurn(task, input.content, "user_message");
@@ -678,14 +713,41 @@ export class AgentWorkbench {
     return turn;
   }
 
-  private async revertTaskTurnUnlocked(taskId: string, turnId: string): Promise<TaskTurnRevertResult> {
+  private async answerPendingUserInput(task: TaskDetail, content: string): Promise<boolean> {
+    const request = [...task.events].reverse().find(
+      (event) => event.type === "user_input_requested" && event.payload["status"] !== "answered" && !event.reverted
+    );
+    if (!request) return false;
+    const toolCallId = String(request.payload["toolCallId"] ?? "");
+    if (!toolCallId) return false;
+    const answerEvent = this.addEvent(task, "user_input_answered", content, {
+      requestEventId: request.id,
+      toolCallId,
+      toolName: "ask_user"
+    });
+    request.payload = { ...request.payload, status: "answered", answerEventId: answerEvent.id };
+    await this.addToolResultEvent(
+      task,
+      { id: toolCallId, toolName: "ask_user", args: recordFromUnknown(request.payload["args"]) },
+      managedToolResult(
+        { id: toolCallId, toolName: "ask_user", args: recordFromUnknown(request.payload["args"]) },
+        true,
+        JSON.stringify({ status: "answered", answer: content })
+      )
+    );
+    return true;
+  }
+
+  private async revertTaskTurnUnlocked(
+    taskId: string,
+    turnId: string,
+    options: { rollbackFiles: boolean; rollbackProjectMemory: boolean }
+  ): Promise<TaskTurnRevertResult> {
     const task = await this.requiredTask(taskId);
     const turns = this.withComputedTurnEnds(task, await this.store.listTaskTurns(taskId));
     const turn = turns.find((item) => item.id === turnId);
     if (!turn) throw new Error(`Task turn not found: ${turnId}`);
     if (turn.status === "reverted") {
-      const hasLaterActiveTurn = turns.some((item) => item.status === "active" && item.createdAt.localeCompare(turn.createdAt) > 0);
-      if (hasLaterActiveTurn) throw new Error("Only the latest active user turn can be reverted.");
       return {
         task,
         turn,
@@ -694,36 +756,35 @@ export class AgentWorkbench {
         irreversibleEventCount: 0
       };
     }
-    const latestActive = [...turns].reverse().find((item) => item.status === "active");
-    if (latestActive?.id !== turn.id) throw new Error("Only the latest active user turn can be reverted.");
 
-    if (task.status === "running" || task.status === "waiting_approval") {
+    if (task.status === "running" || task.status === "waiting_approval" || task.status === "waiting_for_user") {
       this.cancelRunningTask(task.id);
       this.setStatus(task, "paused");
     }
 
-    const range = this.turnEventRange(task, turn);
+    const range = this.eventsFromTurn(task, turn);
     const checkpointIds = new Set(
       range
         .filter((event) => event.type === "task_checkpoint_created")
         .map((event) => String(event.payload["checkpointId"] ?? ""))
         .filter(Boolean)
     );
-    const rollback = await this.rollbackTurnCheckpoints(task, [...checkpointIds]);
+    const rollback = options.rollbackFiles ? await this.rollbackTurnCheckpoints(task, [...checkpointIds]) : undefined;
+    const projectMemoryRollback = options.rollbackProjectMemory ? await this.restoreProjectMemoryVersions(task, range) : undefined;
     const irreversibleEventCount = range.filter(isIrreversibleTurnEvent).length;
     const now = nowIso();
-    const revertedTurn: TaskTurn = {
-      ...turn,
-      status: "reverted",
-      revertedAt: now,
-      updatedAt: now
-    };
+    const affectedTurns = turns.filter((item) => item.status === "active" && item.createdAt.localeCompare(turn.createdAt) >= 0);
+    const revertedTurn: TaskTurn = { ...turn, status: "reverted", revertedAt: now, updatedAt: now };
     for (const event of range) event.reverted = true;
-    this.addEvent(task, "turn_reverted", "Latest user turn was reverted for editing.", {
+    this.addEvent(task, "turn_reverted", "User turn and later task history were reverted for editing.", {
       turnId: turn.id,
+      revertedTurnIds: affectedTurns.map((item) => item.id),
       revertedEventCount: range.length,
       irreversibleEventCount,
-      ...(rollback ? { rollback } : {})
+      rollbackFiles: options.rollbackFiles,
+      rollbackProjectMemory: options.rollbackProjectMemory,
+      ...(rollback ? { rollback } : {}),
+      ...(projectMemoryRollback ? { projectMemoryRollback } : {})
     });
     if (rollback && rollback.skippedFiles > 0) {
       this.addEvent(task, "rollback_partial", "Some files or side effects could not be fully reverted.", {
@@ -732,7 +793,9 @@ export class AgentWorkbench {
         irreversibleEventCount
       });
     }
-    await this.store.saveTaskTurn(revertedTurn);
+    for (const item of affectedTurns) {
+      await this.store.saveTaskTurn({ ...item, status: "reverted", revertedAt: now, updatedAt: now });
+    }
     await this.store.saveTask(task);
     return {
       task,
@@ -762,6 +825,12 @@ export class AgentWorkbench {
     return task.events.slice(startIndex, endIndex >= startIndex ? endIndex + 1 : task.events.length);
   }
 
+  private eventsFromTurn(task: TaskDetail, turn: TaskTurn): TaskEvent[] {
+    const startIndex = task.events.findIndex((event) => event.id === turn.startEventId);
+    if (startIndex < 0) return [];
+    return task.events.slice(startIndex).filter((event) => !event.reverted);
+  }
+
   private async rollbackTurnCheckpoints(task: TaskDetail, checkpointIds: string[]): Promise<TaskRollbackResult | undefined> {
     const checkpoints = (await Promise.all(checkpointIds.map((id) => this.store.getTaskCheckpoint(id)))).filter((item): item is TaskCheckpoint => Boolean(item));
     if (checkpoints.length === 0) return undefined;
@@ -777,6 +846,26 @@ export class AgentWorkbench {
       files: result.files
     });
     return result;
+  }
+
+  private async restoreProjectMemoryVersions(task: TaskDetail, events: TaskEvent[]): Promise<{ restored: number; folderIds: string[] } | undefined> {
+    const snapshots = events
+      .filter((event) => event.type === "project_memory_version_created")
+      .filter((event) => typeof event.payload["folderId"] === "string" && typeof event.payload["content"] === "string");
+    if (snapshots.length === 0) return undefined;
+    const latestByFolder = new Map<string, TaskEvent>();
+    for (const event of snapshots) latestByFolder.set(String(event.payload["folderId"]), event);
+    const restoredFolderIds: string[] = [];
+    for (const [folderId, event] of latestByFolder) {
+      const folder = await this.resolveTaskFolder(folderId);
+      await this.writeMemoryDocument("project", String(event.payload["content"] ?? ""), folder);
+      restoredFolderIds.push(folder.id);
+    }
+    this.addEvent(task, "project_memory_rollback_completed", `Rolled back project memory for ${restoredFolderIds.length} folder(s).`, {
+      folderIds: restoredFolderIds,
+      restored: restoredFolderIds.length
+    });
+    return { restored: restoredFolderIds.length, folderIds: restoredFolderIds };
   }
 
   async control(taskId: string, action: "pause" | "resume" | "cancel"): Promise<TaskDetail> {
@@ -1781,10 +1870,17 @@ export class AgentWorkbench {
     if (task.status !== "running") return task;
     let modelTurns = 0;
     let stateOnlyTurns = 0;
+    const startedAt = Date.now();
 
     while (task.status === "running") {
-      if (modelTurns >= MAX_MODEL_TURNS_PER_TASK) {
-        await this.pauseTaskForLoop(task, `Paused after ${MAX_MODEL_TURNS_PER_TASK} model turns in one task run. Ask for guidance or continue with a narrower step.`);
+      const modelTurnLimit = task.runMode === "target" ? normalizeTargetLimits(task.targetLimits).maxModelTurns : MAX_MODEL_TURNS_PER_TASK;
+      if (modelTurns >= modelTurnLimit) {
+        await this.pauseTaskForLoop(task, `Paused after ${modelTurnLimit} model turns in one task run. Ask for guidance or continue with a narrower step.`);
+        return task;
+      }
+      const targetLimitReason = targetLimitReached(task, modelTurns, countToolResultEvents(task), startedAt);
+      if (targetLimitReason) {
+        await this.pauseTaskForLoop(task, targetLimitReason);
         return task;
       }
 
@@ -1869,6 +1965,37 @@ export class AgentWorkbench {
     for (const call of calls) {
       const stoppedBeforeTool = await this.stoppedTask(task.id);
       if (stoppedBeforeTool) return stoppedBeforeTool;
+
+      if (call.toolName === "ask_user") {
+        const eventArgs = this.sanitizeForPreferences(call.args, preferences);
+        this.addEvent(task, "tool_requested", call.toolName, {
+          toolCallId: call.id,
+          toolName: call.toolName,
+          args: eventArgs,
+          riskCategory: "none"
+        });
+        this.addEvent(task, "user_input_requested", String(call.args["question"] ?? "User input required."), {
+          toolCallId: call.id,
+          toolName: call.toolName,
+          args: eventArgs,
+          status: "pending",
+          options: Array.isArray(call.args["options"]) ? call.args["options"] : [],
+          required: call.args["required"] !== false,
+          ...(typeof call.args["details"] === "string" ? { details: String(call.args["details"]) } : {})
+        });
+        await this.safeAppendTaskTrace(task, {
+          kind: "tool_requested",
+          timestamp: nowIso(),
+          toolCallId: call.id,
+          toolName: call.toolName,
+          args: call.args,
+          riskCategory: "none",
+          waitingForUser: true
+        });
+        this.setStatus(task, "waiting_for_user");
+        await this.store.saveTask(task);
+        return task;
+      }
 
       if (isApprovalBypassedStateTool(call.toolName)) {
         this.addEvent(task, "tool_requested", call.toolName, {
@@ -2043,47 +2170,38 @@ export class AgentWorkbench {
   }
 
   private async recordPromptCacheStats(task: TaskDetail, usage?: ModelUsage): Promise<void> {
-    const preferences = await this.store.getPreferences();
+    if (usage?.inputTokens === undefined && usage?.outputTokens === undefined) return;
     const provider = await this.resolveModelProviderConfig();
-    const previous = await this.store.listPromptCacheStats(task.id);
-    const transcript = task.events
-      .filter((event) => event.type !== "assistant_delta" && event.type !== "thinking_delta")
-      .map((event) => `${event.type}: ${event.summary}`)
-      .join("\n");
-    const estimatedInputTokens = Math.max(1, approximateTokenCount(transcript) + 600);
-    const inputTokens = usage?.inputTokens ?? estimatedInputTokens;
-    const stablePrefixTokens = Math.min(inputTokens, approximateTokenCount([
-      preferences.agentRole,
-      preferences.agentTone,
-      preferences.responseDetail,
-      preferences.language,
-      task.workRoot,
-      task.folderId
-    ].filter(Boolean).join("\n")) + 450);
-    const cachedTokens = usage?.cachedTokens ?? (previous.length > 0 ? Math.min(stablePrefixTokens, inputTokens) : 0);
+    const inputTokens = usage.inputTokens ?? 0;
+    const outputTokens = usage.outputTokens ?? 0;
+    const cachedTokens = usage.cachedTokens ?? 0;
+    const totalTokens = inputTokens + outputTokens;
     const stats: PromptCacheStats = {
       id: createId("prompt_cache_stats"),
       taskId: task.id,
       providerId: provider?.providerId,
       model: provider?.model ?? "local-fallback",
       policy: "auto_savings",
-      source: usage?.raw ? "provider" : "estimated",
+      source: "provider",
       inputTokens,
+      outputTokens,
+      totalTokens,
       cachedTokens,
       cacheHitRatio: cachedTokens / Math.max(1, inputTokens),
-      estimatedSavings: cachedTokens * 0.00000025,
+      estimatedSavings: 0,
       ...(usage?.raw ? { providerUsage: usage.raw } : {}),
       createdAt: nowIso()
     };
     await this.store.savePromptCacheStats(stats);
-    this.addEvent(task, "prompt_cache_stats", cachedTokens > 0 ? `Prompt cache estimated ${Math.round(stats.cacheHitRatio * 100)}% reusable prefix.` : "Prompt cache baseline recorded.", {
+    this.addEvent(task, "token_usage_recorded", `Provider token usage recorded: ${totalTokens} total.`, {
       statsId: stats.id,
       providerId: stats.providerId,
       model: stats.model,
       inputTokens: stats.inputTokens,
+      outputTokens: stats.outputTokens,
+      totalTokens: stats.totalTokens,
       cachedTokens: stats.cachedTokens,
-      cacheHitRatio: stats.cacheHitRatio,
-      estimatedSavings: stats.estimatedSavings
+      source: stats.source
     });
   }
 
@@ -2265,6 +2383,7 @@ export class AgentWorkbench {
       folderId: "default",
       workRoot: defaultTaskWorkRoot(),
       status: "idle",
+      runMode: "normal",
       createdAt: now,
       updatedAt: now,
       events: [],
@@ -2333,11 +2452,11 @@ export class AgentWorkbench {
         case "user_memory_delete":
           return await this.executeMemoryDeleteTool(call, "user");
         case "project_memory_add":
-          return await this.executeMemoryAddTool(call, "project", await this.folderForMemoryTool(task, call));
+          return await this.executeMemoryAddTool(call, "project", await this.folderForMemoryTool(task, call), task);
         case "project_memory_edit":
-          return await this.executeMemoryEditTool(call, "project", await this.folderForMemoryTool(task, call));
+          return await this.executeMemoryEditTool(call, "project", await this.folderForMemoryTool(task, call), task);
         case "project_memory_delete":
-          return await this.executeMemoryDeleteTool(call, "project", await this.folderForMemoryTool(task, call));
+          return await this.executeMemoryDeleteTool(call, "project", await this.folderForMemoryTool(task, call), task);
         case "skill_create":
           return await this.executeSkillCreateTool(call);
         case "skill_edit":
@@ -2375,12 +2494,14 @@ export class AgentWorkbench {
   private async executeMemoryAddTool(
     call: ToolCall,
     scope: "user" | "project",
-    folder?: TaskFolderRecord
+    folder?: TaskFolderRecord,
+    task?: TaskDetail
   ): Promise<ToolResult> {
     const content = normalizeMemoryEntry(String(call.args["content"] ?? ""));
     if (!content) throw new Error("content is required.");
     const section = typeof call.args["section"] === "string" ? call.args["section"] : undefined;
     const before = scope === "project" ? await this.readMemoryDocument("project", requiredFolder(folder)) : await this.readMemoryDocument("user");
+    if (scope === "project" && task && folder) this.addProjectMemoryVersionEvent(task, folder, before.content, "add", call.id);
     const updatedContent = appendMemoryEntry(before.content, content, section);
     const after =
       scope === "project"
@@ -2392,13 +2513,15 @@ export class AgentWorkbench {
   private async executeMemoryEditTool(
     call: ToolCall,
     scope: "user" | "project",
-    folder?: TaskFolderRecord
+    folder?: TaskFolderRecord,
+    task?: TaskDetail
   ): Promise<ToolResult> {
     const match = String(call.args["match"] ?? "").trim();
     const replacement = normalizeMemoryEntry(String(call.args["replacement"] ?? ""));
     if (!match) throw new Error("match is required.");
     if (!replacement) throw new Error("replacement is required.");
     const before = scope === "project" ? await this.readMemoryDocument("project", requiredFolder(folder)) : await this.readMemoryDocument("user");
+    if (scope === "project" && task && folder) this.addProjectMemoryVersionEvent(task, folder, before.content, "edit", call.id);
     const updatedContent = replaceMemoryEntry(before.content, match, replacement);
     const after =
       scope === "project"
@@ -2410,11 +2533,13 @@ export class AgentWorkbench {
   private async executeMemoryDeleteTool(
     call: ToolCall,
     scope: "user" | "project",
-    folder?: TaskFolderRecord
+    folder?: TaskFolderRecord,
+    task?: TaskDetail
   ): Promise<ToolResult> {
     const match = String(call.args["match"] ?? "").trim();
     if (!match) throw new Error("match is required.");
     const before = scope === "project" ? await this.readMemoryDocument("project", requiredFolder(folder)) : await this.readMemoryDocument("user");
+    if (scope === "project" && task && folder) this.addProjectMemoryVersionEvent(task, folder, before.content, "delete", call.id);
     const updatedContent = deleteMemoryEntry(before.content, match);
     const after =
       scope === "project"
@@ -2444,6 +2569,23 @@ export class AgentWorkbench {
       relatedPatterns: []
     });
     return managedToolResult(call, true, JSON.stringify({ action: "created", skillId: skill.id, title: skill.title, status: skill.status }));
+  }
+
+  private addProjectMemoryVersionEvent(
+    task: TaskDetail,
+    folder: TaskFolderRecord,
+    content: string,
+    operation: "add" | "edit" | "delete",
+    toolCallId?: string
+  ): void {
+    this.addEvent(task, "project_memory_version_created", `Project memory snapshot before ${operation}.`, {
+      folderId: folder.id,
+      workRoot: folder.rootPath,
+      operation,
+      content,
+      ...(toolCallId ? { toolCallId } : {}),
+      uiHidden: true
+    });
   }
 
   private async executeSkillDeleteTool(call: ToolCall): Promise<ToolResult> {
@@ -3146,6 +3288,38 @@ function autoApproveAllows(level: UserPreferences["autoApprove"], category: Risk
   return category === "host_observation" || category === "workspace_read" || category === "workspace_write" || category === "shell" || category === "network";
 }
 
+function normalizeTargetLimits(input: TaskRunOptions["targetLimits"] | undefined): typeof DEFAULT_TARGET_LIMITS {
+  return {
+    maxModelTurns: positiveInt(input?.maxModelTurns, DEFAULT_TARGET_LIMITS.maxModelTurns),
+    maxToolCalls: positiveInt(input?.maxToolCalls, DEFAULT_TARGET_LIMITS.maxToolCalls),
+    maxWallTimeMs: positiveInt(input?.maxWallTimeMs, DEFAULT_TARGET_LIMITS.maxWallTimeMs)
+  };
+}
+
+function positiveInt(value: unknown, fallback: number): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric) : fallback;
+}
+
+function targetLimitReached(task: TaskDetail, modelTurnsInRun: number, toolResultsInTask: number, startedAt: number): string | null {
+  if (task.runMode !== "target") return null;
+  const limits = normalizeTargetLimits(task.targetLimits);
+  if (modelTurnsInRun >= limits.maxModelTurns) {
+    return `Target mode paused after ${limits.maxModelTurns} model turns. Review evidence, adjust the goal, or resume explicitly.`;
+  }
+  if (toolResultsInTask >= limits.maxToolCalls) {
+    return `Target mode paused after ${limits.maxToolCalls} tool results. Review evidence, adjust permissions or scope, then resume explicitly.`;
+  }
+  if (Date.now() - startedAt >= limits.maxWallTimeMs) {
+    return `Target mode paused after ${Math.round(limits.maxWallTimeMs / 60000)} minutes. Review evidence before continuing.`;
+  }
+  return null;
+}
+
+function countToolResultEvents(task: TaskDetail): number {
+  return task.events.filter((event) => event.type === "tool_result" && !event.reverted).length;
+}
+
 function initialIntegrationStatus(kind: IntegrationKind, callbackUrl?: string): IntegrationProviderConfig["status"] {
   if (kind === "feishu" && !callbackUrl) return "setup_pending";
   return "connected";
@@ -3166,6 +3340,10 @@ function approximateTokenCount(text: string): number {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) return 0;
   return Math.ceil(normalized.length / 4);
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function sanitizeProviderError(input: string): string {
@@ -3684,6 +3862,7 @@ function compactMemoryMarkdown(content: string, charLimit: number, entryCharLimi
 
 function isManagedStateTool(toolName: string): boolean {
   return (
+    toolName === "ask_user" ||
     toolName === "use_skill" ||
     toolName === "user_memory_add" ||
     toolName === "user_memory_edit" ||

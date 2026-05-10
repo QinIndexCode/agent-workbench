@@ -55,7 +55,7 @@ export function HistoryPage({
             value={status}
             options={[
               { value: "all", label: text.all },
-              ...["running", "waiting_approval", "paused", "completed", "failed", "cancelled"].map((value) => ({
+              ...["running", "waiting_for_user", "waiting_approval", "paused", "completed", "failed", "cancelled"].map((value) => ({
                 value,
                 label: value.replace("_", " ")
               }))

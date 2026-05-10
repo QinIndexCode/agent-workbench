@@ -43,7 +43,7 @@ export function TaskThread({
   onCancelBusy,
   onPreviewRollback,
   onRollback,
-  onRevertLatestTurn,
+  onRevertTurn,
   onLoadContextSummaries,
   onLoadPromptCacheStats,
   titleIssue,
@@ -86,7 +86,7 @@ export function TaskThread({
   onCancelBusy?: () => void;
   onPreviewRollback?: ((input?: TaskRollbackRequest) => Promise<TaskRollbackPreview>) | undefined;
   onRollback?: ((input?: TaskRollbackRequest) => Promise<TaskRollbackResult>) | undefined;
-  onRevertLatestTurn?: (() => Promise<string>) | undefined;
+  onRevertTurn?: ((turnId: string) => Promise<string>) | undefined;
   onLoadContextSummaries?: (() => Promise<ConversationSummary[]>) | undefined;
   onLoadPromptCacheStats?: (() => Promise<PromptCacheStats[]>) | undefined;
   titleIssue?: { goal: string; error: string } | null;
@@ -94,7 +94,7 @@ export function TaskThread({
   onUseLocalTitle: () => void;
   onApprovalDecision: (approvalId: string, decision: ApprovalDecision) => void;
 }) {
-  const running = task?.status === "running" || task?.status === "waiting_approval";
+  const running = task?.status === "running" || task?.status === "waiting_approval" || task?.status === "waiting_for_user";
   const mode = getComposerMode(task);
   const text = getUiCopy(language);
   const [draft, setDraft] = useState("");
@@ -172,9 +172,11 @@ export function TaskThread({
                 showThinking={preferences?.showThinking ?? true}
                 task={transcriptEvents ? { ...task, events: transcriptEvents } : task}
                 onApprovalDecision={onApprovalDecision}
-                onRevertLatestTurn={async () => {
-                  if (!onRevertLatestTurn) return;
-                  const revertedDraft = await onRevertLatestTurn();
+                onRevertTurn={async (turnId) => {
+                  if (!onRevertTurn) return;
+                  const confirmed = window.confirm(language === "zh-CN" ? "是否同时回退该轮之后的文件变更？默认会回退。" : "Also roll back file changes after this turn? The default is yes.");
+                  if (!confirmed) return;
+                  const revertedDraft = await onRevertTurn(turnId);
                   if (revertedDraft) setDraft(revertedDraft);
                 }}
               />
@@ -247,7 +249,7 @@ function TaskPlanPanel({
   const zh = language === "zh-CN";
   const steps = derivePlanSteps(task);
   const checkpointCount = task.events.filter((event) => event.type === "task_checkpoint_created").length;
-  const hasAudit = task.events.some((event) => event.type === "conversation_summary_created" || event.type === "context_overflow_recovered" || event.type === "prompt_cache_stats" || event.type === "provider_fallback");
+  const hasAudit = task.events.some((event) => event.type === "conversation_summary_created" || event.type === "context_overflow_recovered" || event.type === "token_usage_recorded" || event.type === "prompt_cache_stats" || event.type === "provider_fallback");
   const [rollbackPreview, setRollbackPreview] = useState<TaskRollbackPreview | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [rollbackResult, setRollbackResult] = useState<TaskRollbackResult | null>(null);
@@ -466,15 +468,18 @@ function ContextAuditView({ language, summaries, cacheStats, task }: { language?
       )}
       {latestCache ? (
         <details>
-          <summary>{zh ? "缓存成本" : "Prompt cache"}</summary>
+          <summary>{zh ? "精确 Token 用量" : "Exact token usage"}</summary>
           <div className="auditMeta">
             <span>{latestCache.model ?? ""}</span>
-            <span>{Math.round((latestCache.cacheHitRatio ?? 0) * 100)}% hit</span>
-            <span>{latestCache.cachedTokens ?? 0}/{latestCache.inputTokens ?? 0} cached</span>
-            <span>{latestCache.source ?? ""}</span>
+            <span>{zh ? "输入" : "Input"}: {latestCache.inputTokens ?? 0}</span>
+            <span>{zh ? "输出" : "Output"}: {latestCache.outputTokens ?? 0}</span>
+            <span>{zh ? "总计" : "Total"}: {latestCache.totalTokens ?? ((latestCache.inputTokens ?? 0) + (latestCache.outputTokens ?? 0))}</span>
+            {latestCache.cachedTokens ? <span>{zh ? "Provider cached" : "Provider cached"}: {latestCache.cachedTokens}</span> : null}
           </div>
         </details>
-      ) : null}
+      ) : (
+        <p className="muted">{zh ? "当前 provider 暂未返回精确 token 用量。" : "The current provider has not returned exact token usage yet."}</p>
+      )}
       {fallbackEvents.length > 0 ? (
         <details>
           <summary>{zh ? "模型故障转移" : "Provider fallback"}</summary>
@@ -527,7 +532,7 @@ function normalizeStepStatus(value: unknown): "pending" | "running" | "completed
 
 function getComposerMode(task: TaskDetail | null): ComposerMode {
   if (!task) return "new_task";
-  if (task.status === "running" || task.status === "waiting_approval") return "guidance";
+  if (task.status === "running" || task.status === "waiting_approval" || task.status === "waiting_for_user") return "guidance";
   return "continue";
 }
 

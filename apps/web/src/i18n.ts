@@ -216,6 +216,7 @@ const copy = {
       agentTone: "Agent 语气",
       agentRole: "Agent 角色",
       responseDetail: "回答详略",
+      startupView: "启动页面",
       llmProvider: "LLM Provider",
       defaultModel: "默认模型",
       customModel: "自定义模型 ID",
@@ -274,6 +275,11 @@ const copy = {
         brief: "简短",
         normal: "正常",
         detailed: "详细"
+      },
+      startupViewOptions: {
+        last_task: "恢复上次任务",
+        last_folder: "恢复上次文件夹",
+        new_task: "始终新任务"
       },
       themeOptions: {
         dark: "黑色",
@@ -494,6 +500,7 @@ const copy = {
       agentTone: "Agent tone",
       agentRole: "Agent role",
       responseDetail: "Response detail",
+      startupView: "Startup view",
       llmProvider: "LLM provider",
       defaultModel: "Default model",
       customModel: "Custom model id",
@@ -552,6 +559,11 @@ const copy = {
         brief: "Brief",
         normal: "Normal",
         detailed: "Detailed"
+      },
+      startupViewOptions: {
+        last_task: "Restore last task",
+        last_folder: "Restore last folder",
+        new_task: "Always new task"
       },
       themeOptions: {
         dark: "Dark",

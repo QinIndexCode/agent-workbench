@@ -131,6 +131,12 @@ export class ContextAssembler {
     systemLayers.push(workingFolderLayer);
     usedTokens += estimateTokens(workingFolderLayer);
 
+    const targetModeLayer = this.buildTargetModeLayer(task);
+    if (targetModeLayer) {
+      systemLayers.push(targetModeLayer);
+      usedTokens += estimateTokens(targetModeLayer);
+    }
+
     const taskGraph = taskGraphFromEvents(task);
     const taskGraphLayer = buildTaskGraphSystemLayer(taskGraph);
     if (taskGraphLayer) {
@@ -348,6 +354,18 @@ export class ContextAssembler {
     if (preferences.responseDetail === "detailed") lines.push("Provide enough detail for a careful user to audit the reasoning and result.");
     lines.push(`User language preference: ${preferences.language}`);
     return lines.join("\n");
+  }
+
+  private buildTargetModeLayer(task: TaskDetail): string {
+    if (task.runMode !== "target") return "";
+    const limits = task.targetLimits;
+    return [
+      "## Target Mode",
+      "The user explicitly started /target. Work toward complete verified goal satisfaction, not a merely plausible answer.",
+      "First establish acceptance criteria if they are not already clear. Continue with evidence-driven exploration, implementation, and verification until the criteria are met or the system pauses on limits or user interruption.",
+      "If verification fails, use the failure as evidence for the next step. If blocked by permissions or ambiguity, ask the user with ask_user.",
+      limits ? `Run limits: ${limits.maxModelTurns} model turns, ${limits.maxToolCalls} tool results, ${Math.round(limits.maxWallTimeMs / 60000)} minutes.` : ""
+    ].filter(Boolean).join("\n");
   }
 
   private async buildMemoryFileLayer(task: TaskDetail, options: { compact?: boolean } = {}): Promise<string> {
@@ -884,13 +902,13 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
 function isModelHistoryEvent(event: TaskEvent): boolean {
   if (["status_changed", "task_created", "task_memory_created", "task_title_updated", "task_graph_created", "task_graph_node_started", "pattern_discovered", "reflection_completed"].includes(event.type)) return false;
   if (event.type.startsWith("plan_")) return false;
-  if (["prompt_cache_stats", "conversation_summary_created", "context_overflow_recovered"].includes(event.type)) return false;
+  if (["prompt_cache_stats", "token_usage_recorded", "conversation_summary_created", "context_overflow_recovered", "project_memory_version_created", "project_memory_rollback_completed"].includes(event.type)) return false;
   if (event.payload["uiHidden"] === true && event.type !== "tool_result") return false;
   return true;
 }
 
 function isSummarizableContextEvent(event: TaskEvent): boolean {
-  if (["assistant_delta", "thinking_delta", "conversation_summary_created", "context_overflow_recovered", "prompt_cache_stats", "task_title_updated", "task_graph_created", "task_graph_node_started"].includes(event.type)) return false;
+  if (["assistant_delta", "thinking_delta", "conversation_summary_created", "context_overflow_recovered", "prompt_cache_stats", "token_usage_recorded", "project_memory_version_created", "task_title_updated", "task_graph_created", "task_graph_node_started"].includes(event.type)) return false;
   if (event.type.startsWith("plan_")) return false;
   if (event.payload["uiHidden"] === true && event.type !== "tool_result") return false;
   return true;

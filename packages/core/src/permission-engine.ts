@@ -30,6 +30,9 @@ export class PermissionEngine {
     if (toolName === "knowledge_search") {
       return { category: "workspace_read", reason: "knowledge_search reads indexed local knowledge snippets." };
     }
+    if (toolName === "ask_user") {
+      return { category: "workspace_read", reason: "ask_user pauses the task to request user input without touching external resources." };
+    }
     if (toolName === "edit_file" || toolName === "write_file") {
       return { category: "workspace_write", reason: `${toolName} changes local project files.` };
     }

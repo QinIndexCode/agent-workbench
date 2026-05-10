@@ -12,6 +12,8 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
   "assistant_message",
   "thinking_delta",
   "guidance_pending",
+  "user_input_requested",
+  "user_input_answered",
   "approval_pending",
   "tool_result",
   "task_checkpoint_created",
@@ -29,13 +31,13 @@ export function Timeline({
   task,
   showThinking = true,
   onApprovalDecision,
-  onRevertLatestTurn
+  onRevertTurn
 }: {
   language?: string | null;
   task: TaskDetail | null;
   showThinking?: boolean | undefined;
   onApprovalDecision: (approvalId: string, decision: ApprovalDecision) => void;
-  onRevertLatestTurn?: (() => Promise<void> | void) | undefined;
+  onRevertTurn?: ((turnId: string) => Promise<void> | void) | undefined;
 }) {
   const timelineRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -66,10 +68,6 @@ export function Timeline({
   const lastEventId = safeEvents[safeEvents.length - 1]?.id ?? "empty";
   const timelineVersion = useMemo(() => getTimelineVersion(items), [items]);
   const displayItems = useMemo(() => limitTimelineItems(items, language, visibleLimit), [items, language, visibleLimit]);
-  const latestUserEventId = useMemo(() => {
-    const latest = [...safeEvents].reverse().find((event) => event?.type === "user_message" && !event?.reverted);
-    return latest?.id ?? null;
-  }, [safeEvents]);
   const latestVisibleAgentBodyKey = useMemo(() => {
     const latest = displayItems[displayItems.length - 1];
     return latest && isAgentMessageItem(latest) ? latest.key : null;
@@ -167,7 +165,7 @@ export function Timeline({
                 copied={copiedKey === item.key}
                 alwaysShowActions={item.key === latestVisibleAgentBodyKey}
                 language={language ?? null}
-                canRevert={item.kind === "event" && item.event.id === latestUserEventId && Boolean(onRevertLatestTurn)}
+                canRevert={item.kind === "event" && item.event.type === "user_message" && !item.event.reverted && typeof item.event.payload["turnId"] === "string" && Boolean(onRevertTurn)}
                 onApprovalDecision={onApprovalDecision}
                 onCopy={(text) => {
                   void copyText(text);
@@ -175,7 +173,7 @@ export function Timeline({
                   window.setTimeout(() => setCopiedKey((current) => (current === item.key ? null : current)), 1400);
                 }}
                 onLoadOlder={() => setVisibleLimit((current) => Math.min(items.length, current + MAX_RENDERED_TIMELINE_ITEMS))}
-                onRevertLatestTurn={onRevertLatestTurn}
+                onRevertTurn={onRevertTurn}
               />
             </AnimatedTimelineItem>
           ))}
@@ -338,7 +336,7 @@ function TimelineEvent({
   onApprovalDecision,
   onCopy,
   onLoadOlder,
-  onRevertLatestTurn
+  onRevertTurn
 }: {
   item: TimelineItem;
   approvals: ToolApproval[];
@@ -349,7 +347,7 @@ function TimelineEvent({
   onApprovalDecision: (approvalId: string, decision: ApprovalDecision) => void;
   onCopy: (text: string) => void;
   onLoadOlder: () => void;
-  onRevertLatestTurn?: (() => Promise<void> | void) | undefined;
+  onRevertTurn?: ((turnId: string) => Promise<void> | void) | undefined;
 }) {
   const [thinkingOpen, setThinkingOpen] = useState(false);
   const [toolOpen, setToolOpen] = useState(false);
@@ -458,12 +456,38 @@ function TimelineEvent({
     );
   }
 
+  if (event.type === "user_input_requested") {
+    const options = Array.isArray(event.payload["options"]) ? event.payload["options"].map(String).filter(Boolean) : [];
+    return (
+      <article className="event user_input_requested">
+        <small>{zh ? "需要用户确认" : "User input needed"}</small>
+        <MarkdownText content={event.summary} />
+        {typeof event.payload["details"] === "string" ? <p className="muted">{String(event.payload["details"])}</p> : null}
+        {options.length > 0 ? (
+          <div className="askUserOptions">
+            {options.map((option) => <span key={option}>{option}</span>)}
+          </div>
+        ) : null}
+      </article>
+    );
+  }
+
+  if (event.type === "user_input_answered") {
+    return (
+      <article className="event user_input_answered">
+        <small>{zh ? "用户回答" : "User answered"}</small>
+        <MarkdownText content={event.summary} />
+      </article>
+    );
+  }
+
   if (event.type === "tool_result") {
     const output = String(event.payload["output"] ?? "");
     const parsed = parseToolOutput(output);
     const toolName = String(event.payload["toolName"] ?? "tool");
     const ok = Boolean(event.payload["ok"] ?? false);
     const visibleOutput = parsed.display.trim() || parsed.summary || parsed.preview || (zh ? "没有可展示的工具返回内容。" : "No visible tool output.");
+    const fullTarget = fullToolTarget(event.payload, parsed);
     return (
       <article className="event tool_result">
         <div className={`${ok ? "toolResultDetails" : "toolResultDetails failed"}${toolOpen ? " open" : ""}`}>
@@ -476,10 +500,12 @@ function TimelineEvent({
           >
             {renderToolIcon(toolName)}
             <span>{formatToolLabel(toolName, event.payload)}</span>
+            {parsed.changes ? <LineChangeBadge added={parsed.changes.addedLines} removed={parsed.changes.removedLines} /> : null}
             <ChevronDown className="toolResultChevron" size={13} />
           </button>
           <div className="toolResultBodyShell">
             <div className="toolResultBody">
+              {fullTarget ? <div className="toolFullPath" title={fullTarget}>{fullTarget}</div> : null}
               <button
                 aria-label={zh ? "复制工具返回" : "Copy tool output"}
                 className="toolResultCopyButton"
@@ -516,7 +542,7 @@ function TimelineEvent({
         copied={copied}
         language={language}
         onCopy={() => onCopy(formatVisibleEventSummary(event, language))}
-        onRevert={canRevert ? () => void onRevertLatestTurn?.() : undefined}
+        onRevert={canRevert ? () => void onRevertTurn?.(String(event.payload["turnId"])) : undefined}
       />
       <MarkdownText content={formatVisibleEventSummary(event, language)} />
     </article>
@@ -534,6 +560,15 @@ function RunningStatus({ language }: { language?: string | null | undefined }) {
         <span>.</span>
       </span>
     </article>
+  );
+}
+
+function LineChangeBadge({ added, removed }: { added: number; removed: number }) {
+  return (
+    <span className="lineChangeBadge" aria-label={`+${added} -${removed}`}>
+      <span className="added">+{added}</span>
+      <span className="removed">-{removed}</span>
+    </span>
   );
 }
 
@@ -766,7 +801,7 @@ function renderToolIcon(toolName: string): ReactNode {
   return <Wrench size={14} />;
 }
 
-function parseToolOutput(output: string): { summary: string; preview: string; display: string; rawOutputRef?: string; citations: Array<{ key: string; title: string; heading?: string; source?: string; excerpt: string }> } {
+function parseToolOutput(output: string): { summary: string; preview: string; display: string; rawOutputRef?: string; citations: Array<{ key: string; title: string; heading?: string; source?: string; excerpt: string }>; changes?: { path: string; addedLines: number; removedLines: number; operation?: string } } {
   try {
     const parsed = JSON.parse(output) as Record<string, unknown>;
     const rawSummary = typeof parsed["summary"] === "string" ? parsed["summary"] : "";
@@ -774,11 +809,13 @@ function parseToolOutput(output: string): { summary: string; preview: string; di
     const rawOutputRef = typeof parsed["rawOutputRef"] === "string" ? parsed["rawOutputRef"] : undefined;
     const citations = extractCitations(parsed);
     const compact = stringifyToolDisplay(parsed, summary);
+    const changes = extractLineChanges(parsed);
     return {
       summary: summary ? firstUsefulLine(summary) : "",
       preview: summary ? "" : firstUsefulToolPreview(parsed),
       display: compact,
       citations,
+      ...(changes ? { changes } : {}),
       ...(rawOutputRef ? { rawOutputRef } : {})
     };
   } catch {
@@ -791,6 +828,27 @@ function parseToolOutput(output: string): { summary: string; preview: string; di
       citations: []
     };
   }
+}
+
+function extractLineChanges(parsed: Record<string, unknown>): { path: string; addedLines: number; removedLines: number; operation?: string } | undefined {
+  const value = parsed["changes"];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const addedLines = Number(record["addedLines"] ?? 0);
+  const removedLines = Number(record["removedLines"] ?? 0);
+  if (!Number.isFinite(addedLines) || !Number.isFinite(removedLines)) return undefined;
+  return {
+    path: String(record["path"] ?? parsed["path"] ?? ""),
+    addedLines: Math.max(0, Math.round(addedLines)),
+    removedLines: Math.max(0, Math.round(removedLines)),
+    ...(typeof record["operation"] === "string" ? { operation: record["operation"] } : {})
+  };
+}
+
+function fullToolTarget(payload: Record<string, unknown>, parsed: ReturnType<typeof parseToolOutput>): string {
+  if (parsed.changes?.path) return parsed.changes.path;
+  const args = payload["args"] && typeof payload["args"] === "object" ? (payload["args"] as Record<string, unknown>) : {};
+  return firstStringArg(args, ["path", "file", "targetPath", "cwd", "url"]);
 }
 
 function isPlaceholderToolSummary(value: string): boolean {

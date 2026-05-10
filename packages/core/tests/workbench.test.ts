@@ -1219,6 +1219,23 @@ class StreamingFinalModel implements ModelClient {
   }
 }
 
+class AskUserThenFinishModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    const answer = [...task.events].reverse().find(
+      (event) => event.type === "tool_result" && event.payload["toolName"] === "ask_user" && String(event.payload["output"] ?? "").includes("answered")
+    );
+    if (answer) return { kind: "final", message: "User answer received." };
+    return {
+      kind: "tool_calls",
+      calls: [{
+        id: createId("tool_call"),
+        toolName: "ask_user",
+        args: { question: "Which option should I use?", options: ["A", "B"], required: true }
+      }]
+    };
+  }
+}
+
 class PlainFinalModel implements ModelClient {
   async next(): Promise<ModelTurn> {
     return { kind: "final", message: "Done." };
@@ -2312,6 +2329,67 @@ describe("AgentWorkbench", () => {
     }
   });
 
+  it("fails edit_file with a conflict when hash or expected text no longer matches", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-edit-conflict-"));
+    const hash = (content: string) => createHash("sha256").update(content).digest("hex").slice(0, 16);
+    try {
+      const filePath = join(root, "note.txt");
+      writeFileSync(filePath, "alpha\nbeta\n", "utf8");
+      const tools = new ShellToolExecutor(root);
+      const hashConflict = await tools.execute({
+        id: createId("tool_call"),
+        toolName: "edit_file",
+        args: {
+          path: "note.txt",
+          expectedHash: hash("alpha\n"),
+          edits: [{ startLine: 1, endLine: 1, newText: "changed" }]
+        }
+      });
+      const textConflict = await tools.execute({
+        id: createId("tool_call"),
+        toolName: "edit_file",
+        args: {
+          path: "note.txt",
+          expectedHash: hash("alpha\nbeta\n"),
+          edits: [{ startLine: 2, endLine: 2, expectedText: "gamma", newText: "changed" }]
+        }
+      });
+
+      expect(hashConflict.ok).toBe(false);
+      expect(hashConflict.output).toContain("\"status\": \"conflict\"");
+      expect(textConflict.ok).toBe(false);
+      expect(textConflict.output).toContain("Expected text");
+      expect(readFileSync(filePath, "utf8")).toBe("alpha\nbeta\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports line additions and removals for write_file results", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-line-delta-"));
+    try {
+      const tools = new ShellToolExecutor(root);
+      const result = await tools.execute({
+        id: createId("tool_call"),
+        toolName: "write_file",
+        args: {
+          path: "new.txt",
+          expectedHash: "__new__",
+          content: "one\ntwo\nthree\n"
+        }
+      });
+      const parsed = JSON.parse(result.output) as Record<string, unknown>;
+      const changes = parsed["changes"] as Record<string, unknown>;
+
+      expect(result.ok).toBe(true);
+      expect(changes["addedLines"]).toBe(4);
+      expect(changes["removedLines"]).toBe(0);
+      expect(changes["operation"]).toBe("create");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rolls back a task to the earliest checkpoint for files edited multiple times", async () => {
     const root = mkdtempSync(join(tmpdir(), "scc-checkpoint-chain-"));
     const hash = (content: string) => createHash("sha256").update(content).digest("hex").slice(0, 16);
@@ -2459,15 +2537,14 @@ describe("AgentWorkbench", () => {
     expect(await workbench.listIntegrationProviders()).toHaveLength(1);
   });
 
-  it("records prompt cache statistics after model turns", async () => {
+  it("does not fabricate token usage when provider metadata is absent", async () => {
     const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
     const first = await workbench.createTask("record cache baseline");
     const second = await workbench.appendMessage(first.id, "continue with another turn");
     const stats = await workbench.listPromptCacheStats(second.id);
 
-    expect(stats.length).toBeGreaterThanOrEqual(2);
-    expect(stats[0]?.inputTokens).toBeGreaterThan(0);
-    expect(second.events.some((event) => event.type === "prompt_cache_stats")).toBe(true);
+    expect(stats).toHaveLength(0);
+    expect(second.events.some((event) => event.type === "token_usage_recorded")).toBe(false);
   });
 
   it("records provider sourced prompt cache usage when the model returns token metadata", async () => {
@@ -2477,8 +2554,10 @@ describe("AgentWorkbench", () => {
 
     expect(stats[0]?.source).toBe("provider");
     expect(stats[0]?.inputTokens).toBe(1000);
+    expect(stats[0]?.outputTokens).toBe(80);
+    expect(stats[0]?.totalTokens).toBe(1080);
     expect(stats[0]?.cachedTokens).toBe(400);
-    expect(stats[0]?.cacheHitRatio).toBe(0.4);
+    expect(task.events.some((event) => event.type === "token_usage_recorded")).toBe(true);
   });
 
   it("records provider fallback diagnostics in task events", async () => {
@@ -2489,6 +2568,22 @@ describe("AgentWorkbench", () => {
     expect(fallback?.payload["fromModel"]).toBe("primary-model");
     expect(fallback?.payload["toModel"]).toBe("backup-model");
     expect(task.status).toBe("completed");
+  });
+
+  it("pauses for ask_user and resumes with the user answer as a tool result", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new AskUserThenFinishModel() });
+    const waiting = await workbench.createTask("Need a user decision before continuing");
+
+    expect(waiting.status).toBe("waiting_for_user");
+    expect(waiting.events.some((event) => event.type === "user_input_requested")).toBe(true);
+    expect(waiting.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "ask_user")).toBe(false);
+
+    const completed = await workbench.appendMessage(waiting.id, "Use option B");
+    const askResult = completed.events.find((event) => event.type === "tool_result" && event.payload["toolName"] === "ask_user");
+
+    expect(completed.status).toBe("completed");
+    expect(completed.events.some((event) => event.type === "user_input_answered")).toBe(true);
+    expect(String(askResult?.payload["output"] ?? "")).toContain("Use option B");
   });
 
   it("snapshots the selected local folder root when a task is created", async () => {

@@ -133,6 +133,9 @@ export function Composer({
   useClickOutside(permissionAccordionRef, () => setPermissionOpen(false), permissionOpen);
   const text = draft ?? localText;
   const canSubmit = text.trim().length > 0;
+  const trimmedText = text.trimStart();
+  const slashOpen = trimmedText.startsWith("/") && !trimmedText.includes("\n");
+  const targetActive = trimmedText.startsWith("/target");
   const canStop = running && !canSubmit;
   const labels = getUiCopy(language).composer;
   const modeCopy = labels.modes[mode];
@@ -168,6 +171,24 @@ export function Composer({
           }}
           onKeyDown={handleKeyDown}
         />
+        {slashOpen ? (
+          <div className="slashCommandMenu" role="listbox" aria-label={language === "zh-CN" ? "可用指令" : "Available commands"}>
+            <button
+              type="button"
+              role="option"
+              aria-selected={targetActive}
+              onClick={() => updateText("/target ")}
+            >
+              <strong>/target</strong>
+              <span>{language === "zh-CN" ? "目标运行模式" : "Target run mode"}</span>
+            </button>
+            <p>
+              {language === "zh-CN"
+                ? "实验功能：/target 会消耗更多 token，运行更久，且可能不可控。启动前请明确选择权限范围，可随时暂停。"
+                : "Experimental: /target may use more tokens, run longer, and be less predictable. Choose permissions explicitly before starting. You can pause anytime."}
+            </p>
+          </div>
+        ) : null}
         <input
           ref={fileInputRef}
           type="file"
@@ -514,8 +535,14 @@ function getPermissionOptions(labels: ReturnType<typeof getUiCopy>["composer"]):
 }
 
 function resize(element: HTMLTextAreaElement, reset = false) {
+  // 先获取当前高度，用于平滑过渡
+  const currentHeight = element.style.height || `${element.offsetHeight}px`;
+  // 临时设置高度为 auto 来获取真实内容高度
   element.style.height = "auto";
-  element.style.height = reset ? "" : `${Math.min(element.scrollHeight, 260)}px`;
+  const targetHeight = reset ? "72px" : `${Math.min(element.scrollHeight, 180)}px`;
+  // 强制浏览器布局，确保过渡效果能生效
+  void element.offsetHeight;
+  element.style.height = targetHeight;
 }
 
 function speechRecognitionSupported(): boolean {

@@ -230,6 +230,16 @@ export function PermissionsPanel({
                   ["detailed", text.responseDetailOptions.detailed]
                 ]}
               />
+              <PreferenceSelect
+                label={text.startupView}
+                value={preferences?.startupView ?? "last_task"}
+                onChange={(value) => emitPreference({ startupView: value as UserPreferences["startupView"] })}
+                options={[
+                  ["last_task", text.startupViewOptions.last_task],
+                  ["last_folder", text.startupViewOptions.last_folder],
+                  ["new_task", text.startupViewOptions.new_task]
+                ]}
+              />
               <PreferenceInput
                 label={text.agentRole}
                 value={preferences?.agentRole ?? ""}

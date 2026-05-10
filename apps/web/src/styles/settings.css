@@ -3478,6 +3478,46 @@
   font-size: 13px;
 }
 
+.targetModeDialog .stdBody {
+  gap: 14px;
+}
+
+.targetPermissionGrid {
+  display: grid;
+  gap: 10px;
+}
+
+.targetPermissionOption {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 12px;
+  text-align: left;
+  color: var(--muted-strong);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+
+.targetPermissionOption:hover:not(:disabled),
+.targetPermissionOption.selected {
+  color: var(--text);
+  background: var(--surface-hover);
+  border-color: var(--accent);
+}
+
+.targetPermissionOption strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.targetPermissionOption span {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 @media (max-width: 900px) {
   .settingsBody,
   .libraryBody {

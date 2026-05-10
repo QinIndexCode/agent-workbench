@@ -1590,6 +1590,73 @@ describe("Workbench components", () => {
     await waitFor(() => expect(createCalls).toEqual(["check this folder"]));
   });
 
+  it("requires an explicit permission preset before starting target mode", async () => {
+    const now = new Date().toISOString();
+    const created: TaskDetail = {
+      ...task,
+      id: "task_target",
+      title: "Target run",
+      status: "running",
+      approvals: [],
+      events: []
+    };
+    const grants: GlobalPermissionGrant[] = [];
+    const grantCalls: RiskCategory[] = [];
+    const createBodies: Array<{ goal: string; runMode?: string }> = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+        if (url === "/api/preferences") return jsonResponse(defaultPreferences("en-US"));
+        if (url === "/api/permissions/global" && method === "POST") {
+          const body = JSON.parse(String(init?.body)) as { riskCategory: RiskCategory };
+          grantCalls.push(body.riskCategory);
+          const grant: GlobalPermissionGrant = {
+            id: `grant_${body.riskCategory}`,
+            riskCategory: body.riskCategory,
+            reason: "target test",
+            grantedBy: "test",
+            grantedAt: now
+          };
+          grants.push(grant);
+          return jsonResponse(grant);
+        }
+        if (url === "/api/permissions/global") return jsonResponse(grants);
+        if (url === "/api/tasks" && method === "POST") {
+          const body = JSON.parse(String(init?.body)) as { goal: string; runMode?: string };
+          createBodies.push(body);
+          return jsonResponse({
+            ...created,
+            events: [{ id: "event_target", taskId: created.id, type: "user_message", createdAt: now, summary: body.goal, payload: {} }]
+          });
+        }
+        if (url === "/api/tasks") return jsonResponse(createBodies.length ? [created] : []);
+        if (url === "/api/tasks/task_target" || url.startsWith("/api/tasks/task_target?")) return jsonResponse(created);
+        if (url === "/api/tasks/task_target/transcript") return jsonResponse(created.events);
+        if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+        return jsonResponse([]);
+      })
+    );
+
+    render(<App />);
+    expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "/target repair the failing check" } });
+    fireEvent.click(screen.getByLabelText("Send"));
+
+    const dialog = await screen.findByRole("dialog", { name: "Start /target" });
+    expect(createBodies).toHaveLength(0);
+    expect(within(dialog).getByRole("button", { name: "Start target mode" })).toBeDisabled();
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: /Read only/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start target mode" }));
+
+    await waitFor(() => expect(grantCalls).toEqual(["host_observation", "workspace_read"]));
+    await waitFor(() => expect(createBodies).toEqual([expect.objectContaining({ goal: "repair the failing check", runMode: "target" })]));
+  });
+
   it("renders the full transcript endpoint instead of rebuilding chat from windowed events", async () => {
     const now = new Date().toISOString();
     const windowedTask: TaskDetail = {

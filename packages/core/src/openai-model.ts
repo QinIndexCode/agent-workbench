@@ -1010,6 +1010,19 @@ function toolDefinitions(): ModelToolDefinition[] {
     {
       type: "function",
       function: {
+        name: "ask_user",
+        description: "Ask the user a concise clarification or decision question when progress depends on missing requirements, ambiguous intent, or a choice only the user can make. This pauses the task until the user answers.",
+        parameters: strictObject({
+          question: { type: "string", description: "The specific question the user needs to answer." },
+          options: { type: "array", items: { type: "string" }, description: "Optional short mutually exclusive options." },
+          required: { type: "boolean", description: "Whether the answer is required before continuing. Defaults to true." },
+          details: { type: "string", description: "Optional short context explaining why the question matters." }
+        }, ["question"])
+      }
+    },
+    {
+      type: "function",
+      function: {
         name: "run_command",
         description: "Request a local shell command. The application classifies risk and may ask the user before running it.",
         parameters: strictObject({
@@ -1049,7 +1062,8 @@ function toolDefinitions(): ModelToolDefinition[] {
                 properties: {
                   startLine: { type: "number" },
                   endLine: { type: "number" },
-                  newText: { type: "string" }
+                  newText: { type: "string" },
+                  expectedText: { type: "string", description: "Optional exact current text for the target range. The edit fails if it no longer matches." }
                 },
                 required: ["startLine", "endLine", "newText"]
               }
