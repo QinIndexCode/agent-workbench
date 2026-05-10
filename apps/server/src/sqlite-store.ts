@@ -11,6 +11,7 @@ import type {
   KnowledgeChunk,
   KnowledgeEmbedding,
   KnowledgeItem,
+  KnowledgeSearchIndexEntry,
   McpServerConfig,
   ModelProviderRecord,
   PatternRecord,
@@ -57,6 +58,7 @@ type Namespace =
   | "knowledge_items"
   | "knowledge_chunks"
   | "knowledge_embeddings"
+  | "knowledge_search_index"
   | "prompt_cache_stats"
   | "integration_providers"
   | "integration_secrets"
@@ -436,6 +438,7 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
       .filter((record) => record.knowledgeId === knowledgeId)
       .map((record) => record.id);
     for (const chunkId of chunkIds) this.delete("knowledge_chunks", chunkId);
+    await this.deleteKnowledgeSearchIndexEntries(chunkIds);
     await this.deleteKnowledgeEmbeddings(chunkIds);
   }
 
@@ -452,6 +455,22 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
     const ids = new Set(chunkIds);
     for (const record of this.list<KnowledgeEmbedding>("knowledge_embeddings")) {
       if (ids.has(record.chunkId)) this.delete("knowledge_embeddings", record.id);
+    }
+  }
+
+  async saveKnowledgeSearchIndexEntry(record: KnowledgeSearchIndexEntry): Promise<void> {
+    this.upsert("knowledge_search_index", record.id, record);
+  }
+
+  async listKnowledgeSearchIndexEntries(chunkIds?: string[]): Promise<KnowledgeSearchIndexEntry[]> {
+    const ids = chunkIds ? new Set(chunkIds) : null;
+    return this.list<KnowledgeSearchIndexEntry>("knowledge_search_index").filter((record) => !ids || ids.has(record.chunkId));
+  }
+
+  async deleteKnowledgeSearchIndexEntries(chunkIds: string[]): Promise<void> {
+    const ids = new Set(chunkIds);
+    for (const record of this.list<KnowledgeSearchIndexEntry>("knowledge_search_index")) {
+      if (ids.has(record.chunkId)) this.delete("knowledge_search_index", record.id);
     }
   }
 

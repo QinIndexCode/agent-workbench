@@ -881,6 +881,8 @@ describe("Workbench components", () => {
       responseDetail: "normal",
       skillAutoInject: true,
       maxInjectedSkills: 3,
+      knowledgeActiveInjection: true,
+      maxInjectedKnowledgeItems: 3,
       mcpApprovalMode: "confirm_dangerous",
       sanitizeSensitiveData: true,
       encryptStorage: false,
@@ -1009,6 +1011,7 @@ describe("Workbench components", () => {
     const onCreate = vi.fn().mockResolvedValue(undefined);
     const onUpdate = vi.fn().mockResolvedValue(undefined);
     const onDelete = vi.fn().mockResolvedValue(undefined);
+    const onReindex = vi.fn().mockResolvedValue(undefined);
     const item: KnowledgeItem = {
       id: "knowledge_1",
       projectId: "default",
@@ -1024,6 +1027,29 @@ describe("Workbench components", () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
+    const onSearch = vi.fn().mockResolvedValue([
+      {
+        item,
+        chunk: {
+          id: "knowledge_chunk_1",
+          knowledgeId: item.id,
+          projectId: "default",
+          ordinal: 0,
+          title: item.title,
+          content: item.content,
+          tokenEstimate: 12,
+          tags: item.tags,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt
+        },
+        score: 0.86,
+        matchedFields: ["title", "content"],
+        highlights: [{ field: "content", text: "Use approvals for runtime changes." }],
+        rankReason: "Matched title, content; lexical score 0.86.",
+        rerankStatus: "applied",
+        rerankScore: 0.9
+      }
+    ]);
 
     render(
       <KnowledgePanel
@@ -1031,6 +1057,8 @@ describe("Workbench components", () => {
         language="en-US"
         onCreate={onCreate}
         onDelete={onDelete}
+        onReindex={onReindex}
+        onSearch={onSearch}
         onUpdate={onUpdate}
         onUpload={vi.fn()}
       />
@@ -1038,6 +1066,18 @@ describe("Workbench components", () => {
 
     expect(screen.getAllByText("Runtime notes").length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { name: "Runtime" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Search test"), { target: { value: "approval" } });
+    fireEvent.click(screen.getByRole("button", { name: /Search/ }));
+    await waitFor(() => expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({ query: "approval" })));
+    await waitFor(() => expect(screen.getAllByText("content").length).toBeGreaterThan(0));
+    expect(screen.getByText(/Local structured|lexical score/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Select item Runtime notes"));
+    fireEvent.click(screen.getByText("Reindex selected"));
+    await waitFor(() => expect(onReindex).toHaveBeenCalledWith("knowledge_1"));
+    fireEvent.click(screen.getByLabelText("Select item Runtime notes"));
+    fireEvent.click(screen.getByText("Delete selected"));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Delete selected knowledge items?" })).getByRole("button", { name: "Delete selected" }));
+    await waitFor(() => expect(onDelete).toHaveBeenCalledWith("knowledge_1"));
     fireEvent.click(screen.getAllByLabelText("Edit item Runtime notes")[0]!);
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Updated notes" } });
     fireEvent.click(screen.getByText("Save"));
@@ -1871,6 +1911,8 @@ function defaultPreferences(language: "zh-CN" | "en-US"): UserPreferences {
     responseDetail: "normal",
     skillAutoInject: true,
     maxInjectedSkills: 3,
+    knowledgeActiveInjection: true,
+    maxInjectedKnowledgeItems: 3,
     mcpApprovalMode: "confirm_dangerous",
     sanitizeSensitiveData: true,
     encryptStorage: false,

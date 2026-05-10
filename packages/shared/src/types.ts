@@ -21,6 +21,8 @@ import type {
   KnowledgeCreateRequestSchema,
   KnowledgeEmbeddingSchema,
   KnowledgeItemSchema,
+  KnowledgeSearchFieldSchema,
+  KnowledgeSearchIndexEntrySchema,
   KnowledgeReindexResultSchema,
   KnowledgeSearchRequestSchema,
   KnowledgeSearchResultSchema,
@@ -165,6 +167,8 @@ export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderConfigSche
 export type KnowledgeItem = z.infer<typeof KnowledgeItemSchema>;
 export type KnowledgeChunk = z.infer<typeof KnowledgeChunkSchema>;
 export type KnowledgeEmbedding = z.infer<typeof KnowledgeEmbeddingSchema>;
+export type KnowledgeSearchField = z.infer<typeof KnowledgeSearchFieldSchema>;
+export type KnowledgeSearchIndexEntry = z.infer<typeof KnowledgeSearchIndexEntrySchema>;
 export type KnowledgeCreateRequest = z.infer<typeof KnowledgeCreateRequestSchema>;
 export type KnowledgePatchRequest = z.infer<typeof KnowledgePatchRequestSchema>;
 export type KnowledgeUploadRequest = z.infer<typeof KnowledgeUploadRequestSchema>;

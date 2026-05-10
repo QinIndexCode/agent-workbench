@@ -40,15 +40,23 @@ export function KnowledgePanel({
   const [page, setPage] = useState(0);
   const [modalMode, setModalMode] = useState<"create" | "edit" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<KnowledgeItem | null>(null);
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<KnowledgeSearchResult[]>([]);
   const [searchBusy, setSearchBusy] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [kindFilter, setKindFilter] = useState<"all" | KnowledgeItem["kind"]>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | KnowledgeItem["indexStatus"]>("all");
   const selected = selectedId ? items.find((item) => item.id === selectedId) ?? null : null;
   const [draft, setDraft] = useState<KnowledgeDraft>(selected ? draftFromItem(selected) : emptyDraft());
   const searchText = `${query} ${localQuery}`.trim().toLowerCase();
   const filtered = useMemo(() => {
-    if (!searchText) return items;
-    return items.filter((item) => `${item.title} ${item.content} ${item.tags.join(" ")} ${item.fileName ?? ""}`.toLowerCase().includes(searchText));
-  }, [items, searchText]);
+    return items.filter((item) => {
+      if (kindFilter !== "all" && item.kind !== kindFilter) return false;
+      if (statusFilter !== "all" && item.indexStatus !== statusFilter) return false;
+      if (!searchText) return true;
+      return `${item.title} ${item.content} ${item.tags.join(" ")} ${item.fileName ?? ""}`.toLowerCase().includes(searchText);
+    });
+  }, [items, kindFilter, searchText, statusFilter]);
 
   useEffect(() => {
     if (selectedId && !items.some((item) => item.id === selectedId)) setSelectedId(items[0]?.id ?? null);
@@ -60,7 +68,15 @@ export function KnowledgePanel({
 
   useEffect(() => {
     setPage(0);
-  }, [searchText]);
+  }, [kindFilter, searchText, statusFilter]);
+
+  useEffect(() => {
+    setSelectedIds((current) => {
+      const itemIds = new Set(items.map((item) => item.id));
+      const next = new Set([...current].filter((id) => itemIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [items]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
   const visibleItems = filtered.slice(page * pageSize, page * pageSize + pageSize);
@@ -98,10 +114,45 @@ export function KnowledgePanel({
             <Search size={15} />
             <input aria-label={text.search} placeholder={text.search} value={localQuery} onChange={(event) => setLocalQuery(event.target.value)} />
           </label>
+          <div className="knowledgeFilters">
+            <select aria-label={text.kindFilter} value={kindFilter} onChange={(event) => setKindFilter(event.target.value as "all" | KnowledgeItem["kind"])}>
+              <option value="all">{text.allKinds}</option>
+              <option value="memory">{text.memory}</option>
+              <option value="file">{text.file}</option>
+            </select>
+            <select aria-label={text.statusFilter} value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "all" | KnowledgeItem["indexStatus"])}>
+              <option value="all">{text.allStatuses}</option>
+              <option value="indexed">indexed</option>
+              <option value="pending">pending</option>
+              <option value="failed">failed</option>
+              <option value="metadata_only">metadata_only</option>
+            </select>
+          </div>
+          {selectedIds.size > 0 ? (
+            <div className="knowledgeBatchBar">
+              <span>{text.selectedCount(selectedIds.size)}</span>
+              {onReindex ? (
+                <button className="textButton iconText" type="button" onClick={() => void reindexSelected()}>
+                  <RefreshCw size={14} />
+                  {text.reindexSelected}
+                </button>
+              ) : null}
+              <button className="textButton dangerText iconText" type="button" onClick={() => setBatchDeleteOpen(true)}>
+                <Trash2 size={14} />
+                {text.deleteSelected}
+              </button>
+            </div>
+          ) : null}
           <div className="skillRows">
             {filtered.length === 0 ? <LibraryEmpty text={text.empty} /> : null}
             {visibleItems.map((item) => (
-              <article className={selectedId === item.id ? "knowledgeRow selected" : "knowledgeRow"} key={item.id}>
+              <article className={selectedId === item.id ? "knowledgeRow selectableKnowledgeRow selected" : "knowledgeRow selectableKnowledgeRow"} key={item.id}>
+                <input
+                  aria-label={`${text.select} ${item.title}`}
+                  checked={selectedIds.has(item.id)}
+                  type="checkbox"
+                  onChange={(event) => toggleSelected(item.id, event.currentTarget.checked)}
+                />
                 <button className="knowledgeRowMain" type="button" onClick={() => setSelectedId(item.id)}>
                   <strong>{item.title}</strong>
                   <span>{item.kind === "file" ? item.fileName ?? text.file : text.memory}</span>
@@ -149,7 +200,10 @@ export function KnowledgePanel({
                 <div><dt>{text.updated}</dt><dd>{new Date(selected.updatedAt).toLocaleString()}</dd></div>
                 <div><dt>{text.size}</dt><dd>{selected.size ? `${selected.size} B` : text.none}</dd></div>
                 <div><dt>{text.index}</dt><dd>{selected.indexStatus} · {selected.chunkCount}</dd></div>
+                <div><dt>{text.lastIndexed}</dt><dd>{selected.lastIndexedAt ? new Date(selected.lastIndexedAt).toLocaleString() : text.none}</dd></div>
+                <div><dt>{text.source}</dt><dd title={selected.sourceUri ?? selected.fileName ?? ""}>{selected.sourceUri ?? selected.fileName ?? text.none}</dd></div>
               </dl>
+              {selected.indexError ? <p className="knowledgeError">{selected.indexError}</p> : null}
               {onSearch ? (
                 <section className="skillPreview">
                   <h3>{text.searchTest}</h3>
@@ -170,9 +224,30 @@ export function KnowledgePanel({
                       {searchResults.map((result) => (
                         <article className="providerRow" key={result.chunk.id}>
                           <span className="providerIcon"><FileText size={15} /></span>
-                          <div>
+                          <div className="knowledgeSearchResult">
                             <strong>{result.item.title}</strong>
-                            <small>{Math.round(result.score * 100)}% · {result.chunk.content.slice(0, 160)}</small>
+                            <small>
+                              {Math.round(result.score * 100)}% · {text.rerank}: {result.rerankStatus ?? "skipped"}
+                              {typeof result.rerankScore === "number" ? ` · ${Math.round(result.rerankScore * 100)}%` : ""}
+                            </small>
+                            {result.matchedFields?.length ? (
+                              <div className="knowledgeHitFields">
+                                {result.matchedFields.map((field) => <span key={field}>{field}</span>)}
+                              </div>
+                            ) : null}
+                            {result.highlights?.length ? (
+                              <div className="knowledgeHighlights">
+                                {result.highlights.slice(0, 3).map((highlight, index) => (
+                                  <p key={`${highlight.field}-${index}`}>
+                                    <span>{highlight.field}</span>
+                                    {highlight.text}
+                                  </p>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="knowledgeHighlights"><span>{text.snippet}</span>{result.chunk.content.slice(0, 180)}</p>
+                            )}
+                            {result.rankReason ? <small>{result.rankReason}</small> : null}
                           </div>
                         </article>
                       ))}
@@ -249,6 +324,17 @@ export function KnowledgePanel({
       >
         <p>{deleteTarget ? text.deleteBody(deleteTarget.title) : ""}</p>
       </ConfirmDialog>
+
+      <ConfirmDialog
+        cancelLabel={text.cancel}
+        confirmLabel={text.deleteSelected}
+        open={batchDeleteOpen}
+        title={text.batchDeleteTitle}
+        onCancel={() => setBatchDeleteOpen(false)}
+        onConfirm={() => void deleteSelected()}
+      >
+        <p>{text.batchDeleteBody(selectedIds.size)}</p>
+      </ConfirmDialog>
     </section>
   );
 
@@ -291,6 +377,27 @@ export function KnowledgePanel({
     } finally {
       setSearchBusy(false);
     }
+  }
+
+  function toggleSelected(id: string, selected: boolean) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (selected) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  async function reindexSelected() {
+    if (!onReindex) return;
+    for (const id of selectedIds) await onReindex(id);
+    setSelectedIds(new Set());
+  }
+
+  async function deleteSelected() {
+    for (const id of selectedIds) await onDelete(id);
+    setSelectedIds(new Set());
+    setBatchDeleteOpen(false);
   }
 }
 
@@ -361,6 +468,11 @@ function getKnowledgeCopy(language?: string | null) {
     empty: zh ? "没有匹配的知识条目。" : "No matching knowledge items.",
     file: zh ? "文件" : "File",
     memory: zh ? "项目记忆" : "Project memory",
+    select: zh ? "选择条目" : "Select item",
+    kindFilter: zh ? "按类型筛选" : "Filter by type",
+    statusFilter: zh ? "按索引状态筛选" : "Filter by index status",
+    allKinds: zh ? "全部类型" : "All types",
+    allStatuses: zh ? "全部状态" : "All statuses",
     kind: zh ? "类型" : "Type",
     noTags: zh ? "无标签" : "No tags",
     edit: zh ? "编辑条目" : "Edit item",
@@ -378,10 +490,19 @@ function getKnowledgeCopy(language?: string | null) {
     noPreview: zh ? "还没有内容。" : "No content yet.",
     updated: zh ? "更新时间" : "Updated",
     index: zh ? "索引" : "Index",
+    lastIndexed: zh ? "最近索引" : "Last indexed",
+    source: zh ? "来源" : "Source",
     reindex: zh ? "重建索引" : "Reindex",
+    selectedCount: (count: number) => zh ? `已选择 ${count} 项` : `${count} selected`,
+    reindexSelected: zh ? "批量重建" : "Reindex selected",
+    deleteSelected: zh ? "批量删除" : "Delete selected",
+    batchDeleteTitle: zh ? "删除选中的知识条目？" : "Delete selected knowledge items?",
+    batchDeleteBody: (count: number) => zh ? `将从资料库移除 ${count} 个条目。` : `${count} items will be removed from the library.`,
     searchTest: zh ? "检索测试" : "Search test",
     searchPlaceholder: zh ? "输入要查找的知识..." : "Search stored knowledge...",
     searchAction: zh ? "检索" : "Search",
+    rerank: zh ? "重排" : "Rerank",
+    snippet: zh ? "片段" : "Snippet",
     size: zh ? "大小" : "Size",
     none: zh ? "无" : "None",
     pageLabel: (page: number, total: number) => zh ? `第 ${page} / ${total} 页` : `Page ${page} / ${total}`

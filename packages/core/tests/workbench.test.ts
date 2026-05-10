@@ -332,6 +332,46 @@ describe("ContextAssembler", () => {
     expect(context.messages.at(-1)?.role).toBe("user");
   });
 
+  it("injects only a compact knowledge brief as system background", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    await workbench.updatePreferences({ knowledgeActiveInjection: true, maxInjectedKnowledgeItems: 1 });
+    const item = await workbench.createKnowledgeItem({
+      kind: "memory",
+      title: "Routing notes",
+      content: `SCC routing notes describe stable background pointers for navigation. ${"brief filler ".repeat(30)}FULL_BODY_MARKER_SHOULD_NOT_APPEAR`,
+      tags: ["routing", "ui"]
+    });
+    const assembler = new ContextAssembler(store);
+    const context = await assembler.assemble({
+      id: "task_knowledge_brief",
+      title: "Knowledge brief",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_user",
+          taskId: "task_knowledge_brief",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "继续检查当前实现",
+          payload: {}
+        }
+      ]
+    });
+
+    expect(context.systemPrompt).toContain("## Knowledge Brief");
+    expect(context.systemPrompt).toContain(item.id);
+    expect(context.systemPrompt).toContain("Routing notes");
+    expect(context.systemPrompt).toContain("not the current user request");
+    expect(context.systemPrompt).not.toContain("FULL_BODY_MARKER_SHOULD_NOT_APPEAR");
+    expect(context.messages.at(-1)?.role).toBe("user");
+    expect(context.messages.at(-1)?.role === "user" ? context.messages.at(-1)?.content : "").toContain("继续检查当前实现");
+  });
+
   it("keeps the latest user message when a long history is truncated", () => {
     const task: TaskDetail = {
       id: "task_long_history",
@@ -2262,16 +2302,49 @@ describe("AgentWorkbench", () => {
       tags: ["permissions"]
     });
     const search = await workbench.searchKnowledge({ query: "risky approval grants", projectId: "default", limit: 2 });
+    const embeddings = await store.listKnowledgeEmbeddings();
     await workbench.grantGlobalPermission("workspace_read", "knowledge search smoke");
     const completed = await workbench.createTask("search stored approval policy");
 
     expect(item.indexStatus).toBe("indexed");
     expect(item.chunkCount).toBeGreaterThan(0);
+    expect(embeddings).toHaveLength(0);
     expect(search[0]?.item.id).toBe(item.id);
+    expect(search[0]?.matchedFields).toContain("content");
+    expect(search[0]?.rankReason).toContain("Matched");
+    expect(search[0]?.highlights?.some((highlight) => highlight.text.includes("risky tools"))).toBe(true);
+    expect(search[0]?.rerankStatus).toBe("applied");
     expect(completed.status).toBe("completed");
     expect(completed.events.some((event) => event.type === "tool_result" && String(event.payload["output"] ?? "").includes("Approval notes"))).toBe(true);
     expect(search[0]?.citation?.title).toBe("Approval notes");
     expect(search[0]?.citation?.excerpt).toContain("ask before risky tools");
+  });
+
+  it("searches knowledge by title, tags, Chinese text, code, and file name without embeddings", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    const apiItem = await workbench.createKnowledgeItem({
+      kind: "file",
+      title: "API route examples",
+      content: "export function loadKnowledgeIndex() { return 'browser style search'; }",
+      tags: ["code", "routes"],
+      fileName: "knowledge-api.ts",
+      mimeType: "text/typescript"
+    });
+    const chineseItem = await workbench.createKnowledgeItem({
+      kind: "memory",
+      title: "资料库中文说明",
+      content: "资料库需要支持中文检索、标签命中和稳定排序。",
+      tags: ["资料库", "搜索"]
+    });
+
+    expect(await store.listKnowledgeEmbeddings()).toHaveLength(0);
+    expect((await workbench.searchKnowledge({ query: "API route", projectId: "default", limit: 3 }))[0]?.item.id).toBe(apiItem.id);
+    expect((await workbench.searchKnowledge({ query: "knowledge-api.ts", projectId: "default", limit: 3 }))[0]?.matchedFields).toContain("fileName");
+    expect((await workbench.searchKnowledge({ query: "loadKnowledgeIndex", projectId: "default", limit: 3 }))[0]?.item.id).toBe(apiItem.id);
+    const chinese = await workbench.searchKnowledge({ query: "中文检索", projectId: "default", limit: 3 });
+    expect(chinese[0]?.item.id).toBe(chineseItem.id);
+    expect(chinese[0]?.highlights?.some((highlight) => highlight.text.includes("中文检索"))).toBe(true);
   });
 
   it("returns failed knowledge_search results when the knowledge store throws or is cancelled", async () => {

@@ -8,6 +8,7 @@ import type {
   KnowledgeChunk,
   KnowledgeEmbedding,
   KnowledgeItem,
+  KnowledgeSearchIndexEntry,
   McpServerConfig,
   ModelProviderRecord,
   PatternRecord,
@@ -115,6 +116,9 @@ export interface WorkbenchStore {
   saveKnowledgeEmbedding(record: KnowledgeEmbedding): Promise<void>;
   listKnowledgeEmbeddings(chunkIds?: string[]): Promise<KnowledgeEmbedding[]>;
   deleteKnowledgeEmbeddings(chunkIds: string[]): Promise<void>;
+  saveKnowledgeSearchIndexEntry(record: KnowledgeSearchIndexEntry): Promise<void>;
+  listKnowledgeSearchIndexEntries(chunkIds?: string[]): Promise<KnowledgeSearchIndexEntry[]>;
+  deleteKnowledgeSearchIndexEntries(chunkIds: string[]): Promise<void>;
   savePromptCacheStats(record: PromptCacheStats): Promise<void>;
   listPromptCacheStats(taskId?: string): Promise<PromptCacheStats[]>;
   saveIntegrationProvider(record: IntegrationProviderConfig): Promise<void>;
@@ -162,6 +166,7 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
   private readonly knowledgeItems = new Map<string, KnowledgeItem>();
   private readonly knowledgeChunks = new Map<string, KnowledgeChunk>();
   private readonly knowledgeEmbeddings = new Map<string, KnowledgeEmbedding>();
+  private readonly knowledgeSearchIndex = new Map<string, KnowledgeSearchIndexEntry>();
   private readonly promptCacheStats = new Map<string, PromptCacheStats>();
   private readonly integrationProviders = new Map<string, IntegrationProviderConfig>();
   private readonly integrationSecrets = new Map<string, EncryptedSecretValue>();
@@ -510,6 +515,7 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
   async deleteKnowledgeChunks(knowledgeId: string): Promise<void> {
     const chunkIds = [...this.knowledgeChunks.values()].filter((chunk) => chunk.knowledgeId === knowledgeId).map((chunk) => chunk.id);
     for (const chunkId of chunkIds) this.knowledgeChunks.delete(chunkId);
+    await this.deleteKnowledgeSearchIndexEntries(chunkIds);
     await this.deleteKnowledgeEmbeddings(chunkIds);
   }
 
@@ -526,6 +532,24 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
     const ids = new Set(chunkIds);
     for (const [id, record] of this.knowledgeEmbeddings) {
       if (ids.has(record.chunkId)) this.knowledgeEmbeddings.delete(id);
+    }
+  }
+
+  async saveKnowledgeSearchIndexEntry(record: KnowledgeSearchIndexEntry): Promise<void> {
+    this.knowledgeSearchIndex.set(record.id, clone(record));
+  }
+
+  async listKnowledgeSearchIndexEntries(chunkIds?: string[]): Promise<KnowledgeSearchIndexEntry[]> {
+    const ids = chunkIds ? new Set(chunkIds) : null;
+    return [...this.knowledgeSearchIndex.values()]
+      .filter((record) => !ids || ids.has(record.chunkId))
+      .map((record) => clone(record));
+  }
+
+  async deleteKnowledgeSearchIndexEntries(chunkIds: string[]): Promise<void> {
+    const ids = new Set(chunkIds);
+    for (const [id, record] of this.knowledgeSearchIndex) {
+      if (ids.has(record.chunkId)) this.knowledgeSearchIndex.delete(id);
     }
   }
 
@@ -641,6 +665,9 @@ export function defaultPreferences(): UserPreferences {
     startupView: "last_task",
     skillAutoInject: true,
     maxInjectedSkills: 3,
+    knowledgeActiveInjection: true,
+    maxInjectedKnowledgeItems: 3,
+    knowledgeRerankProviderId: undefined,
     mcpApprovalMode: "confirm_dangerous",
     sanitizeSensitiveData: true,
     encryptStorage: false,

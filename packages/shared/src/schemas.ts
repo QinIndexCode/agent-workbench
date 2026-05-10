@@ -521,6 +521,9 @@ export const UserPreferencesSchema = z.object({
   startupView: z.enum(["last_task", "last_folder", "new_task"]).optional(),
   skillAutoInject: z.boolean().default(true),
   maxInjectedSkills: z.number().int().positive().default(3),
+  knowledgeActiveInjection: z.boolean().default(true),
+  maxInjectedKnowledgeItems: z.number().int().min(0).max(10).default(3),
+  knowledgeRerankProviderId: z.string().optional(),
   mcpApprovalMode: z.enum(["confirm_each", "confirm_dangerous", "auto"]).default("confirm_dangerous"),
   sanitizeSensitiveData: z.boolean().default(true),
   encryptStorage: z.boolean().default(false),
@@ -797,6 +800,20 @@ export const KnowledgeEmbeddingSchema = z.object({
   createdAt: z.string()
 });
 
+export const KnowledgeSearchFieldSchema = z.enum(["title", "heading", "content", "tags", "fileName", "sourceUri"]);
+
+export const KnowledgeSearchIndexEntrySchema = z.object({
+  id: z.string(),
+  knowledgeId: z.string(),
+  chunkId: z.string(),
+  projectId: z.string(),
+  term: z.string(),
+  field: KnowledgeSearchFieldSchema,
+  frequency: z.number().int().positive(),
+  positions: z.array(z.number().int().nonnegative()).default([]),
+  createdAt: z.string()
+});
+
 export const KnowledgeSearchRequestSchema = z
   .object({
     query: z.string().min(1),
@@ -809,6 +826,18 @@ export const KnowledgeSearchResultSchema = z.object({
   item: KnowledgeItemSchema,
   chunk: KnowledgeChunkSchema,
   score: z.number().min(0).max(1),
+  rankReason: z.string().optional(),
+  highlights: z
+    .array(
+      z.object({
+        field: KnowledgeSearchFieldSchema,
+        text: z.string()
+      })
+    )
+    .optional(),
+  matchedFields: z.array(KnowledgeSearchFieldSchema).optional(),
+  rerankScore: z.number().min(0).max(1).optional(),
+  rerankStatus: z.enum(["applied", "skipped", "failed"]).optional(),
   citation: z
     .object({
       knowledgeId: z.string(),

@@ -1,4 +1,4 @@
-import type { ConversationSummary, ModelProviderRecord, SkillRecord, TaskAttachment, TaskDetail, TaskEvent, ToolCall, UserPreferences } from "@scc/shared";
+import type { ConversationSummary, KnowledgeItem, ModelProviderRecord, SkillRecord, TaskAttachment, TaskDetail, TaskEvent, ToolCall, UserPreferences } from "@scc/shared";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -21,6 +21,7 @@ const MAX_SKILL_LOADS = 3;
 const SKILL_CONTENT_TRUNCATE = 1200;
 const MAX_PROJECT_MEMORIES = 5;
 const PROJECT_MEMORY_TRUNCATE = 1000;
+const MAX_KNOWLEDGE_BRIEF_SUMMARY = 220;
 const MAX_MCP_SERVERS_DISPLAY = 12;
 const MAX_INTEGRATIONS_DISPLAY = 12;
 const MAX_USER_SUMMARY_TRUNCATE = 2200;
@@ -164,6 +165,12 @@ export class ContextAssembler {
     if (projectLayer) {
       systemLayers.push(projectLayer);
       usedTokens += estimateTokens(projectLayer);
+    }
+
+    const knowledgeBriefLayer = await this.buildKnowledgeBriefLayer(task, preferences);
+    if (knowledgeBriefLayer) {
+      systemLayers.push(knowledgeBriefLayer);
+      usedTokens += estimateTokens(knowledgeBriefLayer);
     }
 
     const attachmentLayer = await this.buildAttachmentLayer(task.id);
@@ -471,6 +478,24 @@ export class ContextAssembler {
       "## Project Context",
       ...memories.slice(0, 5).map((memory) => `### ${memory.title} [${memory.category}]\n${memory.content.slice(0, 1000)}`)
     ].join("\n\n");
+  }
+
+  private async buildKnowledgeBriefLayer(task: TaskDetail, preferences: UserPreferences): Promise<string> {
+    if (!preferences.knowledgeActiveInjection || preferences.maxInjectedKnowledgeItems <= 0) return "";
+    const projectId = task.folderId || "default";
+    const projectItems = await this.store.listKnowledgeItems(projectId);
+    const fallbackItems = projectId === "default" ? [] : await this.store.listKnowledgeItems("default");
+    const byId = new Map<string, KnowledgeItem>();
+    for (const item of [...projectItems, ...fallbackItems]) byId.set(item.id, item);
+    const items = [...byId.values()].sort(compareKnowledgeBriefItems);
+    if (items.length === 0) return "";
+    const selected = items.slice(0, preferences.maxInjectedKnowledgeItems);
+    return [
+      "## Knowledge Brief",
+      `Library knowledge available for this project scope: ${items.length} item(s).`,
+      "These are compact candidate background pointers, not the current user request and not proof of live file state. Use knowledge_search when full evidence or exact wording is needed.",
+      ...selected.map(formatKnowledgeBriefItem)
+    ].join("\n");
   }
 
   private async buildAttachmentLayer(taskId: string): Promise<string> {
@@ -1245,6 +1270,34 @@ function defaultProjectMemoryContent(workRoot: string): string {
     "## Open Risks",
     "- Add risks only when they remain relevant across future tasks."
   ].join("\n");
+}
+
+function compareKnowledgeBriefItems(left: KnowledgeItem, right: KnowledgeItem): number {
+  const statusDelta = knowledgeStatusRank(right) - knowledgeStatusRank(left);
+  if (statusDelta !== 0) return statusDelta;
+  const chunkDelta = right.chunkCount - left.chunkCount;
+  if (chunkDelta !== 0) return chunkDelta;
+  const indexedDelta = String(right.lastIndexedAt ?? "").localeCompare(String(left.lastIndexedAt ?? ""));
+  if (indexedDelta !== 0) return indexedDelta;
+  return right.updatedAt.localeCompare(left.updatedAt);
+}
+
+function knowledgeStatusRank(item: KnowledgeItem): number {
+  if (item.indexStatus === "indexed") return 3;
+  if (item.indexStatus === "pending") return 2;
+  if (item.indexStatus === "metadata_only") return 1;
+  return 0;
+}
+
+function formatKnowledgeBriefItem(item: KnowledgeItem): string {
+  const tags = item.tags.length > 0 ? item.tags.slice(0, 6).join(", ") : "none";
+  const source = item.fileName ?? item.sourceUri ?? item.kind;
+  const summary = truncate(item.content.replace(/\s+/g, " ").trim(), MAX_KNOWLEDGE_BRIEF_SUMMARY);
+  return [
+    `- ${item.id}: ${item.title}`,
+    `  kind=${item.kind}; status=${item.indexStatus}; chunks=${item.chunkCount}; source=${source}; tags=${tags}`,
+    summary ? `  summary=${summary}` : ""
+  ].filter(Boolean).join("\n");
 }
 
 function compareSkillCatalogEntries(left: SkillRecord, right: SkillRecord): number {
