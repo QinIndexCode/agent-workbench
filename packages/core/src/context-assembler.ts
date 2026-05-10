@@ -2,7 +2,6 @@ import type { ConversationSummary, ModelProviderRecord, SkillRecord, TaskAttachm
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { findRelevantSkills } from "./experience.js";
 import { createId, nowIso } from "./ids.js";
 import type { WorkbenchStore } from "./store.js";
 import {
@@ -11,7 +10,6 @@ import {
   taskGraphFromEvents,
   type AttentionPacket
 } from "./task-graph.js";
-import { latestUserText } from "./task-events.js";
 import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
 
 const DEFAULT_MAX_RESERVED_RESPONSE_TOKENS = 16000;
@@ -150,7 +148,7 @@ export class ContextAssembler {
     systemLayers.push(continuityLayer);
     usedTokens += estimateTokens(continuityLayer);
 
-    const skillLayer = await this.buildSkillMetaLayer(task, preferences);
+    const skillLayer = await this.buildSkillMetaLayer(preferences);
     if (skillLayer) {
       systemLayers.push(skillLayer);
       usedTokens += estimateTokens(skillLayer);
@@ -296,17 +294,16 @@ export class ContextAssembler {
     return [loaded, unavailable].filter(Boolean).join("\n\n");
   }
 
-  private async buildSkillMetaLayer(task: TaskDetail, preferences: UserPreferences): Promise<string> {
+  private async buildSkillMetaLayer(preferences: UserPreferences): Promise<string> {
     if (!preferences.skillAutoInject) return "";
-    const allSkills = (await this.store.listSkills())
-      .filter((skill) => skill.status === "active" || skill.status === "candidate")
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    const relevant = findRelevantSkills(latestUserText(task), allSkills, preferences.maxInjectedSkills);
-    const skills = uniqueSkills([...relevant, ...allSkills]).slice(0, preferences.maxInjectedSkills);
+    const skills = (await this.store.listSkills())
+      .filter((skill) => skill.status === "active")
+      .sort(compareSkillCatalogEntries)
+      .slice(0, preferences.maxInjectedSkills);
     if (skills.length === 0) return "";
     return [
       "## Available Skills",
-      "Skill metadata is always safe to inspect. Call use_skill with name set to the skill ID or exact title only when a skill is directly relevant and you need its full guidance.",
+      "This is a bounded catalog of active skills. It is not selected from the latest user text. Call use_skill with name set to the skill ID or exact title only when you decide the full guidance is needed.",
       ...skills.map((skill) => {
         const success = Math.round(skill.stats.successRate * 100);
         return [
@@ -1232,13 +1229,14 @@ function defaultProjectMemoryContent(workRoot: string): string {
   ].join("\n");
 }
 
-function uniqueSkills(skills: SkillRecord[]): SkillRecord[] {
-  const seen = new Set<string>();
-  return skills.filter((skill) => {
-    if (seen.has(skill.id)) return false;
-    seen.add(skill.id);
-    return true;
-  });
+function compareSkillCatalogEntries(left: SkillRecord, right: SkillRecord): number {
+  const successDelta = right.stats.successRate - left.stats.successRate;
+  if (Math.abs(successDelta) > 0.001) return successDelta;
+  const lastUsedDelta = String(right.lastUsedAt ?? "").localeCompare(String(left.lastUsedAt ?? ""));
+  if (lastUsedDelta !== 0) return lastUsedDelta;
+  const updatedDelta = right.updatedAt.localeCompare(left.updatedAt);
+  if (updatedDelta !== 0) return updatedDelta;
+  return left.id.localeCompare(right.id);
 }
 
 function findActiveModelProvider(providers: ModelProviderRecord[], activeId?: string): ModelProviderRecord | undefined {

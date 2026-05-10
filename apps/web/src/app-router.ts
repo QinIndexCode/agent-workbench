@@ -11,7 +11,7 @@ export type AppRoute =
   | { view: "settings"; section: SettingsSection }
   | { view: "docs" };
 
-const librarySections = new Set<LibrarySection>(["skills", "curator", "knowledge", "reflections"]);
+const librarySections = new Set<LibrarySection>(["skills", "curator", "knowledge", "memory", "reflections"]);
 const settingsSections = new Set<SettingsSection>(["providers", "permissions", "mcp", "integrations", "scheduled", "search", "preferences"]);
 
 export function useAppRoute(): [AppRoute, (route: AppRoute, options?: { replace?: boolean }) => void] {

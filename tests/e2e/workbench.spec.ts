@@ -203,6 +203,19 @@ test("manages model providers and MCP servers from settings", async ({ page }, t
   await expect(mimoRow).toHaveCount(0);
 });
 
+test("loads the library memory route directly", async ({ page }) => {
+  await page.goto("/library/memory");
+  await expect(page.getByRole("heading", { name: "Library" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Memory" })).toBeVisible();
+  await expect(page.getByLabel("USER.md content")).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Memory" })).toBeVisible();
+  const metrics = await page.evaluate(() => ({
+    horizontalOverflow: Math.max(document.documentElement.scrollWidth - document.documentElement.clientWidth, document.body.scrollWidth - document.body.clientWidth)
+  }));
+  expect(metrics.horizontalOverflow).toBeLessThanOrEqual(1);
+});
+
 test("covers library, reflection, and history management", async ({ page, request }, testInfo) => {
   const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
   const taskResponse = await request.post(`${apiBase}/api/tasks`, {
@@ -236,6 +249,29 @@ test("covers library, reflection, and history management", async ({ page, reques
   await knowledgeDialog.getByRole("button", { name: "Save" }).click();
   const knowledgeRow = page.locator(".knowledgeRow").filter({ hasText: `E2E Knowledge ${suffix}` });
   await expect(knowledgeRow).toBeVisible();
+
+  await page.locator(".libraryNav").getByRole("button", { name: "Memory" }).click();
+  await expect(page.getByRole("heading", { name: "Memory" })).toBeVisible();
+  await expect(page.getByLabel("USER.md content")).toBeVisible();
+  await page.getByLabel("USER.md content").fill("# USER.md\n- E2E prefers concise evidence.");
+  await page.locator(".libraryPreviewHeader").getByLabel("Save").click();
+  await page.getByRole("button", { name: /Project memory/ }).first().click();
+  await expect(page.getByLabel("MEMORY.md content")).toBeVisible();
+  await page.getByLabel("MEMORY.md content").fill("# MEMORY.md\n- E2E memory route is wired.\n- E2E memory route is wired.");
+  await page.locator(".libraryPreviewHeader").getByLabel("Save").click();
+  await page.getByLabel("Compact project memory").click();
+  await expect(page.getByText(/Compacted project memory/)).toBeVisible();
+  await page.getByRole("button", { name: "New project memory" }).click();
+  const memoryDialog = page.getByRole("dialog", { name: "Create project memory" });
+  await memoryDialog.getByLabel("Title").fill(`E2E Memory ${suffix}`);
+  await memoryDialog.getByLabel("Tags").fill("e2e, memory");
+  await memoryDialog.getByLabel("Content").fill("Memory side surface is wired through Library.");
+  await memoryDialog.getByRole("button", { name: "Save" }).click();
+  const memoryRow = page.locator(".knowledgeRow").filter({ hasText: `E2E Memory ${suffix}` });
+  await expect(memoryRow).toBeVisible();
+  await memoryRow.getByLabel(`Delete E2E Memory ${suffix}`).click();
+  await page.locator(".confirmDialog").getByRole("button", { name: "Delete" }).click();
+  await expect(memoryRow).toHaveCount(0);
 
   await page.getByRole("button", { name: /Reflections/ }).click();
   await page.getByRole("button", { name: "Run reflection" }).click();

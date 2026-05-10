@@ -2,20 +2,24 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GlobalPermissionGrant, KnowledgeItem, ModelProviderRecord, ScheduledTask, SkillRecord, TaskDetail, TaskFolderRecord, ToolApproval, UserPreferences } from "@scc/shared";
+import type { GlobalPermissionGrant, IntegrationProviderConfig, KnowledgeItem, MemoryDocument, MemoryDocumentCompactResult, ModelProviderRecord, ProjectMemory, RiskCategory, ScheduledTask, SkillRecord, TaskDetail, TaskEvent, TaskFolderRecord, ToolApproval, UserPreferences, WebSearchProviderConfig } from "@scc/shared";
 import { App } from "./App.js";
 import { ApprovalCard } from "./components/ApprovalCard.js";
 import { Composer } from "./components/Composer.js";
 import { CompactList, LearningPanel } from "./components/LearningPanel.js";
 import { McpPanel } from "./components/McpPanel.js";
 import { KnowledgePanel } from "./components/KnowledgePanel.js";
+import { IntegrationsPanel } from "./components/IntegrationsPanel.js";
 import { ModelProvidersPanel } from "./components/ModelProvidersPanel.js";
 import { PermissionsPanel } from "./components/PermissionsPanel.js";
+import { ProjectMemoryPanel } from "./components/ProjectMemoryPanel.js";
 import { SkillPanel } from "./components/SkillPanel.js";
 import { ScheduledTasksPanel } from "./components/ScheduledTasksPanel.js";
 import { TaskList } from "./components/TaskList.js";
 import { TaskThread } from "./components/TaskThread.js";
 import { Timeline } from "./components/Timeline.js";
+import { WebSearchPanel } from "./components/WebSearchPanel.js";
+import { coalesceRealtimeEvents, parseRealtimeMessage } from "./useWorkbenchData.js";
 
 afterEach(() => {
   cleanup();
@@ -35,6 +39,13 @@ describe("Composer", () => {
     fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "new guidance" } });
     fireEvent.click(screen.getByLabelText("Send"));
     expect(onSubmit).toHaveBeenCalledWith("new guidance");
+  });
+
+  it("keeps the running primary action as stop instead of a loader", () => {
+    const { container } = render(<Composer busy={true} running={true} mode="guidance" onSubmit={vi.fn()} onStop={vi.fn()} />);
+
+    expect(screen.getByLabelText("Stop")).toBeDisabled();
+    expect(container.querySelector(".composerPrimaryButton .spin")).toBeNull();
   });
 
   it("lets users switch models and quick global permissions from the composer", () => {
@@ -577,6 +588,117 @@ describe("Workbench components", () => {
     fireEvent.click(thinking);
     expect(thinking).toHaveAttribute("aria-expanded", "true");
     expect(container.querySelector(".thinkingDetails")).toHaveClass("open");
+    expect(container.querySelector(".timelineItemShell.fromLeft .event.assistant_delta")).not.toBeNull();
+  });
+
+  it("shows a lightweight running indicator while a response is still open", () => {
+    const { container } = render(
+      <Timeline
+        task={{
+          ...task,
+          status: "running",
+          events: [
+            {
+              id: "event_user_running",
+              taskId: "task_1",
+              type: "user_message",
+              createdAt: new Date().toISOString(),
+              summary: "Please check this",
+              payload: {}
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText("think...")).toBeInTheDocument();
+    expect(container.querySelector(".event.running_status .thinkingDots")).not.toBeNull();
+  });
+
+  it("coalesces burst streaming deltas before appending them to live task state", () => {
+    const base: TaskEvent = {
+      id: "event_delta_0",
+      taskId: "task_1",
+      type: "assistant_delta",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      summary: "chunk-0",
+      payload: { streamId: "stream_fast", delta: "chunk-0" }
+    };
+    const burst: TaskEvent[] = [
+      {
+        id: "event_delta_1",
+        taskId: "task_1",
+        type: "assistant_delta",
+        createdAt: "2026-01-01T00:00:00.010Z",
+        summary: "chunk-1",
+        payload: { streamId: "stream_fast", delta: "chunk-1" }
+      },
+      {
+        id: "event_delta_2",
+        taskId: "task_1",
+        type: "assistant_delta",
+        createdAt: "2026-01-01T00:00:00.020Z",
+        summary: "chunk-2",
+        payload: { streamId: "stream_fast", delta: "chunk-2" }
+      },
+      {
+        id: "event_tool",
+        taskId: "task_1",
+        type: "tool_result",
+        createdAt: "2026-01-01T00:00:00.030Z",
+        summary: "Tool completed",
+        payload: { toolName: "read_file", ok: true, output: "{}" }
+      }
+    ];
+
+    const merged = coalesceRealtimeEvents([base], burst);
+
+    expect(merged.events).toHaveLength(2);
+    expect(merged.acceptedEvents).toHaveLength(3);
+    expect(merged.events[0]?.summary).toBe("chunk-0chunk-1chunk-2");
+    expect(merged.events[0]?.payload["delta"]).toBe("chunk-0chunk-1chunk-2");
+    expect(merged.events[1]?.type).toBe("tool_result");
+  });
+
+  it("parses websocket heartbeat messages without treating them as task events", () => {
+    expect(parseRealtimeMessage(JSON.stringify({ type: "heartbeat", taskId: "task_1", timestamp: "2026-01-01T00:00:00.000Z" }))).toEqual({
+      type: "heartbeat",
+      taskId: "task_1",
+      timestamp: "2026-01-01T00:00:00.000Z"
+    });
+  });
+
+  it("uses side-aware animation shells for user and assistant cards", () => {
+    const { container } = render(
+      <Timeline
+        task={{
+          ...task,
+          events: [
+            {
+              id: "event_user_side",
+              taskId: "task_1",
+              type: "user_message",
+              createdAt: new Date().toISOString(),
+              summary: "请帮我看一下这里",
+              payload: {}
+            },
+            {
+              id: "event_assistant_side",
+              taskId: "task_1",
+              type: "assistant_message",
+              createdAt: new Date().toISOString(),
+              summary: "我先说明当前观察。",
+              payload: {}
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(container.querySelector(".timelineItemShell.fromRight .event.user_message")).not.toBeNull();
+    expect(container.querySelector(".timelineItemShell.fromLeft .event.assistant_message")).not.toBeNull();
   });
 
   it("hides thinking events when the user preference disables thinking display", () => {
@@ -928,6 +1050,190 @@ describe("Workbench components", () => {
     await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ title: "Fresh note", kind: "memory" })));
   });
 
+  it("manages user and project memory documents plus structured memories", async () => {
+    const now = new Date().toISOString();
+    const userDoc: MemoryDocument = {
+      scope: "user",
+      path: "memory/USER.md",
+      fileName: "USER.md",
+      content: "# USER.md\n- Prefer concise evidence.",
+      charLimit: 12000,
+      entryCharLimit: 600,
+      updatedAt: now,
+    };
+    const projectDoc: MemoryDocument = {
+      scope: "project",
+      folderId: "default",
+      workRoot: "D:/repo",
+      path: "memory/projects/default/MEMORY.md",
+      fileName: "MEMORY.md",
+      content: "# MEMORY.md\n- Keep route tests current.",
+      charLimit: 12000,
+      entryCharLimit: 600,
+      updatedAt: now,
+    };
+    const memory: ProjectMemory = {
+      id: "project_memory_1",
+      projectId: "default",
+      title: "Validation convention",
+      content: "Trace files stay outside normal UI.",
+      category: "convention",
+      tags: ["trace", "ui"],
+      createdAt: now,
+      updatedAt: now,
+    };
+    const compactResult: MemoryDocumentCompactResult = {
+      document: projectDoc,
+      beforeChars: 80,
+      afterChars: 64,
+      removedLines: 1,
+    };
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    const onDelete = vi.fn().mockResolvedValue(undefined);
+    const onLoadProjectMemory = vi.fn().mockResolvedValue(projectDoc);
+    const onLoadUserProfile = vi.fn().mockResolvedValue(userDoc);
+    const onSaveProjectMemory = vi.fn().mockResolvedValue(projectDoc);
+    const onSaveUserProfile = vi.fn().mockResolvedValue(userDoc);
+    const onCompactProjectMemory = vi.fn().mockResolvedValue(compactResult);
+
+    render(
+      <ProjectMemoryPanel
+        activeFolderId="default"
+        folders={[{ id: "default", name: "Default", rootPath: "D:/repo", isDefault: true, exists: true, sortOrder: 0, createdAt: now, updatedAt: now }]}
+        memories={[memory]}
+        onCompactProjectMemory={onCompactProjectMemory}
+        onCreate={onCreate}
+        onDelete={onDelete}
+        onLoadProjectMemory={onLoadProjectMemory}
+        onLoadUserProfile={onLoadUserProfile}
+        onSaveProjectMemory={onSaveProjectMemory}
+        onSaveUserProfile={onSaveUserProfile}
+      />,
+    );
+
+    expect(await screen.findByLabelText("USER.md content")).toHaveValue(userDoc.content);
+    fireEvent.change(screen.getByLabelText("USER.md content"), {
+      target: { value: "# USER.md\n- Prefer direct answers." },
+    });
+    fireEvent.click(screen.getByLabelText("Save"));
+    await waitFor(() => expect(onSaveUserProfile).toHaveBeenCalledWith("# USER.md\n- Prefer direct answers."));
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Project memory/ })[0]!);
+    expect(await screen.findByLabelText("MEMORY.md content")).toHaveValue(projectDoc.content);
+    fireEvent.change(screen.getByLabelText("MEMORY.md content"), {
+      target: { value: "# MEMORY.md\n- Keep route tests current." },
+    });
+    fireEvent.click(screen.getByLabelText("Save"));
+    await waitFor(() => expect(onSaveProjectMemory).toHaveBeenCalledWith("default", "# MEMORY.md\n- Keep route tests current."));
+
+    fireEvent.click(screen.getByLabelText("Compact project memory"));
+    await waitFor(() => expect(onCompactProjectMemory).toHaveBeenCalledWith("default"));
+    expect(await screen.findByText(/Compacted project memory/)).toBeInTheDocument();
+
+    expect(screen.getByText("Validation convention")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "New project memory" }));
+    const dialog = screen.getByRole("dialog", { name: "Create project memory" });
+    fireEvent.change(within(dialog).getByLabelText("Title"), {
+      target: { value: "Runtime architecture" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Tags"), {
+      target: { value: "runtime, trace" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Content"), {
+      target: { value: "Trace files stay outside normal UI." },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith({
+        projectId: "default",
+        title: "Runtime architecture",
+        content: "Trace files stay outside normal UI.",
+        category: "architecture",
+        tags: ["runtime", "trace"],
+      }),
+    );
+
+    fireEvent.click(screen.getByLabelText("Delete Validation convention"));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Delete project memory?" })).getByRole("button", { name: "Delete" }));
+    expect(onDelete).toHaveBeenCalledWith("project_memory_1");
+  });
+
+  it("manages web search providers with accessible row actions", async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const onDelete = vi.fn().mockResolvedValue(undefined);
+    const provider: WebSearchProviderConfig = {
+      id: "search_brave",
+      label: "Brave Search",
+      kind: "brave",
+      apiKeyRef: { secretId: "search_brave", last4: "1234", updatedAt: new Date().toISOString() },
+      enabled: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    render(<WebSearchPanel providers={[provider]} language="en-US" onCreate={onCreate} onDelete={onDelete} onUpdate={onUpdate} />);
+
+    expect(screen.getByText("Brave Search")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Edit search provider Brave Search"));
+    fireEvent.change(screen.getByDisplayValue("Brave Search"), { target: { value: "Brave Updated" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith("search_brave", expect.objectContaining({ label: "Brave Updated", kind: "brave" })));
+
+    fireEvent.click(screen.getByLabelText("Delete search provider Brave Search"));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Delete search provider" })).getByRole("button", { name: "Delete" }));
+    expect(onDelete).toHaveBeenCalledWith("search_brave");
+  });
+
+  it("manages integration rows without exposing secret values", async () => {
+    const now = new Date().toISOString();
+    const onConnect = vi.fn().mockResolvedValue(undefined);
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    const onDelete = vi.fn().mockResolvedValue(undefined);
+    const onDisconnect = vi.fn().mockResolvedValue(undefined);
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const provider: IntegrationProviderConfig = {
+      id: "integration_discord",
+      kind: "discord",
+      label: "Discord Ops",
+      status: "disabled",
+      enabled: false,
+      botTokenRef: { secretId: "integration_discord:botToken", last4: "9876", updatedAt: now },
+      defaultFolderId: "default",
+      defaultPermissionPreset: "ask",
+      createdAt: now,
+      updatedAt: now
+    };
+
+    render(
+      <IntegrationsPanel
+        folders={defaultFolders()}
+        integrations={[provider]}
+        language="en-US"
+        onConnect={onConnect}
+        onCreate={onCreate}
+        onDelete={onDelete}
+        onDisconnect={onDisconnect}
+        onUpdate={onUpdate}
+      />
+    );
+
+    expect(screen.getByText("Discord Ops")).toBeInTheDocument();
+    expect(screen.getByText(/9876/)).toBeInTheDocument();
+    expect(screen.queryByText(/secret-token/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Connect Discord Ops"));
+    expect(onConnect).toHaveBeenCalledWith("integration_discord");
+
+    fireEvent.click(screen.getByLabelText("Edit integration Discord Ops"));
+    fireEvent.change(screen.getByDisplayValue("Discord Ops"), { target: { value: "Discord Support" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith("integration_discord", expect.objectContaining({ label: "Discord Support" })));
+
+    fireEvent.click(screen.getByLabelText("Delete Discord Ops"));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Delete integration?" })).getByRole("button", { name: "Delete" }));
+    expect(onDelete).toHaveBeenCalledWith("integration_discord");
+  });
+
   it("renders compact governance rows", () => {
     render(<CompactList title="Skills" rows={[{ id: "skill_1", label: "Host observation", meta: "active" }]} />);
     expect(screen.getByText("Host observation")).toBeInTheDocument();
@@ -1162,6 +1468,128 @@ describe("Workbench components", () => {
     expect(createTask).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a created running task visible when transcript hydration times out", async () => {
+    const now = new Date().toISOString();
+    const created: TaskDetail = {
+      ...task,
+      id: "task_long",
+      title: "Long output",
+      status: "running",
+      approvals: [],
+      events: [
+        {
+          id: "event_user_long",
+          taskId: "task_long",
+          type: "user_message",
+          createdAt: now,
+          summary: "帮我检查这个项目为什么慢",
+          payload: {}
+        }
+      ]
+    };
+    let currentTasks: TaskDetail[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/health") return jsonResponse({ ok: true });
+        if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+        if (url === "/api/preferences") return jsonResponse(defaultPreferences("zh-CN"));
+        if (url === "/api/tasks" && method === "POST") {
+          currentTasks = [created];
+          return jsonResponse(created);
+        }
+        if (url === "/api/tasks") return jsonResponse(currentTasks);
+        if (url === "/api/tasks/task_long" || url.startsWith("/api/tasks/task_long?")) return jsonResponse(created);
+        if (url === "/api/tasks/task_long/transcript") throw new Error("后端响应超时。模型处理时间较长，请稍后重试或检查后端服务状态。");
+        if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+        return jsonResponse([]);
+      })
+    );
+
+    render(<App />);
+    expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "帮我检查这个项目为什么慢" } });
+    await waitFor(() => expect(screen.getByLabelText("发送")).not.toBeDisabled());
+    fireEvent.click(screen.getByLabelText("发送"));
+
+    expect(await screen.findByRole("heading", { name: "Long output" })).toBeInTheDocument();
+    expect(screen.getByLabelText("think...")).toBeInTheDocument();
+    expect(screen.queryByText(/后端响应超时/)).not.toBeInTheDocument();
+  });
+
+  it("waits for pending permission preset updates before starting a new task", async () => {
+    const now = new Date().toISOString();
+    const created: TaskDetail = {
+      ...task,
+      id: "task_permission",
+      title: "Permission check",
+      status: "running",
+      approvals: [],
+      events: []
+    };
+    const grants: GlobalPermissionGrant[] = [];
+    const grantCalls: RiskCategory[] = [];
+    const createCalls: string[] = [];
+    let releasePermissionMutation!: () => void;
+    const permissionGate = new Promise<void>((resolve) => {
+      releasePermissionMutation = resolve;
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/health") return jsonResponse({ ok: true });
+        if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+        if (url === "/api/preferences") return jsonResponse(defaultPreferences("en-US"));
+        if (url === "/api/permissions/global" && method === "POST") {
+          const body = JSON.parse(String(init?.body)) as { riskCategory: RiskCategory };
+          grantCalls.push(body.riskCategory);
+          await permissionGate;
+          const grant: GlobalPermissionGrant = {
+            id: `grant_${body.riskCategory}`,
+            riskCategory: body.riskCategory,
+            reason: "test",
+            grantedBy: "test",
+            grantedAt: now
+          };
+          grants.push(grant);
+          return jsonResponse(grant);
+        }
+        if (url === "/api/permissions/global") return jsonResponse(grants);
+        if (url === "/api/tasks" && method === "POST") {
+          const body = JSON.parse(String(init?.body)) as { goal: string };
+          createCalls.push(body.goal);
+          return jsonResponse({ ...created, events: [{ id: "event_goal", taskId: created.id, type: "user_message", createdAt: now, summary: body.goal, payload: {} }] });
+        }
+        if (url === "/api/tasks") return jsonResponse(createCalls.length > 0 ? [created] : []);
+        if (url === "/api/tasks/task_permission" || url.startsWith("/api/tasks/task_permission?")) return jsonResponse(created);
+        if (url === "/api/tasks/task_permission/transcript") return jsonResponse(created.events);
+        if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+        return jsonResponse([]);
+      })
+    );
+
+    render(<App />);
+    expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Choose permission scope"));
+    fireEvent.click(screen.getByText("Read only"));
+    await waitFor(() => expect(grantCalls).toEqual(["host_observation"]));
+
+    fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "check this folder" } });
+    await waitFor(() => expect(screen.getByLabelText("Send")).not.toBeDisabled());
+    fireEvent.click(screen.getByLabelText("Send"));
+    expect(createCalls).toHaveLength(0);
+
+    releasePermissionMutation();
+    await waitFor(() => expect(grantCalls).toEqual(["host_observation", "workspace_read"]));
+    await waitFor(() => expect(createCalls).toEqual(["check this folder"]));
+  });
+
   it("renders the full transcript endpoint instead of rebuilding chat from windowed events", async () => {
     const now = new Date().toISOString();
     const windowedTask: TaskDetail = {
@@ -1353,4 +1781,54 @@ function jsonResponse(value: unknown): Response {
     json: async () => value,
     text: async () => JSON.stringify(value)
   } as Response;
+}
+
+function defaultFolders(): TaskFolderRecord[] {
+  return [{ id: "default", name: "Default", sortOrder: 0, isDefault: true, exists: true, rootPath: process.cwd(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }];
+}
+
+function defaultPreferences(language: "zh-CN" | "en-US"): UserPreferences {
+  return {
+    llmProvider: "mimo",
+    defaultModel: "mimo-v2.5",
+    providerBaseUrl: "",
+    contextMode: "auto",
+    customModelContextWindow: 128000,
+    maxTokensPerRequest: 128000,
+    autoApprove: "none",
+    showThinking: true,
+    language,
+    theme: "dark",
+    agentTone: "balanced",
+    agentRole: "Pragmatic engineering assistant",
+    responseDetail: "normal",
+    skillAutoInject: true,
+    maxInjectedSkills: 3,
+    mcpApprovalMode: "confirm_dangerous",
+    sanitizeSensitiveData: true,
+    encryptStorage: false,
+    modelRoute: { fallbackProviderIds: [] },
+    updatedAt: new Date().toISOString()
+  } as UserPreferences;
+}
+
+function isWorkbenchCollectionEndpoint(url: string): boolean {
+  return (
+    url === "/api/experiences" ||
+    url === "/api/task-memories" ||
+    url === "/api/patterns" ||
+    url === "/api/skills" ||
+    url === "/api/skills/duplicates" ||
+    url === "/api/skill-conflicts" ||
+    url === "/api/skill-curator" ||
+    url === "/api/reflections" ||
+    url === "/api/project-memories" ||
+    url === "/api/mcp/servers" ||
+    url === "/api/mcp/tools" ||
+    url === "/api/knowledge" ||
+    url === "/api/model-providers" ||
+    url === "/api/scheduled-tasks" ||
+    url === "/api/web-search/providers" ||
+    url === "/api/prompt-cache-stats"
+  );
 }

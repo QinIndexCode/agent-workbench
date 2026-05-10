@@ -375,23 +375,6 @@ export function mergeSkillRecords(target: SkillRecord, source: SkillRecord): Ski
   };
 }
 
-export function findRelevantSkills(queryText: string, skills: SkillRecord[], limit = 3): SkillRecord[] {
-  return skills
-    .map(normalizeSkillRecord)
-    .filter(
-      (skill) =>
-        skill.status === "active" &&
-        skill.stats.successRate >= 0.6 &&
-        skill.body.length > 20 &&
-        !/could not be loaded|model provider failed|no provider is configured/i.test(skill.body)
-    )
-    .map((skill) => ({ skill, relevance: calculateRelevance(queryText, skill) }))
-    .filter((item) => item.relevance > 0.3)
-    .sort((a, b) => compositeScore(b.skill, b.relevance) - compositeScore(a.skill, a.relevance))
-    .slice(0, limit)
-    .map((item) => item.skill);
-}
-
 export function detectSkillConflicts(skill: SkillRecord, existingSkills: SkillRecord[]): SkillConflict[] {
   const conflicts: SkillConflict[] = [];
   const normalizedSkill = normalizeSkillRecord(skill);
@@ -434,20 +417,6 @@ export function exportSkill(skill: SkillRecord): { markdown: string; manifest: R
       exportedAt: nowIso()
     }
   };
-}
-
-export function calculateRelevance(queryText: string, skill: SkillRecord): number {
-  skill = normalizeSkillRecord(skill);
-  const titleWords = new Set(tokenize(queryText));
-  const keywordWords = new Set(skill.applicability.keywords.flatMap(tokenize));
-  const intersection = [...titleWords].filter((word) => keywordWords.has(word)).length;
-  const union = new Set([...titleWords, ...keywordWords]).size;
-  const keywordScore = union > 0 ? intersection / union : 0;
-  const title = queryText.toLowerCase();
-  const domainScore = skill.applicability.requiredContext.some((context) => title.includes(context.toLowerCase())) ? 0.3 : 0;
-  const toolScore = skill.applicability.requiredTools.some((tool) => title.includes(tool.toLowerCase())) ? 0.2 : 0;
-  const exactScore = skill.applicability.keywords.some((keyword) => title.includes(keyword.toLowerCase())) ? 0.2 : 0;
-  return Math.min(1, keywordScore + domainScore + toolScore + exactScore);
 }
 
 export function tokenize(text: string): string[] {
@@ -533,13 +502,6 @@ function mostCommon(values: string[]): string[] {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(([value]) => value);
-}
-
-function compositeScore(skill: SkillRecord, relevance: number): number {
-  skill = normalizeSkillRecord(skill);
-  const daysSinceUse = (Date.now() - new Date(skill.lastUsedAt).getTime()) / (1000 * 60 * 60 * 24);
-  const recency = Math.max(0.5, 1 - daysSinceUse / 60);
-  return relevance * (0.4 + 0.4 * skill.stats.successRate + 0.2 * recency);
 }
 
 function normalizeSkillStatus(value: unknown): SkillRecord["status"] {

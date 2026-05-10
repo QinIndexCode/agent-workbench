@@ -10,6 +10,9 @@
   "scripts": {
     "build": "npm run build -w @scc/shared && npm run build -w @scc/core && npm run build -w @scc/server && npm run build -w @scc/web",
     "dev": "npm run dev -w @scc/server",
+    "dev:all": "node scripts/start-dev.js",
+    "dev:server": "npm run dev -w @scc/server",
+    "dev:web": "npm run dev -w @scc/web",
     "test": "vitest run",
     "test:matrix": "vitest run tests/real-task-matrix/matrix.test.ts",
     "test:stress": "vitest run tests/stress/stress.test.ts",

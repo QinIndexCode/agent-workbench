@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import type { ApprovalDecision, TaskDetail, TaskEvent, ToolApproval } from "@scc/shared";
 import { ArrowDown, BookOpen, ChevronDown, Copy, Eye, FileText, Globe2, List as ListIcon, PencilLine, Plug, Search, Terminal, Wrench } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
@@ -38,10 +38,10 @@ export function Timeline({
   onRevertLatestTurn?: (() => Promise<void> | void) | undefined;
 }) {
   const timelineRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const followBottomRef = useRef(true);
-  const scrollFrameRef = useRef<number | null>(null);
-  const smoothScrollUntilRef = useRef(0);
-  const smoothScrollTimerRef = useRef<number | null>(null);
+  const scrollAnimationRef = useRef<number | null>(null);
+  const scrollFollowUntilRef = useRef(0);
   const taskIdRef = useRef<string | null>(null);
   const [atBottom, setAtBottom] = useState(true);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -74,6 +74,11 @@ export function Timeline({
     const latest = displayItems[displayItems.length - 1];
     return latest && isAgentMessageItem(latest) ? latest.key : null;
   }, [displayItems]);
+  const showRunningIndicator = Boolean(task?.status === "running");
+  const runningIndicatorItem = useMemo<TimelineItem | null>(
+    () => showRunningIndicator && task ? { key: `running-status:${task.id}`, kind: "status" } : null,
+    [showRunningIndicator, task?.id]
+  );
 
   useEffect(() => {
     followBottomRef.current = true;
@@ -83,17 +88,17 @@ export function Timeline({
 
   const updateBottomState = useCallback((node: HTMLDivElement) => {
     const isAtBottom = getDistanceFromBottom(node) <= FOLLOW_BOTTOM_DISTANCE;
-    if (Date.now() < smoothScrollUntilRef.current) {
+    if (Date.now() < scrollFollowUntilRef.current) {
       followBottomRef.current = true;
       if (isAtBottom) {
-        smoothScrollUntilRef.current = 0;
+        scrollFollowUntilRef.current = 0;
         setAtBottom(true);
       }
       return isAtBottom;
     }
-    if (!isAtBottom && scrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(scrollFrameRef.current);
-      scrollFrameRef.current = null;
+    if (!isAtBottom && scrollAnimationRef.current !== null) {
+      window.cancelAnimationFrame(scrollAnimationRef.current);
+      scrollAnimationRef.current = null;
     }
     followBottomRef.current = isAtBottom;
     setAtBottom(isAtBottom);
@@ -103,26 +108,11 @@ export function Timeline({
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const node = timelineRef.current;
     if (!node) return;
-    if (scrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(scrollFrameRef.current);
-      scrollFrameRef.current = null;
-    }
-    if (behavior === "smooth") {
-      smoothScrollUntilRef.current = Date.now() + 520;
-      if (smoothScrollTimerRef.current !== null) window.clearTimeout(smoothScrollTimerRef.current);
-      scrollElementTo(node, node.scrollHeight, "smooth");
-      setAtBottom(true);
-      smoothScrollTimerRef.current = window.setTimeout(() => {
-        smoothScrollUntilRef.current = 0;
-        smoothScrollTimerRef.current = null;
-        if (followBottomRef.current && getDistanceFromBottom(node) <= FOLLOW_BOTTOM_DISTANCE) setAtBottom(true);
-      }, 540);
-      return;
-    }
-    scrollFrameRef.current = window.requestAnimationFrame(() => {
-      node.scrollTop = node.scrollHeight;
-      setAtBottom(true);
-      scrollFrameRef.current = null;
+    const smooth = behavior === "smooth" && !prefersReducedMotion();
+    scrollFollowUntilRef.current = Date.now() + (smooth ? 360 : 80);
+    animateScrollToBottom(node, smooth ? 220 : 0, scrollAnimationRef, () => {
+      scrollFollowUntilRef.current = 0;
+      setAtBottom(getDistanceFromBottom(node) <= FOLLOW_BOTTOM_DISTANCE);
     });
   }, []);
 
@@ -136,24 +126,23 @@ export function Timeline({
       followBottomRef.current = true;
     }
     if (followBottomRef.current) {
-      scrollToBottom("auto");
+      scrollToBottom(taskChanged ? "auto" : "smooth");
     }
-  }, [task?.id, lastEventId, timelineVersion, scrollToBottom]);
+  }, [task?.id, lastEventId, timelineVersion, showRunningIndicator, scrollToBottom]);
 
   useEffect(() => {
-    const node = timelineRef.current;
-    if (!node) return;
-    const observer = new MutationObserver(() => {
-      if (followBottomRef.current) scrollToBottom("auto");
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (followBottomRef.current) scrollToBottom("smooth");
     });
-    observer.observe(node, { characterData: true, childList: true, subtree: true });
+    observer.observe(content);
     return () => observer.disconnect();
   }, [task?.id, scrollToBottom]);
 
   useEffect(() => {
     return () => {
-      if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
-      if (smoothScrollTimerRef.current !== null) window.clearTimeout(smoothScrollTimerRef.current);
+      if (scrollAnimationRef.current !== null) window.cancelAnimationFrame(scrollAnimationRef.current);
     };
   }, []);
 
@@ -169,25 +158,33 @@ export function Timeline({
           updateBottomState(event.currentTarget);
         }}
       >
-        {displayItems.map((item) => (
-          <TimelineEvent
-            item={item}
-            key={item.key}
-            approvals={task.approvals}
-            copied={copiedKey === item.key}
-            alwaysShowActions={item.key === latestVisibleAgentBodyKey}
-            language={language ?? null}
-            canRevert={item.kind === "event" && item.event.id === latestUserEventId && Boolean(onRevertLatestTurn)}
-            onApprovalDecision={onApprovalDecision}
-            onCopy={(text) => {
-              void copyText(text);
-              setCopiedKey(item.key);
-              window.setTimeout(() => setCopiedKey((current) => (current === item.key ? null : current)), 1400);
-            }}
-            onLoadOlder={() => setVisibleLimit((current) => Math.min(items.length, current + MAX_RENDERED_TIMELINE_ITEMS))}
-            onRevertLatestTurn={onRevertLatestTurn}
-          />
-        ))}
+        <div className="timelineContent" ref={contentRef}>
+          {displayItems.map((item) => (
+            <AnimatedTimelineItem item={item} key={item.key}>
+              <TimelineEvent
+                item={item}
+                approvals={task.approvals}
+                copied={copiedKey === item.key}
+                alwaysShowActions={item.key === latestVisibleAgentBodyKey}
+                language={language ?? null}
+                canRevert={item.kind === "event" && item.event.id === latestUserEventId && Boolean(onRevertLatestTurn)}
+                onApprovalDecision={onApprovalDecision}
+                onCopy={(text) => {
+                  void copyText(text);
+                  setCopiedKey(item.key);
+                  window.setTimeout(() => setCopiedKey((current) => (current === item.key ? null : current)), 1400);
+                }}
+                onLoadOlder={() => setVisibleLimit((current) => Math.min(items.length, current + MAX_RENDERED_TIMELINE_ITEMS))}
+                onRevertLatestTurn={onRevertLatestTurn}
+              />
+            </AnimatedTimelineItem>
+          ))}
+          {runningIndicatorItem ? (
+            <AnimatedTimelineItem item={runningIndicatorItem} key={runningIndicatorItem.key}>
+              <RunningStatus language={language ?? null} />
+            </AnimatedTimelineItem>
+          ) : null}
+        </div>
       </div>
       {!atBottom ? (
         <button
@@ -210,11 +207,69 @@ export function Timeline({
 type TimelineItem =
   | { key: string; kind: "event"; event: TaskEvent }
   | { key: string; kind: "stream"; type: "assistant_delta" | "thinking_delta"; streamId: string; summary: string }
-  | { key: string; kind: "notice"; summary: string; hiddenCount?: number };
+  | { key: string; kind: "notice"; summary: string; hiddenCount?: number }
+  | { key: string; kind: "status" };
+
+function AnimatedTimelineItem({ children, item }: { children: ReactNode; item: TimelineItem }) {
+  const shellRef = useRef<HTMLDivElement>(null);
+  const previousHeightRef = useRef<number | null>(null);
+  const version = timelineItemContentVersion(item);
+
+  useLayoutEffect(() => {
+    const node = shellRef.current;
+    if (!node) return;
+    const nextHeight = node.getBoundingClientRect().height;
+    const previousHeight = previousHeightRef.current;
+    previousHeightRef.current = nextHeight;
+    if (previousHeight === null || prefersReducedMotion()) return;
+    const delta = Math.abs(nextHeight - previousHeight);
+    if (delta < 2 || delta > 1600) return;
+    node.style.height = `${previousHeight}px`;
+    node.style.overflow = "hidden";
+    node.style.willChange = "height";
+    const frame = window.requestAnimationFrame(() => {
+      node.style.transition = "height 180ms cubic-bezier(0.2, 0, 0, 1)";
+      node.style.height = `${nextHeight}px`;
+    });
+    const timer = window.setTimeout(() => {
+      node.style.height = "";
+      node.style.overflow = "";
+      node.style.transition = "";
+      node.style.willChange = "";
+    }, 220);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [version]);
+
+  const side = timelineItemSide(item);
+  return (
+    <div className={`timelineItemShell ${side === "right" ? "fromRight" : "fromLeft"}`} data-timeline-item-key={item.key} ref={shellRef}>
+      {children}
+    </div>
+  );
+}
+
+function timelineItemSide(item: TimelineItem): "left" | "right" {
+  if (item.kind === "status") return "left";
+  if (item.kind !== "event") return "left";
+  return item.event.type === "user_message" || item.event.type === "guidance_pending" || item.event.type === "attachment_added"
+    ? "right"
+    : "left";
+}
+
+function timelineItemContentVersion(item: TimelineItem): string {
+  if (item.kind === "stream") return `${item.key}:${item.summary.length}`;
+  if (item.kind === "notice") return `${item.key}:${item.summary.length}:${item.hiddenCount ?? 0}`;
+  if (item.kind === "status") return item.key;
+  const output = typeof item.event.payload["output"] === "string" ? String(item.event.payload["output"]).length : 0;
+  return `${item.key}:${item.event.summary.length}:${output}`;
+}
 
 function isAgentMessageItem(item: TimelineItem): boolean {
   if (item.kind === "stream") return item.type === "assistant_delta";
-  if (item.kind === "notice") return false;
+  if (item.kind === "notice" || item.kind === "status") return false;
   return item.event.type === "assistant_message";
 }
 
@@ -222,12 +277,42 @@ function getDistanceFromBottom(node: HTMLDivElement): number {
   return Math.max(0, node.scrollHeight - node.scrollTop - node.clientHeight);
 }
 
-function scrollElementTo(node: HTMLDivElement, top: number, behavior: ScrollBehavior): void {
-  if (typeof node.scrollTo === "function") {
-    node.scrollTo({ top, behavior });
+function animateScrollToBottom(
+  node: HTMLDivElement,
+  durationMs: number,
+  frameRef: MutableRefObject<number | null>,
+  onDone: () => void
+): void {
+  if (frameRef.current !== null) {
+    window.cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
+  }
+  const targetTop = () => Math.max(0, node.scrollHeight - node.clientHeight);
+  if (durationMs <= 0 || prefersReducedMotion()) {
+    node.scrollTop = targetTop();
+    onDone();
     return;
   }
-  node.scrollTop = top;
+  const startedAt = performance.now();
+  const startTop = node.scrollTop;
+  const step = (now: number) => {
+    const progress = Math.min(1, (now - startedAt) / durationMs);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    const target = targetTop();
+    node.scrollTop = startTop + (target - startTop) * eased;
+    if (progress < 1) {
+      frameRef.current = window.requestAnimationFrame(step);
+      return;
+    }
+    frameRef.current = null;
+    node.scrollTop = targetTop();
+    onDone();
+  };
+  frameRef.current = window.requestAnimationFrame(step);
+}
+
+function prefersReducedMotion(): boolean {
+  return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 function getTimelineVersion(items: TimelineItem[]): string {
@@ -236,6 +321,7 @@ function getTimelineVersion(items: TimelineItem[]): string {
     .map((item) => {
       if (item.kind === "stream") return `${item.key}:${item.summary.length}`;
       if (item.kind === "notice") return item.key;
+      if (item.kind === "status") return item.key;
       const output = typeof item.event.payload["output"] === "string" ? String(item.event.payload["output"]).length : 0;
       return `${item.key}:${item.event.reverted ? "r" : "a"}:${item.event.summary.length}:${output}`;
     })
@@ -268,6 +354,9 @@ function TimelineEvent({
   const [thinkingOpen, setThinkingOpen] = useState(false);
   const [toolOpen, setToolOpen] = useState(false);
   const zh = language === "zh-CN";
+  if (item.kind === "status") {
+    return <RunningStatus language={language} />;
+  }
   if (item.kind === "notice") {
     return (
       <article className="event note timeline_window_notice">
@@ -430,6 +519,20 @@ function TimelineEvent({
         onRevert={canRevert ? () => void onRevertLatestTurn?.() : undefined}
       />
       <MarkdownText content={formatVisibleEventSummary(event, language)} />
+    </article>
+  );
+}
+
+function RunningStatus({ language }: { language?: string | null | undefined }) {
+  const label = language === "zh-CN" ? "think" : "think";
+  return (
+    <article className="event running_status" aria-live="polite" aria-label="think...">
+      <span>{label}</span>
+      <span className="thinkingDots" aria-hidden="true">
+        <span>.</span>
+        <span>.</span>
+        <span>.</span>
+      </span>
     </article>
   );
 }

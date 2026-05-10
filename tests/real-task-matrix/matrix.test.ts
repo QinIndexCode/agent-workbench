@@ -52,6 +52,17 @@ describe("real task matrix", () => {
     recordPass("short no-tool answer", task, { toolRequests: 0 });
   });
 
+  it("treats a broad tool-testing request as a safe model decision, not a code filter", async () => {
+    const workbench = new AgentWorkbench({ model: new SafeToolInventoryModel() });
+    const task = await createRegisteredTask(workbench, "测试一下你大概能用哪些工具", "Tool inventory");
+
+    expect(task.status).toBe("completed");
+    expect(task.events.filter((event) => event.type === "tool_requested")).toHaveLength(0);
+    expect(assistantText(task)).toContain("read-only");
+    expect(assistantText(task)).toContain("approval");
+    recordPass("safe tool inventory wording", task, { toolRequests: 0 });
+  });
+
   it("reads a fixture codebase and summarizes the relevant files", async () => {
     const fixture = createFixtureProject("read");
     try {
@@ -90,6 +101,46 @@ describe("real task matrix", () => {
       expect(finalSource).toContain("reduce");
       expect(successfulToolOutputs(task).join("\n")).toContain("math tests passed");
       recordPass("debug and fix", task, { toolResults: task.events.filter((event) => event.type === "tool_result").length });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("handles a vague broken-project request with evidence before the fix", async () => {
+    const fixture = createFixtureProject("vague-debug");
+    try {
+      const fixtureWorkbench = await workbenchForRoot(fixture.root, new DebugFixModel());
+      const task = await runWithApprovals(
+        await createRegisteredTask(fixtureWorkbench.workbench, "这个项目好像跑不起来，帮我看看", "Vague debug", fixtureWorkbench.folderId)
+      );
+      const finalSource = readFileSync(join(fixture.root, "src", "math.mjs"), "utf8");
+
+      expect(task.status).toBe("completed");
+      expect(toolEvents(task, "run_command")).toHaveLength(2);
+      expect(toolEvents(task, "read_file")).toHaveLength(1);
+      expect(finalSource).toContain("reduce");
+      expect(assistantText(task)).toContain("tests now pass");
+      recordPass("vague debug request", task, { promptStyle: "ordinary", verified: true });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("supports a read-only diagnosis turn without code-level prompt blocking", async () => {
+    const fixture = createFixtureProject("read-only-diagnosis");
+    try {
+      const fixtureWorkbench = await workbenchForRoot(fixture.root, new ReadOnlyDiagnosisModel());
+      const task = await runWithApprovals(
+        await createRegisteredTask(fixtureWorkbench.workbench, "先帮我判断大概问题在哪，暂时不用改代码", "Read-only diagnosis", fixtureWorkbench.folderId)
+      );
+
+      expect(task.status).toBe("completed");
+      expect(toolEvents(task, "list_files")).toHaveLength(1);
+      expect(toolEvents(task, "read_file")).toHaveLength(1);
+      expect(toolEvents(task, "edit_file")).toHaveLength(0);
+      expect(toolEvents(task, "write_file")).toHaveLength(0);
+      expect(assistantText(task)).toContain("likely issue");
+      recordPass("read-only diagnosis", task, { writes: 0 });
     } finally {
       fixture.cleanup();
     }
@@ -280,6 +331,15 @@ class DirectAnswerModel implements ModelClient {
   }
 }
 
+class SafeToolInventoryModel implements ModelClient {
+  async next(): Promise<ModelTurn> {
+    return {
+      kind: "final",
+      message: "I can explain available capabilities and run read-only checks when useful. Tools with side effects still go through approval."
+    };
+  }
+}
+
 class CodebaseReadModel implements ModelClient {
   async next(task: TaskDetail): Promise<ModelTurn> {
     const results = task.events.filter((event) => event.type === "tool_result");
@@ -311,6 +371,15 @@ class DebugFixModel implements ModelClient {
     }
     if (results.length === 3) return singleCall("run_command", { command: "node tests/math.test.mjs" });
     return { kind: "final", message: "The math tests now pass after fixing sum to add values instead of counting entries." };
+  }
+}
+
+class ReadOnlyDiagnosisModel implements ModelClient {
+  async next(task: TaskDetail): Promise<ModelTurn> {
+    const results = task.events.filter((event) => event.type === "tool_result");
+    if (results.length === 0) return singleCall("list_files", { path: ".", recursive: true });
+    if (results.length === 1) return singleCall("read_file", { path: "src/math.mjs" });
+    return { kind: "final", message: "The likely issue is in src/math.mjs: sum counts entries instead of adding values. No files were changed." };
   }
 }
 

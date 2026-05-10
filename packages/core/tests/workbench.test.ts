@@ -258,6 +258,80 @@ describe("ContextAssembler", () => {
     expect(context.messages.at(-1)?.role).toBe("user");
   });
 
+  it("injects a bounded active skill catalog without matching the latest user text", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    await workbench.updatePreferences({ skillAutoInject: true, maxInjectedSkills: 4 });
+    const financeSkill = await workbench.createSkill({
+      title: "Quarterly Finance Close",
+      body: "Review ledgers and reconcile accruals before drafting the close note.",
+      status: "active",
+      applicability: {
+        description: "Finance close checklist",
+        requiredTools: ["read_file"],
+        requiredContext: ["ledger"],
+        exclusions: [],
+        keywords: ["finance", "ledger", "close"]
+      },
+      sourceMemoryIds: [],
+      relatedPatterns: []
+    });
+    const releaseSkill = await workbench.createSkill({
+      title: "Release Checklist",
+      body: "Check changelog, test results, and deployment notes before release.",
+      status: "active",
+      applicability: {
+        description: "Release readiness",
+        requiredTools: ["run_command"],
+        requiredContext: ["release"],
+        exclusions: [],
+        keywords: ["release", "deploy"]
+      },
+      sourceMemoryIds: [],
+      relatedPatterns: []
+    });
+    const candidate = await workbench.createSkill({
+      title: "React Blog Candidate",
+      body: "Candidate skill that should stay out of runtime catalog until activated.",
+      status: "candidate",
+      applicability: {
+        description: "Candidate React blog guidance",
+        requiredTools: ["edit_file"],
+        requiredContext: ["react"],
+        exclusions: [],
+        keywords: ["react", "blog"]
+      },
+      sourceMemoryIds: [],
+      relatedPatterns: []
+    });
+    const assembler = new ContextAssembler(store);
+    const context = await assembler.assemble({
+      id: "task_skill_catalog",
+      title: "Skill catalog",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_user",
+          taskId: "task_skill_catalog",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "帮我写一个 React 博客页面",
+          payload: {}
+        }
+      ]
+    });
+
+    expect(context.systemPrompt).toContain("not selected from the latest user text");
+    expect(context.systemPrompt).toContain(financeSkill.id);
+    expect(context.systemPrompt).toContain(releaseSkill.id);
+    expect(context.systemPrompt).not.toContain(candidate.id);
+    expect(context.messages.at(-1)?.role).toBe("user");
+  });
+
   it("keeps the latest user message when a long history is truncated", () => {
     const task: TaskDetail = {
       id: "task_long_history",
@@ -828,6 +902,40 @@ describe("Task title generation", () => {
 
       expect(task.title).toBe("后端智能命名检查");
       expect(task.status).toBe("completed");
+    } finally {
+      await new Promise<void>((resolve) => titleServer.close(() => resolve()));
+    }
+  });
+
+  it("returns a local title immediately for background-started tasks", async () => {
+    let titleRequests = 0;
+    const titleServer = createServer((_request, response) => {
+      titleRequests += 1;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ choices: [{ message: { content: "不应阻塞创建" } }] }));
+    });
+    await new Promise<void>((resolve) => titleServer.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = titleServer.address() as AddressInfo;
+      const store = new InMemoryWorkbenchStore();
+      const workbench = new AgentWorkbench({ store, model: new StreamingFinalModel() });
+      await workbench.createModelProvider({
+        vendor: "custom",
+        label: "Title provider",
+        protocol: "openai_compatible",
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: "test-title-key",
+        models: [{ id: "title-model", label: "title-model", contextWindow: 128000, supportsTools: true, supportsThinking: false }],
+        defaultModelId: "title-model",
+        enabled: true,
+        makeActive: true
+      });
+
+      const task = await workbench.startTask("请检查新任务建立后的后端自动命名流程");
+
+      expect(task.title).toBe(createLocalTaskTitle("请检查新任务建立后的后端自动命名流程"));
+      expect(task.status).toBe("running");
+      expect(titleRequests).toBe(0);
     } finally {
       await new Promise<void>((resolve) => titleServer.close(() => resolve()));
     }

@@ -59,24 +59,24 @@ export function IntegrationsPanel({
             <div>
               <strong>{provider.label}</strong>
               <small>
-                {provider.kind} · {folderName(folders, provider.defaultFolderId)}
+                {[provider.kind, folderName(folders, provider.defaultFolderId), integrationSecretSummary(provider)].filter(Boolean).join(" · ")}
               </small>
               {provider.lastError ? <small className="dangerText">{provider.lastError}</small> : null}
             </div>
             <span className={provider.enabled ? "statusPill" : "statusPill muted"}>{text.status[provider.status] ?? provider.status}</span>
             <div className="rowIconActions">
               <button
-                aria-label={provider.enabled ? text.disconnect : text.connect}
+                aria-label={`${provider.enabled ? text.disconnect : text.connect} ${provider.label}`}
                 className="iconButton"
                 type="button"
                 onClick={() => void (provider.enabled ? onDisconnect(provider.id) : onConnect(provider.id))}
               >
                 <Power size={15} />
               </button>
-              <button aria-label={text.edit} className="iconButton" type="button" onClick={() => setModal({ mode: "edit", provider })}>
+              <button aria-label={`${text.edit} ${provider.label}`} className="iconButton" type="button" onClick={() => setModal({ mode: "edit", provider })}>
                 <Pencil size={15} />
               </button>
-              <button aria-label={text.delete} className="iconButton danger" type="button" onClick={() => setDeleteTarget(provider)}>
+              <button aria-label={`${text.delete} ${provider.label}`} className="iconButton danger" type="button" onClick={() => setDeleteTarget(provider)}>
                 <Trash2 size={15} />
               </button>
             </div>
@@ -250,6 +250,14 @@ function IntegrationDialog({
 
 function folderName(folders: TaskFolderRecord[], folderId: string): string {
   return folders.find((folder) => folder.id === folderId)?.name ?? folderId;
+}
+
+function integrationSecretSummary(provider: IntegrationProviderConfig): string {
+  return [
+    provider.botTokenRef?.last4 ? `bot token ••••${provider.botTokenRef.last4}` : "",
+    provider.signingSecretRef?.last4 ? `signing secret ••••${provider.signingSecretRef.last4}` : "",
+    provider.appSecretRef?.last4 ? `app secret ••••${provider.appSecretRef.last4}` : ""
+  ].filter(Boolean).join(", ");
 }
 
 function copy(language?: string | null) {

@@ -69,6 +69,8 @@ export function Composer({
   modelValue,
   permissionPreset = "ask",
   permissionScopeLabel,
+  permissionBusy = false,
+  permissionError = null,
   running,
   mode,
   onDraftChange,
@@ -97,6 +99,8 @@ export function Composer({
   modelValue?: string;
   permissionPreset?: ComposerPermissionMode;
   permissionScopeLabel?: string;
+  permissionBusy?: boolean;
+  permissionError?: string | null;
   running: boolean;
   mode: ComposerMode;
   onDraftChange?: (text: string) => void;
@@ -136,14 +140,9 @@ export function Composer({
   const currentPermission = permissionOptions.find((option) => option.value === permissionPreset) ?? permissionOptions[0]!;
   const currentFolder = folderOptions.find((option) => option.value === folderValue) ?? folderOptions[0];
   const currentModel = modelOptions.find((option) => option.value === modelValue) ?? modelOptions[0];
-  const icon = busy ? (
-    <LoaderCircle className="spin" size={18} />
-  ) : canStop ? (
-    <Square size={14} />
-  ) : (
-    <ArrowUp size={18} />
-  );
-  const label = busy ? labels.working : canSubmit ? labels.send : canStop ? labels.stop : labels.idle;
+  const icon = canSubmit ? <ArrowUp size={18} /> : canStop ? <Square size={14} /> : <ArrowUp size={18} />;
+  const label = canSubmit ? labels.send : canStop ? labels.stop : labels.idle;
+  const primaryDisabled = busy || (!canSubmit && !running);
 
   return (
     <form
@@ -304,7 +303,7 @@ export function Composer({
               aria-expanded={permissionOpen}
               aria-label={labels.permissionToggle}
               className="permissionAccordionTrigger"
-              disabled={busy}
+              disabled={permissionBusy}
               type="button"
               onClick={() => {
                 setPermissionOpen((open) => !open);
@@ -314,6 +313,7 @@ export function Composer({
             >
               {currentPermission.icon}
               <span>{currentPermission.label}</span>
+              {permissionBusy ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : null}
               <ChevronDown className="permissionChevron" size={13} />
             </button>
             <div className="permissionAccordionPanel" aria-label={labels.permission} aria-hidden={!permissionOpen}>
@@ -322,7 +322,7 @@ export function Composer({
                   key={option.value}
                   currentPreset={permissionPreset}
                   hasCustomSnapshot={hasCustomSnapshot}
-                  disabled={busy}
+                  disabled={permissionBusy}
                   description={option.description}
                   icon={option.icon}
                   label={option.label}
@@ -345,8 +345,9 @@ export function Composer({
               ))}
             </div>
           </div>
+          {permissionError ? <span className="composerPermissionError" role="status">{permissionError}</span> : null}
         </div>
-        <button className="composerPrimaryButton" aria-label={label} disabled={busy || (!canSubmit && !running)} type="submit">
+        <button className="composerPrimaryButton" aria-label={label} disabled={primaryDisabled} type="submit">
           {icon}
         </button>
       </div>

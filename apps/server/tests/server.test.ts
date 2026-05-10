@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore, McpRegistry } from "@scc/core";
+import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore, McpRegistry, type ModelClient, type ModelTurn } from "@scc/core";
 import type { TaskDetail, TaskEvent, ToolCall, ToolResult } from "@scc/shared";
 import { createApp } from "../src/server.js";
 import { SqliteWorkbenchStore } from "../src/sqlite-store.js";
@@ -23,6 +23,13 @@ class StubToolExecutor {
       createdAt: new Date().toISOString(),
       output: JSON.stringify([{ ProcessName: "node", Id: 1, CPU: 2, WorkingSet64: 1024 }])
     };
+  }
+}
+
+class SlowFinalModelClient implements ModelClient {
+  async next(): Promise<ModelTurn> {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    return { kind: "final", message: "Background continuation completed." };
   }
 }
 
@@ -224,6 +231,41 @@ describe("server API", () => {
     await app.close();
   });
 
+  it("returns immediately for message continuations while the model resumes in the background", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const now = new Date().toISOString();
+    await store.saveTask({
+      id: "task_background",
+      title: "Background continuation",
+      folderId: "default",
+      workRoot: process.cwd(),
+      status: "completed",
+      createdAt: now,
+      updatedAt: now,
+      approvals: [],
+      pendingGuidance: [],
+      events: []
+    });
+    const app = await createTestApp({
+      workbench: new AgentWorkbench({
+        store,
+        model: new SlowFinalModelClient()
+      })
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/tasks/task_background/messages",
+      payload: { content: "continue this" }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().status).toBe("running");
+    const completed = await waitForTask(app, "task_background", (task) => task.status === "completed");
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary === "Background continuation completed.")).toBe(true);
+    await app.close();
+  });
+
   it("generates local fallback titles and manages task folders", async () => {
     const app = await createTestApp({
       workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ConfiguredToolModelClient("Get-Process") })
@@ -355,7 +397,8 @@ describe("server API", () => {
       url: `/api/tasks/${created.id}/approvals/${approval.id}`,
       payload: { decision: "allow_for_task" }
     });
-    expect(approvalResponse.json().status).toBe("completed");
+    expect(approvalResponse.json().status).toBe("running");
+    await waitForTask(app, created.id, (task) => task.status === "completed");
 
     const experiences = (await app.inject("/api/experiences")).json();
     const skills = (await app.inject("/api/skills")).json();
@@ -547,6 +590,141 @@ describe("server API", () => {
     expect(createResponse.statusCode).toBe(201);
     expect((await app.inject("/api/mcp/servers")).json()[0].id).toBe("mock");
     expect((await app.inject("/api/mcp/tools")).statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("serves document and structured project memory endpoints", async () => {
+    const memoryRoot = mkdtempSync(join(tmpdir(), "scc-memory-api-"));
+    const previousMemoryDir = process.env.SCC_MEMORY_DIR;
+    process.env.SCC_MEMORY_DIR = memoryRoot;
+    const app = await createTestApp({
+      workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore() })
+    });
+
+    try {
+      const userProfile = await app.inject("/api/user-profile");
+      expect(userProfile.statusCode).toBe(200);
+      expect(userProfile.json().fileName).toBe("USER.md");
+
+      const savedProfile = await app.inject({
+        method: "PATCH",
+        url: "/api/user-profile",
+        payload: { content: "# USER.md\n- Keep answers concrete." }
+      });
+      expect(savedProfile.statusCode).toBe(200);
+      expect(savedProfile.json().content).toContain("Keep answers concrete");
+
+      const projectMemory = await app.inject("/api/project-memory?folderId=default");
+      expect(projectMemory.statusCode).toBe(200);
+      expect(projectMemory.json()).toMatchObject({ fileName: "MEMORY.md", folderId: "default" });
+
+      const savedProjectMemory = await app.inject({
+        method: "PATCH",
+        url: "/api/project-memory?folderId=default",
+        payload: { content: "# MEMORY.md\n- Keep route tests current.\n- Keep route tests current.\n- Preserve trace evidence." }
+      });
+      expect(savedProjectMemory.statusCode).toBe(200);
+      expect(savedProjectMemory.json().content).toContain("Preserve trace evidence");
+
+      const compacted = await app.inject({ method: "POST", url: "/api/project-memory/compact?folderId=default" });
+      expect(compacted.statusCode).toBe(200);
+      expect(compacted.json().removedLines).toBeGreaterThanOrEqual(1);
+
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/project-memories",
+        payload: {
+          projectId: "default",
+          title: "Architecture fact",
+          content: "Memory documents are Library data, not current user input.",
+          category: "architecture",
+          tags: ["memory", "ui"]
+        }
+      });
+      expect(created.statusCode).toBe(201);
+      const createdMemory = created.json();
+      expect(createdMemory).toMatchObject({ projectId: "default", title: "Architecture fact", category: "architecture" });
+
+      const listed = (await app.inject("/api/project-memories")).json();
+      expect(listed.some((memory: { id: string; title: string }) => memory.id === createdMemory.id && memory.title === "Architecture fact")).toBe(true);
+      expect((await app.inject({ method: "DELETE", url: `/api/project-memories/${createdMemory.id}` })).statusCode).toBe(204);
+    } finally {
+      await app.close();
+      if (previousMemoryDir === undefined) {
+        delete process.env.SCC_MEMORY_DIR;
+      } else {
+        process.env.SCC_MEMORY_DIR = previousMemoryDir;
+      }
+      rmSync(memoryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("serves scheduled, web search, and integration management endpoints", async () => {
+    const app = await createTestApp({
+      workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore() })
+    });
+
+    const scheduledResponse = await app.inject({
+      method: "POST",
+      url: "/api/scheduled-tasks",
+      payload: {
+        title: "Weekly cleanup",
+        prompt: "Review stale tasks.",
+        scheduleKind: "calendar",
+        frequency: "weekly",
+        timeOfDay: "09:30"
+      }
+    });
+    expect(scheduledResponse.statusCode).toBe(201);
+    const scheduled = scheduledResponse.json();
+    expect((await app.inject({ method: "PATCH", url: `/api/scheduled-tasks/${scheduled.id}`, payload: { status: "paused" } })).json().status).toBe("paused");
+    expect((await app.inject({ method: "DELETE", url: `/api/scheduled-tasks/${scheduled.id}` })).statusCode).toBe(204);
+
+    const webSearchResponse = await app.inject({
+      method: "POST",
+      url: "/api/web-search/providers",
+      payload: { label: "Brave", kind: "brave", apiKey: "search-secret-1234", enabled: true }
+    });
+    expect(webSearchResponse.statusCode).toBe(201);
+    const webSearch = webSearchResponse.json();
+    expect(webSearch.apiKeyRef.last4).toBe("1234");
+    expect(JSON.stringify(webSearch)).not.toContain("search-secret");
+    const webSearchPatch = await app.inject({
+      method: "PATCH",
+      url: `/api/web-search/providers/${webSearch.id}`,
+      payload: { label: "Brave paused", clearApiKey: true, enabled: false }
+    });
+    expect(webSearchPatch.json().enabled).toBe(false);
+    expect(webSearchPatch.json().apiKeyRef).toBeUndefined();
+    expect((await app.inject({ method: "DELETE", url: `/api/web-search/providers/${webSearch.id}` })).statusCode).toBe(204);
+
+    const integrationResponse = await app.inject({
+      method: "POST",
+      url: "/api/integrations",
+      payload: {
+        kind: "discord",
+        label: "Discord Ops",
+        botToken: "discord-secret-9876",
+        defaultFolderId: "default",
+        defaultPermissionPreset: "ask",
+        enabled: false
+      }
+    });
+    expect(integrationResponse.statusCode).toBe(201);
+    const integration = integrationResponse.json();
+    expect(integration.botTokenRef.last4).toBe("9876");
+    expect(JSON.stringify(integration)).not.toContain("discord-secret");
+    expect((await app.inject({ method: "POST", url: `/api/integrations/${integration.id}/connect` })).json().status).toBe("connected");
+    const integrationPatch = await app.inject({
+      method: "PATCH",
+      url: `/api/integrations/${integration.id}`,
+      payload: { label: "Discord Support", clearBotToken: true }
+    });
+    expect(integrationPatch.json().label).toBe("Discord Support");
+    expect(integrationPatch.json().botTokenRef).toBeUndefined();
+    expect((await app.inject({ method: "POST", url: `/api/integrations/${integration.id}/disconnect` })).json().status).toBe("disabled");
+    expect((await app.inject({ method: "DELETE", url: `/api/integrations/${integration.id}` })).statusCode).toBe(204);
+
     await app.close();
   });
 

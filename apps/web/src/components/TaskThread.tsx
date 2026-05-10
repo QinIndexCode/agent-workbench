@@ -25,6 +25,8 @@ export function TaskThread({
   modelOptions,
   permissionPreset,
   permissionScopeLabel,
+  permissionBusy,
+  permissionError,
   onModelChange,
   onFilesSelected,
   onRemoveAttachment,
@@ -66,6 +68,8 @@ export function TaskThread({
   modelOptions: Array<{ label: string; value: string }>;
   permissionPreset: ComposerPermissionMode;
   permissionScopeLabel: string;
+  permissionBusy?: boolean;
+  permissionError?: string | null;
   onModelChange: (modelId: string) => void;
   onFilesSelected: (files: File[]) => Promise<void> | void;
   onRemoveAttachment: (attachmentId: string) => Promise<void> | void;
@@ -192,6 +196,8 @@ export function TaskThread({
             modelValue={preferences?.defaultModel ?? ""}
             permissionPreset={permissionPreset}
             permissionScopeLabel={permissionScopeLabel}
+            permissionBusy={Boolean(permissionBusy)}
+            permissionError={permissionError ?? null}
             running={running}
             mode={mode}
             onDraftChange={setDraft}

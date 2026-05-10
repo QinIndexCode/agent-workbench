@@ -164,11 +164,17 @@ export class AgentWorkbench {
   }
 
   async startTask(goal: string, title?: string, folderId = "default", attachmentIds: string[] = []): Promise<TaskDetail> {
-    const task = await this.initializeTask(goal, await this.resolveTaskTitle(goal, title), folderId, attachmentIds);
+    const task = await this.initializeTask(goal, this.resolveImmediateTaskTitle(goal, title), folderId, attachmentIds);
     void this.runTaskExclusive(task.id, () => this.step(task.id)).catch((error) => {
       this.safeBackgroundCatch(task.id, error);
     });
     return task;
+  }
+
+  private resolveImmediateTaskTitle(goal: string, title?: string, language?: string): TaskTitleResolution {
+    const explicit = title?.trim();
+    if (explicit) return { title: explicit, source: "explicit" };
+    return { title: createLocalTaskTitle(goal, language), source: "local_fallback" };
   }
 
   private async resolveTaskTitle(goal: string, title?: string, language?: string): Promise<TaskTitleResolution> {
@@ -599,6 +605,19 @@ export class AgentWorkbench {
   }
 
   async appendMessage(taskId: string, content: string, attachmentIds: string[] = []): Promise<TaskDetail> {
+    return this.appendMessageInternal(taskId, content, attachmentIds, "inline");
+  }
+
+  async appendMessageInBackground(taskId: string, content: string, attachmentIds: string[] = []): Promise<TaskDetail> {
+    return this.appendMessageInternal(taskId, content, attachmentIds, "background");
+  }
+
+  private async appendMessageInternal(
+    taskId: string,
+    content: string,
+    attachmentIds: string[],
+    continuation: "inline" | "background"
+  ): Promise<TaskDetail> {
     return this.runTaskExclusive(taskId, async () => {
       const task = await this.requiredTask(taskId);
       await this.attachUploadedFiles(task, attachmentIds);
@@ -610,6 +629,10 @@ export class AgentWorkbench {
       await this.beginTaskTurn(task, content, "user_message");
       this.setStatus(task, "running");
       await this.store.saveTask(task);
+      if (continuation === "background") {
+        this.scheduleTaskStep(task.id);
+        return task;
+      }
       return this.step(task.id);
     });
   }
@@ -757,11 +780,23 @@ export class AgentWorkbench {
   }
 
   async control(taskId: string, action: "pause" | "resume" | "cancel"): Promise<TaskDetail> {
+    return this.controlInternal(taskId, action, "inline");
+  }
+
+  async controlInBackground(taskId: string, action: "pause" | "resume" | "cancel"): Promise<TaskDetail> {
+    return this.controlInternal(taskId, action, "background");
+  }
+
+  private async controlInternal(taskId: string, action: "pause" | "resume" | "cancel", continuation: "inline" | "background"): Promise<TaskDetail> {
     if (action === "resume") {
       return this.runTaskExclusive(taskId, async () => {
         const task = await this.requiredTask(taskId);
         this.setStatus(task, "running");
         await this.store.saveTask(task);
+        if (continuation === "background") {
+          this.scheduleTaskStep(task.id);
+          return task;
+        }
         return this.step(task.id);
       });
     }
@@ -775,6 +810,19 @@ export class AgentWorkbench {
   }
 
   async decideApproval(taskId: string, approvalId: string, decision: ApprovalDecision): Promise<TaskDetail> {
+    return this.decideApprovalInternal(taskId, approvalId, decision, "inline");
+  }
+
+  async decideApprovalInBackground(taskId: string, approvalId: string, decision: ApprovalDecision): Promise<TaskDetail> {
+    return this.decideApprovalInternal(taskId, approvalId, decision, "background");
+  }
+
+  private async decideApprovalInternal(
+    taskId: string,
+    approvalId: string,
+    decision: ApprovalDecision,
+    continuation: "inline" | "background"
+  ): Promise<TaskDetail> {
     return this.runTaskExclusive(taskId, async () => {
       const task = await this.requiredTask(taskId);
       const approval = task.approvals.find((item) => item.id === approvalId);
@@ -808,6 +856,10 @@ export class AgentWorkbench {
         });
         this.setStatus(task, "running");
         await this.store.saveTask(task);
+        if (continuation === "background") {
+          this.scheduleTaskStep(task.id);
+          return task;
+        }
         return this.step(task.id);
       }
 
@@ -817,6 +869,10 @@ export class AgentWorkbench {
         reason: approval.reason
       });
       await this.store.saveTask(task);
+      if (continuation === "background") {
+        this.scheduleApprovedToolContinuation(task.id, approval.toolCall);
+        return task;
+      }
       const result = await this.executeTool(task.id, approval.toolCall);
       const latest = await this.requiredTask(task.id);
       await this.addToolResultEvent(latest, approval.toolCall, result);
@@ -2165,6 +2221,25 @@ export class AgentWorkbench {
 
   private safeBackgroundCatch(taskId: string, error: unknown): void {
     void this.failBackgroundRun(taskId, error).catch(() => undefined);
+  }
+
+  private scheduleTaskStep(taskId: string): void {
+    void this.runTaskExclusive(taskId, () => this.step(taskId)).catch((error) => {
+      this.safeBackgroundCatch(taskId, error);
+    });
+  }
+
+  private scheduleApprovedToolContinuation(taskId: string, call: ToolCall): void {
+    void this.runTaskExclusive(taskId, async () => {
+      const result = await this.executeTool(taskId, call);
+      const latest = await this.requiredTask(taskId);
+      await this.addToolResultEvent(latest, call, result);
+      await this.store.saveTask(latest);
+      if (latest.status !== "running") return latest;
+      return this.step(latest.id);
+    }).catch((error) => {
+      this.safeBackgroundCatch(taskId, error);
+    });
   }
 
   private async failBackgroundRun(taskId: string, error: unknown): Promise<void> {

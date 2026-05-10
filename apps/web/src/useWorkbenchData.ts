@@ -58,6 +58,10 @@ export interface WorkbenchData {
   scheduledTasks: ScheduledTask[];
   webSearchProviders: WebSearchProviderConfig[];
   realtimeConnected: boolean;
+  realtimeStale: boolean;
+  lastRealtimeAt: number | null;
+  lastSuccessfulSyncAt: number | null;
+  syncWarning: string | null;
   busy: boolean;
   busySince: number | null;
   error: string | null;
@@ -102,6 +106,10 @@ export function useWorkbenchData(): WorkbenchData {
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
   const [webSearchProviders, setWebSearchProviders] = useState<WebSearchProviderConfig[]>([]);
   const [realtimeConnected, setRealtimeConnected] = useState(false);
+  const [realtimeStale, setRealtimeStale] = useState(false);
+  const [lastRealtimeAt, setLastRealtimeAt] = useState<number | null>(null);
+  const [lastSuccessfulSyncAt, setLastSuccessfulSyncAt] = useState<number | null>(null);
+  const [syncWarning, setSyncWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [busySince, setBusySince] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -115,6 +123,8 @@ export function useWorkbenchData(): WorkbenchData {
   const wsFlushTimerRef = useRef<number | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const backgroundPollRef = useRef(0);
+  const lastRealtimeAtRef = useRef<number | null>(null);
+  const lastSuccessfulSyncAtRef = useRef<number | null>(null);
 
   async function refresh(nextId?: string | null) {
     const results = await Promise.allSettled([
@@ -180,18 +190,23 @@ export function useWorkbenchData(): WorkbenchData {
     setMcpTools(nextMcpTools);
     setScheduledTasks(nextScheduledTasks);
     setWebSearchProviders(nextWebSearchProviders);
+    markSyncSuccess();
   }
 
   async function refreshTaskShell(nextId?: string | null, loadTranscript = false) {
     const list = await api.listTasks();
     setTasks(list);
     await syncSelectionFromTaskList(list, nextId, loadTranscript);
+    markSyncSuccess();
   }
 
   async function syncSelectionFromTaskList(list: TaskDetail[], nextId?: string | null, loadTranscript = false) {
     const hasExplicitNext = nextId !== undefined;
     const preferredId = hasExplicitNext ? nextId : selectedIdRef.current;
     const preferredExists = preferredId ? list.some((task) => task.id === preferredId) : false;
+    if (!hasExplicitNext && preferredId && !preferredExists && list.length === 0) {
+      return;
+    }
     const id = preferredExists ? preferredId : newTaskModeRef.current && !hasExplicitNext ? null : list[0]?.id ?? null;
     selectedIdRef.current = id;
     setSelectedId(id);
@@ -211,7 +226,7 @@ export function useWorkbenchData(): WorkbenchData {
   }
 
   useEffect(() => {
-    void refresh();
+    void refresh().catch(recordBackgroundSyncFailure);
     if (refreshTimerRef.current !== null) {
       window.clearInterval(refreshTimerRef.current);
     }
@@ -220,10 +235,10 @@ export function useWorkbenchData(): WorkbenchData {
       backgroundPollRef.current = (backgroundPollRef.current + 1) % cycleLength;
       const shouldFullRefresh = backgroundPollRef.current === 0;
       if (shouldFullRefresh) {
-        void refresh();
+        void refresh().catch(recordBackgroundSyncFailure);
         return;
       }
-      void refreshTaskShell(undefined, !realtimeConnected);
+      void refreshTaskShell(undefined, !realtimeConnected).catch(recordBackgroundSyncFailure);
     }, realtimeConnected ? 8000 : 2500);
     return () => {
       if (refreshTimerRef.current !== null) {
@@ -231,6 +246,20 @@ export function useWorkbenchData(): WorkbenchData {
         refreshTimerRef.current = null;
       }
     };
+  }, [realtimeConnected]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (!selectedIdRef.current || !realtimeConnected) {
+        setRealtimeStale(false);
+        return;
+      }
+      const now = Date.now();
+      const lastRealtime = lastRealtimeAtRef.current;
+      const lastSync = lastSuccessfulSyncAtRef.current;
+      setRealtimeStale(Boolean(lastRealtime && now - lastRealtime > 25_000 && (!lastSync || now - lastSync > 25_000)));
+    }, 5000);
+    return () => window.clearInterval(timer);
   }, [realtimeConnected]);
 
   useEffect(() => {
@@ -261,6 +290,10 @@ export function useWorkbenchData(): WorkbenchData {
 
     function connect() {
       if (wsCancelRef.current) return;
+      if (typeof WebSocket === "undefined") {
+        setRealtimeConnected(false);
+        return;
+      }
       try {
         const ws = new WebSocket(api.taskEventsWebSocketUrl(currentTaskId));
         wsRef.current = ws;
@@ -269,6 +302,7 @@ export function useWorkbenchData(): WorkbenchData {
             ws.close();
             return;
           }
+          markRealtimeSeen();
           setRealtimeConnected(true);
           reconnectAttempt = 0;
         };
@@ -285,8 +319,12 @@ export function useWorkbenchData(): WorkbenchData {
         ws.onmessage = (message) => {
           if (wsCancelRef.current) return;
           try {
+            markRealtimeSeen();
             const parsed = parseRealtimeMessage(message.data);
             if (!parsed) return;
+            if (parsed.type === "heartbeat") {
+              return;
+            }
             if (parsed.type === "snapshot") {
               wsEventQueueRef.current = [];
               if (wsFlushTimerRef.current !== null) {
@@ -297,12 +335,16 @@ export function useWorkbenchData(): WorkbenchData {
                 if (!current || current.id !== currentTaskId) return current;
                 return { ...current, events: parsed.events };
               });
+              markSyncSuccess();
               if (parsed.transcript) {
                 setSelectedTranscript(parsed.transcript);
               } else {
                 void api.listTaskTranscript(currentTaskId).then((transcript) => {
-                  if (!wsCancelRef.current && selectedIdRef.current === currentTaskId) setSelectedTranscript(transcript);
-                }).catch(() => undefined);
+                  if (!wsCancelRef.current && selectedIdRef.current === currentTaskId) {
+                    setSelectedTranscript(transcript);
+                    markSyncSuccess();
+                  }
+                }).catch(recordBackgroundSyncFailure);
               }
               return;
             }
@@ -356,21 +398,18 @@ export function useWorkbenchData(): WorkbenchData {
       if (queued.length === 0 || wsCancelRef.current) return;
       setSelected((current) => {
         if (!current || current.id !== taskId) return current;
-        const seen = new Set(current.events.map((event) => event.id));
-        const nextEvents = [...current.events];
+        const merged = coalesceRealtimeEvents(current.events, queued);
+        if (merged.events.length === current.events.length && merged.changedCount === 0) return current;
         let nextApprovals = current.approvals;
         let updatedAt = current.updatedAt;
-        for (const event of queued) {
-          if (seen.has(event.id)) continue;
-          seen.add(event.id);
-          nextEvents.push(event);
+        for (const event of merged.acceptedEvents) {
           nextApprovals = approvalFromEvent(event, nextApprovals);
           updatedAt = event.createdAt;
         }
-        if (nextEvents.length === current.events.length) return current;
-        return { ...current, events: nextEvents, approvals: nextApprovals, updatedAt };
+        return { ...current, events: merged.events, approvals: nextApprovals, updatedAt };
       });
       setSelectedTranscript((current) => appendTranscriptEvents(current, queued));
+      markSyncSuccess();
     }, 40);
   }
 
@@ -378,9 +417,20 @@ export function useWorkbenchData(): WorkbenchData {
     newTaskModeRef.current = false;
     selectedIdRef.current = taskId;
     setSelectedId(taskId);
-    const [nextSelected, nextTranscript] = await Promise.all([api.getTask(taskId), api.listTaskTranscript(taskId)]);
+    const nextSelected = await api.getTask(taskId);
+    if (selectedIdRef.current !== taskId) return;
     setSelected(nextSelected);
-    setSelectedTranscript(nextTranscript);
+    setTasks((current) => upsertTask(current, nextSelected));
+    markSyncSuccess();
+    try {
+      const nextTranscript = await api.listTaskTranscript(taskId);
+      if (selectedIdRef.current === taskId) {
+        setSelectedTranscript(nextTranscript);
+        markSyncSuccess();
+      }
+    } catch (error) {
+      recordBackgroundSyncFailure(error);
+    }
   }
 
   function clearSelection() {
@@ -462,12 +512,8 @@ export function useWorkbenchData(): WorkbenchData {
   async function runTaskAction(action: () => Promise<TaskDetail>) {
     await run(async () => {
       const task = await action();
-      newTaskModeRef.current = false;
-      selectedIdRef.current = task.id;
-      setSelectedId(task.id);
-      setSelected(task);
-      setSelectedTranscript(await api.listTaskTranscript(task.id));
-      await refresh(task.id);
+      activateTask(task);
+      void hydrateSelectedTask(task.id);
     });
   }
 
@@ -505,6 +551,52 @@ export function useWorkbenchData(): WorkbenchData {
     setBusySince(null);
   }
 
+  function activateTask(task: TaskDetail) {
+    newTaskModeRef.current = false;
+    selectedIdRef.current = task.id;
+    setSelectedId(task.id);
+    setSelected(task);
+    setSelectedTranscript(compactTaskEventsForTranscript(task.events));
+    setTasks((current) => upsertTask(current, task));
+    markSyncSuccess();
+  }
+
+  async function hydrateSelectedTask(taskId: string) {
+    try {
+      const [nextSelected, nextTranscript] = await Promise.all([api.getTask(taskId), api.listTaskTranscript(taskId)]);
+      if (selectedIdRef.current !== taskId) return;
+      setSelected(nextSelected);
+      setSelectedTranscript(nextTranscript);
+      setTasks((current) => upsertTask(current, nextSelected));
+      markSyncSuccess();
+    } catch (error) {
+      recordBackgroundSyncFailure(error);
+    }
+    try {
+      await refreshTaskShell(taskId, false);
+    } catch (error) {
+      recordBackgroundSyncFailure(error);
+    }
+  }
+
+  function markRealtimeSeen() {
+    const now = Date.now();
+    lastRealtimeAtRef.current = now;
+    setLastRealtimeAt(now);
+    setRealtimeStale(false);
+  }
+
+  function markSyncSuccess() {
+    const now = Date.now();
+    lastSuccessfulSyncAtRef.current = now;
+    setLastSuccessfulSyncAt(now);
+    setSyncWarning(null);
+  }
+
+  function recordBackgroundSyncFailure(error: unknown) {
+    setSyncWarning(error instanceof Error ? error.message : String(error));
+  }
+
   return {
     tasks,
     taskFolders,
@@ -530,6 +622,10 @@ export function useWorkbenchData(): WorkbenchData {
     scheduledTasks,
     webSearchProviders,
     realtimeConnected,
+    realtimeStale,
+    lastRealtimeAt,
+    lastSuccessfulSyncAt,
+    syncWarning,
     busy,
     busySince,
     error,
@@ -554,6 +650,20 @@ function settledValue<T>(result: PromiseSettledResult<T>): T | undefined {
   return result.status === "fulfilled" ? result.value : undefined;
 }
 
+function upsertTask(tasks: TaskDetail[], task: TaskDetail): TaskDetail[] {
+  const existingIndex = tasks.findIndex((item) => item.id === task.id);
+  if (existingIndex < 0) return [task, ...tasks];
+  const next = [...tasks];
+  next[existingIndex] = task;
+  return next;
+}
+
+function compactTaskEventsForTranscript(events: TaskEvent[]): TaskTranscriptItem[] {
+  return events
+    .filter((event) => isClientTranscriptEvent(event) && !isInlineToolMarkupEvent(event))
+    .map(compactLiveTranscriptEvent);
+}
+
 function approvalFromEvent(event: TaskEvent, approvals: ToolApproval[]): ToolApproval[] {
   if (event.type !== "approval_pending") return approvals;
   const approval = event.payload["approval"] as ToolApproval | undefined;
@@ -561,9 +671,10 @@ function approvalFromEvent(event: TaskEvent, approvals: ToolApproval[]): ToolApp
   return [...approvals, approval];
 }
 
-function parseRealtimeMessage(value: unknown):
+export function parseRealtimeMessage(value: unknown):
   | { type: "snapshot"; events: TaskEvent[]; transcript?: TaskTranscriptItem[] }
   | { type: "event"; event: TaskEvent }
+  | { type: "heartbeat"; taskId?: string; timestamp?: string }
   | null {
   try {
     const strValue = String(value ?? "");
@@ -582,10 +693,40 @@ function parseRealtimeMessage(value: unknown):
     if (parsed["type"] === "event" && typeof parsed["event"] === "object" && parsed["event"]) {
       return { type: "event", event: parsed["event"] as TaskEvent };
     }
+    if (parsed["type"] === "heartbeat") {
+      return {
+        type: "heartbeat",
+        ...(typeof parsed["taskId"] === "string" ? { taskId: parsed["taskId"] } : {}),
+        ...(typeof parsed["timestamp"] === "string" ? { timestamp: parsed["timestamp"] } : {})
+      };
+    }
     return null;
   } catch {
     return null;
   }
+}
+
+export function coalesceRealtimeEvents(
+  currentEvents: TaskEvent[],
+  incomingEvents: TaskEvent[]
+): { events: TaskEvent[]; acceptedEvents: TaskEvent[]; changedCount: number } {
+  const next = [...currentEvents];
+  const acceptedEvents: TaskEvent[] = [];
+  const seen = new Set(currentEvents.map((event) => event.id));
+  let changedCount = 0;
+  for (const event of incomingEvents) {
+    if (seen.has(event.id)) continue;
+    seen.add(event.id);
+    if (mergeAdjacentStreamDelta(next, event)) {
+      acceptedEvents.push(event);
+      changedCount++;
+      continue;
+    }
+    next.push(event);
+    acceptedEvents.push(event);
+    changedCount++;
+  }
+  return { events: next, acceptedEvents, changedCount };
 }
 
 function appendTranscriptEvents(current: TaskTranscriptItem[], events: TaskEvent[]): TaskTranscriptItem[] {
@@ -595,9 +736,59 @@ function appendTranscriptEvents(current: TaskTranscriptItem[], events: TaskEvent
     if (seen.has(event.id) || !isClientTranscriptEvent(event)) continue;
     if (isInlineToolMarkupEvent(event)) continue;
     seen.add(event.id);
-    next.push(compactLiveTranscriptEvent(event));
+    const compact = compactLiveTranscriptEvent(event);
+    if (mergeAdjacentStreamDelta(next, compact)) {
+      continue;
+    }
+    next.push(compact);
   }
   return next;
+}
+
+function mergeAdjacentStreamDelta<T extends TaskEvent | TaskTranscriptItem>(events: T[], incoming: T): boolean {
+  if (!isStreamDeltaEvent(incoming) || events.length === 0) return false;
+  const candidate = events[events.length - 1];
+  if (!candidate || !isStreamDeltaEvent(candidate) || streamDeltaKey(candidate) !== streamDeltaKey(incoming)) return false;
+  events[events.length - 1] = mergeStreamDeltaEvents(candidate, incoming) as T;
+  return true;
+}
+
+type StreamDeltaEvent = (TaskEvent | TaskTranscriptItem) & { type: "assistant_delta" | "thinking_delta" };
+
+function mergeStreamDeltaEvents<T extends StreamDeltaEvent>(current: T, incoming: T): T {
+  const currentDelta = streamDeltaText(current);
+  const incomingDelta = streamDeltaText(incoming);
+  const mergedDelta = appendStreamDeltaText(currentDelta, incomingDelta, incoming.type);
+  const mergedSummary = appendStreamDeltaText(current.summary ?? "", incoming.summary ?? incomingDelta, incoming.type);
+  return {
+    ...current,
+    createdAt: incoming.createdAt,
+    summary: mergedSummary,
+    payload: {
+      ...current.payload,
+      ...incoming.payload,
+      delta: mergedDelta
+    }
+  };
+}
+
+function isStreamDeltaEvent(event: TaskEvent | TaskTranscriptItem): event is StreamDeltaEvent {
+  return event.type === "assistant_delta" || event.type === "thinking_delta";
+}
+
+function streamDeltaKey(event: TaskEvent | TaskTranscriptItem): string {
+  return `${event.type}:${String(event.payload["streamId"] ?? event.id)}`;
+}
+
+function streamDeltaText(event: TaskEvent | TaskTranscriptItem): string {
+  const delta = event.payload["delta"];
+  return typeof delta === "string" ? delta : event.summary ?? "";
+}
+
+function appendStreamDeltaText(current: string, delta: string, type: "assistant_delta" | "thinking_delta"): string {
+  if (!current || type === "assistant_delta") return current + delta;
+  if (!delta || /^\s/.test(delta) || /\s$/.test(current)) return current + delta;
+  return `${current}\n${delta}`;
 }
 
 function compactLiveTranscriptEvent(event: TaskEvent): TaskTranscriptItem {

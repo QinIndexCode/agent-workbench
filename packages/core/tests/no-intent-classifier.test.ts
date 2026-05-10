@@ -24,7 +24,9 @@ describe("natural-language intent classifier guard", () => {
       "isTrivialUserMessage",
       "isCodeChangeRequest",
       "selectModelToolsForIntent",
-      "shouldLoadDynamicTools"
+      "shouldLoadDynamicTools",
+      "findRelevantSkills",
+      "calculateRelevance"
     ];
 
     expect(existsSync(removedModule)).toBe(false);

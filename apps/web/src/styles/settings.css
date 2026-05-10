@@ -2986,6 +2986,36 @@
   margin-top: 18px;
 }
 
+.memoryGrid {
+  min-height: min(760px, calc(100vh - 170px));
+}
+
+.memoryDocList {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.memoryDocList .knowledgeRow {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.memoryDocList .knowledgeRow > span:last-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.memoryEditor {
+  margin-top: 12px;
+}
+
+.memoryEditor textarea {
+  min-height: 280px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 .knowledgeListPane,
 .knowledgeDetailPane {
   min-width: 0;

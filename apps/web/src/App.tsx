@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup, TaskAttachment } from "@scc/shared";
 import { type AppRoute, useAppRoute } from "./app-router.js";
 import { api } from "./api.js";
@@ -18,6 +18,7 @@ const LibraryView = lazy(() => import("./components/LibraryView.js").then((modul
 const McpPanel = lazy(() => import("./components/McpPanel.js").then((module) => ({ default: module.McpPanel })));
 const ModelProvidersPanel = lazy(() => import("./components/ModelProvidersPanel.js").then((module) => ({ default: module.ModelProvidersPanel })));
 const PermissionsPanel = lazy(() => import("./components/PermissionsPanel.js").then((module) => ({ default: module.PermissionsPanel })));
+const ProjectMemoryPanel = lazy(() => import("./components/ProjectMemoryPanel.js").then((module) => ({ default: module.ProjectMemoryPanel })));
 const ReflectionPanel = lazy(() => import("./components/ReflectionPanel.js").then((module) => ({ default: module.ReflectionPanel })));
 const SettingsView = lazy(() => import("./components/SettingsView.js").then((module) => ({ default: module.SettingsView })));
 const ScheduledTasksPanel = lazy(() => import("./components/ScheduledTasksPanel.js").then((module) => ({ default: module.ScheduledTasksPanel })));
@@ -42,7 +43,11 @@ export function App() {
   const [pendingAttachments, setPendingAttachments] = useState<TaskAttachment[]>([]);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [optimisticPermissionPreset, setOptimisticPermissionPreset] = useState<ComposerPermissionMode | null>(null);
+  const [permissionBusy, setPermissionBusy] = useState(false);
+  const [permissionError, setPermissionError] = useState<string | null>(null);
   const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">("dark");
+  const permissionMutationRef = useRef<Promise<void> | null>(null);
   const language = data.preferences?.language ?? "zh-CN";
   const theme = data.preferences?.theme ?? "dark";
   const activeView = route.view;
@@ -51,11 +56,12 @@ export function App() {
   const selectedId = route.view === "tasks" && route.newTask ? null : data.selectedId;
   const settingsSection: SettingsSection = route.view === "settings" ? route.section : "providers";
   const librarySection: LibrarySection = route.view === "library" ? route.section : "skills";
-  const engineStatus = data.backendHealthy === false ? "attention" : data.error ? "attention" : data.realtimeConnected ? "streaming" : "running";
+  const syncFresh = data.lastSuccessfulSyncAt === null || Date.now() - data.lastSuccessfulSyncAt < 35_000;
+  const engineStatus = data.backendHealthy === false || (data.realtimeStale && !syncFresh) ? "attention" : data.realtimeConnected ? "streaming" : "running";
   const activeProvider = data.modelProviders.find((provider) => provider.id === data.preferences?.activeModelProviderId) ?? data.modelProviders.find((provider) => provider.enabled);
   const activeModel = activeProvider?.models.find((model) => model.id === activeProvider.defaultModelId) ?? activeProvider?.models[0];
   const modelLabel = activeProvider && activeModel ? (activeModel.label || activeModel.id) : "not configured";
-  const permissionPreset = getPermissionPreset(data.permissions);
+  const permissionPreset = optimisticPermissionPreset ?? getPermissionPreset(data.permissions);
   const permissionScopeLabel = formatPermissionPreset(permissionPreset, language);
   const hasCustomSnapshot = Boolean(data.preferences?.customPermissionSnapshot?.length);
   const modelOptions = activeProvider
@@ -100,6 +106,13 @@ export function App() {
     if (route.view === "tasks" && route.newTask) data.clearSelection();
     if (route.view === "tasks" && route.taskId && route.taskId !== data.selectedId) void data.selectTask(route.taskId);
   }, [route]);
+
+  useEffect(() => {
+    if (!optimisticPermissionPreset || permissionBusy) return;
+    if (getPermissionPreset(data.permissions) === optimisticPermissionPreset) {
+      setOptimisticPermissionPreset(null);
+    }
+  }, [data.permissions, optimisticPermissionPreset, permissionBusy]);
 
   return (
     <main className={activeView === "docs" ? "shell docsShell" : "shell"}>
@@ -174,6 +187,8 @@ export function App() {
           modelOptions={modelOptions}
           permissionPreset={permissionPreset}
           permissionScopeLabel={permissionScopeLabel}
+          permissionBusy={permissionBusy}
+          permissionError={permissionError}
           onModelChange={(modelId) => updateModelSelection(modelId)}
           onFilesSelected={(files) => uploadComposerFiles(files)}
           onRemoveAttachment={(attachmentId) => removeComposerAttachment(attachmentId)}
@@ -264,6 +279,22 @@ export function App() {
                 onUpload={(input) => data.runSideAction(() => api.uploadKnowledgeFile(input))}
                 onReindex={(id) => data.runSideAction(() => api.reindexKnowledgeItem(id))}
                 onSearch={(input) => api.searchKnowledge(input)}
+              />
+            ),
+            memory: (
+              <ProjectMemoryPanel
+                activeFolderId={activeTaskFolderId}
+                folders={data.taskFolders}
+                language={language}
+                memories={data.projectMemories}
+                query={libraryQuery}
+                onLoadUserProfile={() => api.getUserProfile()}
+                onSaveUserProfile={(content) => api.updateUserProfile({ content })}
+                onLoadProjectMemory={(folderId) => api.getProjectMemory(folderId)}
+                onSaveProjectMemory={(folderId, content) => api.updateProjectMemory(folderId, { content })}
+                onCompactProjectMemory={(folderId) => api.compactProjectMemory(folderId)}
+                onCreate={(input) => data.runSideAction(() => api.createProjectMemory(input))}
+                onDelete={(id) => data.runSideAction(() => api.deleteProjectMemory(id))}
               />
             ),
             reflections: (
@@ -383,6 +414,11 @@ export function App() {
   }
 
   function submitComposer(mode: ComposerMode, text: string) {
+    void submitComposerAfterPermissionSync(mode, text);
+  }
+
+  async function submitComposerAfterPermissionSync(mode: ComposerMode, text: string) {
+    if (!(await waitForPermissionMutation())) return;
     const attachmentIds = pendingAttachments.map((attachment) => attachment.id);
     if (mode === "guidance" || mode === "continue") {
       setTitleIssue(null);
@@ -393,15 +429,23 @@ export function App() {
       });
       return;
     }
-    submitNewTask(text, false, attachmentIds);
-  }
-
-  function submitNewTask(goal: string, useLocalFallback: boolean, attachmentIds = pendingAttachments.map((attachment) => attachment.id)) {
+    setTitleIssue(null);
     void data.runTaskAction(async () => {
-      const task = await submitNewTaskAction(goal, useLocalFallback, attachmentIds);
+      const task = await submitNewTaskAction(text, false, attachmentIds);
       setPendingAttachments([]);
       return task;
     });
+  }
+
+  function submitNewTask(goal: string, useLocalFallback: boolean, attachmentIds = pendingAttachments.map((attachment) => attachment.id)) {
+    void (async () => {
+      if (!(await waitForPermissionMutation())) return;
+      await data.runTaskAction(async () => {
+        const task = await submitNewTaskAction(goal, useLocalFallback, attachmentIds);
+        setPendingAttachments([]);
+        return task;
+      });
+    })();
   }
 
   async function submitNewTaskAction(goal: string, useLocalFallback: boolean, attachmentIds = pendingAttachments.map((attachment) => attachment.id)) {
@@ -422,7 +466,10 @@ export function App() {
 
   function approve(approvalId: string, decision: ApprovalDecision) {
     if (!data.selected) return;
-    void data.runTaskAction(() => api.decideApproval(data.selected!.id, approvalId, decision));
+    void (async () => {
+      if (!(await waitForPermissionMutation())) return;
+      await data.runTaskAction(() => api.decideApproval(data.selected!.id, approvalId, decision));
+    })();
   }
 
   function grantGlobal(risk: RiskCategory) {
@@ -441,7 +488,10 @@ export function App() {
   }
 
   function applyPermissionPreset(preset: PermissionPreset) {
-    void data.runSideAction(async () => {
+    setOptimisticPermissionPreset(preset);
+    setPermissionError(null);
+    setPermissionBusy(true);
+    const mutation = (async () => {
       const granted = new Set(data.permissions.map((permission) => permission.riskCategory));
 
       if (permissionPreset === "custom") {
@@ -460,7 +510,20 @@ export function App() {
           await api.revokeGlobalPermission(risk);
         }
       }
-    });
+      await data.refresh(data.selectedId);
+    })();
+    permissionMutationRef.current = mutation;
+    void mutation
+      .catch((error) => {
+        setPermissionError(error instanceof Error ? error.message : String(error));
+        setOptimisticPermissionPreset(null);
+      })
+      .finally(() => {
+        if (permissionMutationRef.current === mutation) {
+          permissionMutationRef.current = null;
+          setPermissionBusy(false);
+        }
+      });
   }
 
   function restoreCustomPermissions() {
@@ -477,6 +540,18 @@ export function App() {
         }
       }
     });
+  }
+
+  async function waitForPermissionMutation(): Promise<boolean> {
+    const mutation = permissionMutationRef.current;
+    if (!mutation) return true;
+    try {
+      await mutation;
+      return true;
+    } catch (error) {
+      setPermissionError(error instanceof Error ? error.message : String(error));
+      return false;
+    }
   }
 
   function updateModelSelection(modelId: string) {

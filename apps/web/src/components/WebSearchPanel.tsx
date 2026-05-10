@@ -60,8 +60,8 @@ export function WebSearchPanel({
             </div>
             <span className={provider.enabled ? "statusPill" : "statusPill muted"}>{provider.enabled ? (zh ? "可用" : "Available") : (zh ? "暂停" : "Paused")}</span>
             <div className="rowIconActions">
-              <button className="iconButton" type="button" onClick={() => setEditing(provider)}><Pencil size={15} /></button>
-              <button className="iconButton danger" type="button" onClick={() => setConfirmDeleteId(provider.id)}><Trash2 size={15} /></button>
+              <button className="iconButton" type="button" aria-label={`${zh ? "编辑搜索 Provider" : "Edit search provider"} ${provider.label}`} onClick={() => setEditing(provider)}><Pencil size={15} /></button>
+              <button className="iconButton danger" type="button" aria-label={`${zh ? "删除搜索 Provider" : "Delete search provider"} ${provider.label}`} onClick={() => setConfirmDeleteId(provider.id)}><Trash2 size={15} /></button>
             </div>
           </article>
         ))}

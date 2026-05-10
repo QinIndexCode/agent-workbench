@@ -76,6 +76,7 @@ const MAX_EVENT_WINDOW = 1200;
 const LIST_EVENT_WINDOW = 0;
 const MAX_UI_OUTPUT_CHARS = 12000;
 const MAX_UI_SUMMARY_CHARS = 8000;
+const TASK_WS_HEARTBEAT_MS = 10_000;
 
 function parseEventWindow(query: unknown, fallback = DEFAULT_EVENT_WINDOW): number {
   const value = z.object({ eventLimit: z.coerce.number().int().nonnegative().optional() }).safeParse(query);
@@ -468,20 +469,31 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const eventLimit = parseEventWindow(request.query);
     const task = await workbench.getTask(id);
-    socket.send(JSON.stringify({
+    safeSocketSend(socket, {
       type: "snapshot",
       events: task ? selectEventsForTransport(task.events, eventLimit).map(compactEventForTransport) : [],
       transcript: task ? taskTranscriptForTransport(task) : []
-    }));
-    const unsubscribe = events.subscribe(id, (event) => socket.send(JSON.stringify({ type: "event", event: compactEventForTransport(event) })));
-    socket.on("close", unsubscribe);
+    });
+    const unsubscribe = events.subscribe(id, (event) => safeSocketSend(socket, { type: "event", event: compactEventForTransport(event) }));
+    const heartbeat = setInterval(() => {
+      safeSocketSend(socket, { type: "heartbeat", taskId: id, timestamp: new Date().toISOString() });
+    }, TASK_WS_HEARTBEAT_MS);
+    let closed = false;
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(heartbeat);
+      unsubscribe();
+    };
+    socket.on("close", cleanup);
+    socket.on("error", cleanup);
   });
 
   app.post("/api/tasks/:id/messages", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = MessageRequestSchema.parse(request.body);
     try {
-      return await workbench.appendMessage(id, input.content, input.attachmentIds);
+      return await workbench.appendMessageInBackground(id, input.content, input.attachmentIds);
     } catch (error) {
       return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -491,7 +503,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = ControlRequestSchema.parse(request.body);
     try {
-      return await workbench.control(id, input.action);
+      return await workbench.controlInBackground(id, input.action);
     } catch (error) {
       return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -501,7 +513,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id, approvalId } = z.object({ id: z.string(), approvalId: z.string() }).parse(request.params);
     const input = ApprovalRequestSchema.parse(request.body);
     try {
-      return await workbench.decideApproval(id, approvalId, input.decision);
+      return await workbench.decideApprovalInBackground(id, approvalId, input.decision);
     } catch (error) {
       return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -1009,6 +1021,14 @@ function redactSensitiveText(input: string): string {
   return input
     .replace(/\bsk-[A-Za-z0-9_\-*]{8,}/g, "[redacted-api-key]")
     .replace(/(OPENAI_API_KEY\s*=\s*)\S+/gi, "$1[redacted]");
+}
+
+function safeSocketSend(socket: { send: (data: string) => void }, payload: Record<string, unknown>): void {
+  try {
+    socket.send(JSON.stringify(payload));
+  } catch {
+    // The client may have closed between the event publish and this send.
+  }
 }
 
 function requireMcp(registry: McpRegistry | undefined): McpRegistry {
