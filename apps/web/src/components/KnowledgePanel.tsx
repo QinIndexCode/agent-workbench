@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { KnowledgeCreateRequest, KnowledgeItem, KnowledgePatchRequest, KnowledgeSearchRequest, KnowledgeSearchResult, KnowledgeUploadRequest } from "@scc/shared";
-import { Edit3, FileText, FileUp, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
+import type { KnowledgeCreateRequest, KnowledgeItem, KnowledgeModelAssetKind, KnowledgeModelDownloadRequest, KnowledgeModelDownloadResult, KnowledgeModelStatus, KnowledgePatchRequest, KnowledgeSearchRequest, KnowledgeSearchResult, KnowledgeUploadRequest, PreferencesPatch, UserPreferences } from "@scc/shared";
+import { BrainCircuit, Download, Edit3, FileText, FileUp, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { MarkdownText } from "./MarkdownText.js";
 
@@ -21,7 +21,11 @@ export function KnowledgePanel({
   onReindex,
   onSearch,
   onUpdate,
-  onUpload
+  onUpload,
+  preferences,
+  onPreference,
+  onLoadModels,
+  onDownloadModel
 }: {
   items: KnowledgeItem[];
   language?: string | null;
@@ -32,6 +36,10 @@ export function KnowledgePanel({
   onSearch?: (input: KnowledgeSearchRequest) => Promise<KnowledgeSearchResult[]>;
   onUpdate: (id: string, input: KnowledgePatchRequest) => Promise<void> | void;
   onUpload: (input: KnowledgeUploadRequest) => Promise<void> | void;
+  preferences?: UserPreferences | null;
+  onPreference?: (patch: PreferencesPatch) => Promise<void> | void;
+  onLoadModels?: () => Promise<KnowledgeModelStatus>;
+  onDownloadModel?: (input: KnowledgeModelDownloadRequest) => Promise<KnowledgeModelDownloadResult>;
 }) {
   const text = getKnowledgeCopy(language);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -43,6 +51,12 @@ export function KnowledgePanel({
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<KnowledgeSearchResult[]>([]);
   const [searchBusy, setSearchBusy] = useState(false);
+  const [modelStatus, setModelStatus] = useState<KnowledgeModelStatus | null>(null);
+  const [modelBusy, setModelBusy] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
+  const [modelKind, setModelKind] = useState<KnowledgeModelAssetKind>("fasttext_vectors");
+  const [modelUrl, setModelUrl] = useState("");
+  const [modelFileName, setModelFileName] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [kindFilter, setKindFilter] = useState<"all" | KnowledgeItem["kind"]>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | KnowledgeItem["indexStatus"]>("all");
@@ -69,6 +83,21 @@ export function KnowledgePanel({
   useEffect(() => {
     setPage(0);
   }, [kindFilter, searchText, statusFilter]);
+
+  useEffect(() => {
+    if (!onLoadModels) return;
+    let cancelled = false;
+    void onLoadModels()
+      .then((status) => {
+        if (!cancelled) setModelStatus(status);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setModelError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onLoadModels]);
 
   useEffect(() => {
     setSelectedIds((current) => {
@@ -107,6 +136,66 @@ export function KnowledgePanel({
         </div>
         <input hidden multiple ref={fileRef} type="file" onChange={(event) => void uploadFiles(event.currentTarget.files)} />
       </header>
+
+      {onLoadModels || onDownloadModel ? (
+        <section className="knowledgeModelCard">
+          <div className="knowledgeModelHeader">
+            <span className="prefSectionIcon"><BrainCircuit size={16} aria-hidden="true" /></span>
+            <div>
+              <h3>{text.modelTitle}</h3>
+              <p>{text.modelSubtitle}</p>
+            </div>
+          </div>
+          <div className="knowledgeModelAssets">
+            {(modelStatus?.assets ?? []).map((asset) => (
+              <article className={asset.exists ? "knowledgeModelAsset ready" : "knowledgeModelAsset"} key={asset.kind}>
+                <strong>{asset.label}</strong>
+                <span>{asset.exists ? text.ready : asset.configured ? text.missing : text.notConfigured}</span>
+                <small title={asset.path ?? ""}>{asset.path ?? text.noPath}{asset.size ? ` · ${formatBytes(asset.size)}` : ""}</small>
+              </article>
+            ))}
+          </div>
+          <form
+            className="knowledgeModelDownload"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void downloadModel();
+            }}
+          >
+            <select aria-label={text.modelKind} value={modelKind} onChange={(event) => setModelKind(event.target.value as KnowledgeModelAssetKind)}>
+              <option value="fasttext_vectors">fastText .vec/.txt</option>
+              <option value="tiny_reranker_model">Tiny reranker .onnx</option>
+              <option value="tiny_reranker_vocab">Tiny reranker vocab.txt</option>
+            </select>
+            <input aria-label={text.modelUrl} placeholder={text.modelUrlPlaceholder} value={modelUrl} onChange={(event) => setModelUrl(event.target.value)} />
+            <input aria-label={text.modelFileName} placeholder={text.modelFileNamePlaceholder} value={modelFileName} onChange={(event) => setModelFileName(event.target.value)} />
+            <button className="subtleButton iconText" disabled={modelBusy || !modelUrl.trim()} type="submit">
+              <Download size={14} />
+              {modelBusy ? text.downloading : text.download}
+            </button>
+          </form>
+          <div className="knowledgeModelToggles">
+            <label>
+              <input
+                checked={preferences?.knowledgeActiveInjection ?? true}
+                type="checkbox"
+                onChange={(event) => void onPreference?.({ knowledgeActiveInjection: event.currentTarget.checked })}
+              />
+              {text.activeInjection}
+            </label>
+            <label>
+              <input
+                checked={preferences?.knowledgeTinyRerankerEnabled ?? false}
+                disabled={!hasReadyAsset(modelStatus, "tiny_reranker_model") || !hasReadyAsset(modelStatus, "tiny_reranker_vocab")}
+                type="checkbox"
+                onChange={(event) => void onPreference?.({ knowledgeTinyRerankerEnabled: event.currentTarget.checked })}
+              />
+              {text.tinyReranker}
+            </label>
+          </div>
+          {modelError ? <p className="knowledgeError">{modelError}</p> : null}
+        </section>
+      ) : null}
 
       <div className="knowledgeGrid libraryManagerGrid">
         <aside className="knowledgeListPane">
@@ -229,6 +318,7 @@ export function KnowledgePanel({
                             <small>
                               {Math.round(result.score * 100)}% · {text.rerank}: {result.rerankStatus ?? "skipped"}
                               {typeof result.rerankScore === "number" ? ` · ${Math.round(result.rerankScore * 100)}%` : ""}
+                              {typeof result.semanticScore === "number" ? ` · fastText ${Math.round(result.semanticScore * 100)}%` : ""}
                             </small>
                             {result.matchedFields?.length ? (
                               <div className="knowledgeHitFields">
@@ -379,6 +469,33 @@ export function KnowledgePanel({
     }
   }
 
+  async function downloadModel() {
+    if (!onDownloadModel || !modelUrl.trim()) return;
+    setModelBusy(true);
+    setModelError(null);
+    try {
+      const result = await onDownloadModel({
+        kind: modelKind,
+        url: modelUrl.trim(),
+        ...(modelFileName.trim() ? { fileName: modelFileName.trim() } : {})
+      });
+      setModelStatus((current) => {
+        if (!current) return { assets: [result.asset], presets: [], tinyRerankerEnabled: result.preferences.knowledgeTinyRerankerEnabled };
+        return {
+          ...current,
+          assets: current.assets.map((asset) => asset.kind === result.asset.kind ? result.asset : asset),
+          tinyRerankerEnabled: result.preferences.knowledgeTinyRerankerEnabled
+        };
+      });
+      setModelUrl("");
+      setModelFileName("");
+    } catch (error) {
+      setModelError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setModelBusy(false);
+    }
+  }
+
   function toggleSelected(id: string, selected: boolean) {
     setSelectedIds((current) => {
       const next = new Set(current);
@@ -457,6 +574,16 @@ function isTextLike(file: File): boolean {
   return file.type.startsWith("text/") || /(\.md|\.txt|\.json|\.csv|\.ts|\.tsx|\.js|\.jsx|\.css|\.html|\.xml|\.yaml|\.yml)$/i.test(file.name);
 }
 
+function hasReadyAsset(status: KnowledgeModelStatus | null, kind: KnowledgeModelAssetKind): boolean {
+  return Boolean(status?.assets.some((asset) => asset.kind === kind && asset.exists));
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${Math.round(bytes / 1024 / 102.4) / 10} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 102.4) / 10} KB`;
+  return `${bytes} B`;
+}
+
 function getKnowledgeCopy(language?: string | null) {
   const zh = language === "zh-CN";
   return {
@@ -503,6 +630,21 @@ function getKnowledgeCopy(language?: string | null) {
     searchAction: zh ? "检索" : "Search",
     rerank: zh ? "重排" : "Rerank",
     snippet: zh ? "片段" : "Snippet",
+    modelTitle: zh ? "本地小模型" : "Local small models",
+    modelSubtitle: zh ? "下载 fastText 向量与 TinyBERT/MobileBERT ONNX 重排器，下载后自动配置到资料库检索。" : "Download fastText vectors and TinyBERT/MobileBERT ONNX rerankers. Downloads are configured automatically for knowledge search.",
+    modelKind: zh ? "模型类型" : "Model type",
+    modelUrl: zh ? "模型下载 URL" : "Model download URL",
+    modelUrlPlaceholder: zh ? "https://.../model.onnx 或 vectors.vec" : "https://.../model.onnx or vectors.vec",
+    modelFileName: zh ? "保存文件名" : "Saved file name",
+    modelFileNamePlaceholder: zh ? "可选，默认使用 URL 文件名" : "Optional, defaults to URL file name",
+    download: zh ? "下载并配置" : "Download and configure",
+    downloading: zh ? "下载中" : "Downloading",
+    ready: zh ? "可用" : "Ready",
+    missing: zh ? "文件缺失" : "Missing file",
+    notConfigured: zh ? "未配置" : "Not configured",
+    noPath: zh ? "无路径" : "No path",
+    activeInjection: zh ? "主动注入短知识摘要" : "Inject compact knowledge brief",
+    tinyReranker: zh ? "启用 Tiny ONNX 重排器" : "Enable Tiny ONNX reranker",
     size: zh ? "大小" : "Size",
     none: zh ? "无" : "None",
     pageLabel: (page: number, total: number) => zh ? `第 ${page} / ${total} 页` : `Page ${page} / ${total}`

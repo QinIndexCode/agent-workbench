@@ -6,6 +6,9 @@ import type {
   IntegrationProviderPatchRequest,
   KnowledgeCreateRequest,
   KnowledgeItem,
+  KnowledgeModelDownloadRequest,
+  KnowledgeModelDownloadResult,
+  KnowledgeModelStatus,
   KnowledgePatchRequest,
   KnowledgeReindexResult,
   KnowledgeSearchRequest,
@@ -430,6 +433,12 @@ export const api = {
   },
   searchKnowledge(input: KnowledgeSearchRequest): Promise<KnowledgeSearchResult[]> {
     return request("/api/knowledge/search", { method: "POST", body: JSON.stringify(input) });
+  },
+  getKnowledgeModelStatus(): Promise<KnowledgeModelStatus> {
+    return request("/api/knowledge/models");
+  },
+  downloadKnowledgeModel(input: KnowledgeModelDownloadRequest): Promise<KnowledgeModelDownloadResult> {
+    return request("/api/knowledge/models/download", { method: "POST", body: JSON.stringify(input) });
   },
   listPromptCacheStats(taskId?: string): Promise<PromptCacheStats[]> {
     const suffix = taskId ? `?taskId=${encodeURIComponent(taskId)}` : "";

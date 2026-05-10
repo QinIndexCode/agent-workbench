@@ -3,6 +3,7 @@ export * from "./experience.js";
 export * from "./fallback-model.js";
 export * from "./ids.js";
 export * from "./knowledge-rag.js";
+export * from "./knowledge-models.js";
 export * from "./mcp.js";
 export * from "./openai-model.js";
 export * from "./permission-engine.js";

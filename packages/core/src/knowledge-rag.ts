@@ -7,8 +7,11 @@ import type {
   KnowledgeSearchIndexEntry,
   KnowledgeSearchResult,
   ToolCall,
-  ToolResult
+  ToolResult,
+  UserPreferences
 } from "@scc/shared";
+import { existsSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { createId, nowIso } from "./ids.js";
 import { sanitizeSensitiveText } from "./secrets.js";
 import type { WorkbenchStore } from "./store.js";
@@ -25,6 +28,8 @@ const fieldWeights: Record<KnowledgeSearchField, number> = {
 };
 const fieldOrder: KnowledgeSearchField[] = ["title", "tags", "heading", "fileName", "content", "sourceUri"];
 const maxLocalRecall = 30;
+const semanticRecallThreshold = 0.22;
+const tinyRerankLimit = 12;
 
 export class KnowledgeSearchToolExecutor implements ToolExecutorDelegate {
   constructor(private readonly store: WorkbenchStore) {}
@@ -123,6 +128,7 @@ export async function indexKnowledgeItem(store: WorkbenchStore, item: KnowledgeI
 }
 
 export async function searchKnowledge(store: WorkbenchStore, request: KnowledgeSearchRequest): Promise<KnowledgeSearchResult[]> {
+  const preferences = await store.getPreferences();
   const chunks = (await store.listKnowledgeChunks()).filter((chunk) => chunk.projectId === request.projectId);
   if (chunks.length === 0) return [];
   const items = new Map((await store.listKnowledgeItems(request.projectId)).map((item) => [item.id, item]));
@@ -144,6 +150,7 @@ export async function searchKnowledge(store: WorkbenchStore, request: KnowledgeS
   const documentFrequency = buildDocumentFrequency(indexEntries, querySet);
   const averageLength = chunks.reduce((sum, chunk) => sum + Math.max(1, chunk.tokenEstimate), 0) / chunks.length;
   const rawScores = new Map<string, number>();
+  const semanticScores = await scoreFastTextSemanticMatches(preferences.knowledgeFastTextVectorPath, request.query, chunks);
   const matchedFields = new Map<string, Set<KnowledgeSearchField>>();
   const coveredTerms = new Map<string, Set<string>>();
   const k1 = 1.2;
@@ -163,14 +170,21 @@ export async function searchKnowledge(store: WorkbenchStore, request: KnowledgeS
 
   const maxRawScore = Math.max(...rawScores.values(), 0);
   const candidates: RankedKnowledgeResult[] = [];
-  for (const [chunkId, rawScore] of rawScores) {
+  const candidateChunkIds = new Set([
+    ...rawScores.keys(),
+    ...[...semanticScores.entries()].filter(([, score]) => score >= semanticRecallThreshold).map(([chunkId]) => chunkId)
+  ]);
+  for (const chunkId of candidateChunkIds) {
+    const rawScore = rawScores.get(chunkId) ?? 0;
+    const semanticScore = semanticScores.get(chunkId);
     const chunk = chunkById.get(chunkId);
     if (!chunk) continue;
     const item = items.get(chunk.knowledgeId);
     if (!item) continue;
-    const fields = sortFields(matchedFields.get(chunkId) ?? new Set());
+    const fields = sortFields(matchedFields.get(chunkId) ?? (semanticScore ? new Set<KnowledgeSearchField>(["content"]) : new Set()));
     const highlights = buildHighlights(item, chunk, fields, request.query, queryTerms);
-    const score = normalizeLexicalScore(rawScore, maxRawScore);
+    const lexicalScore = normalizeLexicalScore(rawScore, maxRawScore);
+    const score = combineSearchScores(lexicalScore, semanticScore);
     const coverageRatio = (coveredTerms.get(chunkId)?.size ?? 0) / querySet.size;
     const phraseMatch = hasPhraseMatch(item, chunk, request.query);
     const titleTagMatch = fields.includes("title") || fields.includes("tags");
@@ -178,7 +192,8 @@ export async function searchKnowledge(store: WorkbenchStore, request: KnowledgeS
       item,
       chunk,
       score,
-      rankReason: formatRankReason(fields, score, coverageRatio),
+      ...(semanticScore !== undefined ? { semanticScore } : {}),
+      rankReason: formatRankReason(fields, score, coverageRatio, semanticScore),
       highlights,
       matchedFields: fields,
       rerankStatus: "skipped",
@@ -200,7 +215,7 @@ export async function searchKnowledge(store: WorkbenchStore, request: KnowledgeS
   const recalled = candidates
     .sort(compareLocalCandidates)
     .slice(0, Math.max(request.limit, maxLocalRecall));
-  return applyLocalRerank(recalled)
+  return (await applyRerank(preferences, request.query, recalled))
     .slice(0, request.limit)
     .map(({ coverageRatio: _coverageRatio, phraseMatch: _phraseMatch, titleTagMatch: _titleTagMatch, ...result }) => result);
 }
@@ -463,21 +478,39 @@ function hasPhraseMatch(item: KnowledgeItem, chunk: KnowledgeChunk, query: strin
     .some((value) => value.toLowerCase().includes(phrase));
 }
 
-function formatRankReason(fields: KnowledgeSearchField[], score: number, coverageRatio: number): string {
+function formatRankReason(fields: KnowledgeSearchField[], score: number, coverageRatio: number, semanticScore?: number): string {
   const fieldTextValue = fields.length > 0 ? fields.join(", ") : "content";
-  return `Matched ${fieldTextValue}; lexical score ${score.toFixed(2)}; query coverage ${Math.round(coverageRatio * 100)}%.`;
+  const semantic = semanticScore !== undefined ? ` fastText semantic ${semanticScore.toFixed(2)};` : "";
+  return `Matched ${fieldTextValue}; combined score ${score.toFixed(2)};${semantic} query coverage ${Math.round(coverageRatio * 100)}%.`;
 }
 
 function compareLocalCandidates(left: RankedKnowledgeResult, right: RankedKnowledgeResult): number {
   return right.score - left.score || Number(right.titleTagMatch) - Number(left.titleTagMatch) || right.item.updatedAt.localeCompare(left.item.updatedAt);
 }
 
+async function applyRerank(preferences: UserPreferences, query: string, candidates: RankedKnowledgeResult[]): Promise<RankedKnowledgeResult[]> {
+  const locallyRanked = applyLocalRerank(candidates);
+  if (!preferences.knowledgeTinyRerankerEnabled) return locallyRanked;
+  if (!preferences.knowledgeTinyRerankerModelPath || !preferences.knowledgeTinyRerankerVocabPath) return locallyRanked;
+  try {
+    return await applyTinyRerank(query, locallyRanked, preferences.knowledgeTinyRerankerModelPath, preferences.knowledgeTinyRerankerVocabPath);
+  } catch (error) {
+    const message = sanitizeSensitiveText(error instanceof Error ? error.message : String(error));
+    return locallyRanked.map((candidate) => ({
+      ...candidate,
+      rerankStatus: "failed" as const,
+      rankReason: `${candidate.rankReason} Tiny reranker failed: ${message}.`
+    }));
+  }
+}
+
 function applyLocalRerank(candidates: RankedKnowledgeResult[]): RankedKnowledgeResult[] {
   return candidates
     .map((candidate) => {
       const rerankScore = clamp01(
-        candidate.score * 0.68 +
+        candidate.score * 0.6 +
         candidate.coverageRatio * 0.14 +
+        (candidate.semanticScore ?? 0) * 0.08 +
         (candidate.titleTagMatch ? 0.1 : 0) +
         (candidate.phraseMatch ? 0.06 : 0) +
         recencyScore(candidate.item.updatedAt) * 0.02
@@ -490,6 +523,241 @@ function applyLocalRerank(candidates: RankedKnowledgeResult[]): RankedKnowledgeR
       };
     })
     .sort((left, right) => (right.rerankScore ?? 0) - (left.rerankScore ?? 0) || compareLocalCandidates(left, right));
+}
+
+function combineSearchScores(lexicalScore: number, semanticScore?: number): number {
+  if (semanticScore === undefined) return lexicalScore;
+  if (lexicalScore <= 0) return clamp01(semanticScore * 0.82);
+  return clamp01(lexicalScore * 0.76 + semanticScore * 0.24);
+}
+
+type FastTextVectors = {
+  path: string;
+  mtimeMs: number;
+  dimensions: number;
+  vectors: Map<string, Float32Array>;
+};
+
+let fastTextCache: FastTextVectors | null = null;
+
+async function scoreFastTextSemanticMatches(vectorPath: string | undefined, query: string, chunks: KnowledgeChunk[]): Promise<Map<string, number>> {
+  const model = await loadFastTextVectors(vectorPath);
+  if (!model) return new Map();
+  const queryVector = averageFastTextVector(model, query);
+  if (!queryVector) return new Map();
+  const scores = new Map<string, number>();
+  for (const chunk of chunks) {
+    const vector = averageFastTextVector(model, [chunk.title, chunk.heading ?? "", chunk.tags.join(" "), chunk.content].join("\n"));
+    if (!vector) continue;
+    scores.set(chunk.id, clamp01((cosineDense(queryVector, vector) + 1) / 2));
+  }
+  return scores;
+}
+
+async function loadFastTextVectors(path: string | undefined): Promise<FastTextVectors | null> {
+  if (!path || !existsSync(path)) return null;
+  const metadata = await stat(path);
+  if (fastTextCache && fastTextCache.path === path && fastTextCache.mtimeMs === metadata.mtimeMs) return fastTextCache;
+  const content = await readFile(path, "utf8");
+  const vectors = new Map<string, Float32Array>();
+  let dimensions = 0;
+  const lines = content.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]?.trim();
+    if (!line) continue;
+    const parts = line.split(/\s+/);
+    if (index === 0 && parts.length === 2 && parts.every((part) => /^\d+$/.test(part))) {
+      dimensions = Number(parts[1]);
+      continue;
+    }
+    if (parts.length < 3) continue;
+    const term = parts[0]!;
+    const values = parts.slice(1).map(Number);
+    if (values.some((value) => !Number.isFinite(value))) continue;
+    dimensions ||= values.length;
+    if (values.length !== dimensions) continue;
+    vectors.set(term.toLowerCase(), new Float32Array(values));
+  }
+  fastTextCache = { path, mtimeMs: metadata.mtimeMs, dimensions, vectors };
+  return fastTextCache;
+}
+
+function averageFastTextVector(model: FastTextVectors, text: string): Float32Array | null {
+  const tokens = unique(tokenize(text));
+  const vector = new Float32Array(model.dimensions);
+  let count = 0;
+  for (const token of tokens) {
+    const match = model.vectors.get(token) ?? model.vectors.get(token.toLowerCase());
+    if (!match) continue;
+    for (let index = 0; index < model.dimensions; index += 1) vector[index] = (vector[index] ?? 0) + (match[index] ?? 0);
+    count += 1;
+  }
+  if (count === 0) return null;
+  for (let index = 0; index < model.dimensions; index += 1) vector[index] = (vector[index] ?? 0) / count;
+  return normalizeDense(vector);
+}
+
+function normalizeDense(vector: Float32Array): Float32Array {
+  const length = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0)) || 1;
+  return new Float32Array([...vector].map((value) => value / length));
+}
+
+function cosineDense(left: Float32Array, right: Float32Array): number {
+  const length = Math.min(left.length, right.length);
+  let dot = 0;
+  for (let index = 0; index < length; index += 1) dot += (left[index] ?? 0) * (right[index] ?? 0);
+  return Math.max(-1, Math.min(1, dot));
+}
+
+type OrtModule = typeof import("onnxruntime-node");
+type TinyReranker = {
+  modelPath: string;
+  vocabPath: string;
+  session: Awaited<ReturnType<OrtModule["InferenceSession"]["create"]>>;
+  vocab: Map<string, number>;
+  clsId: number;
+  sepId: number;
+  padId: number;
+  unkId: number;
+};
+
+let tinyRerankerCache: TinyReranker | null = null;
+
+async function applyTinyRerank(
+  query: string,
+  candidates: RankedKnowledgeResult[],
+  modelPath: string,
+  vocabPath: string
+): Promise<RankedKnowledgeResult[]> {
+  if (!existsSync(modelPath) || !existsSync(vocabPath)) return candidates;
+  const reranker = await loadTinyReranker(modelPath, vocabPath);
+  const head = candidates.slice(0, tinyRerankLimit);
+  const tail = candidates.slice(tinyRerankLimit);
+  const rescored = await Promise.all(head.map(async (candidate) => {
+    const document = [candidate.item.title, candidate.chunk.heading ?? "", candidate.chunk.tags.join(" "), candidate.chunk.content.slice(0, 1400)].filter(Boolean).join("\n");
+    const tinyScore = await scoreTinyPair(reranker, query, document);
+    const rerankScore = clamp01((candidate.rerankScore ?? candidate.score) * 0.35 + tinyScore * 0.65);
+    return {
+      ...candidate,
+      rerankScore,
+      rerankStatus: "applied" as const,
+      rankReason: `${candidate.rankReason} Tiny ONNX reranker ${tinyScore.toFixed(2)}.`
+    };
+  }));
+  return [...rescored.sort((left, right) => (right.rerankScore ?? 0) - (left.rerankScore ?? 0)), ...tail];
+}
+
+async function loadTinyReranker(modelPath: string, vocabPath: string): Promise<TinyReranker> {
+  if (tinyRerankerCache?.modelPath === modelPath && tinyRerankerCache.vocabPath === vocabPath) return tinyRerankerCache;
+  const ort = await import("onnxruntime-node");
+  const session = await ort.InferenceSession.create(modelPath, { executionProviders: ["cpu"] });
+  const vocab = await loadWordPieceVocab(vocabPath);
+  const clsId = vocab.get("[CLS]") ?? 101;
+  const sepId = vocab.get("[SEP]") ?? 102;
+  const padId = vocab.get("[PAD]") ?? 0;
+  const unkId = vocab.get("[UNK]") ?? 100;
+  tinyRerankerCache = { modelPath, vocabPath, session, vocab, clsId, sepId, padId, unkId };
+  return tinyRerankerCache;
+}
+
+async function loadWordPieceVocab(path: string): Promise<Map<string, number>> {
+  const lines = (await readFile(path, "utf8")).split(/\r?\n/);
+  const vocab = new Map<string, number>();
+  lines.forEach((line, index) => {
+    const token = line.trim();
+    if (token) vocab.set(token, index);
+  });
+  return vocab;
+}
+
+async function scoreTinyPair(reranker: TinyReranker, query: string, document: string): Promise<number> {
+  const ort = await import("onnxruntime-node");
+  const encoded = encodeWordPiecePair(reranker, query, document, 192);
+  const dims = [1, encoded.inputIds.length];
+  const feeds: Record<string, InstanceType<typeof ort.Tensor>> = {};
+  for (const name of reranker.session.inputNames) {
+    if (name === "input_ids") feeds[name] = new ort.Tensor("int64", BigInt64Array.from(encoded.inputIds.map(BigInt)), dims);
+    else if (name === "attention_mask") feeds[name] = new ort.Tensor("int64", BigInt64Array.from(encoded.attentionMask.map(BigInt)), dims);
+    else if (name === "token_type_ids" || name === "segment_ids") feeds[name] = new ort.Tensor("int64", BigInt64Array.from(encoded.tokenTypeIds.map(BigInt)), dims);
+  }
+  const outputs = await reranker.session.run(feeds);
+  const first = outputs[reranker.session.outputNames[0]!] ?? Object.values(outputs)[0];
+  const values = Array.from(first?.data as Iterable<number> | undefined ?? []);
+  if (values.length >= 2) return softmaxPositive(values[values.length - 2] ?? 0, values[values.length - 1] ?? 0);
+  return sigmoid(values[0] ?? 0);
+}
+
+function encodeWordPiecePair(reranker: TinyReranker, query: string, document: string, maxLength: number): { inputIds: number[]; attentionMask: number[]; tokenTypeIds: number[] } {
+  const queryTokens = wordPieceTokenize(reranker, query).slice(0, 48);
+  const documentBudget = Math.max(8, maxLength - queryTokens.length - 3);
+  const documentTokens = wordPieceTokenize(reranker, document).slice(0, documentBudget);
+  const inputIds = [reranker.clsId, ...queryTokens, reranker.sepId, ...documentTokens, reranker.sepId];
+  const tokenTypeIds = [
+    0,
+    ...queryTokens.map(() => 0),
+    0,
+    ...documentTokens.map(() => 1),
+    1
+  ];
+  const attentionMask = inputIds.map(() => 1);
+  while (inputIds.length < maxLength) {
+    inputIds.push(reranker.padId);
+    tokenTypeIds.push(0);
+    attentionMask.push(0);
+  }
+  return { inputIds, attentionMask, tokenTypeIds };
+}
+
+function wordPieceTokenize(reranker: TinyReranker, text: string): number[] {
+  const ids: number[] = [];
+  for (const token of basicWordPieceTokens(text)) {
+    if (reranker.vocab.has(token)) {
+      ids.push(reranker.vocab.get(token)!);
+      continue;
+    }
+    let start = 0;
+    const pieces: number[] = [];
+    while (start < token.length) {
+      let end = token.length;
+      let match: number | undefined;
+      while (start < end) {
+        const piece = `${start === 0 ? "" : "##"}${token.slice(start, end)}`;
+        const id = reranker.vocab.get(piece);
+        if (id !== undefined) {
+          match = id;
+          break;
+        }
+        end -= 1;
+      }
+      if (match === undefined) {
+        pieces.push(reranker.unkId);
+        break;
+      }
+      pieces.push(match);
+      start = end;
+    }
+    ids.push(...pieces);
+  }
+  return ids;
+}
+
+function basicWordPieceTokens(text: string): string[] {
+  const tokens: string[] = [];
+  for (const match of text.toLowerCase().matchAll(/[\p{Script=Han}]|[a-z0-9_]+|[^\s]/gu)) {
+    if (match[0]) tokens.push(match[0]);
+  }
+  return tokens;
+}
+
+function softmaxPositive(negative: number, positive: number): number {
+  const max = Math.max(negative, positive);
+  const neg = Math.exp(negative - max);
+  const pos = Math.exp(positive - max);
+  return clamp01(pos / (neg + pos));
+}
+
+function sigmoid(value: number): number {
+  return clamp01(1 / (1 + Math.exp(-value)));
 }
 
 function recencyScore(updatedAt: string): number {

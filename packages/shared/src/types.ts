@@ -21,6 +21,12 @@ import type {
   KnowledgeCreateRequestSchema,
   KnowledgeEmbeddingSchema,
   KnowledgeItemSchema,
+  KnowledgeModelAssetKindSchema,
+  KnowledgeModelAssetStatusSchema,
+  KnowledgeModelDownloadRequestSchema,
+  KnowledgeModelDownloadResultSchema,
+  KnowledgeModelPresetSchema,
+  KnowledgeModelStatusSchema,
   KnowledgeSearchFieldSchema,
   KnowledgeSearchIndexEntrySchema,
   KnowledgeReindexResultSchema,
@@ -167,6 +173,12 @@ export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderConfigSche
 export type KnowledgeItem = z.infer<typeof KnowledgeItemSchema>;
 export type KnowledgeChunk = z.infer<typeof KnowledgeChunkSchema>;
 export type KnowledgeEmbedding = z.infer<typeof KnowledgeEmbeddingSchema>;
+export type KnowledgeModelAssetKind = z.infer<typeof KnowledgeModelAssetKindSchema>;
+export type KnowledgeModelAssetStatus = z.infer<typeof KnowledgeModelAssetStatusSchema>;
+export type KnowledgeModelDownloadRequest = z.infer<typeof KnowledgeModelDownloadRequestSchema>;
+export type KnowledgeModelDownloadResult = z.infer<typeof KnowledgeModelDownloadResultSchema>;
+export type KnowledgeModelPreset = z.infer<typeof KnowledgeModelPresetSchema>;
+export type KnowledgeModelStatus = z.infer<typeof KnowledgeModelStatusSchema>;
 export type KnowledgeSearchField = z.infer<typeof KnowledgeSearchFieldSchema>;
 export type KnowledgeSearchIndexEntry = z.infer<typeof KnowledgeSearchIndexEntrySchema>;
 export type KnowledgeCreateRequest = z.infer<typeof KnowledgeCreateRequestSchema>;

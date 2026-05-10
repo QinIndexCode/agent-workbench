@@ -883,6 +883,10 @@ describe("Workbench components", () => {
       maxInjectedSkills: 3,
       knowledgeActiveInjection: true,
       maxInjectedKnowledgeItems: 3,
+      knowledgeFastTextVectorPath: undefined,
+      knowledgeTinyRerankerEnabled: false,
+      knowledgeTinyRerankerModelPath: undefined,
+      knowledgeTinyRerankerVocabPath: undefined,
       mcpApprovalMode: "confirm_dangerous",
       sanitizeSensitiveData: true,
       encryptStorage: false,
@@ -1088,6 +1092,65 @@ describe("Workbench components", () => {
     fireEvent.change(screen.getByLabelText("Content"), { target: { value: "New body" } });
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ title: "Fresh note", kind: "memory" })));
+  });
+
+  it("downloads local knowledge model assets and updates model preferences", async () => {
+    const now = new Date().toISOString();
+    const preferences = defaultPreferences("en-US");
+    const onPreference = vi.fn().mockResolvedValue(undefined);
+    const onLoadModels = vi.fn().mockResolvedValue({
+      assets: [
+        { kind: "fasttext_vectors", label: "fastText vectors", exists: false, configured: false },
+        { kind: "tiny_reranker_model", label: "Tiny reranker ONNX", exists: true, configured: true, path: "D:/models/tiny.onnx" },
+        { kind: "tiny_reranker_vocab", label: "Tiny reranker vocab", exists: true, configured: true, path: "D:/models/vocab.txt" }
+      ],
+      presets: [],
+      tinyRerankerEnabled: false
+    });
+    const onDownloadModel = vi.fn().mockResolvedValue({
+      asset: {
+        kind: "fasttext_vectors",
+        label: "fastText vectors",
+        exists: true,
+        configured: true,
+        path: "D:/models/mini.vec",
+        size: 30,
+        updatedAt: now
+      },
+      preferences: {
+        ...preferences,
+        knowledgeFastTextVectorPath: "D:/models/mini.vec"
+      }
+    });
+
+    render(
+      <KnowledgePanel
+        items={[]}
+        language="en-US"
+        preferences={preferences}
+        onCreate={vi.fn()}
+        onDelete={vi.fn()}
+        onDownloadModel={onDownloadModel}
+        onLoadModels={onLoadModels}
+        onPreference={onPreference}
+        onUpdate={vi.fn()}
+        onUpload={vi.fn()}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText("Local small models")).toBeInTheDocument());
+    expect(await screen.findByText("Tiny reranker ONNX")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Model download URL"), { target: { value: "https://example.test/mini.vec" } });
+    fireEvent.click(screen.getByRole("button", { name: "Download and configure" }));
+    await waitFor(() =>
+      expect(onDownloadModel).toHaveBeenCalledWith({
+        kind: "fasttext_vectors",
+        url: "https://example.test/mini.vec"
+      })
+    );
+    await waitFor(() => expect(screen.getByText("D:/models/mini.vec · 30 B")).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText("Enable Tiny ONNX reranker"));
+    expect(onPreference).toHaveBeenCalledWith({ knowledgeTinyRerankerEnabled: true });
   });
 
   it("manages user and project memory documents plus structured memories", async () => {
@@ -1913,6 +1976,10 @@ function defaultPreferences(language: "zh-CN" | "en-US"): UserPreferences {
     maxInjectedSkills: 3,
     knowledgeActiveInjection: true,
     maxInjectedKnowledgeItems: 3,
+    knowledgeFastTextVectorPath: undefined,
+    knowledgeTinyRerankerEnabled: false,
+    knowledgeTinyRerankerModelPath: undefined,
+    knowledgeTinyRerankerVocabPath: undefined,
     mcpApprovalMode: "confirm_dangerous",
     sanitizeSensitiveData: true,
     encryptStorage: false,

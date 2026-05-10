@@ -2347,6 +2347,91 @@ describe("AgentWorkbench", () => {
     expect(chinese[0]?.highlights?.some((highlight) => highlight.text.includes("中文检索"))).toBe(true);
   });
 
+  it("uses configured fastText vectors for semantic recall without requiring lexical overlap", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-fasttext-"));
+    try {
+      const vectorPath = join(root, "mini.vec");
+      writeFileSync(vectorPath, ["4 3", "car 1 0 0", "automobile 1 0 0", "apple 0 1 0", "banana 0 1 0"].join("\n"), "utf8");
+      const store = new InMemoryWorkbenchStore();
+      const workbench = new AgentWorkbench({ store });
+      await workbench.updatePreferences({ knowledgeFastTextVectorPath: vectorPath });
+      const item = await workbench.createKnowledgeItem({
+        kind: "memory",
+        title: "Workshop manual",
+        content: "Automobile repair diagnostics and maintenance steps.",
+        tags: ["vehicles"]
+      });
+
+      const results = await workbench.searchKnowledge({ query: "car", projectId: "default", limit: 3 });
+
+      expect(results[0]?.item.id).toBe(item.id);
+      expect(results[0]?.semanticScore).toBeGreaterThan(0.9);
+      expect(results[0]?.rankReason).toContain("fastText semantic");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("downloads knowledge model assets and records paths in preferences", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-knowledge-models-"));
+    const previousWorkspaceRoot = process.env["SCC_WORKSPACE_ROOT"];
+    const previousFetch = globalThis.fetch;
+    process.env["SCC_WORKSPACE_ROOT"] = root;
+    globalThis.fetch = async () =>
+      new Response("2 2\ncar 1 0\nautomobile 1 0\n", {
+        status: 200,
+        headers: { "content-length": "30" }
+      });
+    try {
+      const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore() });
+      const result = await workbench.downloadKnowledgeModel({
+        kind: "fasttext_vectors",
+        url: "https://example.test/mini.vec"
+      });
+      const preferences = await workbench.getPreferences();
+
+      expect(result.asset.exists).toBe(true);
+      expect(result.asset.path).toContain("mini.vec");
+      expect(preferences.knowledgeFastTextVectorPath).toBe(result.asset.path);
+      expect(existsSync(result.asset.path ?? "")).toBe(true);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousWorkspaceRoot === undefined) delete process.env["SCC_WORKSPACE_ROOT"];
+      else process.env["SCC_WORKSPACE_ROOT"] = previousWorkspaceRoot;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps local knowledge search usable when a configured tiny reranker fails to load", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-tiny-rerank-"));
+    try {
+      const modelPath = join(root, "broken.onnx");
+      const vocabPath = join(root, "vocab.txt");
+      writeFileSync(modelPath, "not an onnx model", "utf8");
+      writeFileSync(vocabPath, ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "approval", "policy"].join("\n"), "utf8");
+      const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore() });
+      await workbench.updatePreferences({
+        knowledgeTinyRerankerEnabled: true,
+        knowledgeTinyRerankerModelPath: modelPath,
+        knowledgeTinyRerankerVocabPath: vocabPath
+      });
+      await workbench.createKnowledgeItem({
+        kind: "memory",
+        title: "Approval policy",
+        content: "Workspace writes require explicit approval.",
+        tags: ["permissions"]
+      });
+
+      const results = await workbench.searchKnowledge({ query: "approval policy", projectId: "default", limit: 3 });
+
+      expect(results[0]?.rerankStatus).toBe("failed");
+      expect(results[0]?.rankReason).toContain("Tiny reranker failed");
+      expect(results[0]?.item.title).toBe("Approval policy");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("returns failed knowledge_search results when the knowledge store throws or is cancelled", async () => {
     const call: ToolCall = {
       id: createId("tool_call"),

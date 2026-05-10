@@ -13,6 +13,9 @@ import type {
   IntegrationTaskLink,
   KnowledgeCreateRequest,
   KnowledgeItem,
+  KnowledgeModelDownloadRequest,
+  KnowledgeModelDownloadResult,
+  KnowledgeModelStatus,
   KnowledgePatchRequest,
   KnowledgeReindexResult,
   KnowledgeSearchRequest,
@@ -91,6 +94,7 @@ import {
 import { FallbackModelClient, type ModelClient, type ModelTraceEvent, type ModelUsage } from "./fallback-model.js";
 import { createId, nowIso } from "./ids.js";
 import { indexKnowledgeItem, searchKnowledge } from "./knowledge-rag.js";
+import { downloadKnowledgeModelAsset, getKnowledgeModelStatus } from "./knowledge-models.js";
 import type { ResolvedModelProviderConfig } from "./openai-model.js";
 import { PermissionEngine, type PermissionState, type RiskAssessment } from "./permission-engine.js";
 import { LocalSecretBox, maskSecret, sanitizeSensitiveText, sanitizeSensitiveValue } from "./secrets.js";
@@ -1830,6 +1834,14 @@ export class AgentWorkbench {
 
   async searchKnowledge(input: KnowledgeSearchRequest): Promise<KnowledgeSearchResult[]> {
     return searchKnowledge(this.store, input);
+  }
+
+  async getKnowledgeModelStatus(): Promise<KnowledgeModelStatus> {
+    return getKnowledgeModelStatus(this.store);
+  }
+
+  async downloadKnowledgeModel(input: KnowledgeModelDownloadRequest): Promise<KnowledgeModelDownloadResult> {
+    return downloadKnowledgeModelAsset(this.store, input);
   }
 
   private async setActiveProvider(provider: ModelProviderRecord): Promise<void> {

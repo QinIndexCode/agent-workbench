@@ -528,6 +528,44 @@ describe("server API", () => {
     await app.close();
   });
 
+  it("downloads knowledge model assets through the API and auto-updates preferences", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-model-api-"));
+    const previousWorkspaceRoot = process.env["SCC_WORKSPACE_ROOT"];
+    const previousFetch = globalThis.fetch;
+    process.env["SCC_WORKSPACE_ROOT"] = root;
+    globalThis.fetch = async () =>
+      new Response("2 2\ncar 1 0\nautomobile 1 0\n", {
+        status: 200,
+        headers: { "content-length": "30" }
+      });
+    const app = await createTestApp({
+      workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore() })
+    });
+    try {
+      const initial = (await app.inject("/api/knowledge/models")).json();
+      expect(initial.assets.find((asset: { kind: string }) => asset.kind === "fasttext_vectors")?.exists).toBe(false);
+
+      const download = await app.inject({
+        method: "POST",
+        url: "/api/knowledge/models/download",
+        payload: { kind: "fasttext_vectors", url: "https://example.test/mini.vec" }
+      });
+      const body = download.json();
+      const preferences = (await app.inject("/api/preferences")).json();
+
+      expect(download.statusCode).toBe(201);
+      expect(body.asset.exists).toBe(true);
+      expect(body.asset.path).toContain("mini.vec");
+      expect(preferences.knowledgeFastTextVectorPath).toBe(body.asset.path);
+    } finally {
+      await app.close();
+      globalThis.fetch = previousFetch;
+      if (previousWorkspaceRoot === undefined) delete process.env["SCC_WORKSPACE_ROOT"];
+      else process.env["SCC_WORKSPACE_ROOT"] = previousWorkspaceRoot;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("deletes tasks with optional learning cleanup", async () => {
     const app = await createTestApp({
       workbench: new AgentWorkbench({

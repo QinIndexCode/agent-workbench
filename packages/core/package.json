@@ -12,6 +12,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@scc/shared": "0.1.0",
+    "onnxruntime-node": "^1.26.0",
     "openai": "^5.0.1"
   }
 }

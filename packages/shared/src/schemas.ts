@@ -524,6 +524,10 @@ export const UserPreferencesSchema = z.object({
   knowledgeActiveInjection: z.boolean().default(true),
   maxInjectedKnowledgeItems: z.number().int().min(0).max(10).default(3),
   knowledgeRerankProviderId: z.string().optional(),
+  knowledgeFastTextVectorPath: z.string().optional(),
+  knowledgeTinyRerankerEnabled: z.boolean().default(false),
+  knowledgeTinyRerankerModelPath: z.string().optional(),
+  knowledgeTinyRerankerVocabPath: z.string().optional(),
   mcpApprovalMode: z.enum(["confirm_each", "confirm_dangerous", "auto"]).default("confirm_dangerous"),
   sanitizeSensitiveData: z.boolean().default(true),
   encryptStorage: z.boolean().default(false),
@@ -814,6 +818,47 @@ export const KnowledgeSearchIndexEntrySchema = z.object({
   createdAt: z.string()
 });
 
+export const KnowledgeModelAssetKindSchema = z.enum(["fasttext_vectors", "tiny_reranker_model", "tiny_reranker_vocab"]);
+
+export const KnowledgeModelPresetSchema = z.object({
+  id: z.string(),
+  kind: KnowledgeModelAssetKindSchema,
+  label: z.string(),
+  description: z.string(),
+  url: z.string().url().optional(),
+  fileName: z.string(),
+  sizeHint: z.string().optional()
+});
+
+export const KnowledgeModelAssetStatusSchema = z.object({
+  kind: KnowledgeModelAssetKindSchema,
+  label: z.string(),
+  path: z.string().optional(),
+  exists: z.boolean(),
+  configured: z.boolean(),
+  size: z.number().int().nonnegative().optional(),
+  updatedAt: z.string().optional()
+});
+
+export const KnowledgeModelStatusSchema = z.object({
+  assets: z.array(KnowledgeModelAssetStatusSchema),
+  presets: z.array(KnowledgeModelPresetSchema),
+  tinyRerankerEnabled: z.boolean()
+});
+
+export const KnowledgeModelDownloadRequestSchema = z
+  .object({
+    kind: KnowledgeModelAssetKindSchema,
+    url: z.string().url(),
+    fileName: z.string().optional()
+  })
+  .strict();
+
+export const KnowledgeModelDownloadResultSchema = z.object({
+  asset: KnowledgeModelAssetStatusSchema,
+  preferences: UserPreferencesSchema
+});
+
 export const KnowledgeSearchRequestSchema = z
   .object({
     query: z.string().min(1),
@@ -826,6 +871,7 @@ export const KnowledgeSearchResultSchema = z.object({
   item: KnowledgeItemSchema,
   chunk: KnowledgeChunkSchema,
   score: z.number().min(0).max(1),
+  semanticScore: z.number().min(0).max(1).optional(),
   rankReason: z.string().optional(),
   highlights: z
     .array(

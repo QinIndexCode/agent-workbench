@@ -310,6 +310,14 @@ export function App() {
                 onUpload={(input) => data.runSideAction(() => api.uploadKnowledgeFile(input))}
                 onReindex={(id) => data.runSideAction(() => api.reindexKnowledgeItem(id))}
                 onSearch={(input) => api.searchKnowledge(input)}
+                preferences={data.preferences}
+                onPreference={(patch) => void updatePreference(patch)}
+                onLoadModels={() => api.getKnowledgeModelStatus()}
+                onDownloadModel={async (input) => {
+                  const result = await api.downloadKnowledgeModel(input);
+                  await data.refresh(data.selected?.id ?? null);
+                  return result;
+                }}
               />
             ),
             memory: (

@@ -2986,6 +2986,94 @@
   margin-top: 18px;
 }
 
+.knowledgeModelCard {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 14px;
+  background: var(--surface-container);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.knowledgeModelHeader {
+  display: flex;
+  gap: 10px;
+  align-items: start;
+}
+
+.knowledgeModelHeader h3,
+.knowledgeModelHeader p {
+  margin: 0;
+}
+
+.knowledgeModelHeader p {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.knowledgeModelAssets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.knowledgeModelAsset {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.knowledgeModelAsset.ready {
+  border-color: var(--accent-border);
+}
+
+.knowledgeModelAsset span,
+.knowledgeModelAsset small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledgeModelDownload {
+  display: grid;
+  grid-template-columns: minmax(140px, 190px) minmax(180px, 1fr) minmax(130px, 180px) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.knowledgeModelDownload input,
+.knowledgeModelDownload select {
+  min-width: 0;
+  height: 34px;
+  padding: 0 9px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.knowledgeModelToggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  color: var(--muted-strong);
+  font-size: 12px;
+}
+
+.knowledgeModelToggles label {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+}
+
 .memoryGrid {
   min-height: min(760px, calc(100vh - 170px));
 }
@@ -3640,6 +3728,8 @@ p.knowledgeHighlights span {
   .mcpToolRow,
   .providerFormGrid,
   .knowledgeGrid,
+  .knowledgeModelAssets,
+  .knowledgeModelDownload,
   .docsLayout,
   .librarySections,
   .reflectionSummaryGrid,

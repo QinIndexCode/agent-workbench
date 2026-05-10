@@ -25,6 +25,7 @@ import {
   IntegrationProviderCreateRequestSchema,
   IntegrationProviderPatchRequestSchema,
   KnowledgeCreateRequestSchema,
+  KnowledgeModelDownloadRequestSchema,
   KnowledgePatchRequestSchema,
   KnowledgeSearchRequestSchema,
   KnowledgeUploadRequestSchema,
@@ -814,6 +815,17 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   app.post("/api/knowledge/search", async (request) => {
     const input = KnowledgeSearchRequestSchema.parse(request.body);
     return workbench.searchKnowledge(input);
+  });
+
+  app.get("/api/knowledge/models", async () => workbench.getKnowledgeModelStatus());
+
+  app.post("/api/knowledge/models/download", async (request, reply) => {
+    const input = KnowledgeModelDownloadRequestSchema.parse(request.body);
+    try {
+      return reply.code(201).send(await workbench.downloadKnowledgeModel(input));
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.post("/api/knowledge/:id/reindex", async (request, reply) => {
