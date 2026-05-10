@@ -1184,6 +1184,25 @@ class SingleToolModel implements ModelClient {
   }
 }
 
+class LlmApprovalDecisionModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (task.id.includes(":llm_approval:")) {
+      return {
+        kind: "final",
+        message: JSON.stringify({ allow: true, reason: "Read-only evidence is safe for this task." }),
+        usage: { inputTokens: 11, outputTokens: 9, totalTokens: 20, cachedTokens: 0 }
+      };
+    }
+    if (task.events.some((event) => event.type === "tool_result")) {
+      return { kind: "final", message: "Read completed." };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{ id: createId("tool_call"), toolName: "read_file", args: { path: "note.txt" } }]
+    };
+  }
+}
+
 class ContextAwarePlanModel implements ModelClient {
   calls = 0;
 
@@ -1704,6 +1723,79 @@ describe("AgentWorkbench", () => {
     expect(result?.payload["ok"]).toBe(false);
     expect(String(result?.payload["output"])).toContain("Tool execution failed");
     expect(String(result?.payload["output"])).not.toContain("sk-testsecret");
+  });
+
+  it("records running progress before final file tool results", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-tool-progress-"));
+    try {
+      const workbench = new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        model: new SingleToolModel("write_file", {
+          path: "generated.txt",
+          expectedHash: "__new__",
+          content: Array.from({ length: 220 }, (_, index) => `line ${index}`).join("\n")
+        })
+      });
+      const folder = await workbench.createTaskFolder({ name: "progress-root", rootPath: root });
+      await workbench.grantGlobalPermission("workspace_write", "progress test");
+
+      const completed = await workbench.createTask("create a generated note", "Create generated note", folder.id);
+      const started = completed.events.find((event) => event.type === "tool_started");
+      const progress = completed.events.find((event) => event.type === "tool_progress");
+      const result = completed.events.find((event) => event.type === "tool_result");
+      const output = JSON.parse(String(result?.payload["output"] ?? "{}")) as Record<string, unknown>;
+      const changes = output["changes"] as Record<string, unknown>;
+
+      expect(started?.payload["toolName"]).toBe("write_file");
+      expect(String(progress?.payload["targetPath"] ?? "")).toMatch(/generated\.txt$/);
+      expect(result?.payload["ok"]).toBe(true);
+      expect(changes["addedLines"]).toBeGreaterThan(200);
+      expect(output["displayMode"]).toBe("summary_only");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("can use experimental LLM approval only for non-destructive tool approvals", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-llm-approval-"));
+    try {
+      writeFileSync(join(root, "note.txt"), "approval evidence\n", "utf8");
+      const store = new InMemoryWorkbenchStore();
+      const workbench = new AgentWorkbench({
+        store,
+        model: new LlmApprovalDecisionModel()
+      });
+      const folder = await workbench.createTaskFolder({ name: "approval-root", rootPath: root });
+      await workbench.updatePreferences({ llmApprovalMode: "non_destructive" });
+
+      const completed = await workbench.createTask("read the note file", "Read note", folder.id);
+      const autoApproval = completed.events.find((event) => event.type === "approval_auto_granted");
+      const result = completed.events.find((event) => event.type === "tool_result");
+
+      expect(completed.status).toBe("completed");
+      expect(autoApproval?.payload["approvalSource"]).toBe("llmApproval");
+      expect(autoApproval?.payload["riskCategory"]).toBe("workspace_read");
+      expect(result?.payload["ok"]).toBe(true);
+      expect(completed.events.some((event) => event.type === "token_usage_recorded")).toBe(true);
+      expect(completed.approvals).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let experimental LLM approval bypass destructive tools", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new SingleToolModel("run_command", { command: "Stop-Process -Id 99999" })
+    });
+    await workbench.updatePreferences({ llmApprovalMode: "non_destructive" });
+
+    const pending = await workbench.createTask("attempt a dangerous command", "Dangerous command");
+
+    expect(pending.status).toBe("waiting_approval");
+    expect(pending.approvals[0]?.riskCategory).toBe("destructive");
+    expect(pending.events.some((event) => event.type === "approval_auto_granted")).toBe(false);
+    expect(pending.events.some((event) => event.type === "tool_result")).toBe(false);
   });
 
   it("pauses repeated state-only tool turns before they spin forever", async () => {

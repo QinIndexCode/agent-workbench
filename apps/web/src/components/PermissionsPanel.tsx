@@ -8,7 +8,6 @@ import {
   Globe2,
   LockKeyhole,
   PencilLine,
-  RotateCcw,
   ShieldAlert,
   MessageCircle,
   SlidersHorizontal,
@@ -100,10 +99,50 @@ export function PermissionsPanel({
                 }
               }}
             />
-            <button className="resetPermissionButton" type="button" onClick={() => applyPreset("ask")} disabled={safePermissions.length === 0}>
-              <RotateCcw size={14} aria-hidden="true" />
-              {text.resetAsk}
-            </button>
+          </section>
+
+          <section className="permissionCoveragePanel">
+            <div className="panelHeader">
+              <div>
+                <h3>{text.behaviorTitle}</h3>
+                <p>{text.approvalPolicySubtitle}</p>
+              </div>
+            </div>
+            <div className="settingRows cols2">
+              <PreferenceSelect
+                label={text.autoApprove}
+                value={preferences?.autoApprove ?? "none"}
+                help={text.autoApproveHelp}
+                onChange={(value) => emitPreference({ autoApprove: value as UserPreferences["autoApprove"] })}
+                options={[
+                  ["none", text.autoApproveOptions.none],
+                  ["low", text.autoApproveOptions.low],
+                  ["medium", text.autoApproveOptions.medium],
+                  ["all", text.autoApproveOptions.all]
+                ]}
+              />
+              <PreferenceSelect
+                label={text.llmApprovalMode}
+                value={preferences?.llmApprovalMode ?? "off"}
+                help={text.llmApprovalHelp}
+                onChange={(value) => emitPreference({ llmApprovalMode: value as UserPreferences["llmApprovalMode"] })}
+                options={[
+                  ["off", text.llmApprovalOptions.off],
+                  ["non_destructive", text.llmApprovalOptions.non_destructive]
+                ]}
+              />
+              <PreferenceSelect
+                label={text.mcpApprovalMode}
+                value={preferences?.mcpApprovalMode ?? "confirm_dangerous"}
+                help={text.mcpApprovalHelp}
+                onChange={(value) => emitPreference({ mcpApprovalMode: value as UserPreferences["mcpApprovalMode"] })}
+                options={[
+                  ["confirm_each", text.mcpApprovalOptions.confirm_each],
+                  ["confirm_dangerous", text.mcpApprovalOptions.confirm_dangerous],
+                  ["auto", text.mcpApprovalOptions.auto]
+                ]}
+              />
+            </div>
           </section>
 
           <section className="permissionCoveragePanel">
@@ -269,27 +308,6 @@ export function PermissionsPanel({
               </div>
             </div>
             <div className="prefBehaviorList">
-              <PreferenceSelect
-                label={text.autoApprove}
-                value={preferences?.autoApprove ?? "none"}
-                onChange={(value) => emitPreference({ autoApprove: value as UserPreferences["autoApprove"] })}
-                options={[
-                  ["none", text.autoApproveOptions.none],
-                  ["low", text.autoApproveOptions.low],
-                  ["medium", text.autoApproveOptions.medium],
-                  ["all", text.autoApproveOptions.all]
-                ]}
-              />
-              <PreferenceSelect
-                label={text.mcpApprovalMode}
-                value={preferences?.mcpApprovalMode ?? "confirm_dangerous"}
-                onChange={(value) => emitPreference({ mcpApprovalMode: value as UserPreferences["mcpApprovalMode"] })}
-                options={[
-                  ["confirm_each", text.mcpApprovalOptions.confirm_each],
-                  ["confirm_dangerous", text.mcpApprovalOptions.confirm_dangerous],
-                  ["auto", text.mcpApprovalOptions.auto]
-                ]}
-              />
               <PreferenceToggle label={text.sanitizeSensitiveData} value={preferences?.sanitizeSensitiveData ?? true} onChange={(value) => emitPreference({ sanitizeSensitiveData: value })} />
               <PreferenceToggle label={text.encryptStorage} value={preferences?.encryptStorage ?? false} onChange={(value) => emitPreference({ encryptStorage: value })} />
             </div>
@@ -398,12 +416,14 @@ function PreferenceSelect({
   label,
   value,
   disabled,
+  help,
   options,
   onChange
 }: {
   label: string;
   value: string;
   disabled?: boolean;
+  help?: string;
   options: Array<[string, string]>;
   onChange: (value: string) => void;
 }) {
@@ -417,6 +437,7 @@ function PreferenceSelect({
         options={options.map(([optionValue, optionLabel]) => ({ value: optionValue, label: optionLabel }))}
         onChange={onChange}
       />
+      {help ? <small>{help}</small> : null}
     </div>
   );
 }

@@ -1,23 +1,31 @@
-import type { SkillCuratorItem } from "@scc/shared";
-import { CheckCircle2, GitMerge, PauseCircle, RefreshCcw, Sparkles } from "lucide-react";
+import type { ReflectionSession, SkillCuratorItem } from "@scc/shared";
+import { CheckCircle2, GitMerge, PauseCircle, RefreshCcw, Sparkles, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { ConfirmDialog } from "./ConfirmDialog.js";
 
 export function SkillCuratorPanel({
   items,
   language,
   onActivateSkill,
+  onDeleteReflection,
   onMergeDuplicate,
   onRunReflection,
-  onSuspendSkill
+  onSuspendSkill,
+  reflections = []
 }: {
   items: SkillCuratorItem[];
   language?: string | null;
   onActivateSkill: (skillId: string) => Promise<void> | void;
+  onDeleteReflection?: (id: string) => Promise<void> | void;
   onMergeDuplicate: (skillIds: string[]) => Promise<void> | void;
   onRunReflection?: () => Promise<void> | void;
   onSuspendSkill: (skillId: string) => Promise<void> | void;
+  reflections?: ReflectionSession[];
 }) {
   const text = getCuratorCopy(language);
   const reviewItems = Array.isArray(items) ? items : [];
+  const latestReflections = Array.isArray(reflections) ? reflections.slice(0, 3) : [];
+  const [deleteReflection, setDeleteReflection] = useState<ReflectionSession | null>(null);
 
   return (
     <section className="curatorPanel">
@@ -31,6 +39,25 @@ export function SkillCuratorPanel({
           {text.run}
         </button>
       </header>
+
+      {latestReflections.length > 0 ? (
+        <div className="reflectionList compactReflectionList">
+          {latestReflections.map((reflection) => (
+            <article className="reflectionRow" key={reflection.id}>
+              <div>
+                <strong>{reflection.progress.phase}</strong>
+                <p>{reflection.progress.nextStep || text.noNextStep}</p>
+              </div>
+              <span>{reflection.status}</span>
+              {onDeleteReflection ? (
+                <button aria-label={`${text.deleteReflection} ${reflection.progress.phase}`} className="iconButton dangerIcon" type="button" onClick={() => setDeleteReflection(reflection)}>
+                  <Trash2 size={14} />
+                </button>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      ) : null}
 
       <div className="curatorRows">
         {reviewItems.length === 0 ? (
@@ -71,6 +98,21 @@ export function SkillCuratorPanel({
           </article>
         ))}
       </div>
+      <ConfirmDialog
+        cancelLabel={text.cancel}
+        confirmLabel={text.deleteReflection}
+        open={Boolean(deleteReflection)}
+        title={text.deleteReflectionTitle}
+        tone="danger"
+        onCancel={() => setDeleteReflection(null)}
+        onConfirm={async () => {
+          if (!deleteReflection) return;
+          await onDeleteReflection?.(deleteReflection.id);
+          setDeleteReflection(null);
+        }}
+      >
+        <p>{deleteReflection ? text.deleteReflectionBody(deleteReflection.progress.phase) : ""}</p>
+      </ConfirmDialog>
     </section>
   );
 }
@@ -83,6 +125,11 @@ function getCuratorCopy(language?: string | null) {
       ? "解释哪些经验值得晋升、哪些应该留在记忆里，以及哪些 Skill 需要合并或暂停。"
       : "Explains what should become a skill, stay as memory, or be merged/suspended.",
     run: zh ? "运行反思" : "Run reflection",
+    deleteReflection: zh ? "删除反思" : "Delete reflection",
+    cancel: zh ? "取消" : "Cancel",
+    deleteReflectionTitle: zh ? "删除反思记录？" : "Delete reflection?",
+    deleteReflectionBody: (phase: string) => zh ? `将删除“${phase}”这条反思记录。` : `The "${phase}" reflection record will be deleted.`,
+    noNextStep: zh ? "暂无下一步。" : "No next step.",
     activate: zh ? "启用候选 Skill" : "Activate candidate skill",
     suspend: zh ? "暂停 Skill" : "Suspend skill",
     merge: zh ? "合并重复 Skill" : "Merge duplicate skills",

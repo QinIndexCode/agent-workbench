@@ -201,11 +201,23 @@ export class McpRegistry implements ModelToolProvider, ToolExecutorDelegate {
       return this.result(call, false, "MCP tool call cancelled before it started.");
     }
     try {
+      await options.onProgress?.({
+        status: "running",
+        operation: "mcp_tool",
+        message: `Calling MCP tool ${resolved.tool.displayName}.`,
+        progress: { processed: 0, unit: "items" }
+      });
       const response = await abortable(
         resolved.connection.client.callTool({ name: resolved.tool.name, arguments: call.args }),
         options.signal
       );
       const output = serializeMcpToolResponse(response);
+      await options.onProgress?.({
+        status: "running",
+        operation: "mcp_tool",
+        message: `MCP tool ${resolved.tool.displayName} returned.`,
+        progress: { processed: 1, total: 1, unit: "items" }
+      });
       return this.result(call, !isMcpError(response), output);
     } catch (error) {
       return this.result(call, false, `MCP tool error: ${sanitizeError(error)}`);

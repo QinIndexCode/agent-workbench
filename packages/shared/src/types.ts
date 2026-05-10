@@ -53,6 +53,7 @@ import type {
   PreferencesPatchSchema,
   ProviderProtocolSchema,
   ProjectMemoryCreateRequestSchema,
+  ProjectMemoryPatchRequestSchema,
   ProjectMemorySchema,
   PromptCachePolicySchema,
   PromptCacheStatsSchema,
@@ -213,6 +214,7 @@ export type SkillCorrectionRequest = z.infer<typeof SkillCorrectionRequestSchema
 export type ReflectionSession = z.infer<typeof ReflectionSessionSchema>;
 export type ProjectMemory = z.infer<typeof ProjectMemorySchema>;
 export type ProjectMemoryCreateRequest = z.infer<typeof ProjectMemoryCreateRequestSchema>;
+export type ProjectMemoryPatchRequest = z.infer<typeof ProjectMemoryPatchRequestSchema>;
 export type ScheduledTask = z.infer<typeof ScheduledTaskSchema>;
 export type ScheduledTaskCreateRequest = z.infer<typeof ScheduledTaskCreateRequestSchema>;
 export type ScheduledTaskPatchRequest = z.infer<typeof ScheduledTaskPatchRequestSchema>;

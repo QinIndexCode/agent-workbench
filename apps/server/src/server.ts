@@ -37,6 +37,7 @@ import {
   MemoryDocumentPatchSchema,
   PreferencesPatchSchema,
   ProjectMemoryCreateRequestSchema,
+  ProjectMemoryPatchRequestSchema,
   ScheduledTaskCreateRequestSchema,
   ScheduledTaskPatchRequestSchema,
   SkillBulkDeleteRequestSchema,
@@ -154,6 +155,8 @@ function isTranscriptVisibleEvent(event: TaskEvent): boolean {
     event.type === "user_input_requested" ||
     event.type === "user_input_answered" ||
     event.type === "approval_pending" ||
+    event.type === "tool_started" ||
+    event.type === "tool_progress" ||
     event.type === "tool_result" ||
     event.type === "task_checkpoint_created" ||
     event.type === "task_rollback_completed" ||
@@ -171,7 +174,7 @@ function compactTranscriptItemForTransport(event: TaskTranscriptItem): TaskTrans
       payload: stripAssistantPayloadBoilerplate(event.payload)
     };
   }
-  if (event.type !== "tool_result" && event.type !== "web_search_result") return event;
+  if (event.type !== "tool_result" && event.type !== "tool_progress" && event.type !== "tool_started" && event.type !== "web_search_result") return event;
   const summary = compactTranscriptText(event.summary, MAX_UI_SUMMARY_CHARS);
   const payload: Record<string, unknown> = { ...event.payload };
   if (typeof payload["output"] === "string") payload["output"] = compactTranscriptText(payload["output"], MAX_UI_OUTPUT_CHARS);
@@ -781,6 +784,17 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.post("/api/reflections", async (request, reply) => reply.code(201).send(await workbench.runReflection()));
 
+  app.delete("/api/reflections", async (_request, reply) => {
+    await workbench.clearReflectionSessions();
+    return reply.code(204).send();
+  });
+
+  app.delete("/api/reflections/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    await workbench.deleteReflectionSession(id);
+    return reply.code(204).send();
+  });
+
   app.get("/api/project-memories", async (request) => {
     const query = z.object({ projectId: z.string().optional() }).parse(request.query);
     return workbench.listProjectMemories(query.projectId);
@@ -789,6 +803,12 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   app.post("/api/project-memories", async (request, reply) => {
     const input = ProjectMemoryCreateRequestSchema.parse(request.body);
     return reply.code(201).send(await workbench.createProjectMemory(input));
+  });
+
+  app.patch("/api/project-memories/:id", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const input = ProjectMemoryPatchRequestSchema.parse(request.body);
+    return workbench.updateProjectMemory(id, input);
   });
 
   app.delete("/api/project-memories/:id", async (request, reply) => {

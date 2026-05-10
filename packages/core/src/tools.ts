@@ -15,10 +15,22 @@ const LARGE_FILE_TAIL_LINES = 120;
 const WRITE_CHUNK_CHARS = 64 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 
+export interface ToolProgressUpdate {
+  status?: "running" | "completed" | "failed";
+  targetPath?: string;
+  operation?: string;
+  changes?: { path: string; addedLines: number; removedLines: number; operation?: string };
+  progress?: { processed?: number; total?: number; unit?: "bytes" | "lines" | "files" | "items" };
+  message?: string;
+  tail?: string;
+  displayMode?: "inline" | "summary_only";
+}
+
 export interface ToolExecutionOptions {
   signal?: AbortSignal;
   workRoot?: string;
   timeoutMs?: number;
+  onProgress?: (progress: ToolProgressUpdate) => void | Promise<void>;
 }
 
 export interface ToolExecutor {
@@ -90,6 +102,7 @@ export class ShellToolExecutor implements ToolExecutor {
     const root = this.rootFor(options);
     const cwd = this.resolveWorkspacePath(String(call.args["cwd"] ?? "."), root);
     const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
+    await emitToolProgress(options, { status: "running", operation: "run_command", message: "Command process started.", progress: { processed: 0, unit: "bytes" } });
 
     return new Promise<ToolResult>((resolveResult) => {
       let stdout = "";
@@ -118,10 +131,24 @@ export class ShellToolExecutor implements ToolExecutor {
       });
 
       child.stdout?.on("data", (chunk: Buffer | string) => {
-        stdout = appendLimited(stdout, String(chunk), maxBuffer);
+        const text = String(chunk);
+        stdout = appendLimited(stdout, text, maxBuffer);
+        void emitToolProgress(options, {
+          status: "running",
+          operation: "run_command",
+          progress: { processed: Buffer.byteLength(stdout) + Buffer.byteLength(stderr), unit: "bytes" },
+          tail: stdout.slice(-1200)
+        });
       });
       child.stderr?.on("data", (chunk: Buffer | string) => {
-        stderr = appendLimited(stderr, String(chunk), maxBuffer);
+        const text = String(chunk);
+        stderr = appendLimited(stderr, text, maxBuffer);
+        void emitToolProgress(options, {
+          status: "running",
+          operation: "run_command",
+          progress: { processed: Buffer.byteLength(stdout) + Buffer.byteLength(stderr), unit: "bytes" },
+          tail: stderr.slice(-1200)
+        });
       });
 
       child.on("error", (err) => {
@@ -154,6 +181,13 @@ export class ShellToolExecutor implements ToolExecutor {
       const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
       const hasExplicitRange = Object.hasOwn(call.args, "offset") || Object.hasOwn(call.args, "limit");
       const info = await stat(path);
+      await emitToolProgress(options, {
+        status: "running",
+        targetPath: path,
+        operation: "read",
+        progress: { processed: 0, total: info.size, unit: "bytes" },
+        displayMode: info.size > READ_FILE_FULL_INLINE_BYTES ? "summary_only" : "inline"
+      });
       if (hasExplicitRange) {
         const offset = Math.max(1, Number(call.args["offset"] ?? 1));
         const limit = Math.max(1, Number(call.args["limit"] ?? DEFAULT_READ_RANGE_LINES));
@@ -280,7 +314,16 @@ export class ShellToolExecutor implements ToolExecutor {
       }
 
       const next = lines.join("\n");
-      await writeTextFileInChunks(path, next);
+      const changes = lineChangeSummary(path, current, next, existed ? "edit" : "create", existed);
+      await emitToolProgress(options, {
+        status: "running",
+        targetPath: path,
+        operation: changes.operation,
+        changes,
+        progress: { processed: 0, total: Buffer.byteLength(next, "utf8"), unit: "bytes" },
+        displayMode: isLargeChange(changes, next) ? "summary_only" : "inline"
+      });
+      await writeTextFileInChunks(path, next, options, { path, changes, operation: changes.operation, totalBytes: Buffer.byteLength(next, "utf8"), displayMode: isLargeChange(changes, next) ? "summary_only" : "inline" });
       return this.result(
         call,
         true,
@@ -289,7 +332,8 @@ export class ShellToolExecutor implements ToolExecutor {
           path,
           hash: hash(next),
           changed: current !== next,
-          changes: lineChangeSummary(path, current, next, existed ? "edit" : "create", existed)
+          changes,
+          displayMode: isLargeChange(changes, next) ? "summary_only" : "inline"
         }, null, 2)
       );
     } catch (error) {
@@ -304,7 +348,18 @@ export class ShellToolExecutor implements ToolExecutor {
       if (!("path" in validation)) return validation;
       const { path, current, existed } = validation;
 
-      await writeTextFileInChunks(path, content);
+      const changes = lineChangeSummary(path, current, content, existed ? "write" : "create", existed);
+      const totalBytes = Buffer.byteLength(content, "utf8");
+      const displayMode = isLargeChange(changes, content) ? "summary_only" : "inline";
+      await emitToolProgress(options, {
+        status: "running",
+        targetPath: path,
+        operation: changes.operation,
+        changes,
+        progress: { processed: 0, total: totalBytes, unit: "bytes" },
+        displayMode
+      });
+      await writeTextFileInChunks(path, content, options, { path, changes, operation: changes.operation, totalBytes, displayMode });
       return this.result(
         call,
         true,
@@ -314,9 +369,10 @@ export class ShellToolExecutor implements ToolExecutor {
             path,
             hash: hash(content),
             changed: current !== content,
-            changes: lineChangeSummary(path, current, content, existed ? "write" : "create", existed),
-            sizeBytes: Buffer.byteLength(content, "utf8"),
-            totalLines: content.split(/\r?\n/).length
+            changes,
+            sizeBytes: totalBytes,
+            totalLines: content.split(/\r?\n/).length,
+            displayMode
           },
           null,
           2
@@ -332,6 +388,7 @@ export class ShellToolExecutor implements ToolExecutor {
       const query = String(call.args["query"] ?? "");
       if (!query.trim()) return this.result(call, false, "Missing query.");
       const root = this.resolveWorkspacePath(String(call.args["path"] ?? "."), this.rootFor(options));
+      await emitToolProgress(options, { status: "running", targetPath: root, operation: "search", message: "Scanning workspace files.", progress: { processed: 0, unit: "files" } });
       const files = await walk(root, 300);
       const matches: Array<{ path: string; line?: number; text?: string }> = [];
       for (const file of files) {
@@ -359,6 +416,7 @@ export class ShellToolExecutor implements ToolExecutor {
     try {
       const root = this.resolveWorkspacePath(String(call.args["path"] ?? "."), this.rootFor(options));
       const recursive = Boolean(call.args["recursive"] ?? false);
+      await emitToolProgress(options, { status: "running", targetPath: root, operation: "list", message: "Listing workspace files.", progress: { processed: 0, unit: "files" } });
       const files = recursive ? await walk(root, 500) : await list(root);
       return this.result(call, true, JSON.stringify({ path: root, files }, null, 2));
     } catch (error) {
@@ -461,6 +519,10 @@ function splitComparableLines(value: string): string[] {
 
 function countContentLines(value: string): number {
   return value.length === 0 ? 0 : splitComparableLines(value).length;
+}
+
+function isLargeChange(changes: { addedLines: number; removedLines: number }, content: string): boolean {
+  return changes.addedLines + changes.removedLines > 160 || Buffer.byteLength(content, "utf8") > 64 * 1024;
 }
 
 async function list(root: string): Promise<string[]> {
@@ -569,15 +631,48 @@ async function readTextLineRange(path: string, offset: number, limit: number): P
   return { content: selected.join("\n"), totalLines, hash: hasher.digest("hex").slice(0, 16) };
 }
 
-async function writeTextFileInChunks(path: string, content: string): Promise<void> {
+async function writeTextFileInChunks(
+  path: string,
+  content: string,
+  options: ToolExecutionOptions = {},
+  progress?: {
+    path: string;
+    changes: { path: string; addedLines: number; removedLines: number; operation?: string };
+    operation: string;
+    totalBytes: number;
+    displayMode: "inline" | "summary_only";
+  }
+): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const handle = await open(path, "w");
+  let processed = 0;
   try {
     for (let index = 0; index < content.length; index += WRITE_CHUNK_CHARS) {
-      await handle.write(content.slice(index, index + WRITE_CHUNK_CHARS), undefined, "utf8");
+      const chunk = content.slice(index, index + WRITE_CHUNK_CHARS);
+      await handle.write(chunk, undefined, "utf8");
+      processed += Buffer.byteLength(chunk, "utf8");
+      if (progress) {
+        await emitToolProgress(options, {
+          status: "running",
+          targetPath: progress.path,
+          operation: progress.operation,
+          changes: progress.changes,
+          progress: { processed, total: progress.totalBytes, unit: "bytes" },
+          displayMode: progress.displayMode
+        });
+      }
     }
   } finally {
     await handle.close();
+  }
+}
+
+async function emitToolProgress(options: ToolExecutionOptions, progress: ToolProgressUpdate): Promise<void> {
+  if (!options.onProgress) return;
+  try {
+    await options.onProgress(progress);
+  } catch {
+    // Progress is best-effort and must not fail the tool itself.
   }
 }
 

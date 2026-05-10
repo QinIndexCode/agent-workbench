@@ -100,7 +100,7 @@ test("covers support, docs, settings subpages, and visual overflow probes", asyn
     "Preferences": "Agent preferences"
   };
   for (const section of settingsSections) {
-    await page.getByRole("button", { name: section }).click();
+    await page.getByRole("button", { name: section, exact: true }).click();
     await expect(page.locator(".settingsPanel")).toContainText(expectedPanelText[section]!);
     const metrics = await page.evaluate(() => ({
       horizontalOverflow: Math.max(document.documentElement.scrollWidth - document.documentElement.clientWidth, document.body.scrollWidth - document.body.clientWidth)

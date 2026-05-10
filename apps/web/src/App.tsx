@@ -293,7 +293,9 @@ export function App() {
               <SkillCuratorPanel
                 items={data.skillCurator}
                 language={language}
+                reflections={data.reflections}
                 onRunReflection={() => void data.runSideAction(() => api.runReflection())}
+                onDeleteReflection={(id) => data.runSideAction(() => api.deleteReflection(id))}
                 onActivateSkill={(skillId) => data.runSideAction(() => api.patchSkill(skillId, { status: "active" }))}
                 onSuspendSkill={(skillId) => data.runSideAction(() => api.patchSkill(skillId, { status: "suspended" }))}
                 onMergeDuplicate={(skillIds) => mergeDuplicateIds(skillIds)}
@@ -333,6 +335,7 @@ export function App() {
                 onSaveProjectMemory={(folderId, content) => api.updateProjectMemory(folderId, { content })}
                 onCompactProjectMemory={(folderId) => api.compactProjectMemory(folderId)}
                 onCreate={(input) => data.runSideAction(() => api.createProjectMemory(input))}
+                onUpdateMemory={(id, input) => data.runSideAction(() => api.patchProjectMemory(id, input))}
                 onDelete={(id) => data.runSideAction(() => api.deleteProjectMemory(id))}
               />
             ),
@@ -343,6 +346,8 @@ export function App() {
                 language={language}
                 reflections={data.reflections}
                 onRunReflection={() => void data.runSideAction(() => api.runReflection())}
+                onDeleteReflection={(id) => data.runSideAction(() => api.deleteReflection(id))}
+                onClearReflections={() => data.runSideAction(() => api.clearReflections())}
               />
             )
           }}

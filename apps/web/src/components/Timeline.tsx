@@ -15,6 +15,8 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
   "user_input_requested",
   "user_input_answered",
   "approval_pending",
+  "tool_started",
+  "tool_progress",
   "tool_result",
   "task_checkpoint_created",
   "task_rollback_completed",
@@ -205,6 +207,7 @@ export function Timeline({
 type TimelineItem =
   | { key: string; kind: "event"; event: TaskEvent }
   | { key: string; kind: "stream"; type: "assistant_delta" | "thinking_delta"; streamId: string; summary: string }
+  | { key: string; kind: "tool"; toolCallId: string; events: TaskEvent[] }
   | { key: string; kind: "notice"; summary: string; hiddenCount?: number }
   | { key: string; kind: "status" };
 
@@ -259,6 +262,7 @@ function timelineItemSide(item: TimelineItem): "left" | "right" {
 
 function timelineItemContentVersion(item: TimelineItem): string {
   if (item.kind === "stream") return `${item.key}:${item.summary.length}`;
+  if (item.kind === "tool") return `${item.key}:${item.events.length}:${toolResultEvent(item)?.payload["output"] ? String(toolResultEvent(item)?.payload["output"]).length : 0}:${JSON.stringify(toolLatestPayload(item)).length}`;
   if (item.kind === "notice") return `${item.key}:${item.summary.length}:${item.hiddenCount ?? 0}`;
   if (item.kind === "status") return item.key;
   const output = typeof item.event.payload["output"] === "string" ? String(item.event.payload["output"]).length : 0;
@@ -267,7 +271,7 @@ function timelineItemContentVersion(item: TimelineItem): string {
 
 function isAgentMessageItem(item: TimelineItem): boolean {
   if (item.kind === "stream") return item.type === "assistant_delta";
-  if (item.kind === "notice" || item.kind === "status") return false;
+  if (item.kind === "notice" || item.kind === "status" || item.kind === "tool") return false;
   return item.event.type === "assistant_message";
 }
 
@@ -320,6 +324,7 @@ function getTimelineVersion(items: TimelineItem[]): string {
       if (item.kind === "stream") return `${item.key}:${item.summary.length}`;
       if (item.kind === "notice") return item.key;
       if (item.kind === "status") return item.key;
+      if (item.kind === "tool") return `${item.key}:${item.events.length}:${timelineItemContentVersion(item)}`;
       const output = typeof item.event.payload["output"] === "string" ? String(item.event.payload["output"]).length : 0;
       return `${item.key}:${item.event.reverted ? "r" : "a"}:${item.event.summary.length}:${output}`;
     })
@@ -407,6 +412,76 @@ function TimelineEvent({
       <article className="event assistant_delta" aria-live="polite">
         <MessageActions alwaysShow={alwaysShowActions} copied={copied} language={language} onCopy={() => onCopy(item.summary)} />
         <MarkdownText content={item.summary} />
+      </article>
+    );
+  }
+
+  if (item.kind === "tool") {
+    const result = toolResultEvent(item);
+    const parsed = result ? parseToolOutput(String(result.payload["output"] ?? "")) : null;
+    const payload = toolPrimaryPayload(item);
+    const progress = toolLatestProgressPayload(item);
+    const toolName = toolNameForItem(item);
+    const ok = result ? Boolean(result.payload["ok"] ?? false) : true;
+    const status = toolStatusForItem(item);
+    const changes = parsed?.changes ?? extractPayloadChanges(progress) ?? extractPayloadChanges(payload);
+    const displayMode = parsed?.displayMode ?? String(progress["displayMode"] ?? payload["displayMode"] ?? "");
+    const fullTarget = fullToolTarget(payload, parsed ?? emptyParsedToolOutput(), progress);
+    const visibleOutput = result
+      ? (parsed?.display.trim() || parsed?.summary || parsed?.preview || (zh ? "没有可展示的工具返回内容。" : "No visible tool output."))
+      : formatRunningToolOutput(progress, language);
+    const summaryText = result ? parsed?.summary : String(progress["message"] ?? eventSummaryForTool(item));
+    const previewText = result ? parsed?.preview : String(progress["tail"] ?? "");
+    const summaryOnly = displayMode === "summary_only" || isLargeChange(changes);
+    return (
+      <article className="event tool_result">
+        <div className={`${ok ? "toolResultDetails" : "toolResultDetails failed"} runningState-${status}${toolOpen ? " open" : ""}`}>
+          <button
+            aria-expanded={toolOpen}
+            className="toolResultSummary"
+            onClick={() => setToolOpen((open) => !open)}
+            title={fullTarget || toolName}
+            type="button"
+          >
+            {renderToolIcon(toolName)}
+            <span>{formatToolLabel(toolName, payload, changes)}</span>
+            {changes ? <LineChangeBadge added={changes.addedLines} removed={changes.removedLines} /> : null}
+            <small className={`toolStatusPill ${status}`}>{formatToolStatus(status, language)}</small>
+            <ChevronDown className="toolResultChevron" size={13} />
+          </button>
+          <div className="toolResultBodyShell">
+            <div className="toolResultBody">
+              {fullTarget ? <div className="toolFullPath" title={fullTarget}>{fullTarget}</div> : null}
+              <button
+                aria-label={zh ? "复制工具返回" : "Copy tool output"}
+                className="toolResultCopyButton"
+                onClick={() => onCopy(visibleOutput)}
+                title={zh ? "复制工具返回" : "Copy tool output"}
+                type="button"
+              >
+                <Copy size={14} />
+              </button>
+              <ToolProgressMeta payload={progress} language={language} />
+              {summaryText ? <MarkdownText content={summaryText} /> : previewText ? <pre className="toolInlineOutput">{previewText}</pre> : null}
+              {parsed?.citations.length ? (
+                <div className="citationList">
+                  {parsed.citations.map((citation) => (
+                    <span className="citationChip" key={citation.key} title={citation.source ?? citation.excerpt}>
+                      {citation.title}{citation.heading ? ` · ${citation.heading}` : ""}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {parsed?.rawOutputRef ? <code className="rawRef">{parsed.rawOutputRef}</code> : null}
+              {summaryOnly ? (
+                <p className="toolLargeChangeNote">{zh ? "变更较大，行内仅显示路径、状态和增删行摘要；完整调试数据保留在 trace 中。" : "Large change: inline view shows only path, status, and line counts. Full debug data remains in the trace."}</p>
+              ) : (
+                <pre className="toolResultRaw">{visibleOutput.slice(0, 8000)}</pre>
+              )}
+              {copied ? <span className="toolCopiedHint">{zh ? "已复制" : "Copied"}</span> : null}
+            </div>
+          </div>
+        </div>
       </article>
     );
   }
@@ -499,7 +574,7 @@ function TimelineEvent({
             type="button"
           >
             {renderToolIcon(toolName)}
-            <span>{formatToolLabel(toolName, event.payload)}</span>
+            <span>{formatToolLabel(toolName, event.payload, parsed.changes)}</span>
             {parsed.changes ? <LineChangeBadge added={parsed.changes.addedLines} removed={parsed.changes.removedLines} /> : null}
             <ChevronDown className="toolResultChevron" size={13} />
           </button>
@@ -689,6 +764,7 @@ function buildTimelineItems(events: TaskEvent[]): TimelineItem[] {
   );
   const items: TimelineItem[] = [];
   const streamItems = new Map<string, Extract<TimelineItem, { kind: "stream" }>>();
+  const toolItems = new Map<string, Extract<TimelineItem, { kind: "tool" }>>();
   for (const event of events) {
     if (event.type === "assistant_delta" || event.type === "thinking_delta") {
       const streamId = String(event.payload["streamId"] ?? event.id);
@@ -701,6 +777,17 @@ function buildTimelineItems(events: TaskEvent[]): TimelineItem[] {
         items.push(stream);
       }
       stream.summary = appendStreamDelta(stream.summary, String(event.payload["delta"] ?? event.summary), event.type);
+      continue;
+    }
+    if (event.type === "tool_started" || event.type === "tool_progress" || event.type === "tool_result") {
+      const toolCallId = String(event.payload["toolCallId"] ?? event.payload["id"] ?? event.id);
+      let tool = toolItems.get(toolCallId);
+      if (!tool) {
+        tool = { key: `tool:${toolCallId}`, kind: "tool", toolCallId, events: [] };
+        toolItems.set(toolCallId, tool);
+        items.push(tool);
+      }
+      tool.events.push(event);
       continue;
     }
     items.push({ key: event.id, kind: "event", event });
@@ -742,7 +829,9 @@ function isPreservedTimelineAnchor(item: TimelineItem): boolean {
 }
 
 function itemTimestamp(item: TimelineItem): string {
-  return item.kind === "event" ? item.event.createdAt : item.key;
+  if (item.kind === "event") return item.event.createdAt;
+  if (item.kind === "tool") return item.events[0]?.createdAt ?? item.key;
+  return item.key;
 }
 
 function appendStreamDelta(current: string, delta: string, type: "assistant_delta" | "thinking_delta"): string {
@@ -751,7 +840,10 @@ function appendStreamDelta(current: string, delta: string, type: "assistant_delt
   return `${current}\n${delta}`;
 }
 
-function formatToolLabel(toolName: string, payload: Record<string, unknown>): string {
+function formatToolLabel(toolName: string, payload: Record<string, unknown>, changes?: { path: string; addedLines: number; removedLines: number; operation?: string } | undefined): string {
+  if (changes?.path) return compactToolTarget(changes.path);
+  const direct = firstStringArg(payload, ["targetPath", "path", "file", "cwd", "query", "command", "url"]);
+  if (direct) return compactToolTarget(direct);
   const args = payload["args"] && typeof payload["args"] === "object" ? (payload["args"] as Record<string, unknown>) : {};
   const candidate = firstStringArg(args, ["path", "file", "targetPath", "cwd", "query", "command", "url"]);
   if (candidate) return compactToolTarget(candidate);
@@ -801,7 +893,7 @@ function renderToolIcon(toolName: string): ReactNode {
   return <Wrench size={14} />;
 }
 
-function parseToolOutput(output: string): { summary: string; preview: string; display: string; rawOutputRef?: string; citations: Array<{ key: string; title: string; heading?: string; source?: string; excerpt: string }>; changes?: { path: string; addedLines: number; removedLines: number; operation?: string } } {
+function parseToolOutput(output: string): { summary: string; preview: string; display: string; rawOutputRef?: string; displayMode?: string; citations: Array<{ key: string; title: string; heading?: string; source?: string; excerpt: string }>; changes?: { path: string; addedLines: number; removedLines: number; operation?: string } } {
   try {
     const parsed = JSON.parse(output) as Record<string, unknown>;
     const rawSummary = typeof parsed["summary"] === "string" ? parsed["summary"] : "";
@@ -810,12 +902,14 @@ function parseToolOutput(output: string): { summary: string; preview: string; di
     const citations = extractCitations(parsed);
     const compact = stringifyToolDisplay(parsed, summary);
     const changes = extractLineChanges(parsed);
+    const displayMode = typeof parsed["displayMode"] === "string" ? parsed["displayMode"] : undefined;
     return {
       summary: summary ? firstUsefulLine(summary) : "",
       preview: summary ? "" : firstUsefulToolPreview(parsed),
       display: compact,
       citations,
       ...(changes ? { changes } : {}),
+      ...(displayMode ? { displayMode } : {}),
       ...(rawOutputRef ? { rawOutputRef } : {})
     };
   } catch {
@@ -845,10 +939,86 @@ function extractLineChanges(parsed: Record<string, unknown>): { path: string; ad
   };
 }
 
-function fullToolTarget(payload: Record<string, unknown>, parsed: ReturnType<typeof parseToolOutput>): string {
+function fullToolTarget(payload: Record<string, unknown>, parsed: ReturnType<typeof parseToolOutput>, progress?: Record<string, unknown>): string {
   if (parsed.changes?.path) return parsed.changes.path;
+  const progressPath = progress ? firstStringArg(progress, ["targetPath", "path", "file", "cwd", "url"]) : "";
+  if (progressPath) return progressPath;
+  const direct = firstStringArg(payload, ["targetPath", "path", "file", "cwd", "url"]);
+  if (direct) return direct;
   const args = payload["args"] && typeof payload["args"] === "object" ? (payload["args"] as Record<string, unknown>) : {};
   return firstStringArg(args, ["path", "file", "targetPath", "cwd", "url"]);
+}
+
+function emptyParsedToolOutput(): ReturnType<typeof parseToolOutput> {
+  return { summary: "", preview: "", display: "", citations: [] };
+}
+
+function toolResultEvent(item: Extract<TimelineItem, { kind: "tool" }>): TaskEvent | undefined {
+  return [...item.events].reverse().find((event) => event.type === "tool_result");
+}
+
+function toolPrimaryPayload(item: Extract<TimelineItem, { kind: "tool" }>): Record<string, unknown> {
+  return (item.events.find((event) => event.type === "tool_started") ?? toolResultEvent(item) ?? item.events[0])?.payload ?? {};
+}
+
+function toolLatestPayload(item: Extract<TimelineItem, { kind: "tool" }>): Record<string, unknown> {
+  return item.events[item.events.length - 1]?.payload ?? {};
+}
+
+function toolLatestProgressPayload(item: Extract<TimelineItem, { kind: "tool" }>): Record<string, unknown> {
+  return [...item.events].reverse().find((event) => event.type === "tool_progress")?.payload ?? toolLatestPayload(item);
+}
+
+function toolNameForItem(item: Extract<TimelineItem, { kind: "tool" }>): string {
+  return String(toolPrimaryPayload(item)["toolName"] ?? toolLatestPayload(item)["toolName"] ?? "tool");
+}
+
+function toolStatusForItem(item: Extract<TimelineItem, { kind: "tool" }>): "running" | "completed" | "failed" {
+  const result = toolResultEvent(item);
+  if (result) return Boolean(result.payload["ok"] ?? false) ? "completed" : "failed";
+  const status = String(toolLatestProgressPayload(item)["status"] ?? "");
+  return status === "completed" || status === "failed" ? status : "running";
+}
+
+function eventSummaryForTool(item: Extract<TimelineItem, { kind: "tool" }>): string {
+  return [...item.events].reverse().map((event) => event.summary).find(Boolean) ?? "";
+}
+
+function extractPayloadChanges(payload: Record<string, unknown>): { path: string; addedLines: number; removedLines: number; operation?: string } | undefined {
+  return extractLineChanges(payload);
+}
+
+function isLargeChange(changes?: { addedLines: number; removedLines: number } | undefined): boolean {
+  if (!changes) return false;
+  return changes.addedLines + changes.removedLines > 160;
+}
+
+function formatToolStatus(status: "running" | "completed" | "failed", language?: string | null | undefined): string {
+  const zh = language === "zh-CN";
+  if (status === "running") return zh ? "运行中" : "Running";
+  if (status === "failed") return zh ? "失败" : "Failed";
+  return zh ? "完成" : "Done";
+}
+
+function formatRunningToolOutput(payload: Record<string, unknown>, language?: string | null | undefined): string {
+  const zh = language === "zh-CN";
+  const message = typeof payload["message"] === "string" ? payload["message"] : "";
+  const tail = typeof payload["tail"] === "string" ? payload["tail"] : "";
+  return [message || (zh ? "工具正在运行。" : "Tool is running."), tail].filter(Boolean).join("\n\n");
+}
+
+function ToolProgressMeta({ payload, language }: { payload: Record<string, unknown>; language?: string | null | undefined }) {
+  const progress = payload["progress"] && typeof payload["progress"] === "object" ? payload["progress"] as Record<string, unknown> : null;
+  if (!progress) return null;
+  const processed = Number(progress["processed"] ?? NaN);
+  const total = Number(progress["total"] ?? NaN);
+  const unit = String(progress["unit"] ?? "");
+  const zh = language === "zh-CN";
+  if (!Number.isFinite(processed) && !Number.isFinite(total)) return null;
+  const text = Number.isFinite(total) && total > 0
+    ? `${Math.max(0, processed || 0)} / ${Math.max(0, total)} ${unit}`
+    : `${Math.max(0, processed || 0)} ${unit}`;
+  return <small className="toolProgressMeta">{zh ? "进度" : "Progress"}: {text}</small>;
 }
 
 function isPlaceholderToolSummary(value: string): boolean {

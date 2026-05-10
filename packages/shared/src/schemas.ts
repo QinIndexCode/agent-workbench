@@ -107,6 +107,8 @@ export const TaskEventSchema = z.object({
     "guidance_pending",
     "guidance_consumed",
     "tool_requested",
+    "tool_started",
+    "tool_progress",
     "approval_pending",
     "approval_resolved",
     "approval_auto_granted",
@@ -512,6 +514,7 @@ export const UserPreferencesSchema = z.object({
   customModelContextWindow: z.number().int().positive().optional(),
   maxTokensPerRequest: z.number().int().positive().default(1048576),
   autoApprove: z.enum(["none", "low", "medium", "all"]).default("none"),
+  llmApprovalMode: z.enum(["off", "non_destructive"]).default("off"),
   showThinking: z.boolean().default(true),
   language: z.string().default("zh-CN"),
   theme: z.enum(["dark", "light", "system"]).default("dark"),
@@ -1210,6 +1213,15 @@ export const ProjectMemoryCreateRequestSchema = z
     category: ProjectMemorySchema.shape.category,
     tags: z.array(z.string()).default([]),
     projectId: z.string().default("default")
+  })
+  .strict();
+
+export const ProjectMemoryPatchRequestSchema = z
+  .object({
+    title: z.string().min(1).optional(),
+    content: z.string().min(1).optional(),
+    category: ProjectMemorySchema.shape.category.optional(),
+    tags: z.array(z.string()).optional()
   })
   .strict();
 

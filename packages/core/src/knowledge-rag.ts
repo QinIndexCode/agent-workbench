@@ -45,8 +45,10 @@ export class KnowledgeSearchToolExecutor implements ToolExecutorDelegate {
     const projectId = String(call.args["projectId"] ?? "default");
     const limit = clamp(Number(call.args["limit"] ?? 5), 1, 12);
     try {
+      await options.onProgress?.({ status: "running", operation: "knowledge_search", message: `Searching knowledge for "${query}".`, progress: { processed: 0, total: limit, unit: "items" } });
       const matches = await searchKnowledge(this.store, { query, projectId, limit });
       if (options.signal?.aborted) return result(call, false, "Knowledge search cancelled by user.");
+      await options.onProgress?.({ status: "running", operation: "knowledge_search", message: `Ranked ${matches.length} knowledge result(s).`, progress: { processed: matches.length, total: limit, unit: "items" } });
       return result(
         call,
         true,

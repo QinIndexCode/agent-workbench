@@ -450,6 +450,15 @@ function ContextAuditView({ language, summaries, cacheStats, task }: { language?
   const latestCache = [...safeCacheStats].sort((a, b) => {
     try { return b.createdAt.localeCompare(a.createdAt); } catch { return 0; }
   })[0];
+  const tokenTotals = safeCacheStats.reduce(
+    (total, item) => ({
+      input: total.input + Math.max(0, Number(item.inputTokens ?? 0)),
+      output: total.output + Math.max(0, Number(item.outputTokens ?? 0)),
+      total: total.total + Math.max(0, Number(item.totalTokens ?? ((item.inputTokens ?? 0) + (item.outputTokens ?? 0)))),
+      cached: total.cached + Math.max(0, Number(item.cachedTokens ?? 0))
+    }),
+    { input: 0, output: 0, total: 0, cached: 0 }
+  );
   const fallbackEvents = safeEvents.filter((event) => event?.type === "provider_fallback");
   return (
     <section className="contextAuditPanel" aria-label={zh ? "上下文审计" : "Context audit"}>
@@ -468,9 +477,16 @@ function ContextAuditView({ language, summaries, cacheStats, task }: { language?
       )}
       {latestCache ? (
         <details>
-          <summary>{zh ? "精确 Token 用量" : "Exact token usage"}</summary>
+          <summary>{zh ? "Token usage" : "Token usage"}</summary>
           <div className="auditMeta">
-            <span>{latestCache.model ?? ""}</span>
+            <span>{zh ? "请求轮次" : "Requests"}: {safeCacheStats.length}</span>
+            <span>{zh ? "累计输入" : "Total input"}: {tokenTotals.input}</span>
+            <span>{zh ? "累计输出" : "Total output"}: {tokenTotals.output}</span>
+            <span>{zh ? "累计总计" : "Task total"}: {tokenTotals.total}</span>
+            {tokenTotals.cached > 0 ? <span>{zh ? "Provider cached total" : "Provider cached total"}: {tokenTotals.cached}</span> : null}
+          </div>
+          <div className="auditMeta">
+            <span>{zh ? "最近一轮" : "Latest"}: {latestCache.model ?? ""}</span>
             <span>{zh ? "输入" : "Input"}: {latestCache.inputTokens ?? 0}</span>
             <span>{zh ? "输出" : "Output"}: {latestCache.outputTokens ?? 0}</span>
             <span>{zh ? "总计" : "Total"}: {latestCache.totalTokens ?? ((latestCache.inputTokens ?? 0) + (latestCache.outputTokens ?? 0))}</span>

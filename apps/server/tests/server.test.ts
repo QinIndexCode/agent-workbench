@@ -485,6 +485,10 @@ describe("server API", () => {
 
     const reflectionResponse = await app.inject({ method: "POST", url: "/api/reflections" });
     expect(reflectionResponse.statusCode).toBe(201);
+    const reflection = reflectionResponse.json();
+    expect((await app.inject("/api/reflections")).json().some((item: { id: string }) => item.id === reflection.id)).toBe(true);
+    expect((await app.inject({ method: "DELETE", url: `/api/reflections/${reflection.id}` })).statusCode).toBe(204);
+    expect((await app.inject("/api/reflections")).json().some((item: { id: string }) => item.id === reflection.id)).toBe(false);
 
     const scheduledTasks = (await app.inject("/api/scheduled-tasks")).json();
     expect(scheduledTasks.some((task: { id: string; type: string }) => task.id === "schedule_agent_reflection" && task.type === "reflection")).toBe(true);
@@ -685,6 +689,13 @@ describe("server API", () => {
 
       const listed = (await app.inject("/api/project-memories")).json();
       expect(listed.some((memory: { id: string; title: string }) => memory.id === createdMemory.id && memory.title === "Architecture fact")).toBe(true);
+      const patched = await app.inject({
+        method: "PATCH",
+        url: `/api/project-memories/${createdMemory.id}`,
+        payload: { title: "Updated architecture fact", tags: ["memory", "edited"] }
+      });
+      expect(patched.statusCode).toBe(200);
+      expect(patched.json()).toMatchObject({ id: createdMemory.id, title: "Updated architecture fact", tags: ["memory", "edited"] });
       expect((await app.inject({ method: "DELETE", url: `/api/project-memories/${createdMemory.id}` })).statusCode).toBe(204);
     } finally {
       await app.close();

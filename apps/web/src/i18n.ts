@@ -225,11 +225,16 @@ const copy = {
       contextLimit: "上下文上限",
       contextHelp: "自动模式会跟随模型上限；手动值不能超过当前模型窗口。",
       maxTokens: "最大上下文 token",
-      autoApprove: "自动审批级别",
+      autoApprove: "规则自动审批",
+      autoApproveHelp: "基于工具风险元数据自动通过；destructive 永远不会被该规则自动批准。",
+      approvalPolicySubtitle: "权限滑块决定全局授权；这里配置审批默认策略和可选的实验性 LLM 审批。",
       showThinking: "展示思考内容",
       skillAutoInject: "自动注入 Skill 元数据",
       maxInjectedSkills: "最多注入 Skill 数",
       mcpApprovalMode: "MCP 审批模式",
+      mcpApprovalHelp: "仅影响 MCP 工具；仍以工具风险和显式授权为边界。",
+      llmApprovalMode: "LLM 自动审批（实验）",
+      llmApprovalHelp: "仅在规则仍需审批时触发，最多批准非 destructive 工具；会额外消耗 token。",
       sanitizeSensitiveData: "清理敏感数据",
       encryptStorage: "加密本地存储",
       autoApproveOptions: {
@@ -242,6 +247,10 @@ const copy = {
         confirm_each: "每次确认",
         confirm_dangerous: "仅高风险确认",
         auto: "自动"
+      },
+      llmApprovalOptions: {
+        off: "关闭",
+        non_destructive: "仅非 destructive"
       },
       permissionModes: {
         ask: {
@@ -509,11 +518,16 @@ const copy = {
       contextLimit: "Context limit",
       contextHelp: "Auto follows the selected model limit. Manual values cannot exceed the model window.",
       maxTokens: "Max context tokens",
-      autoApprove: "Auto approval level",
+      autoApprove: "Rule auto approval",
+      autoApproveHelp: "Auto-approves from tool risk metadata. Destructive tools are never approved by this rule.",
+      approvalPolicySubtitle: "The permission slider controls global grants. These settings tune default approval policy and optional experimental LLM approval.",
       showThinking: "Show thinking",
       skillAutoInject: "Auto-inject skill metadata",
       maxInjectedSkills: "Max injected skills",
       mcpApprovalMode: "MCP approval mode",
+      mcpApprovalHelp: "Only affects MCP tools, still bounded by tool risk and explicit grants.",
+      llmApprovalMode: "LLM auto approval (experimental)",
+      llmApprovalHelp: "Runs only when rules still require approval, can approve non-destructive tools only, and uses extra tokens.",
       sanitizeSensitiveData: "Sanitize sensitive data",
       encryptStorage: "Encrypt local storage",
       autoApproveOptions: {
@@ -526,6 +540,10 @@ const copy = {
         confirm_each: "Confirm each",
         confirm_dangerous: "Confirm dangerous",
         auto: "Auto"
+      },
+      llmApprovalOptions: {
+        off: "Off",
+        non_destructive: "Non-destructive only"
       },
       permissionModes: {
         ask: {

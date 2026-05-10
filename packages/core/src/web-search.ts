@@ -18,10 +18,12 @@ export class WebSearchToolExecutor implements ToolExecutorDelegate {
     const query = String(call.args["query"] ?? "").trim();
     if (!query) return result(call, false, "Missing web search query.");
     const limit = clamp(Number(call.args["limit"] ?? 5), 1, 10);
+    await options.onProgress?.({ status: "running", operation: "web_search", message: `Searching web for "${query}".`, progress: { processed: 0, total: limit, unit: "items" } });
     const provider = (await this.store.listWebSearchProviders()).find((item) => item.enabled);
     if (!provider) {
       try {
         const results = await searchWithBuiltinDuckDuckGo(query, limit, options.signal);
+        await options.onProgress?.({ status: "running", operation: "web_search", message: `Received ${results.length} result(s).`, progress: { processed: results.length, total: limit, unit: "items" } });
         return result(
           call,
           true,
@@ -45,6 +47,7 @@ export class WebSearchToolExecutor implements ToolExecutorDelegate {
     const apiKey = secret ? this.secretBox.decrypt(secret) : "";
     try {
       const results = await searchWithProvider(provider, query, limit, apiKey, options.signal);
+      await options.onProgress?.({ status: "running", operation: "web_search", message: `Received ${results.length} result(s).`, progress: { processed: results.length, total: limit, unit: "items" } });
       return result(
         call,
         true,

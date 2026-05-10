@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import type { MemoryDocument, MemoryDocumentCompactResult, ProjectMemory, ProjectMemoryCreateRequest, TaskFolderRecord } from "@scc/shared";
-import { BookMarked, Database, Plus, Save, Scissors, Search, Trash2, UserRound, X } from "lucide-react";
+import type { MemoryDocument, MemoryDocumentCompactResult, ProjectMemory, ProjectMemoryCreateRequest, ProjectMemoryPatchRequest, TaskFolderRecord } from "@scc/shared";
+import { BookMarked, Database, Edit3, Plus, Save, Scissors, Search, Trash2, UserRound, X } from "lucide-react";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { MarkdownText } from "./MarkdownText.js";
@@ -26,6 +26,7 @@ export function ProjectMemoryPanel({
   onCompactProjectMemory,
   onCreate,
   onDelete,
+  onUpdateMemory,
   onLoadProjectMemory,
   onLoadUserProfile,
   onSaveProjectMemory,
@@ -39,6 +40,7 @@ export function ProjectMemoryPanel({
   onCompactProjectMemory: (folderId: string) => Promise<MemoryDocumentCompactResult>;
   onCreate: (input: ProjectMemoryCreateRequest) => Promise<void> | void;
   onDelete: (id: string) => Promise<void> | void;
+  onUpdateMemory?: (id: string, input: ProjectMemoryPatchRequest) => Promise<void> | void;
   onLoadProjectMemory: (folderId: string) => Promise<MemoryDocument>;
   onLoadUserProfile: () => Promise<MemoryDocument>;
   onSaveProjectMemory: (folderId: string, content: string) => Promise<MemoryDocument>;
@@ -59,6 +61,7 @@ export function ProjectMemoryPanel({
   const [localQuery, setLocalQuery] = useState("");
   const [selectedMemoryId, setSelectedMemoryId] = useState<string | null>(null);
   const [draftOpen, setDraftOpen] = useState(false);
+  const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
   const [draft, setDraft] = useState<MemoryDraft>(emptyDraft());
   const [deleteTarget, setDeleteTarget] = useState<ProjectMemory | null>(null);
   const searchText = `${query} ${localQuery}`.trim().toLowerCase();
@@ -113,7 +116,7 @@ export function ProjectMemoryPanel({
           <h3>{text.title}</h3>
           <p>{text.subtitle}</p>
         </div>
-        <button className="subtleButton iconText" type="button" onClick={() => { setDraft(emptyDraft()); setDraftOpen(true); }}>
+        <button className="subtleButton iconText" type="button" onClick={() => { setEditingMemoryId(null); setDraft(emptyDraft()); setDraftOpen(true); }}>
           <Plus size={15} />
           {text.newMemory}
         </button>
@@ -157,6 +160,11 @@ export function ProjectMemoryPanel({
                   <small>{memory.tags.slice(0, 3).join(", ") || text.noTags}</small>
                 </button>
                 <div className="rowIconActions">
+                  {onUpdateMemory ? (
+                    <button aria-label={`${text.edit} ${memory.title}`} className="iconButton" type="button" onClick={() => openEditMemory(memory)}>
+                      <Edit3 size={14} />
+                    </button>
+                  ) : null}
                   <button aria-label={`${text.delete} ${memory.title}`} className="iconButton dangerIcon" type="button" onClick={() => setDeleteTarget(memory)}>
                     <Trash2 size={14} />
                   </button>
@@ -222,7 +230,7 @@ export function ProjectMemoryPanel({
       {draftOpen ? (
         <div className="modalOverlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setDraftOpen(false)}>
           <form
-            aria-label={text.createDialog}
+            aria-label={editingMemoryId ? text.editDialog : text.createDialog}
             aria-modal="true"
             className="providerDialog knowledgeDialog"
             role="dialog"
@@ -233,10 +241,10 @@ export function ProjectMemoryPanel({
           >
             <header className="dialogHeader">
               <div>
-                <h3>{text.createDialog}</h3>
-                <p>{text.createHelp(folder?.name ?? folderId)}</p>
+                <h3>{editingMemoryId ? text.editDialog : text.createDialog}</h3>
+                <p>{editingMemoryId ? editingMemoryId : text.createHelp(folder?.name ?? folderId)}</p>
               </div>
-              <button aria-label={text.cancel} className="iconButton" type="button" onClick={() => setDraftOpen(false)}>
+              <button aria-label={text.cancel} className="iconButton" type="button" onClick={() => { setDraftOpen(false); setEditingMemoryId(null); }}>
                 <X size={16} />
               </button>
             </header>
@@ -262,7 +270,7 @@ export function ProjectMemoryPanel({
               <textarea aria-label={text.content} rows={10} value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} required />
             </label>
             <footer className="dialogActions">
-              <button className="subtleButton" type="button" onClick={() => setDraftOpen(false)}>
+              <button className="subtleButton" type="button" onClick={() => { setDraftOpen(false); setEditingMemoryId(null); }}>
                 {text.cancel}
               </button>
               <button className="subtleButton iconText" type="submit">
@@ -327,16 +335,32 @@ export function ProjectMemoryPanel({
   }
 
   async function createMemory() {
-    const payload: ProjectMemoryCreateRequest = {
-      projectId: folderId,
+    const payload = {
       title: draft.title.trim(),
       content: draft.content.trim(),
       category: draft.category,
       tags: splitList(draft.tags)
     };
     if (!payload.title || !payload.content) return;
-    await onCreate(payload);
+    if (editingMemoryId && onUpdateMemory) {
+      await onUpdateMemory(editingMemoryId, payload);
+    } else {
+      await onCreate({ ...payload, projectId: folderId });
+    }
     setDraftOpen(false);
+    setEditingMemoryId(null);
+  }
+
+  function openEditMemory(memory: ProjectMemory) {
+    setSelectedMemoryId(memory.id);
+    setEditingMemoryId(memory.id);
+    setDraft({
+      title: memory.title,
+      content: memory.content,
+      category: memory.category,
+      tags: memory.tags.join(", ")
+    });
+    setDraftOpen(true);
   }
 }
 
@@ -382,6 +406,8 @@ function getMemoryCopy(language?: string | null) {
     projectMemoryContent: zh ? "MEMORY.md 内容" : "MEMORY.md content",
     structuredPreview: zh ? "结构化项目事实" : "Structured project facts",
     createDialog: zh ? "创建项目记忆" : "Create project memory",
+    editDialog: zh ? "编辑项目记忆" : "Edit project memory",
+    edit: zh ? "编辑" : "Edit",
     createHelp: (folderName: string) => zh ? `这条记忆会绑定到“${folderName}”。` : `This memory will be attached to ${folderName}.`,
     itemTitle: zh ? "标题" : "Title",
     category: zh ? "分类" : "Category",

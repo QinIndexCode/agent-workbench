@@ -390,6 +390,16 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
     return this.list<ReflectionSession>("reflection_sessions").sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
+  async deleteReflectionSession(sessionId: string): Promise<void> {
+    this.delete("reflection_sessions", sessionId);
+  }
+
+  async clearReflectionSessions(): Promise<void> {
+    for (const session of await this.listReflectionSessions()) {
+      this.delete("reflection_sessions", session.id);
+    }
+  }
+
   async saveProjectMemory(record: ProjectMemory): Promise<void> {
     this.upsert("project_memories", record.id, record);
   }

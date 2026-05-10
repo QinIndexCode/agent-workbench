@@ -29,6 +29,7 @@ import type {
   PreferencesPatch,
   ProjectMemory,
   ProjectMemoryCreateRequest,
+  ProjectMemoryPatchRequest,
   ReflectionSession,
   RiskCategory,
   ScheduledTask,
@@ -347,11 +348,20 @@ export const api = {
   runReflection(): Promise<ReflectionSession> {
     return request("/api/reflections", { method: "POST" });
   },
+  deleteReflection(id: string): Promise<void> {
+    return request(`/api/reflections/${id}`, { method: "DELETE" });
+  },
+  clearReflections(): Promise<void> {
+    return request("/api/reflections", { method: "DELETE" });
+  },
   listProjectMemories(): Promise<ProjectMemory[]> {
     return request("/api/project-memories");
   },
   createProjectMemory(input: ProjectMemoryCreateRequest): Promise<ProjectMemory> {
     return request("/api/project-memories", { method: "POST", body: JSON.stringify(input) });
+  },
+  patchProjectMemory(id: string, input: ProjectMemoryPatchRequest): Promise<ProjectMemory> {
+    return request(`/api/project-memories/${id}`, { method: "PATCH", body: JSON.stringify(input) });
   },
   deleteProjectMemory(id: string): Promise<void> {
     return request(`/api/project-memories/${id}`, { method: "DELETE" });

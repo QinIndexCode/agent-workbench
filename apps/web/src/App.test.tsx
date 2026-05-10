@@ -483,6 +483,78 @@ describe("Workbench components", () => {
     expect(screen.getByText(/actual returned content/)).toBeInTheDocument();
   });
 
+  it("merges running tool progress and final results into one path-focused card", () => {
+    const { container } = render(
+      <Timeline
+        task={{
+          ...task,
+          status: "running",
+          events: [
+            {
+              id: "event_tool_started",
+              taskId: "task_1",
+              type: "tool_started",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              summary: "Tool started",
+              payload: {
+                toolCallId: "tool_call_1",
+                toolName: "write_file",
+                status: "running",
+                args: { path: "src/generated/large-blog.tsx", expectedHash: "__new__", content: "hidden debug arg" }
+              }
+            },
+            {
+              id: "event_tool_progress",
+              taskId: "task_1",
+              type: "tool_progress",
+              createdAt: "2026-01-01T00:00:00.100Z",
+              summary: "Tool progress",
+              payload: {
+                toolCallId: "tool_call_1",
+                toolName: "write_file",
+                status: "running",
+                targetPath: "src/generated/large-blog.tsx",
+                operation: "create",
+                changes: { path: "src/generated/large-blog.tsx", addedLines: 10, removedLines: 0, operation: "create" },
+                progress: { processed: 5, total: 10, unit: "lines" },
+                message: "Writing file"
+              }
+            },
+            {
+              id: "event_tool_result",
+              taskId: "task_1",
+              type: "tool_result",
+              createdAt: "2026-01-01T00:00:00.200Z",
+              summary: "Tool completed",
+              payload: {
+                toolCallId: "tool_call_1",
+                toolName: "write_file",
+                ok: true,
+                output: JSON.stringify({
+                  status: "success",
+                  path: "src/generated/large-blog.tsx",
+                  displayMode: "summary_only",
+                  changes: { path: "src/generated/large-blog.tsx", addedLines: 10, removedLines: 0, operation: "create" }
+                })
+              }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(container.querySelectorAll(".event.tool_result")).toHaveLength(1);
+    expect(screen.getByText("+10")).toBeInTheDocument();
+    expect(screen.getByText("-0")).toBeInTheDocument();
+    expect(screen.getByText("Done")).toBeInTheDocument();
+    const summary = screen.getByRole("button", { name: /large-blog\.tsx/ });
+    fireEvent.click(summary);
+    expect(screen.getAllByText("src/generated/large-blog.tsx").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Large change/)).toBeInTheDocument();
+    expect(screen.queryByText("hidden debug arg")).not.toBeInTheDocument();
+  });
+
   it("strips provider fallback tool boilerplate from assistant messages", () => {
     render(
       <Timeline
@@ -873,6 +945,7 @@ describe("Workbench components", () => {
       customModelContextWindow: 128000,
       maxTokensPerRequest: 128000,
       autoApprove: "none",
+      llmApprovalMode: "off",
       showThinking: true,
       language: "zh-CN",
       theme: "dark",
@@ -906,11 +979,15 @@ describe("Workbench components", () => {
     );
 
     expect(screen.getByRole("heading", { name: "权限与偏好" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重置为 Ask" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: /自定义/ }));
     fireEvent.click(screen.getByLabelText("取消自动通过 主机观察"));
     expect(onRevoke).toHaveBeenCalledWith("host_observation");
     fireEvent.click(screen.getByRole("radio", { name: /Read only/ }));
     expect(onGrant).toHaveBeenCalledWith("workspace_read");
+    fireEvent.click(screen.getByLabelText("LLM 自动审批（实验）"));
+    fireEvent.click(screen.getByRole("option", { name: "仅非 destructive" }));
+    expect(onPreference).toHaveBeenCalledWith(expect.objectContaining({ llmApprovalMode: "non_destructive" }));
 
     rerender(
       <PermissionsPanel
@@ -1514,6 +1591,7 @@ describe("Workbench components", () => {
             customModelContextWindow: 128000,
             maxTokensPerRequest: 128000,
             autoApprove: "none",
+            llmApprovalMode: "off",
             showThinking: true,
             language: "en-US",
             theme: "dark",
@@ -1845,6 +1923,7 @@ describe("Workbench components", () => {
             customModelContextWindow: 128000,
             maxTokensPerRequest: 128000,
             autoApprove: "none",
+            llmApprovalMode: "off",
             showThinking: true,
             language: "zh-CN",
             theme: "dark",
@@ -1908,6 +1987,7 @@ describe("Workbench components", () => {
             customModelContextWindow: 128000,
             maxTokensPerRequest: 128000,
             autoApprove: "none",
+            llmApprovalMode: "off",
             showThinking: true,
             language: "en-US",
             theme: "dark",
@@ -1966,6 +2046,7 @@ function defaultPreferences(language: "zh-CN" | "en-US"): UserPreferences {
     customModelContextWindow: 128000,
     maxTokensPerRequest: 128000,
     autoApprove: "none",
+    llmApprovalMode: "off",
     showThinking: true,
     language,
     theme: "dark",

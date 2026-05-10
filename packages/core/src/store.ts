@@ -103,6 +103,8 @@ export interface WorkbenchStore {
   deleteWebSearchProviderSecret(providerId: string): Promise<void>;
   saveReflectionSession(session: ReflectionSession): Promise<void>;
   listReflectionSessions(): Promise<ReflectionSession[]>;
+  deleteReflectionSession(sessionId: string): Promise<void>;
+  clearReflectionSessions(): Promise<void>;
   saveProjectMemory(record: ProjectMemory): Promise<void>;
   listProjectMemories(projectId?: string): Promise<ProjectMemory[]>;
   deleteProjectMemory(id: string): Promise<void>;
@@ -466,6 +468,14 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
     return [...this.reflectionSessions.values()].map((record) => clone(record));
   }
 
+  async deleteReflectionSession(sessionId: string): Promise<void> {
+    this.reflectionSessions.delete(sessionId);
+  }
+
+  async clearReflectionSessions(): Promise<void> {
+    this.reflectionSessions.clear();
+  }
+
   async saveProjectMemory(record: ProjectMemory): Promise<void> {
     this.projectMemories.set(record.id, clone(record));
   }
@@ -656,6 +666,7 @@ export function defaultPreferences(): UserPreferences {
     customModelContextWindow: 128000,
     maxTokensPerRequest: 1048576,
     autoApprove: "none",
+    llmApprovalMode: "off",
     showThinking: true,
     language: "zh-CN",
     theme: "dark",

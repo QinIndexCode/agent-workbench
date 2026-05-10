@@ -857,7 +857,11 @@ function isClientTranscriptEvent(event: TaskEvent | null | undefined): boolean {
     event.type === "assistant_message" ||
     event.type === "thinking_delta" ||
     event.type === "guidance_pending" ||
+    event.type === "user_input_requested" ||
+    event.type === "user_input_answered" ||
     event.type === "approval_pending" ||
+    event.type === "tool_started" ||
+    event.type === "tool_progress" ||
     event.type === "tool_result" ||
     event.type === "task_checkpoint_created" ||
     event.type === "task_rollback_completed" ||

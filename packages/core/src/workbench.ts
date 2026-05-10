@@ -29,6 +29,7 @@ import type {
   PromptCacheStats,
   ProjectMemory,
   ProjectMemoryCreateRequest,
+  ProjectMemoryPatchRequest,
   ReflectionSession,
   RiskCategory,
   ScheduledTask,
@@ -101,7 +102,7 @@ import { LocalSecretBox, maskSecret, sanitizeSensitiveText, sanitizeSensitiveVal
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
 import { completionBlocker, verificationResultFromToolEvent } from "./task-graph.js";
 import { hasUserTurn, latestUserText } from "./task-events.js";
-import { ShellToolExecutor, type ToolExecutor } from "./tools.js";
+import { ShellToolExecutor, type ToolExecutor, type ToolProgressUpdate } from "./tools.js";
 import { createWebSearchApiKeyRef } from "./web-search.js";
 import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
 
@@ -1741,6 +1742,14 @@ export class AgentWorkbench {
     return this.store.listReflectionSessions();
   }
 
+  async deleteReflectionSession(sessionId: string): Promise<void> {
+    await this.store.deleteReflectionSession(sessionId);
+  }
+
+  async clearReflectionSessions(): Promise<void> {
+    await this.store.clearReflectionSessions();
+  }
+
   async listProjectMemories(projectId?: string): Promise<ProjectMemory[]> {
     return this.store.listProjectMemories(projectId);
   }
@@ -1759,6 +1768,21 @@ export class AgentWorkbench {
     };
     await this.store.saveProjectMemory(memory);
     return memory;
+  }
+
+  async updateProjectMemory(id: string, input: ProjectMemoryPatchRequest): Promise<ProjectMemory> {
+    const current = (await this.store.listProjectMemories()).find((memory) => memory.id === id);
+    if (!current) throw new Error(`Project memory not found: ${id}`);
+    const updated: ProjectMemory = {
+      ...current,
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.content !== undefined ? { content: input.content } : {}),
+      ...(input.category !== undefined ? { category: input.category } : {}),
+      ...(input.tags !== undefined ? { tags: input.tags } : {}),
+      updatedAt: nowIso()
+    };
+    await this.store.saveProjectMemory(updated);
+    return updated;
   }
 
   async deleteProjectMemory(id: string): Promise<void> {
@@ -2093,7 +2117,35 @@ export class AgentWorkbench {
           preferenceGrant.forceApproval ||
           this.permissions.needsApproval(assessment.category, this.stateFor(task.id, task))
         ) {
+          const llmApproval = await this.maybeApproveWithLlm(task, call, assessment, metadata, preferences);
+          if (llmApproval.allowed) {
+            this.addEvent(task, "approval_auto_granted", `${assessment.category}: ${llmApproval.reason}`, {
+              toolCallId: call.id,
+              toolName: call.toolName,
+              riskCategory: assessment.category,
+              approvalSource: "llmApproval",
+              llmApproval,
+              ...eventMetadata
+            });
+            await this.safeAppendTaskTrace(task, {
+              kind: "approval_auto_granted",
+              timestamp: nowIso(),
+              toolCallId: call.id,
+              toolName: call.toolName,
+              source: "llmApproval",
+              riskCategory: assessment.category,
+              llmApproval
+            });
+            prepared.push({ call, assessment });
+            continue;
+          }
           const approval = this.permissions.createApproval({ taskId: task.id, toolCall: call, assessment, metadata: eventMetadata });
+          if (llmApproval.evaluated) {
+            approval.metadata = {
+              ...(approval.metadata ?? {}),
+              llmApproval
+            };
+          }
           task.approvals.push(approval);
           await this.addApprovalPendingEvent(task, approval);
           await this.safeAppendTaskTrace(task, {
@@ -2427,15 +2479,31 @@ export class AgentWorkbench {
     const controllers = this.runningToolControllers.get(taskId) ?? new Set<AbortController>();
     controllers.add(controller);
     this.runningToolControllers.set(taskId, controllers);
+    const preferences = await this.store.getPreferences().catch(() => undefined);
+    this.addEvent(task, "tool_started", call.toolName, {
+      toolCallId: call.id,
+      toolName: call.toolName,
+      args: preferences ? this.sanitizeForPreferences(call.args, preferences) : call.args,
+      status: "running",
+      ...(call.toolName === "plan_update" ? { uiHidden: true } : {})
+    });
+    await this.store.saveTask(task);
+    await this.safeAppendTaskTrace(task, {
+      kind: "tool_started",
+      timestamp: nowIso(),
+      toolCallId: call.id,
+      toolName: call.toolName,
+      args: call.args
+    });
+    const progress = this.createToolProgressSink(taskId, call);
     try {
       const managed = await this.executeManagedTool(task, call);
       if (managed) {
         await this.store.saveTask(task);
         return managed;
       }
-      return await this.tools.execute(call, { signal: controller.signal, workRoot: task.workRoot });
+      return await this.tools.execute(call, { signal: controller.signal, workRoot: task.workRoot, onProgress: progress });
     } catch (error) {
-      const preferences = await this.store.getPreferences().catch(() => undefined);
       const rawMessage = error instanceof Error ? error.message : String(error);
       const prefix = controller.signal.aborted ? "Tool execution cancelled" : "Tool execution failed";
       const message = `${prefix}: ${rawMessage || "Unknown error."}`;
@@ -2449,6 +2517,46 @@ export class AgentWorkbench {
         }
       }
     }
+  }
+
+  private createToolProgressSink(taskId: string, call: ToolCall): (progress: ToolProgressUpdate) => Promise<void> {
+    let lastAt = 0;
+    let lastKey = "";
+    return async (progress) => {
+      const now = Date.now();
+      const key = JSON.stringify({
+        status: progress.status,
+        processed: progress.progress?.processed,
+        total: progress.progress?.total,
+        message: progress.message,
+        changes: progress.changes
+      });
+      if (now - lastAt < 250 && key === lastKey) return;
+      lastAt = now;
+      lastKey = key;
+      await this.addToolProgressEvent(taskId, call, progress);
+    };
+  }
+
+  private async addToolProgressEvent(taskId: string, call: ToolCall, progress: ToolProgressUpdate): Promise<void> {
+    const task = await this.requiredTask(taskId);
+    const preferences = await this.store.getPreferences().catch(() => undefined);
+    const payload = preferences ? this.sanitizeForPreferences(progress, preferences) : progress;
+    this.addEvent(task, "tool_progress", progress.message ?? call.toolName, {
+      toolCallId: call.id,
+      toolName: call.toolName,
+      status: progress.status ?? "running",
+      ...payload,
+      ...(call.toolName === "plan_update" ? { uiHidden: true } : {})
+    });
+    await this.store.saveTask(task);
+    await this.safeAppendTaskTrace(task, {
+      kind: "tool_progress",
+      timestamp: nowIso(),
+      toolCallId: call.id,
+      toolName: call.toolName,
+      progress
+    });
   }
 
   private async executeManagedTool(task: TaskDetail, call: ToolCall): Promise<ToolResult | undefined> {
@@ -3066,6 +3174,89 @@ export class AgentWorkbench {
     return { allowed: false, forceApproval: false };
   }
 
+  private async maybeApproveWithLlm(
+    task: TaskDetail,
+    call: ToolCall,
+    assessment: RiskAssessment,
+    metadata: Record<string, unknown>,
+    preferences: UserPreferences
+  ): Promise<{ evaluated: boolean; allowed: boolean; reason: string; tokenUsage?: ModelUsage }> {
+    if (preferences.llmApprovalMode !== "non_destructive") return { evaluated: false, allowed: false, reason: "LLM approval disabled." };
+    if (assessment.category === "destructive") return { evaluated: true, allowed: false, reason: "Destructive tools cannot be approved by LLM policy." };
+
+    const prompt = [
+      "Decide whether this tool call can be auto-approved without asking the user.",
+      "Return only compact JSON: {\"allow\": boolean, \"reason\": string}.",
+      "Allow only if the risk, arguments, and task context are clear and non-destructive.",
+      "Deny when the action is ambiguous, destructive, credential-sensitive, or broader than the recorded task need.",
+      "",
+      stableStringify({
+        taskId: task.id,
+        taskStatus: task.status,
+        workRoot: task.workRoot,
+        toolName: call.toolName,
+        riskCategory: assessment.category,
+        riskReason: assessment.reason,
+        args: this.sanitizeForPreferences(call.args, preferences),
+        metadata: this.sanitizeForPreferences(metadata, preferences)
+      })
+    ].join("\n");
+    const approvalTask: TaskDetail = {
+      id: `${task.id}:llm_approval:${call.id}`,
+      title: "LLM tool approval review",
+      folderId: task.folderId,
+      workRoot: task.workRoot,
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: createId("event"),
+          taskId: `${task.id}:llm_approval:${call.id}`,
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: prompt,
+          payload: {}
+        }
+      ]
+    };
+    try {
+      const turn = await this.model.next(approvalTask, {
+        streamId: createId("approval_stream"),
+        onAssistantDelta: async () => undefined,
+        onThinkingDelta: async () => undefined,
+        onTrace: async (event) => {
+          await this.safeAppendModelTrace(task, {
+            ...event,
+            payload: {
+              ...event.payload,
+              approvalReviewForToolCallId: call.id
+            }
+          });
+        }
+      });
+      await this.recordPromptCacheStats(task, turn.usage);
+      if (turn.kind !== "final") {
+        return { evaluated: true, allowed: false, reason: "LLM approval review did not return a final decision.", ...(turn.usage ? { tokenUsage: turn.usage } : {}) };
+      }
+      const parsed = parseApprovalDecision(turn.message);
+      return {
+        evaluated: true,
+        allowed: parsed.allow,
+        reason: parsed.reason,
+        ...(turn.usage ? { tokenUsage: turn.usage } : {})
+      };
+    } catch (error) {
+      return {
+        evaluated: true,
+        allowed: false,
+        reason: `LLM approval review failed: ${sanitizeSensitiveText(error instanceof Error ? error.message : String(error))}.`
+      };
+    }
+  }
+
   private consumePendingGuidance(task: TaskDetail): void {
     for (const event of task.events) {
       if (event.type === "guidance_pending" && event.payload["status"] === "pending") {
@@ -3298,6 +3489,38 @@ function autoApproveAllows(level: UserPreferences["autoApprove"], category: Risk
   if (level === "low") return category === "host_observation" || category === "workspace_read";
   if (level === "medium") return category === "host_observation" || category === "workspace_read" || category === "network";
   return category === "host_observation" || category === "workspace_read" || category === "workspace_write" || category === "shell" || category === "network";
+}
+
+function parseApprovalDecision(message: string): { allow: boolean; reason: string } {
+  const parsed = parseFirstJsonObject(message);
+  if (!parsed) return { allow: false, reason: "LLM approval review returned non-JSON output." };
+  const allow = parsed["allow"] === true;
+  const reason = typeof parsed["reason"] === "string" && parsed["reason"].trim()
+    ? parsed["reason"].trim().slice(0, 600)
+    : allow
+      ? "LLM approval review allowed the non-destructive tool."
+      : "LLM approval review denied the tool.";
+  return { allow, reason };
+}
+
+function parseFirstJsonObject(value: string): Record<string, unknown> | null {
+  const trimmed = value.trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  const candidates = [trimmed, start >= 0 && end >= start ? trimmed.slice(start, end + 1) : ""].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
+function stableStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, nested) => (nested === undefined ? undefined : nested), 2);
 }
 
 function normalizeTargetLimits(input: TaskRunOptions["targetLimits"] | undefined): typeof DEFAULT_TARGET_LIMITS {
