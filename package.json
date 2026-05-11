@@ -17,8 +17,6 @@
     "test:matrix": "vitest run tests/real-task-matrix/matrix.test.ts",
     "test:stress": "vitest run tests/stress/stress.test.ts",
     "smoke:live-model": "npm.cmd run build && node scripts/live-model-smoke.mjs",
-    "native:screenshot-audit": "node scripts/native-screenshot-audit.mjs",
-    "native:matrix": "node scripts/native-real-model-matrix.mjs",
     "test:e2e": "npm.cmd run build && playwright test",
     "typecheck": "tsc -b packages/shared packages/core apps/server apps/web",
     "check:no-old-control": "node scripts/check-no-old-control.mjs"
