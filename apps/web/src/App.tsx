@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup, TaskAttachment } from "@scc/shared";
+import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup, TaskAttachment, UserPreferences } from "@scc/shared";
 import { type AppRoute, useAppRoute } from "./app-router.js";
 import { api } from "./api.js";
 import { ProviderBrandIcon } from "./components/ProviderBrandIcon.js";
@@ -29,6 +29,9 @@ const WebSearchPanel = lazy(() => import("./components/WebSearchPanel.js").then(
 
 const allRiskCategories: RiskCategory[] = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
 const readOnlyRiskCategories: RiskCategory[] = ["host_observation", "workspace_read"];
+const defaultAutoApprovalRiskCategories: UserPreferences["autoApproveRiskCategories"] = ["host_observation", "workspace_read", "network"];
+const nonDestructiveRiskCategories: UserPreferences["autoApproveRiskCategories"] = ["host_observation", "workspace_read", "workspace_write", "shell", "network"];
+type PermissionMode = UserPreferences["permissionMode"];
 
 export function App() {
   const data = useWorkbenchData();
@@ -382,9 +385,7 @@ export function App() {
                 preferences={data.preferences}
                 startCustom={settingsStartCustom}
                 onStartCustomConsumed={() => setSettingsStartCustom(false)}
-                onGrant={(risk) => void grantGlobal(risk)}
-                onRevoke={(risk) => void data.runSideAction(() => api.revokeGlobalPermission(risk))}
-                onPermissionPresetChange={(preset) => applyPermissionPreset(preset)}
+                onPermissionModeChange={(mode, risks) => applyPermissionMode(mode, risks)}
                 onPreference={(patch) => void updatePreference(patch)}
               />
             ),
@@ -437,9 +438,7 @@ export function App() {
                 permissions={data.permissions}
                 preferences={data.preferences}
                 preferencesOnly
-                onGrant={(risk) => void grantGlobal(risk)}
-                onRevoke={(risk) => void data.runSideAction(() => api.revokeGlobalPermission(risk))}
-                onPermissionPresetChange={(preset) => applyPermissionPreset(preset)}
+                onPermissionModeChange={(mode, risks) => applyPermissionMode(mode, risks)}
                 onPreference={(patch) => void updatePreference(patch)}
               />
             )
@@ -541,19 +540,12 @@ export function App() {
     })();
   }
 
-  function grantGlobal(risk: RiskCategory) {
-    void data.runSideAction(() =>
-      api.grantGlobalPermission(
-        risk,
-        risk === "destructive"
-          ? "User explicitly granted destructive global permission from the workbench UI."
-          : "User granted global permission from the workbench UI."
-      )
-    );
-  }
-
   function updatePreference(patch: PreferencesPatch) {
     void data.runSideAction(() => api.updatePreferences(patch));
+  }
+
+  function applyPermissionMode(mode: PermissionMode, selectedRisks?: RiskCategory[]) {
+    void runPermissionModeMutation(mode, selectedRisks);
   }
 
   function applyPermissionPreset(preset: PermissionPreset) {
@@ -561,7 +553,24 @@ export function App() {
   }
 
   async function runPermissionPresetMutation(preset: PermissionPreset): Promise<boolean> {
-    setOptimisticPermissionPreset(preset);
+    const mode: PermissionMode = preset === "all" ? "full_access" : preset === "read_only" ? "read_only" : "ask";
+    return runPermissionModeMutation(mode);
+  }
+
+  async function runPermissionModeMutation(mode: PermissionMode, selectedRisks?: RiskCategory[]): Promise<boolean> {
+    const optimisticPreset: ComposerPermissionMode = mode === "full_access" ? "all" : mode === "read_only" ? "read_only" : mode === "custom" ? "custom" : "ask";
+    const target = new Set<RiskCategory>(targetRisksForPermissionMode(mode, selectedRisks));
+    const preferencePatch = preferencesForPermissionMode(mode, selectedRisks);
+    return runPermissionMutation(optimisticPreset, target, preferencePatch, `User selected ${mode} permission mode from the workbench UI.`);
+  }
+
+  async function runPermissionMutation(
+    nextPreset: ComposerPermissionMode,
+    target: Set<RiskCategory>,
+    preferencePatch: PreferencesPatch,
+    reason: string
+  ): Promise<boolean> {
+    setOptimisticPermissionPreset(nextPreset);
     setPermissionError(null);
     setPermissionBusy(true);
     const previousPreset = permissionPreset;
@@ -573,17 +582,15 @@ export function App() {
         await api.updatePreferences({ customPermissionSnapshot: snapshot });
       }
 
-      const target = new Set<RiskCategory>(
-        preset === "all" ? allRiskCategories : preset === "read_only" ? readOnlyRiskCategories : []
-      );
       for (const risk of allRiskCategories) {
         if (target.has(risk) && !granted.has(risk)) {
-          await api.grantGlobalPermission(risk, `User selected ${preset} permission preset from the composer.`);
+          await api.grantGlobalPermission(risk, reason);
         }
         if (!target.has(risk) && granted.has(risk)) {
           await api.revokeGlobalPermission(risk);
         }
       }
+      await api.updatePreferences(preferencePatch);
       await data.refresh(data.selectedId);
     })();
     permissionMutationRef.current = mutation;
@@ -825,8 +832,44 @@ function getPermissionPreset(permissions: Array<{ riskCategory: RiskCategory }>)
 }
 
 function formatPermissionPreset(preset: ComposerPermissionMode, language: string): string {
-  if (preset === "all") return "All";
+  if (preset === "all") return language === "zh-CN" ? "完全访问" : "Full access";
   if (preset === "custom") return "Custom";
   if (preset === "read_only") return "Read only";
   return "Ask";
+}
+
+function targetRisksForPermissionMode(mode: PermissionMode, selectedRisks?: RiskCategory[]): RiskCategory[] {
+  if (mode === "read_only") return readOnlyRiskCategories;
+  if (mode === "full_access") return allRiskCategories;
+  if (mode === "custom") return allRiskCategories.filter((risk) => selectedRisks?.includes(risk));
+  return [];
+}
+
+function preferencesForPermissionMode(mode: PermissionMode, selectedRisks?: RiskCategory[]): PreferencesPatch {
+  if (mode !== "auto_approval") {
+    return {
+      permissionMode: mode,
+      autoApprove: "none",
+      autoApproveStrategy: "ask",
+      autoApproveRiskCategories: []
+    };
+  }
+  const selected = (selectedRisks?.filter((risk): risk is UserPreferences["autoApproveRiskCategories"][number] =>
+    nonDestructiveRiskCategories.includes(risk as UserPreferences["autoApproveRiskCategories"][number])
+  ) ?? defaultAutoApprovalRiskCategories);
+  const risks = selectedRisks ? selected : defaultAutoApprovalRiskCategories;
+  return {
+    permissionMode: "auto_approval",
+    autoApprove: legacyAutoApproveForRisks(risks),
+    autoApproveStrategy: "custom",
+    autoApproveRiskCategories: risks
+  };
+}
+
+function legacyAutoApproveForRisks(risks: UserPreferences["autoApproveRiskCategories"]): UserPreferences["autoApprove"] {
+  const selected = new Set(risks);
+  if (nonDestructiveRiskCategories.every((risk) => selected.has(risk))) return "all";
+  if (defaultAutoApprovalRiskCategories.every((risk) => selected.has(risk)) && selected.size === defaultAutoApprovalRiskCategories.length) return "medium";
+  if (readOnlyRiskCategories.every((risk) => selected.has(risk as UserPreferences["autoApproveRiskCategories"][number])) && selected.size === readOnlyRiskCategories.length) return "low";
+  return "none";
 }

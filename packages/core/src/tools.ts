@@ -105,13 +105,13 @@ export class ShellToolExecutor implements ToolExecutor {
     await emitToolProgress(options, { status: "running", operation: "run_command", message: "Command process started.", progress: { processed: 0, unit: "bytes" } });
 
     return new Promise<ToolResult>((resolveResult) => {
-      let stdout = "";
-      let stderr = "";
+      let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+      let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
       let settled = false;
       let timedOut = false;
       let cancelled = false;
       const maxBuffer = 1024 * 1024;
-      const child = execFile(shell, args, { cwd, maxBuffer, windowsHide: true }, async (error) => {
+      const child = execFile(shell, args, { cwd, encoding: "buffer", maxBuffer, windowsHide: true }, async (error) => {
         if (settled) return;
         settled = true;
         cleanup();
@@ -124,30 +124,28 @@ export class ShellToolExecutor implements ToolExecutor {
           return;
         }
         if (error) {
-          resolveResult(await this.result(call, false, [error.message, stderr].filter(Boolean).join("\n").trim()));
+          resolveResult(await this.result(call, false, [error.message, decodeCommandOutput(stderr)].filter(Boolean).join("\n").trim()));
           return;
         }
-        resolveResult(await this.result(call, true, [stdout, stderr].filter(Boolean).join("\n").trim()));
+        resolveResult(await this.result(call, true, [decodeCommandOutput(stdout), decodeCommandOutput(stderr)].filter(Boolean).join("\n").trim()));
       });
 
       child.stdout?.on("data", (chunk: Buffer | string) => {
-        const text = String(chunk);
-        stdout = appendLimited(stdout, text, maxBuffer);
+        stdout = appendLimitedBuffer(stdout, chunk, maxBuffer);
         void emitToolProgress(options, {
           status: "running",
           operation: "run_command",
-          progress: { processed: Buffer.byteLength(stdout) + Buffer.byteLength(stderr), unit: "bytes" },
-          tail: stdout.slice(-1200)
+          progress: { processed: stdout.length + stderr.length, unit: "bytes" },
+          tail: decodeCommandOutput(stdout).slice(-1200)
         });
       });
       child.stderr?.on("data", (chunk: Buffer | string) => {
-        const text = String(chunk);
-        stderr = appendLimited(stderr, text, maxBuffer);
+        stderr = appendLimitedBuffer(stderr, chunk, maxBuffer);
         void emitToolProgress(options, {
           status: "running",
           operation: "run_command",
-          progress: { processed: Buffer.byteLength(stdout) + Buffer.byteLength(stderr), unit: "bytes" },
-          tail: stderr.slice(-1200)
+          progress: { processed: stdout.length + stderr.length, unit: "bytes" },
+          tail: decodeCommandOutput(stderr).slice(-1200)
         });
       });
 
@@ -564,6 +562,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function appendLimited(current: string, chunk: string, maxChars: number): string {
   const next = current + chunk;
   return next.length <= maxChars ? next : next.slice(-maxChars);
+}
+
+function appendLimitedBuffer(current: Buffer<ArrayBufferLike>, chunk: Buffer | string, maxBytes: number): Buffer<ArrayBufferLike> {
+  const nextChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  const next = Buffer.concat([current, nextChunk]);
+  return next.length <= maxBytes ? next : next.subarray(next.length - maxBytes);
+}
+
+function decodeCommandOutput(buffer: Buffer<ArrayBufferLike>): string {
+  if (buffer.length === 0) return "";
+  const utf8 = new TextDecoder("utf-8").decode(buffer);
+  if (!utf8.includes("\uFFFD")) return utf8;
+  try {
+    const gb18030 = new TextDecoder("gb18030").decode(buffer);
+    return replacementCount(gb18030) < replacementCount(utf8) ? gb18030 : utf8;
+  } catch {
+    return utf8;
+  }
+}
+
+function replacementCount(value: string): number {
+  return (value.match(/\uFFFD/g) ?? []).length;
 }
 
 async function readTextFileProfile(path: string, sizeBytes: number): Promise<{ content: string; preview: string; totalLines: number; hash: string }> {

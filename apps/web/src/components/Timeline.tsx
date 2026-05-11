@@ -18,6 +18,7 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
   "tool_started",
   "tool_progress",
   "tool_result",
+  "model_empty_response",
   "task_checkpoint_created",
   "task_rollback_completed",
   "task_rollback_failed",
@@ -556,6 +557,23 @@ function TimelineEvent({
     );
   }
 
+  if (event.type === "model_empty_response") {
+    const retrying = event.payload["status"] === "retrying";
+    return (
+      <article className="event note model_empty_response">
+        <span>
+          {retrying
+            ? zh
+              ? "模型本轮未返回可展示内容，正在自动重试一次。"
+              : "The model returned no displayable content; retrying once."
+            : zh
+              ? "模型连续未返回可展示内容，任务已暂停，可重试或检查模型配置。"
+              : "The model returned no displayable content twice; the task is paused for retry or provider inspection."}
+        </span>
+      </article>
+    );
+  }
+
   if (event.type === "tool_result") {
     const output = String(event.payload["output"] ?? "");
     const parsed = parseToolOutput(output);
@@ -835,9 +853,20 @@ function itemTimestamp(item: TimelineItem): string {
 }
 
 function appendStreamDelta(current: string, delta: string, type: "assistant_delta" | "thinking_delta"): string {
-  if (!current || type === "assistant_delta") return current + delta;
+  if (!current) return current + delta;
+  if (type === "assistant_delta") return `${current}${streamDeltaSeparator(current, delta)}${delta}`;
   if (!delta || /^\s/.test(delta) || /\s$/.test(current)) return current + delta;
   return `${current}\n${delta}`;
+}
+
+function streamDeltaSeparator(current: string, delta: string): string {
+  if (!delta || /^\s/.test(delta) || /\s$/.test(current)) return "";
+  const previous = current.at(-1) ?? "";
+  const next = delta[0] ?? "";
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(previous + next)) return "";
+  if (/[A-Za-z0-9)]/.test(previous) && /[A-Za-z0-9(]/.test(next)) return " ";
+  if (/[.,;:!?]/.test(previous) && /[A-Za-z0-9]/.test(next)) return " ";
+  return "";
 }
 
 function formatToolLabel(toolName: string, payload: Record<string, unknown>, changes?: { path: string; addedLines: number; removedLines: number; operation?: string } | undefined): string {

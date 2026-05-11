@@ -925,7 +925,7 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
 }
 
 function isModelHistoryEvent(event: TaskEvent): boolean {
-  if (["status_changed", "task_created", "task_memory_created", "task_title_updated", "task_graph_created", "task_graph_node_started", "pattern_discovered", "reflection_completed", "tool_started", "tool_progress"].includes(event.type)) return false;
+  if (["status_changed", "task_created", "task_memory_created", "task_title_updated", "task_graph_created", "task_graph_node_started", "pattern_discovered", "reflection_completed", "tool_started", "tool_progress", "model_empty_response"].includes(event.type)) return false;
   if (event.type.startsWith("plan_")) return false;
   if (["prompt_cache_stats", "token_usage_recorded", "conversation_summary_created", "context_overflow_recovered", "project_memory_version_created", "project_memory_rollback_completed"].includes(event.type)) return false;
   if (event.payload["uiHidden"] === true && event.type !== "tool_result") return false;
@@ -933,7 +933,7 @@ function isModelHistoryEvent(event: TaskEvent): boolean {
 }
 
 function isSummarizableContextEvent(event: TaskEvent): boolean {
-  if (["assistant_delta", "thinking_delta", "conversation_summary_created", "context_overflow_recovered", "prompt_cache_stats", "token_usage_recorded", "project_memory_version_created", "task_title_updated", "task_graph_created", "task_graph_node_started", "tool_started", "tool_progress"].includes(event.type)) return false;
+  if (["assistant_delta", "thinking_delta", "conversation_summary_created", "context_overflow_recovered", "prompt_cache_stats", "token_usage_recorded", "project_memory_version_created", "task_title_updated", "task_graph_created", "task_graph_node_started", "tool_started", "tool_progress", "model_empty_response"].includes(event.type)) return false;
   if (event.type.startsWith("plan_")) return false;
   if (event.payload["uiHidden"] === true && event.type !== "tool_result") return false;
   return true;

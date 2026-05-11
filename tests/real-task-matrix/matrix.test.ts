@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import type { TaskDetail, ToolCall, ToolResult } from "@scc/shared";
+import type { RiskCategory, TaskDetail, ToolCall, ToolResult } from "@scc/shared";
 import {
   AgentWorkbench,
   createId,
@@ -26,14 +26,21 @@ const matrixCases: MatrixCase[] = [];
 
 afterAll(async () => {
   const outDir = resolve("data", "test-reports", "real-task-matrix");
+  const scorecard = buildScorecard(matrixCases);
   await mkdir(outDir, { recursive: true });
-  await writeFile(join(outDir, "report.json"), JSON.stringify({ generatedAt: nowIso(), cases: matrixCases }, null, 2), "utf8");
+  await writeFile(join(outDir, "report.json"), JSON.stringify({ generatedAt: nowIso(), scorecard, cases: matrixCases }, null, 2), "utf8");
   await writeFile(
     join(outDir, "report.md"),
     [
       "# SCC Real Task Matrix",
       "",
       `Generated: ${nowIso()}`,
+      "",
+      "## Flagship Agent Scorecard",
+      "",
+      ...Object.entries(scorecard).map(([key, value]) => `- ${value ? "PASS" : "FAIL"} ${key}`),
+      "",
+      "## Cases",
       "",
       ...matrixCases.map((item) => `- ${item.status === "passed" ? "PASS" : "FAIL"} ${item.name}`)
     ].join("\n"),
@@ -225,6 +232,54 @@ describe("real task matrix", () => {
     }
   });
 
+  it("asks the user when a real task is under-specified and resumes from the answer", async () => {
+    const workbench = new AgentWorkbench({ model: new AskUserMatrixModel() });
+    const waiting = await createRegisteredTask(workbench, "这个接口文档我没想清楚，帮我先把方向定一下", "Ask user matrix");
+
+    expect(waiting.status).toBe("waiting_for_user");
+    expect(waiting.events.some((event) => event.type === "user_input_requested")).toBe(true);
+
+    const completed = await workbench.appendMessage(waiting.id, "给外部客户看，语气保守一点");
+    expect(completed.status).toBe("completed");
+    expect(completed.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "ask_user")).toBe(true);
+    expect(assistantText(completed).toLowerCase()).toContain("external");
+    recordPass("ask user clarification", completed, { waitingState: true, answered: true });
+  });
+
+  it("recovers from an empty model turn without showing diagnostics as assistant text", async () => {
+    const workbench = new AgentWorkbench({ model: new EmptyOnceMatrixModel() });
+    const task = await createRegisteredTask(workbench, "刚才好像没输出，继续处理一下", "Empty response matrix");
+
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "model_empty_response")).toBe(true);
+    expect(assistantText(task)).not.toContain("I could not produce a result");
+    expect(assistantText(task)).toContain("Recovered");
+    recordPass("empty response recovery", task, { emptyEvents: task.events.filter((event) => event.type === "model_empty_response").length });
+  });
+
+  it("shows progress events for a large file write before the final result", async () => {
+    const fixture = createFixtureProject("large-write");
+    try {
+      const fixtureWorkbench = await workbenchForRoot(fixture.root, new LargeWriteModel());
+      const task = await runWithApprovals(
+        await createRegisteredTask(fixtureWorkbench.workbench, "帮我生成一份稍微完整点的排查记录，放到 docs 里", "Large write matrix", fixtureWorkbench.folderId)
+      );
+      const notes = readFileSync(join(fixture.root, "docs", "diagnostics.md"), "utf8");
+
+      expect(task.status).toBe("completed");
+      expect(task.events.some((event) => event.type === "tool_started" && event.payload["toolName"] === "edit_file")).toBe(true);
+      expect(task.events.some((event) => event.type === "tool_progress" && event.payload["toolName"] === "edit_file")).toBe(true);
+      expect(successfulToolOutputs(task).join("\n")).toContain("\"addedLines\"");
+      expect(notes).toContain("Diagnostic Notes");
+      recordPass("large write progress", task, {
+        progressEvents: task.events.filter((event) => event.type === "tool_progress").length,
+        artifact: "docs/diagnostics.md"
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it("rejects reads outside the task work root while allowing isolated roots", async () => {
     const left = createFixtureProject("left");
     const right = createFixtureProject("right");
@@ -303,6 +358,54 @@ describe("real task matrix", () => {
     expect(assistantText(denied)).toContain("denied");
     expect(denied.events.some((event) => event.type === "approval_resolved" && event.payload["decision"] === "deny")).toBe(true);
     recordPass("mcp denial evidence", denied, { decision: "deny" });
+  });
+
+  it("runs destructive tools only after explicit full-access style grants", async () => {
+    const workbench = new AgentWorkbench({ model: new DestructiveCommandModel(), tools: new PermissionMatrixToolExecutor() });
+    const allRisks: RiskCategory[] = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
+    for (const risk of allRisks) await workbench.grantGlobalPermission(risk, "matrix full access");
+
+    const task = await createRegisteredTask(workbench, "我确认可以完全访问，执行这条维护命令", "Full access matrix");
+
+    expect(task.status).toBe("completed");
+    expect(task.approvals).toHaveLength(0);
+    expect(task.events.some((event) => event.type === "approval_auto_granted" && event.payload["riskCategory"] === "destructive")).toBe(true);
+    expect(successfulToolOutputs(task).join("\n")).toContain("safe destructive fixture");
+    recordPass("full access destructive audit", task, { destructiveEvidence: true });
+  });
+
+  it("keeps custom permissions bounded when shell is not globally allowed", async () => {
+    const workbench = new AgentWorkbench({ model: new ShellDeniedRecoveryModel(), tools: new PermissionMatrixToolExecutor() });
+    await workbench.grantGlobalPermission("workspace_read", "matrix custom");
+    await workbench.grantGlobalPermission("workspace_write", "matrix custom");
+
+    const waiting = await createRegisteredTask(workbench, "我只想允许读写文件，命令行先别直接跑", "Custom bounded matrix");
+    expect(waiting.status).toBe("waiting_approval");
+    expect(waiting.approvals[0]?.riskCategory).toBe("shell");
+
+    const denied = await workbench.decideApproval(waiting.id, waiting.approvals[0]!.id, "deny");
+    expect(denied.status).toBe("completed");
+    expect(assistantText(denied)).toContain("Shell was not allowed");
+    expect(denied.events.some((event) => event.type === "approval_resolved" && event.payload["decision"] === "deny")).toBe(true);
+    recordPass("custom shell denied", denied, { shellExecuted: false });
+  });
+
+  it("uses auto approval rules and optional LLM approval without hardcoded prompt gates", async () => {
+    const workbench = new AgentWorkbench({ model: new LlmApprovalMatrixModel(), tools: new PermissionMatrixToolExecutor() });
+    await workbench.updatePreferences({
+      permissionMode: "auto_approval",
+      autoApproveRiskCategories: ["host_observation"],
+      llmApprovalMode: "non_destructive",
+      reflectionEnabled: false
+    });
+
+    const task = await createRegisteredTask(workbench, "看看当前目录里有哪些关键文件", "Auto approval matrix");
+
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "approval_auto_granted" && event.payload["approvalSource"] === "llmApproval")).toBe(true);
+    expect(task.events.some((event) => event.type === "token_usage_recorded")).toBe(true);
+    expect(assistantText(task)).toContain("Listed files after approval evidence");
+    recordPass("auto approval with llm review", task, { approvalSource: "llmApproval" });
   });
 
   it("records memories for ordinary tasks without directly creating skills", async () => {
@@ -445,6 +548,52 @@ class GuidanceAwareModel implements ModelClient {
   }
 }
 
+class AskUserMatrixModel implements ModelClient {
+  async next(task: TaskDetail): Promise<ModelTurn> {
+    const answer = task.events.find((event) => event.type === "tool_result" && event.payload["toolName"] === "ask_user");
+    if (answer) return { kind: "final", message: "External-customer direction recorded; I will keep the documentation conservative and evidence-led." };
+    return singleCall("ask_user", {
+      question: "Who is the documentation for?",
+      options: ["Internal engineering team", "External customers"],
+      required: true,
+      details: "The audience changes tone, examples, and risk disclosure."
+    });
+  }
+}
+
+class EmptyOnceMatrixModel implements ModelClient {
+  calls = 0;
+
+  async next(_task: TaskDetail, stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    this.calls += 1;
+    if (this.calls === 1) return { kind: "empty_response", reason: "fixture empty response", streamId: stream?.streamId };
+    return { kind: "final", message: "Recovered after the empty model turn.", streamId: stream?.streamId };
+  }
+}
+
+class LargeWriteModel implements ModelClient {
+  async next(task: TaskDetail): Promise<ModelTurn> {
+    if (!task.events.some((event) => event.type === "tool_result")) {
+      return singleCall("edit_file", {
+        path: "docs/diagnostics.md",
+        expectedHash: "__new__",
+        edits: [
+          {
+            startLine: 1,
+            endLine: 0,
+            newText: [
+              "# Diagnostic Notes",
+              "",
+              ...Array.from({ length: 80 }, (_unused, index) => `- Check ${index + 1}: capture evidence before changing behavior.`)
+            ].join("\n")
+          }
+        ]
+      });
+    }
+    return { kind: "final", message: "Created the diagnostics note with a recorded file-change summary." };
+  }
+}
+
 class ReadSharedModel implements ModelClient {
   async next(task: TaskDetail): Promise<ModelTurn> {
     if (!task.events.some((event) => event.type === "tool_result")) return singleCall("read_file", { path: "shared.txt" });
@@ -480,6 +629,35 @@ class McpDenyModel implements ModelClient {
     const denied = task.events.some((event) => event.type === "approval_resolved" && event.payload["decision"] === "deny");
     if (denied) return { kind: "final", message: "The mock MCP tool was denied, so I will explain the limitation instead." };
     return singleCall("mcp__mock__lookup", { query: "status" });
+  }
+}
+
+class DestructiveCommandModel implements ModelClient {
+  async next(task: TaskDetail): Promise<ModelTurn> {
+    if (!task.events.some((event) => event.type === "tool_result")) return singleCall("run_command", { command: "Stop-Process -Id 99999" });
+    return { kind: "final", message: "Full access was explicit, the destructive-class fixture command produced evidence." };
+  }
+}
+
+class ShellDeniedRecoveryModel implements ModelClient {
+  async next(task: TaskDetail): Promise<ModelTurn> {
+    const denied = task.events.some((event) => event.type === "approval_resolved" && event.payload["decision"] === "deny");
+    if (denied) return { kind: "final", message: "Shell was not allowed, so I will continue from the existing permission evidence instead." };
+    return singleCall("run_command", { command: "Write-Output custom-permission-check" });
+  }
+}
+
+class LlmApprovalMatrixModel implements ModelClient {
+  async next(task: TaskDetail): Promise<ModelTurn> {
+    if (task.title === "LLM tool approval review") {
+      return {
+        kind: "final",
+        message: JSON.stringify({ allow: true, reason: "Read-only directory listing is scoped and non-destructive." }),
+        usage: { inputTokens: 32, outputTokens: 12, totalTokens: 44, cachedTokens: 0 }
+      };
+    }
+    if (!task.events.some((event) => event.type === "tool_result")) return singleCall("list_files", { path: "." });
+    return { kind: "final", message: "Listed files after approval evidence." };
   }
 }
 
@@ -519,6 +697,24 @@ class MockMcpToolExecutor implements ToolExecutor {
       ok: true,
       createdAt: nowIso(),
       output: JSON.stringify({ summary: "mock MCP response" })
+    };
+  }
+}
+
+class PermissionMatrixToolExecutor implements ToolExecutor {
+  calls: ToolCall[] = [];
+
+  async execute(call: ToolCall): Promise<ToolResult> {
+    this.calls.push(call);
+    return {
+      id: createId("tool_result"),
+      toolCallId: call.id,
+      ok: true,
+      createdAt: nowIso(),
+      output:
+        call.toolName === "run_command"
+          ? "safe destructive fixture command observed without touching host state"
+          : JSON.stringify({ path: ".", files: ["package.json", "src/math.mjs"] })
     };
   }
 }
@@ -656,6 +852,21 @@ function recordPass(name: string, task: TaskDetail, evidence: Record<string, unk
       ...evidence
     }
   });
+}
+
+function buildScorecard(cases: MatrixCase[]): Record<string, boolean> {
+  const names = new Set(cases.filter((item) => item.status === "passed").map((item) => item.name));
+  return {
+    "goal retention": names.has("same-thread follow-up") && names.has("vague debug request"),
+    "evidence-first execution": names.has("debug and fix") && names.has("read-only diagnosis"),
+    "permission control": names.has("mcp denial evidence") && names.has("work root isolation") && names.has("custom shell denied"),
+    "permission modes": names.has("full access destructive audit") && names.has("auto approval with llm review"),
+    "tool traceability": names.has("large write progress") && names.has("long output handling"),
+    "interruptibility": names.has("long task cancellation"),
+    "user clarification": names.has("ask user clarification"),
+    "empty-response recovery": names.has("empty response recovery"),
+    "side capability hygiene": names.has("memory before skills")
+  };
 }
 
 async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {

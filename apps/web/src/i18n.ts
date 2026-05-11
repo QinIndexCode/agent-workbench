@@ -63,7 +63,7 @@ const copy = {
       title: "设置",
       sections: {
         providers: ["模型配置", "添加模型、管理本地密钥、预设厂商和当前使用模型"],
-        permissions: ["权限", "全局风险授权、审批策略和 Agent 偏好"],
+        permissions: ["权限审批", "审批模式、风险覆盖和工具授权"],
         mcp: ["MCP", "连接的工具服务器和已发现工具"],
         integrations: ["集成", "Discord、飞书和外部消息入口"],
         scheduled: ["定时任务", "一次性或周期性触发 Agent 任务"],
@@ -172,42 +172,55 @@ const copy = {
         ask: "Ask",
         read_only: "Read only",
         custom: "Custom",
-        all: "All"
+        all: "完全访问"
       },
       permissionPresetDescriptions: {
         ask: "每次按风险请求确认",
         read_only: "只读观察自动通过",
         custom: "自定义风险类别",
-        all: "允许所有风险类别"
+        all: "允许所有风险类别，包括破坏性操作"
       },
       keyboardHint: "Shift + Enter 换行 / Enter 发送"
     },
     permissions: {
-      title: "权限与偏好",
-      subtitle: "全局授权会跳过同类风险的审批 UI。撤销后，下一次同类工具请求会重新进入审批。",
-      modeTitle: "权限模式",
-      modeSubtitle: "选择默认授权范围。需要更高风险时，Agent 仍会按真实动作请求确认。",
-      modeCustomDescription: "当前授权来自单次全局审批，和预设模式不完全一致。可以一键切回 Ask、Read only 或 All。",
-      resetAsk: "重置为 Ask",
+      title: "权限审批",
+      subtitle: "选择工具调用的审批模式，并直接查看每类风险会被执行、询问还是自动审批。",
+      modeTitle: "审批策略",
+      modeSubtitle: "按风险类别控制工具调用审批。只读模式只放行观察和读取。",
+      modeCustomDescription: "逐项选择全局允许的风险类别；包含破坏性操作时请确认风险边界。",
+      modeAutoApprovalDescription: "按风险元数据自动审批选中的非破坏性类别，可额外启用 LLM 审批。",
+      modeFullAccessDescription: "全局允许全部风险类别，包括破坏性操作。选择前必须确认。",
       coverageTitle: "风险覆盖",
-      coverageSubtitle: "这里展示哪些风险会自动通过；单项撤销只用于修正已有全局授权。",
+      coverageSubtitle: "当前模式下未覆盖的风险类别会逐次询问。",
+      coverageCustomSubtitle: "自定义模式直接编辑全局允许类别。",
+      coverageAutoSubtitle: "自动审批模式只自动审批选中的非破坏性类别。",
+      coverageFullAccessSubtitle: "完全访问会全局允许全部类别，包括破坏性操作。",
       granted: "已全局允许",
       notGranted: "需要审批",
       autoAllowed: "自动通过",
       approvalRequired: "需要确认",
       allow: "全局允许",
+      allowRisk: (risk: string) => `全局允许 ${risk}`,
       revoke: "撤销",
       revokeRisk: (risk: string) => `撤销 ${risk}`,
-      enableRisk: (risk: string) => `自动通过 ${risk}`,
-      disableRisk: (risk: string) => `取消自动通过 ${risk}`,
+      enableRisk: (risk: string) => `选择 ${risk}`,
+      disableRisk: (risk: string) => `取消 ${risk}`,
       grantedAt: "授权时间",
       reason: "原因",
       noReason: "未记录原因",
-      riskNote: "该授权会跨任务生效，可以随时撤销。",
-      destructiveNote: "高风险授权。授予后 destructive 工具不会再弹出审批，请只在完全信任当前环境时使用。",
-      behaviorTitle: "审批策略",
+      riskNote: "未被当前模式覆盖时会进入审批流程。",
+      readOnlyNote: "只读模式会自动执行该类安全观察操作。",
+      customGrantedNote: "自定义模式会跨任务全局允许该类别。",
+      ruleAutoAllowedNote: "自动审批会按工具风险元数据自动批准该类别。",
+      strategyLocked: "切换到 Custom 后可逐项调整。",
+      globalGrantNote: "该类别已被当前模式全局允许。",
+      destructiveNote: "破坏性操作默认逐次询问，不会被规则或 LLM 自动审批。",
+      destructiveAutoNote: "破坏性操作不能进入自动审批覆盖范围。",
+      destructiveFullAccessNote: "完全访问已全局允许破坏性操作，请确保当前环境可接受该风险。",
+      behaviorTitle: "行为设置",
       preferencesTitle: "Agent 偏好",
       preferencesSubtitle: "这些设置影响语言、回答风格和 Agent 可见行为。",
+      preferencesBehaviorSubtitle: "这些偏好只影响展示和存储，不改变权限审批模式。",
       personalizeTitle: "个性化设置",
       personalizeSubtitle: "配置界面语言、回复风格和技能注入行为。",
       providerTitle: "模型 Provider",
@@ -225,24 +238,20 @@ const copy = {
       contextLimit: "上下文上限",
       contextHelp: "自动模式会跟随模型上限；手动值不能超过当前模型窗口。",
       maxTokens: "最大上下文 token",
-      autoApprove: "规则自动审批",
-      autoApproveHelp: "基于工具风险元数据自动通过；destructive 永远不会被该规则自动批准。",
-      approvalPolicySubtitle: "权限滑块决定全局授权；这里配置审批默认策略和可选的实验性 LLM 审批。",
       showThinking: "展示思考内容",
       skillAutoInject: "自动注入 Skill 元数据",
       maxInjectedSkills: "最多注入 Skill 数",
       mcpApprovalMode: "MCP 审批模式",
       mcpApprovalHelp: "仅影响 MCP 工具；仍以工具风险和显式授权为边界。",
       llmApprovalMode: "LLM 自动审批（实验）",
-      llmApprovalHelp: "仅在规则仍需审批时触发，最多批准非 destructive 工具；会额外消耗 token。",
+      llmApprovalHelp: "仅在规则仍需审批时触发，最多批准非破坏性工具；会额外消耗 token。",
+      llmApprovalAutoOnly: "仅在自动审批模式下可启用；其他模式按风险列表和用户审批执行。",
+      fullAccessTitle: "确认完全访问",
+      fullAccessBody: "完全访问会全局允许所有风险类别，包括删除、覆盖、终止进程等破坏性操作。只有在你确定当前工作区和任务边界可信时才启用。",
+      fullAccessConfirm: "启用完全访问",
+      fullAccessCancel: "取消",
       sanitizeSensitiveData: "清理敏感数据",
       encryptStorage: "加密本地存储",
-      autoApproveOptions: {
-        none: "不自动审批",
-        low: "低风险",
-        medium: "中低风险",
-        all: "全部"
-      },
       mcpApprovalOptions: {
         confirm_each: "每次确认",
         confirm_dangerous: "仅高风险确认",
@@ -250,24 +259,28 @@ const copy = {
       },
       llmApprovalOptions: {
         off: "关闭",
-        non_destructive: "仅非 destructive"
+        non_destructive: "仅非破坏性"
       },
       permissionModes: {
         ask: {
-          label: "Ask",
+          label: "每次询问",
           description: "每次确认"
         },
         read_only: {
-          label: "Read only",
+          label: "只读",
           description: "只读自动"
         },
+        full_access: {
+          label: "完全访问",
+          description: "全部风险"
+        },
         custom: {
-          label: "Custom",
+          label: "自定义",
           description: "自定义"
         },
-        all: {
-          label: "All",
-          description: "全部自动"
+        auto_approval: {
+          label: "自动审批",
+          description: "自动审批"
         }
       },
       contextModeOptions: {
@@ -357,7 +370,7 @@ const copy = {
       title: "Settings",
       sections: {
         providers: ["Model configuration", "Add models, manage local keys, presets, and the active model"],
-        permissions: ["Permissions", "Global risk grants, approval policy, and agent preferences"],
+        permissions: ["Permissions", "Approval modes, risk coverage, and tool authorization"],
         mcp: ["MCP", "Connected tool servers and discovered tools"],
         integrations: ["Integrations", "Discord, Feishu, and external message entrypoints"],
         scheduled: ["Scheduled tasks", "One-shot or recurring agent tasks"],
@@ -465,42 +478,55 @@ const copy = {
         ask: "Ask",
         read_only: "Read only",
         custom: "Custom",
-        all: "All"
+        all: "Full access"
       },
       permissionPresetDescriptions: {
         ask: "Ask before each risk class",
         read_only: "Auto-allow read-only observation",
         custom: "Choose risk classes",
-        all: "Allow every risk class"
+        all: "Allow every risk class, including destructive"
       },
       keyboardHint: "Shift + Enter for newline / Enter to send"
     },
     permissions: {
-      title: "Permissions and preferences",
-      subtitle: "Global grants skip approval UI for matching risk categories. After revoke, the next matching tool request asks again.",
-      modeTitle: "Permission mode",
-      modeSubtitle: "Choose the default authorization scope. Higher-risk actions can still ask when the agent needs them.",
-      modeCustomDescription: "Current grants came from individual approvals and do not match a preset. Switch back to Ask, Read only, or All at any time.",
-      resetAsk: "Reset to Ask",
+      title: "Permissions",
+      subtitle: "Choose how tool calls are approved, and see exactly which risk classes run, ask, or auto-approve.",
+      modeTitle: "Approval strategy",
+      modeSubtitle: "Control tool approvals by risk class. Read only allows observation and file reads.",
+      modeCustomDescription: "Choose globally allowed risk classes one by one; include destructive only when that risk is acceptable.",
+      modeAutoApprovalDescription: "Auto-approve selected non-destructive classes from risk metadata, with optional LLM approval.",
+      modeFullAccessDescription: "Globally allow every risk class, including destructive. Confirmation is required.",
       coverageTitle: "Risk coverage",
-      coverageSubtitle: "Shows what can run automatically. Per-risk revoke is only for correcting existing global grants.",
+      coverageSubtitle: "Risk classes not covered by the current mode ask for approval.",
+      coverageCustomSubtitle: "Custom mode edits globally allowed classes directly.",
+      coverageAutoSubtitle: "Auto approval only covers selected non-destructive classes.",
+      coverageFullAccessSubtitle: "Full access globally allows every class, including destructive.",
       granted: "Globally allowed",
       notGranted: "Approval required",
       autoAllowed: "Auto allowed",
       approvalRequired: "Ask first",
       allow: "Allow globally",
+      allowRisk: (risk: string) => `Allow ${risk} globally`,
       revoke: "Revoke",
       revokeRisk: (risk: string) => `Revoke ${risk}`,
-      enableRisk: (risk: string) => `Auto-allow ${risk}`,
-      disableRisk: (risk: string) => `Stop auto-allowing ${risk}`,
+      enableRisk: (risk: string) => `Select ${risk}`,
+      disableRisk: (risk: string) => `Deselect ${risk}`,
       grantedAt: "Granted at",
       reason: "Reason",
       noReason: "No reason recorded",
-      riskNote: "This grant applies across tasks and can be revoked at any time.",
-      destructiveNote: "High-risk grant. Destructive tools will stop prompting while it is active.",
-      behaviorTitle: "Approval policy",
+      riskNote: "This class enters the approval flow when it is not covered by the current mode.",
+      readOnlyNote: "Read only automatically executes this safe observation class.",
+      customGrantedNote: "Custom mode globally allows this class across tasks.",
+      ruleAutoAllowedNote: "Auto approval approves this class from tool risk metadata.",
+      strategyLocked: "Switch to Custom to adjust individual categories.",
+      globalGrantNote: "This class is globally allowed by the current mode.",
+      destructiveNote: "Destructive tools ask by default and are never rule- or LLM-approved.",
+      destructiveAutoNote: "Destructive cannot be part of auto-approval coverage.",
+      destructiveFullAccessNote: "Full access globally allows destructive tools. Use only inside a trusted task boundary.",
+      behaviorTitle: "Behavior settings",
       preferencesTitle: "Agent preferences",
       preferencesSubtitle: "These settings control language, response style, and visible agent behavior.",
+      preferencesBehaviorSubtitle: "These preferences affect display and storage, not permission approval modes.",
       personalizeTitle: "Personalization",
       personalizeSubtitle: "Configure UI language, reply style, and skill injection behavior.",
       providerTitle: "Model provider",
@@ -518,9 +544,6 @@ const copy = {
       contextLimit: "Context limit",
       contextHelp: "Auto follows the selected model limit. Manual values cannot exceed the model window.",
       maxTokens: "Max context tokens",
-      autoApprove: "Rule auto approval",
-      autoApproveHelp: "Auto-approves from tool risk metadata. Destructive tools are never approved by this rule.",
-      approvalPolicySubtitle: "The permission slider controls global grants. These settings tune default approval policy and optional experimental LLM approval.",
       showThinking: "Show thinking",
       skillAutoInject: "Auto-inject skill metadata",
       maxInjectedSkills: "Max injected skills",
@@ -528,14 +551,13 @@ const copy = {
       mcpApprovalHelp: "Only affects MCP tools, still bounded by tool risk and explicit grants.",
       llmApprovalMode: "LLM auto approval (experimental)",
       llmApprovalHelp: "Runs only when rules still require approval, can approve non-destructive tools only, and uses extra tokens.",
+      llmApprovalAutoOnly: "Available only in Auto approval mode; other modes follow the risk list and user approval.",
+      fullAccessTitle: "Confirm full access",
+      fullAccessBody: "Full access globally allows every risk class, including delete, overwrite, process termination, and other destructive operations. Enable it only when this workspace and task boundary are trusted.",
+      fullAccessConfirm: "Enable full access",
+      fullAccessCancel: "Cancel",
       sanitizeSensitiveData: "Sanitize sensitive data",
       encryptStorage: "Encrypt local storage",
-      autoApproveOptions: {
-        none: "None",
-        low: "Low risk",
-        medium: "Low and medium risk",
-        all: "All"
-      },
       mcpApprovalOptions: {
         confirm_each: "Confirm each",
         confirm_dangerous: "Confirm dangerous",
@@ -554,13 +576,17 @@ const copy = {
           label: "Read only",
           description: "Read auto"
         },
+        full_access: {
+          label: "Full access",
+          description: "All risks"
+        },
         custom: {
           label: "Custom",
           description: "Fine tune"
         },
-        all: {
-          label: "All",
-          description: "All auto"
+        auto_approval: {
+          label: "Auto approval",
+          description: "Auto review"
         }
       },
       contextModeOptions: {

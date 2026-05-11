@@ -1,5 +1,5 @@
 import type { GlobalPermissionGrant, PreferencesPatch, RiskCategory, UserPreferences } from "@scc/shared";
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -7,20 +7,23 @@ import {
   FileSearch,
   Globe2,
   LockKeyhole,
+  MessageCircle,
   PencilLine,
   ShieldAlert,
-  MessageCircle,
   SlidersHorizontal,
-  TerminalSquare,
-  X
+  Sparkles,
+  TerminalSquare
 } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
 import { AccordionSelect } from "./AccordionSelect.js";
-import type { PermissionPreset } from "./Composer.js";
+import { ConfirmDialog } from "./ConfirmDialog.js";
 
 const riskCategories: RiskCategory[] = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
 const readOnlyRiskCategories: RiskCategory[] = ["host_observation", "workspace_read"];
-type PermissionSettingsMode = PermissionPreset | "custom";
+const nonDestructiveRiskCategories: UserPreferences["autoApproveRiskCategories"] = ["host_observation", "workspace_read", "workspace_write", "shell", "network"];
+const defaultAutoApprovalRiskCategories: UserPreferences["autoApproveRiskCategories"] = ["host_observation", "workspace_read", "network"];
+const modeOrder: UserPreferences["permissionMode"][] = ["ask", "read_only", "full_access", "custom", "auto_approval"];
+type PermissionMode = UserPreferences["permissionMode"];
 
 export function PermissionsPanel({
   language,
@@ -29,9 +32,7 @@ export function PermissionsPanel({
   preferencesOnly = false,
   startCustom = false,
   onStartCustomConsumed,
-  onGrant,
-  onRevoke,
-  onPermissionPresetChange,
+  onPermissionModeChange,
   onPreference
 }: {
   language?: string | null;
@@ -40,31 +41,30 @@ export function PermissionsPanel({
   preferencesOnly?: boolean;
   startCustom?: boolean;
   onStartCustomConsumed?: () => void;
-  onGrant: (riskCategory: RiskCategory) => void;
-  onRevoke: (riskCategory: RiskCategory) => void;
-  onPermissionPresetChange?: (preset: PermissionPreset) => void;
+  onPermissionModeChange?: (mode: PermissionMode, selectedRisks: RiskCategory[]) => void;
   onPreference: (patch: PreferencesPatch) => void;
 }) {
   const text = getUiCopy(language).permissions;
   const safePermissions = Array.isArray(permissions) ? permissions : [];
-  const grants = new Map(safePermissions.map((permission) => [permission.riskCategory, permission]));
-  const permissionMode = getPermissionMode(grants);
-  const [customEditing, setCustomEditing] = useState(false);
-  const [pendingMode, setPendingMode] = useState<PermissionSettingsMode | null>(null);
-  const displayedMode: PermissionSettingsMode = pendingMode ?? (customEditing ? "custom" : permissionMode);
+  const grants = new Set(safePermissions.map((permission) => permission.riskCategory));
+  const savedRuleCategories = ruleCategoriesFromPreferences(preferences);
+  const savedMode = derivePermissionMode(preferences, grants);
+  const [pendingMode, setPendingMode] = useState<PermissionMode | null>(null);
+  const [confirmFullAccess, setConfirmFullAccess] = useState(false);
+  const displayedMode = pendingMode ?? savedMode;
+  const selectedRisks = risksForMode(displayedMode, grants, savedRuleCategories);
+  const selectedSet = new Set<RiskCategory>(selectedRisks);
 
   useEffect(() => {
-    if (pendingMode && pendingMode === permissionMode) {
-      setPendingMode(null);
-    }
-  }, [permissionMode, pendingMode]);
+    if (pendingMode && pendingMode === savedMode) setPendingMode(null);
+  }, [pendingMode, savedMode]);
 
   useEffect(() => {
-    if (startCustom) {
-      setCustomEditing(true);
-      onStartCustomConsumed?.();
-    }
-  }, [startCustom, onStartCustomConsumed]);
+    if (!startCustom) return;
+    const customRisks = riskCategories.filter((risk) => grants.has(risk));
+    applyMode("custom", customRisks);
+    onStartCustomConsumed?.();
+  }, [startCustom]);
 
   return (
     <section className="permissionsPanel">
@@ -79,24 +79,23 @@ export function PermissionsPanel({
         <>
           <section className="permissionModePanel">
             <div className="permissionModeCopy">
-              <span className={displayedMode === "all" ? "permissionModeIcon danger" : "permissionModeIcon"}>
+              <span className={displayedMode === "full_access" ? "permissionModeIcon danger" : "permissionModeIcon"}>
                 {getModeIcon(displayedMode, 19)}
               </span>
               <div>
                 <h3>{text.modeTitle}</h3>
-                <p>{displayedMode === "custom" ? text.modeCustomDescription : text.modeSubtitle}</p>
+                <p>{modeDescription(text, displayedMode)}</p>
               </div>
             </div>
             <PermissionModeSwitch
               mode={displayedMode}
               labels={text.permissionModes}
               onSelect={(mode) => {
-                setPendingMode(null);
-                if (mode === "custom") {
-                  setCustomEditing(true);
-                } else {
-                  applyPreset(mode);
+                if (mode === "full_access") {
+                  setConfirmFullAccess(true);
+                  return;
                 }
+                applyMode(mode, risksForMode(mode, grants, savedRuleCategories));
               }}
             />
           </section>
@@ -104,33 +103,57 @@ export function PermissionsPanel({
           <section className="permissionCoveragePanel">
             <div className="panelHeader">
               <div>
-                <h3>{text.behaviorTitle}</h3>
-                <p>{text.approvalPolicySubtitle}</p>
+                <h3>{text.coverageTitle}</h3>
+                <p>{coverageDescription(text, displayedMode)}</p>
               </div>
             </div>
-            <div className="settingRows cols2">
-              <PreferenceSelect
-                label={text.autoApprove}
-                value={preferences?.autoApprove ?? "none"}
-                help={text.autoApproveHelp}
-                onChange={(value) => emitPreference({ autoApprove: value as UserPreferences["autoApprove"] })}
-                options={[
-                  ["none", text.autoApproveOptions.none],
-                  ["low", text.autoApproveOptions.low],
-                  ["medium", text.autoApproveOptions.medium],
-                  ["all", text.autoApproveOptions.all]
-                ]}
-              />
-              <PreferenceSelect
-                label={text.llmApprovalMode}
-                value={preferences?.llmApprovalMode ?? "off"}
-                help={text.llmApprovalHelp}
-                onChange={(value) => emitPreference({ llmApprovalMode: value as UserPreferences["llmApprovalMode"] })}
-                options={[
-                  ["off", text.llmApprovalOptions.off],
-                  ["non_destructive", text.llmApprovalOptions.non_destructive]
-                ]}
-              />
+            <div className="permissionRows">
+              {riskCategories.map((risk) => {
+                const riskCopy = text.risks[risk];
+                const Icon = getRiskIcon(risk);
+                const selected = selectedSet.has(risk);
+                const editable = displayedMode === "custom" || (displayedMode === "auto_approval" && isRuleRiskCategory(risk));
+                const isDestructive = risk === "destructive";
+                const status = permissionStatus(text, displayedMode, selected, isDestructive);
+                return (
+                  <article className={selected ? "permissionRow granted" : editable ? "permissionRow editable" : "permissionRow"} key={risk}>
+                    <span className={isDestructive ? "permissionRowIcon danger" : "permissionRowIcon"}>
+                      <Icon size={17} aria-hidden="true" />
+                    </span>
+                    <div className="permissionRowMain">
+                      <div className="permissionRowTitle">
+                        <h4>{riskCopy[0]}</h4>
+                        <span className={selected ? "permissionStatus granted" : "permissionStatus"}>
+                          {status}
+                        </span>
+                      </div>
+                      <p>{riskCopy[1]}</p>
+                      <small>
+                        {selected ? <CheckCircle2 size={12} aria-hidden="true" /> : <LockKeyhole size={12} aria-hidden="true" />}
+                        {permissionNote(text, displayedMode, selected, isDestructive)}
+                      </small>
+                    </div>
+                    {editable ? (
+                      <button
+                        aria-label={selected ? text.disableRisk(riskCopy[0]) : text.enableRisk(riskCopy[0])}
+                        aria-pressed={selected}
+                        className="switchControl permissionSwitch"
+                        onClick={() => toggleRisk(risk)}
+                        title={selected ? text.disableRisk(riskCopy[0]) : text.enableRisk(riskCopy[0])}
+                        type="button"
+                      >
+                        <span aria-hidden="true" />
+                      </button>
+                    ) : (
+                      <span className="permissionModeLock" title={permissionNote(text, displayedMode, selected, isDestructive)}>
+                        {isDestructive ? <ShieldAlert size={15} aria-hidden="true" /> : <LockKeyhole size={14} aria-hidden="true" />}
+                      </span>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+            <div className="permissionInlinePolicies">
               <PreferenceSelect
                 label={text.mcpApprovalMode}
                 value={preferences?.mcpApprovalMode ?? "confirm_dangerous"}
@@ -142,77 +165,40 @@ export function PermissionsPanel({
                   ["auto", text.mcpApprovalOptions.auto]
                 ]}
               />
+              {displayedMode === "auto_approval" ? (
+                <PreferenceSelect
+                  label={text.llmApprovalMode}
+                  value={preferences?.llmApprovalMode ?? "off"}
+                  help={text.llmApprovalHelp}
+                  onChange={(value) => emitPreference({ llmApprovalMode: value as UserPreferences["llmApprovalMode"] })}
+                  options={[
+                    ["off", text.llmApprovalOptions.off],
+                    ["non_destructive", text.llmApprovalOptions.non_destructive]
+                  ]}
+                />
+              ) : (
+                <div className="permissionPolicyNote">
+                  <span>{text.llmApprovalMode}</span>
+                  <small>{text.llmApprovalAutoOnly}</small>
+                </div>
+              )}
             </div>
           </section>
 
-          <section className="permissionCoveragePanel">
-            <div className="panelHeader">
-              <div>
-                <h3>{text.coverageTitle}</h3>
-                <p>{text.coverageSubtitle}</p>
-              </div>
-            </div>
-            <div className="permissionRows">
-              {riskCategories.map((risk) => {
-                const grant = grants.get(risk);
-                const isDestructive = risk === "destructive";
-                const riskCopy = text.risks[risk];
-                const Icon = getRiskIcon(risk);
-                return (
-                  <article className={grant ? "permissionRow granted" : displayedMode === "custom" ? "permissionRow editable" : "permissionRow"} key={risk}>
-                    <span className={isDestructive ? "permissionRowIcon danger" : "permissionRowIcon"}>
-                      <Icon size={17} aria-hidden="true" />
-                    </span>
-                    <div className="permissionRowMain">
-                      <div className="permissionRowTitle">
-                        <h4>{riskCopy[0]}</h4>
-                        <span className={grant ? "permissionStatus granted" : "permissionStatus"}>
-                          {grant ? text.autoAllowed : text.approvalRequired}
-                        </span>
-                      </div>
-                      <p>{riskCopy[1]}</p>
-                      <small>
-                        {grant ? (
-                          <>
-                            <CheckCircle2 size={12} aria-hidden="true" />
-                            {text.grantedAt}: {formatDate(grant.grantedAt)}
-                          </>
-                        ) : (
-                          <>
-                            <LockKeyhole size={12} aria-hidden="true" />
-                            {isDestructive ? text.destructiveNote : text.riskNote}
-                          </>
-                        )}
-                      </small>
-                    </div>
-                    {displayedMode === "custom" ? (
-                      <button
-                        aria-label={grant ? text.disableRisk(riskCopy[0]) : text.enableRisk(riskCopy[0])}
-                        aria-pressed={Boolean(grant)}
-                        className="switchControl permissionSwitch"
-                        onClick={() => (grant ? onRevoke(risk) : onGrant(risk))}
-                        title={grant ? text.disableRisk(riskCopy[0]) : text.enableRisk(riskCopy[0])}
-                        type="button"
-                      >
-                        <span aria-hidden="true" />
-                      </button>
-                    ) : (
-                      <button
-                        aria-label={text.revokeRisk(riskCopy[0])}
-                        className="iconButton permissionRevokeButton"
-                        disabled={!grant}
-                        onClick={() => onRevoke(risk)}
-                        title={grant ? text.revokeRisk(riskCopy[0]) : text.approvalRequired}
-                        type="button"
-                      >
-                        <X size={15} aria-hidden="true" />
-                      </button>
-                    )}
-                  </article>
-                );
-              })}
-            </div>
-          </section>
+          <ConfirmDialog
+            cancelLabel={text.fullAccessCancel}
+            confirmLabel={text.fullAccessConfirm}
+            open={confirmFullAccess}
+            title={text.fullAccessTitle}
+            tone="danger"
+            onCancel={() => setConfirmFullAccess(false)}
+            onConfirm={() => {
+              setConfirmFullAccess(false);
+              applyMode("full_access", riskCategories);
+            }}
+          >
+            <p>{text.fullAccessBody}</p>
+          </ConfirmDialog>
         </>
       ) : null}
 
@@ -304,7 +290,7 @@ export function PermissionsPanel({
               </span>
               <div>
                 <h3>{text.behaviorTitle}</h3>
-                <p>{text.modeSubtitle}</p>
+                <p>{text.preferencesBehaviorSubtitle}</p>
               </div>
             </div>
             <div className="prefBehaviorList">
@@ -317,23 +303,21 @@ export function PermissionsPanel({
     </section>
   );
 
+  function applyMode(mode: PermissionMode, risks: RiskCategory[]) {
+    setPendingMode(mode);
+    onPermissionModeChange?.(mode, risks);
+  }
+
   function emitPreference(patch: PreferencesPatch) {
     onPreference(patch);
   }
 
-  function applyPreset(preset: PermissionPreset) {
-    setCustomEditing(false);
-    setPendingMode(preset);
-    if (onPermissionPresetChange) {
-      onPermissionPresetChange(preset);
-      return;
-    }
-    const target = new Set<RiskCategory>(preset === "all" ? riskCategories : preset === "read_only" ? readOnlyRiskCategories : []);
-    for (const risk of riskCategories) {
-      const granted = grants.has(risk);
-      if (target.has(risk) && !granted) onGrant(risk);
-      if (!target.has(risk) && granted) onRevoke(risk);
-    }
+  function toggleRisk(risk: RiskCategory) {
+    const next = new Set(selectedRisks);
+    if (next.has(risk)) next.delete(risk);
+    else next.add(risk);
+    const mode = displayedMode === "auto_approval" ? "auto_approval" : "custom";
+    applyMode(mode, riskCategories.filter((category) => next.has(category)));
   }
 }
 
@@ -342,12 +326,11 @@ function PermissionModeSwitch({
   labels,
   onSelect
 }: {
-  mode: PermissionSettingsMode;
-  labels: Record<PermissionSettingsMode, { label: string; description: string }>;
-  onSelect: (preset: PermissionSettingsMode) => void;
+  mode: PermissionMode;
+  labels: Record<PermissionMode, { label: string; description: string }>;
+  onSelect: (preset: PermissionMode) => void;
 }) {
-  const options: PermissionSettingsMode[] = ["ask", "read_only", "custom", "all"];
-  const selectedIndex = options.indexOf(mode);
+  const selectedIndex = modeOrder.indexOf(mode);
   const switchRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -360,7 +343,7 @@ function PermissionModeSwitch({
   return (
     <div ref={switchRef} className="permissionModeSwitch" role="radiogroup">
       <span className="permissionModeThumb" aria-hidden="true" />
-      {options.map((option) => (
+      {modeOrder.map((option) => (
         <button aria-checked={mode === option} key={option} onClick={() => onSelect(option)} role="radio" type="button">
           <span className="modeOptionIcon" aria-hidden="true">{getModeIcon(option)}</span>
           <span>{labels[option].label}</span>
@@ -371,16 +354,100 @@ function PermissionModeSwitch({
   );
 }
 
-function getModeIcon(mode: PermissionSettingsMode, size = 14) {
+function getModeIcon(mode: PermissionMode, size = 14) {
   switch (mode) {
     case "ask":
       return <MessageCircle size={size} aria-hidden="true" />;
     case "read_only":
       return <Eye size={size} aria-hidden="true" />;
+    case "full_access":
+      return <ShieldAlert size={size} aria-hidden="true" />;
     case "custom":
       return <SlidersHorizontal size={size} aria-hidden="true" />;
-    case "all":
-      return <ShieldAlert size={size} aria-hidden="true" />;
+    case "auto_approval":
+      return <Sparkles size={size} aria-hidden="true" />;
+  }
+}
+
+function derivePermissionMode(preferences: UserPreferences | null, grants: Set<RiskCategory>): PermissionMode {
+  if (preferences?.permissionMode === "auto_approval") return "auto_approval";
+  if (riskCategories.every((risk) => grants.has(risk))) return "full_access";
+  if (readOnlyRiskCategories.every((risk) => grants.has(risk)) && riskCategories.every((risk) => readOnlyRiskCategories.includes(risk) || !grants.has(risk))) {
+    return "read_only";
+  }
+  if (riskCategories.every((risk) => !grants.has(risk))) return preferences?.permissionMode === "custom" ? "custom" : "ask";
+  return "custom";
+}
+
+function risksForMode(mode: PermissionMode, grants: Set<RiskCategory>, ruleCategories: UserPreferences["autoApproveRiskCategories"]): RiskCategory[] {
+  if (mode === "ask") return [];
+  if (mode === "read_only") return readOnlyRiskCategories;
+  if (mode === "full_access") return riskCategories;
+  if (mode === "auto_approval") return ruleCategories.length > 0 ? ruleCategories : defaultAutoApprovalRiskCategories;
+  return riskCategories.filter((risk) => grants.has(risk));
+}
+
+function ruleCategoriesFromPreferences(preferences: UserPreferences | null): UserPreferences["autoApproveRiskCategories"] {
+  const categories = Array.isArray(preferences?.autoApproveRiskCategories) ? preferences.autoApproveRiskCategories : [];
+  const selected = categories.filter(isRuleRiskCategory);
+  if (preferences?.permissionMode === "auto_approval") {
+    return selected.length > 0 ? selected : defaultAutoApprovalRiskCategories;
+  }
+  if (preferences?.autoApprove === "low") return ["host_observation", "workspace_read"];
+  if (preferences?.autoApprove === "medium") return defaultAutoApprovalRiskCategories;
+  if (preferences?.autoApprove === "all") return nonDestructiveRiskCategories;
+  return selected;
+}
+
+function isRuleRiskCategory(risk: RiskCategory): risk is UserPreferences["autoApproveRiskCategories"][number] {
+  return risk !== "destructive";
+}
+
+function modeDescription(text: ReturnType<typeof getUiCopy>["permissions"], mode: PermissionMode): string {
+  if (mode === "custom") return text.modeCustomDescription;
+  if (mode === "auto_approval") return text.modeAutoApprovalDescription;
+  if (mode === "full_access") return text.modeFullAccessDescription;
+  return text.modeSubtitle;
+}
+
+function coverageDescription(text: ReturnType<typeof getUiCopy>["permissions"], mode: PermissionMode): string {
+  if (mode === "custom") return text.coverageCustomSubtitle;
+  if (mode === "auto_approval") return text.coverageAutoSubtitle;
+  if (mode === "full_access") return text.coverageFullAccessSubtitle;
+  return text.coverageSubtitle;
+}
+
+function permissionStatus(text: ReturnType<typeof getUiCopy>["permissions"], mode: PermissionMode, selected: boolean, destructive: boolean): string {
+  if (mode === "auto_approval") return selected ? text.autoAllowed : text.approvalRequired;
+  if (mode === "full_access") return text.granted;
+  if (mode === "custom") return selected ? text.granted : text.notGranted;
+  if (mode === "read_only" && selected) return text.autoAllowed;
+  if (destructive) return text.approvalRequired;
+  return selected ? text.autoAllowed : text.approvalRequired;
+}
+
+function permissionNote(text: ReturnType<typeof getUiCopy>["permissions"], mode: PermissionMode, selected: boolean, destructive: boolean): string {
+  if (mode === "full_access") return destructive ? text.destructiveFullAccessNote : text.globalGrantNote;
+  if (mode === "custom") return selected ? text.customGrantedNote : text.riskNote;
+  if (mode === "auto_approval") return destructive ? text.destructiveAutoNote : selected ? text.ruleAutoAllowedNote : text.riskNote;
+  if (mode === "read_only") return selected ? text.readOnlyNote : destructive ? text.destructiveNote : text.riskNote;
+  return destructive ? text.destructiveNote : text.riskNote;
+}
+
+function getRiskIcon(risk: RiskCategory) {
+  switch (risk) {
+    case "host_observation":
+      return Eye;
+    case "workspace_read":
+      return FileSearch;
+    case "workspace_write":
+      return PencilLine;
+    case "shell":
+      return TerminalSquare;
+    case "network":
+      return Globe2;
+    case "destructive":
+      return AlertTriangle;
   }
 }
 
@@ -459,34 +526,4 @@ function PreferenceToggle({
       </button>
     </label>
   );
-}
-
-function getPermissionMode(grants: Map<RiskCategory, GlobalPermissionGrant>): PermissionPreset | "custom" {
-  if (riskCategories.every((risk) => grants.has(risk))) return "all";
-  if (riskCategories.every((risk) => readOnlyRiskCategories.includes(risk) === grants.has(risk))) return "read_only";
-  if (riskCategories.every((risk) => !grants.has(risk))) return "ask";
-  return "custom";
-}
-
-function getRiskIcon(risk: RiskCategory) {
-  switch (risk) {
-    case "host_observation":
-      return Eye;
-    case "workspace_read":
-      return FileSearch;
-    case "workspace_write":
-      return PencilLine;
-    case "shell":
-      return TerminalSquare;
-    case "network":
-      return Globe2;
-    case "destructive":
-      return AlertTriangle;
-  }
-}
-
-function formatDate(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
 }

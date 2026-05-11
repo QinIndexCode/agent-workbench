@@ -1291,6 +1291,7 @@ export class AgentWorkbench {
     for (const [key, value] of Object.entries(patch)) {
       if (value !== undefined) (next as Record<string, unknown>)[key] = value;
     }
+    normalizeAutoApprovePreferences(next, patch);
     await this.normalizeModelContextPreferences(next);
     await this.store.savePreferences(next);
     return next;
@@ -1906,6 +1907,7 @@ export class AgentWorkbench {
     if (task.status !== "running") return task;
     let modelTurns = 0;
     let stateOnlyTurns = 0;
+    let emptyResponseRetries = 0;
     const startedAt = Date.now();
 
     while (task.status === "running") {
@@ -1930,6 +1932,14 @@ export class AgentWorkbench {
       const stoppedAfterModel = await this.stoppedTask(task.id);
       if (stoppedAfterModel) return stoppedAfterModel;
       const turn = this.normalizeInlineToolMarkupTurn(task, modelTurn);
+      if (turn.kind === "empty_response") {
+        const shouldRetry = emptyResponseRetries < 1;
+        emptyResponseRetries += 1;
+        await this.handleEmptyModelResponse(task, turn, shouldRetry);
+        if (shouldRetry) continue;
+        return task;
+      }
+      emptyResponseRetries = 0;
       if (turn.kind === "final") {
         await this.maybeAutoRenameTask(task, { reason: "assistant_output", text: turn.message });
         const blocker = completionBlocker(task);
@@ -1982,6 +1992,33 @@ export class AgentWorkbench {
       ...(turn.streamId ? { streamId: turn.streamId } : {}),
       ...(turn.usage ? { usage: turn.usage } : {})
     };
+  }
+
+  private async handleEmptyModelResponse(
+    task: TaskDetail,
+    turn: Extract<Awaited<ReturnType<ModelClient["next"]>>, { kind: "empty_response" }>,
+    shouldRetry: boolean
+  ): Promise<void> {
+    const summary = shouldRetry
+      ? "Model returned no displayable content; retrying once."
+      : "Model returned no displayable content twice; paused for retry or provider inspection.";
+    this.addEvent(task, "model_empty_response", summary, {
+      status: shouldRetry ? "retrying" : "paused",
+      reason: turn.reason,
+      ...(turn.streamId ? { streamId: turn.streamId } : {}),
+      ...(turn.usage ? { usage: turn.usage } : {})
+    });
+    await this.safeAppendTaskTrace(task, {
+      kind: "model_empty_response",
+      timestamp: nowIso(),
+      status: shouldRetry ? "retrying" : "paused",
+      reason: turn.reason,
+      ...(turn.streamId ? { streamId: turn.streamId } : {}),
+      ...(turn.usage ? { usage: turn.usage } : {}),
+      ...(turn.rawPayload ? { rawPayload: turn.rawPayload } : {})
+    });
+    if (!shouldRetry) this.setStatus(task, "paused");
+    await this.store.saveTask(task);
   }
 
   private hideAssistantStreamDeltas(task: TaskDetail, streamId: string): void {
@@ -2321,7 +2358,11 @@ export class AgentWorkbench {
           timestamp: nowIso(),
           streamId,
           resultKind: turn.kind,
-          ...(turn.kind === "final" ? { message: turn.message } : { toolCalls: turn.calls }),
+          ...(turn.kind === "final"
+            ? { message: turn.message }
+            : turn.kind === "tool_calls"
+              ? { toolCalls: turn.calls }
+              : { reason: turn.reason }),
           ...(turn.usage ? { usage: turn.usage } : {})
         });
         return turn;
@@ -3163,11 +3204,11 @@ export class AgentWorkbench {
       }
       return { allowed: false, forceApproval: false };
     }
-    if (autoApproveAllows(preferences.autoApprove, category)) {
+    if (autoApproveAllows(preferences, category)) {
       return {
         allowed: true,
         forceApproval: false,
-        reason: "preference auto-approve",
+        reason: "rule auto-approve",
         source: "autoApprove"
       };
     }
@@ -3181,6 +3222,7 @@ export class AgentWorkbench {
     metadata: Record<string, unknown>,
     preferences: UserPreferences
   ): Promise<{ evaluated: boolean; allowed: boolean; reason: string; tokenUsage?: ModelUsage }> {
+    if (preferences.permissionMode !== "auto_approval") return { evaluated: false, allowed: false, reason: "LLM approval is only active in auto approval mode." };
     if (preferences.llmApprovalMode !== "non_destructive") return { evaluated: false, allowed: false, reason: "LLM approval disabled." };
     if (assessment.category === "destructive") return { evaluated: true, allowed: false, reason: "Destructive tools cannot be approved by LLM policy." };
 
@@ -3483,12 +3525,103 @@ function normalizeTitleKey(value: string): string {
   return value.replace(/[\s"'“”‘’`.,，。!！?？:：;；\-_/\\()[\]{}]+/gu, "").trim().toLowerCase();
 }
 
-function autoApproveAllows(level: UserPreferences["autoApprove"], category: RiskCategory): boolean {
+type RuleAutoApproveRisk = UserPreferences["autoApproveRiskCategories"][number];
+type PermissionMode = UserPreferences["permissionMode"];
+
+const ruleAutoApproveMap: Record<UserPreferences["autoApproveStrategy"], RuleAutoApproveRisk[]> = {
+  ask: [],
+  read_only: ["host_observation", "workspace_read"],
+  balanced: ["host_observation", "workspace_read", "network"],
+  custom: [],
+  all_safe: ["host_observation", "workspace_read", "workspace_write", "shell", "network"]
+};
+
+const legacyAutoApproveMap: Record<UserPreferences["autoApprove"], UserPreferences["autoApproveStrategy"]> = {
+  none: "ask",
+  low: "read_only",
+  medium: "balanced",
+  all: "all_safe"
+};
+
+function normalizeAutoApprovePreferences(preferences: PreferencesPatch & Record<string, unknown>, patch: PreferencesPatch): void {
+  const hasPermissionMode = Object.prototype.hasOwnProperty.call(patch, "permissionMode");
+  const hasNewStrategy = Object.prototype.hasOwnProperty.call(patch, "autoApproveStrategy");
+  const hasNewCategories = Object.prototype.hasOwnProperty.call(patch, "autoApproveRiskCategories");
+  const hasLegacy = Object.prototype.hasOwnProperty.call(patch, "autoApprove");
+
+  if (hasPermissionMode) {
+    const mode = normalizePermissionMode(preferences["permissionMode"]);
+    preferences["permissionMode"] = mode;
+    if (mode === "auto_approval") {
+      const strategy = hasNewStrategy
+        ? ((preferences["autoApproveStrategy"] as UserPreferences["autoApproveStrategy"]) ?? "custom")
+        : "custom";
+      const categories = autoApproveCategoriesForStrategy(strategy, preferences["autoApproveRiskCategories"]);
+      const selected = hasNewCategories ? categories : categories.length > 0 ? categories : ruleAutoApproveMap.balanced;
+      preferences["autoApproveStrategy"] = "custom";
+      preferences["autoApproveRiskCategories"] = selected;
+      preferences["autoApprove"] = legacyAutoApproveForCategories(selected);
+    } else {
+      preferences["autoApproveStrategy"] = "ask";
+      preferences["autoApproveRiskCategories"] = [];
+      preferences["autoApprove"] = "none";
+    }
+    return;
+  }
+
+  if (hasLegacy && !hasNewStrategy && !hasNewCategories) {
+    preferences["autoApproveStrategy"] = legacyAutoApproveMap[(preferences["autoApprove"] as UserPreferences["autoApprove"]) ?? "none"] ?? "ask";
+  }
+
+  const strategy = (preferences["autoApproveStrategy"] as UserPreferences["autoApproveStrategy"]) ?? legacyAutoApproveMap[(preferences["autoApprove"] as UserPreferences["autoApprove"]) ?? "none"] ?? "ask";
+  preferences["autoApproveStrategy"] = strategy;
+  const categories = autoApproveCategoriesForStrategy(strategy, preferences["autoApproveRiskCategories"]);
+  preferences["autoApproveRiskCategories"] = categories;
+  preferences["autoApprove"] = legacyAutoApproveForStrategy(strategy);
+  preferences["permissionMode"] = strategy === "ask" && categories.length === 0 ? "ask" : "auto_approval";
+}
+
+function normalizePermissionMode(value: unknown): PermissionMode {
+  return value === "read_only" || value === "full_access" || value === "custom" || value === "auto_approval" ? value : "ask";
+}
+
+function autoApproveCategoriesForStrategy(strategy: UserPreferences["autoApproveStrategy"], current: unknown): RuleAutoApproveRisk[] {
+  if (strategy !== "custom") return ruleAutoApproveMap[strategy];
+  const values = Array.isArray(current) ? current : [];
+  return values.filter((item): item is RuleAutoApproveRisk => isRuleAutoApproveRisk(item));
+}
+
+function legacyAutoApproveForStrategy(strategy: UserPreferences["autoApproveStrategy"]): UserPreferences["autoApprove"] {
+  if (strategy === "all_safe") return "all";
+  if (strategy === "balanced") return "medium";
+  if (strategy === "read_only") return "low";
+  return "none";
+}
+
+function legacyAutoApproveForCategories(categories: RuleAutoApproveRisk[]): UserPreferences["autoApprove"] {
+  const selected = new Set(categories);
+  if (ruleAutoApproveMap.all_safe.every((risk) => selected.has(risk))) return "all";
+  if (ruleAutoApproveMap.balanced.every((risk) => selected.has(risk)) && selected.size === ruleAutoApproveMap.balanced.length) return "medium";
+  if (ruleAutoApproveMap.read_only.every((risk) => selected.has(risk)) && selected.size === ruleAutoApproveMap.read_only.length) return "low";
+  return "none";
+}
+
+function isRuleAutoApproveRisk(value: unknown): value is RuleAutoApproveRisk {
+  return value === "host_observation" || value === "workspace_read" || value === "workspace_write" || value === "shell" || value === "network";
+}
+
+function autoApproveAllows(preferences: UserPreferences, category: RiskCategory): boolean {
   if (category === "destructive") return false;
-  if (level === "none") return false;
-  if (level === "low") return category === "host_observation" || category === "workspace_read";
-  if (level === "medium") return category === "host_observation" || category === "workspace_read" || category === "network";
-  return category === "host_observation" || category === "workspace_read" || category === "workspace_write" || category === "shell" || category === "network";
+  const legacyAutoApproval =
+    preferences.permissionMode === "ask" &&
+    (preferences.autoApprove !== "none" || preferences.autoApproveStrategy !== "ask" || (preferences.autoApproveRiskCategories?.length ?? 0) > 0);
+  if (preferences.permissionMode !== "auto_approval" && !legacyAutoApproval) return false;
+  const strategy =
+    preferences.autoApproveStrategy === "ask" && preferences.autoApprove !== "none" && (preferences.autoApproveRiskCategories?.length ?? 0) === 0
+      ? legacyAutoApproveMap[preferences.autoApprove]
+      : preferences.autoApproveStrategy ?? legacyAutoApproveMap[preferences.autoApprove] ?? "ask";
+  const allowed = autoApproveCategoriesForStrategy(strategy, preferences.autoApproveRiskCategories);
+  return allowed.includes(category as RuleAutoApproveRisk);
 }
 
 function parseApprovalDecision(message: string): { allow: boolean; reason: string } {

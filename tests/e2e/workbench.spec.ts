@@ -71,7 +71,8 @@ test("creates a host observation task and shows approval", async ({ page, reques
   await openNavItem(page, /Settings/);
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
   await page.getByText("Permissions").click();
-  await expect(page.getByText("Permissions and preferences")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Permissions" })).toBeVisible();
+  await expect(page.getByText("Approval strategy")).toBeVisible();
 });
 
 test("covers support, docs, settings subpages, and visual overflow probes", async ({ page }, testInfo) => {

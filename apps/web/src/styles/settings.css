@@ -726,6 +726,7 @@
   background: var(--surface-container);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  overflow: visible;
 }
 
 .permissionModeCopy {
@@ -770,30 +771,32 @@
 
 .permissionModeSwitch {
   --permission-mode-index: 0;
+  --permission-mode-gap: 3px;
+  --permission-mode-padding: 4px;
   position: relative;
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 3px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--permission-mode-gap);
   min-height: 54px;
-  padding: 4px;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--surface) 78%, black 22%);
+  padding: var(--permission-mode-padding);
+  overflow: visible;
+  background: color-mix(in srgb, var(--surface-container) 88%, var(--text) 12%);
   border: 1px solid var(--border);
   border-radius: 999px;
 }
 
 .permissionModeThumb {
   position: absolute;
-  top: 4px;
-  bottom: 4px;
-  left: 4px;
-  width: calc((100% - 17px) / 4);
-  background: color-mix(in srgb, var(--accent) 18%, var(--surface-selected) 82%);
+  top: var(--permission-mode-padding);
+  bottom: var(--permission-mode-padding);
+  left: var(--permission-mode-padding);
+  width: calc((100% - (var(--permission-mode-padding) * 2) - (var(--permission-mode-gap) * 4)) / 5);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-selected) 86%);
   border: 1px solid var(--accent-border);
   border-radius: 999px;
   box-shadow: var(--shadow-control);
-  transform: translateX(calc(var(--permission-mode-index) * (100% + 3px)));
+  transform: translateX(calc(var(--permission-mode-index) * (100% + var(--permission-mode-gap))));
   transition: transform 180ms ease, opacity 180ms ease;
 }
 
@@ -816,7 +819,7 @@
 
 .permissionModeSwitch button:hover {
   color: var(--text);
-  background: rgb(255 255 255 / 0.035);
+  background: color-mix(in srgb, var(--surface-hover) 82%, transparent 18%);
 }
 
 .permissionModeSwitch button[aria-checked="true"] {
@@ -826,6 +829,8 @@
 .permissionModeSwitch span:not(.modeOptionIcon) {
   font-size: 13px;
   font-weight: 700;
+  line-height: 1.05;
+  white-space: nowrap;
 }
 
 .modeOptionIcon {
@@ -870,11 +875,61 @@
   background: var(--surface-container);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  overflow: visible;
 }
 
 .permissionRows {
   display: grid;
   gap: 8px;
+}
+
+.permissionInlinePolicies {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+  overflow: visible;
+}
+
+.permissionPolicyNote {
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  min-height: 72px;
+  padding: 11px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.permissionPolicyNote span {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.permissionPolicyNote small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.permissionAdvancedPanel details {
+  display: grid;
+  gap: 12px;
+}
+
+.permissionAdvancedPanel summary {
+  cursor: pointer;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.permissionAdvancedPanel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .permissionRow {
@@ -883,7 +938,7 @@
   gap: 10px;
   align-items: center;
   padding: 10px 10px;
-  background: color-mix(in srgb, var(--surface) 76%, black 24%);
+  background: color-mix(in srgb, var(--surface-container) 88%, var(--text) 12%);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
@@ -906,6 +961,20 @@
 .permissionRowIcon.danger {
   color: var(--danger);
   background: var(--danger-bg);
+}
+
+.permissionModeLock {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  color: var(--muted);
+}
+
+.permissionGrantButton {
+  min-width: 74px;
+  padding-inline: 10px;
+  font-size: 12px;
 }
 
 .permissionRowMain {
@@ -3901,7 +3970,32 @@ p.knowledgeHighlights span {
   }
 
   .permissionModeSwitch {
+    --permission-mode-gap: 2px;
+    --permission-mode-padding: 3px;
     min-width: 0;
+    min-height: 46px;
+  }
+
+  .permissionModeSwitch button {
+    padding: 6px 2px;
+    gap: 1px;
+  }
+
+  .permissionModeSwitch span:not(.modeOptionIcon) {
+    font-size: 11px;
+  }
+
+  .permissionModeSwitch small {
+    display: none;
+  }
+
+  .modeOptionIcon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .permissionInlinePolicies {
+    grid-template-columns: 1fr;
   }
 
   .compactToolSearch {

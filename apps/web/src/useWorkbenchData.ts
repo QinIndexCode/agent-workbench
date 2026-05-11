@@ -800,9 +800,20 @@ function streamDeltaText(event: TaskEvent | TaskTranscriptItem): string {
 }
 
 function appendStreamDeltaText(current: string, delta: string, type: "assistant_delta" | "thinking_delta"): string {
-  if (!current || type === "assistant_delta") return current + delta;
+  if (!current) return current + delta;
+  if (type === "assistant_delta") return `${current}${streamDeltaSeparator(current, delta)}${delta}`;
   if (!delta || /^\s/.test(delta) || /\s$/.test(current)) return current + delta;
   return `${current}\n${delta}`;
+}
+
+function streamDeltaSeparator(current: string, delta: string): string {
+  if (!delta || /^\s/.test(delta) || /\s$/.test(current)) return "";
+  const previous = current.at(-1) ?? "";
+  const next = delta[0] ?? "";
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(previous + next)) return "";
+  if (/[A-Za-z0-9)]/.test(previous) && /[A-Za-z0-9(]/.test(next)) return " ";
+  if (/[.,;:!?]/.test(previous) && /[A-Za-z0-9]/.test(next)) return " ";
+  return "";
 }
 
 function compactLiveTranscriptEvent(event: TaskEvent): TaskTranscriptItem {

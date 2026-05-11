@@ -224,25 +224,30 @@ export class OpenAIModelClient implements ModelClient {
       }
 
       const content = streamed.content.trim();
+      const finalResponse = content
+        ? { kind: "final" as const, message: content, ...(streamed.usage ? { usage: streamed.usage } : {}) }
+        : {
+            kind: "empty_response" as const,
+            reason: "OpenAI-compatible stream ended without content or tool calls.",
+            ...(streamed.usage ? { usage: streamed.usage } : {})
+          };
       await emitModelTrace(stream, {
         kind: "response",
         timestamp: nowIso(),
         streamId: stream?.streamId ?? createId("model_stream"),
         provider: providerTraceMeta(provider?.providerId, "openai_compatible", model, baseURL),
         payload: {
-          response: {
-            kind: "final",
-            message: content || "I could not produce a result from the model response.",
-            ...(streamed.usage ? { usage: streamed.usage } : {})
-          }
+          response: finalResponse
         }
       });
-      return {
-        kind: "final",
-        message: content || "I could not produce a result from the model response.",
-        ...(stream?.streamId ? { streamId: stream.streamId } : {}),
-        ...(streamed.usage ? { usage: streamed.usage } : {})
-      };
+      return content
+        ? { kind: "final", message: content, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(streamed.usage ? { usage: streamed.usage } : {}) }
+        : {
+            kind: "empty_response",
+            reason: "OpenAI-compatible stream ended without content or tool calls.",
+            ...(stream?.streamId ? { streamId: stream.streamId } : {}),
+            ...(streamed.usage ? { usage: streamed.usage } : {})
+          };
     } catch (error) {
       await emitModelTrace(stream, {
         kind: "error",
@@ -308,12 +313,15 @@ export class OpenAIModelClient implements ModelClient {
         payload: {
           response: calls.length > 0
             ? { kind: "tool_calls", calls, ...(usage ? { usage } : {}), rawPayload: payload }
-            : { kind: "final", message: text || "No response returned.", ...(usage ? { usage } : {}), rawPayload: payload }
+            : text
+              ? { kind: "final", message: text, ...(usage ? { usage } : {}), rawPayload: payload }
+              : { kind: "empty_response", reason: "Anthropic response contained no text or tool use.", ...(usage ? { usage } : {}), rawPayload: payload }
         }
       });
-      return calls.length > 0
-        ? { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) }
-        : { kind: "final", message: text || "No response returned.", ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) };
+      if (calls.length > 0) return { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) };
+      return text
+        ? { kind: "final", message: text, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) }
+        : { kind: "empty_response", reason: "Anthropic response contained no text or tool use.", ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}), rawPayload: payload };
     } catch (error) {
       await emitModelTrace(stream, {
         kind: "error",
@@ -374,12 +382,15 @@ export class OpenAIModelClient implements ModelClient {
         payload: {
           response: calls.length > 0
             ? { kind: "tool_calls", calls, ...(usage ? { usage } : {}), rawPayload: payload }
-            : { kind: "final", message: text || "No response returned.", ...(usage ? { usage } : {}), rawPayload: payload }
+            : text
+              ? { kind: "final", message: text, ...(usage ? { usage } : {}), rawPayload: payload }
+              : { kind: "empty_response", reason: "Gemini response contained no text or function calls.", ...(usage ? { usage } : {}), rawPayload: payload }
         }
       });
-      return calls.length > 0
-        ? { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) }
-        : { kind: "final", message: text || "No response returned.", ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) };
+      if (calls.length > 0) return { kind: "tool_calls", calls, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) };
+      return text
+        ? { kind: "final", message: text, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}) }
+        : { kind: "empty_response", reason: "Gemini response contained no text or function calls.", ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(usage ? { usage } : {}), rawPayload: payload };
     } catch (error) {
       await emitModelTrace(stream, {
         kind: "error",

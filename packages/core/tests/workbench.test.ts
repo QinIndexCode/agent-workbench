@@ -1278,6 +1278,32 @@ class StreamingFinalModel implements ModelClient {
   }
 }
 
+class EmptyResponseModel implements ModelClient {
+  calls = 0;
+
+  async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    this.calls += 1;
+    return {
+      kind: "empty_response",
+      reason: "fixture empty stream",
+      ...(stream?.streamId ? { streamId: stream.streamId } : {}),
+      usage: { inputTokens: 12, outputTokens: 0 }
+    };
+  }
+}
+
+class EmptyThenFinalModel implements ModelClient {
+  calls = 0;
+
+  async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      return { kind: "empty_response", reason: "fixture first empty", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+    }
+    return { kind: "final", message: "Recovered after empty model turn.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+}
+
 class AskUserThenFinishModel implements ModelClient {
   async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
     const answer = [...task.events].reverse().find(
@@ -1766,7 +1792,11 @@ describe("AgentWorkbench", () => {
         model: new LlmApprovalDecisionModel()
       });
       const folder = await workbench.createTaskFolder({ name: "approval-root", rootPath: root });
-      await workbench.updatePreferences({ llmApprovalMode: "non_destructive" });
+      await workbench.updatePreferences({
+        permissionMode: "auto_approval",
+        autoApproveRiskCategories: ["host_observation"],
+        llmApprovalMode: "non_destructive"
+      });
 
       const completed = await workbench.createTask("read the note file", "Read note", folder.id);
       const autoApproval = completed.events.find((event) => event.type === "approval_auto_granted");
@@ -1788,7 +1818,11 @@ describe("AgentWorkbench", () => {
       store: new InMemoryWorkbenchStore(),
       model: new SingleToolModel("run_command", { command: "Stop-Process -Id 99999" })
     });
-    await workbench.updatePreferences({ llmApprovalMode: "non_destructive" });
+    await workbench.updatePreferences({
+      permissionMode: "auto_approval",
+      autoApproveRiskCategories: ["host_observation", "workspace_read", "network"],
+      llmApprovalMode: "non_destructive"
+    });
 
     const pending = await workbench.createTask("attempt a dangerous command", "Dangerous command");
 
@@ -1993,6 +2027,26 @@ describe("AgentWorkbench", () => {
 
     expect(pending.status).toBe("waiting_approval");
     expect(pending.approvals[0]?.riskCategory).toBe("destructive");
+  });
+
+  it("migrates rule auto-approval strategy preferences and applies custom risk coverage", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({
+      store,
+      tools: new StubToolExecutor(),
+      model: new SingleToolModel("run_command", { command: "Write-Output ok" })
+    });
+
+    const migrated = await workbench.updatePreferences({ autoApprove: "medium" });
+    expect(migrated.permissionMode).toBe("auto_approval");
+    expect(migrated.autoApproveStrategy).toBe("balanced");
+    expect(migrated.autoApproveRiskCategories).toEqual(["host_observation", "workspace_read", "network"]);
+
+    await workbench.updatePreferences({ permissionMode: "auto_approval", autoApproveStrategy: "custom", autoApproveRiskCategories: ["shell"] });
+    const completed = await workbench.createTask("run a harmless command with custom shell approval");
+    expect(completed.status).toBe("completed");
+    expect(completed.events.some((event) => event.type === "approval_auto_granted" && event.payload["approvalSource"] === "autoApprove")).toBe(true);
+    expect((await store.getPreferences()).autoApproveRiskCategories).toEqual(["shell"]);
   });
 
   it("applies mcpApprovalMode before general auto approval", async () => {
@@ -2810,6 +2864,29 @@ describe("AgentWorkbench", () => {
     expect(task.events.some((event) => event.type === "token_usage_recorded")).toBe(true);
   });
 
+  it("retries one empty model response without storing diagnostic text as an assistant answer", async () => {
+    const model = new EmptyThenFinalModel();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model });
+    const task = await workbench.createTask("recover from an empty provider turn");
+
+    expect(model.calls).toBe(2);
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "model_empty_response" && event.payload["status"] === "retrying")).toBe(true);
+    expect(task.events.some((event) => event.type === "assistant_message" && /I could not produce a result/i.test(event.summary))).toBe(false);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary === "Recovered after empty model turn.")).toBe(true);
+  });
+
+  it("pauses after repeated empty model responses without producing assistant body text", async () => {
+    const model = new EmptyResponseModel();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model });
+    const task = await workbench.createTask("provider keeps returning an empty response");
+
+    expect(model.calls).toBe(2);
+    expect(task.status).toBe("paused");
+    expect(task.events.filter((event) => event.type === "model_empty_response")).toHaveLength(2);
+    expect(task.events.some((event) => event.type === "assistant_message")).toBe(false);
+  });
+
   it("records provider fallback diagnostics in task events", async () => {
     const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ProviderFallbackEventModel() });
     const task = await workbench.createTask("exercise provider fallback");
@@ -3434,6 +3511,54 @@ describe("OpenAIModelClient", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+
+  it("returns an empty_response turn when a streaming chat response has no content or tool calls", async () => {
+    const server = createServer((request, response) => {
+      request.on("data", () => undefined);
+      request.on("end", () => {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 9, completion_tokens: 0 } })}\n\n`);
+        response.write("data: [DONE]\n\n");
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const client = new OpenAIModelClient({
+        apiKey: "test-key",
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        model: "empty-stream-model"
+      });
+      const traces: Array<Record<string, unknown>> = [];
+      const task: TaskDetail = {
+        id: "task_openai_empty",
+        title: "Empty fixture",
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [{ id: "event_goal", taskId: "task_openai_empty", type: "user_message", createdAt: nowIso(), summary: "普通请求", payload: {} }]
+      };
+
+      const turn = await client.next(task, {
+        streamId: "stream_openai_empty",
+        onAssistantDelta: async () => undefined,
+        onThinkingDelta: async () => undefined,
+        onTrace: async (event) => { traces.push(event as unknown as Record<string, unknown>); }
+      });
+      const responseTrace = traces.find((event) => event["kind"] === "response");
+      const traceResponse = (responseTrace?.["payload"] as Record<string, unknown> | undefined)?.["response"] as Record<string, unknown> | undefined;
+
+      expect(turn.kind).toBe("empty_response");
+      expect(turn.usage?.inputTokens).toBe(9);
+      expect(traceResponse?.["kind"]).toBe("empty_response");
+      expect(JSON.stringify(traceResponse)).not.toContain("I could not produce a result");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });
 
 describe("McpRegistry", () => {
@@ -3569,6 +3694,22 @@ describe("ShellToolExecutor", () => {
 
     expect(result.ok).toBe(true);
     expect(result.output).toContain("ok");
+  });
+
+  it("decodes Windows command output without corrupting Chinese text", async () => {
+    if (process.platform !== "win32") return;
+    const executor = new ShellToolExecutor();
+    const result = await executor.execute({
+      id: createId("tool_call"),
+      toolName: "run_command",
+      args: {
+        command: "[Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(936); [Console]::Out.Write('权限审批')"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("权限审批");
+    expect(result.output).not.toContain("�");
   });
 
   it("executes file tools relative to the task work root and rejects path escapes", async () => {

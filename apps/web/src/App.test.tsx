@@ -27,6 +27,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+function getSendButton(): HTMLElement {
+  return screen.queryByLabelText("Send") ?? screen.getByLabelText("发送");
+}
+
 describe("Composer", () => {
   it("uses one primary adaptive button for send and stop", () => {
     const onSubmit = vi.fn();
@@ -37,7 +41,7 @@ describe("Composer", () => {
     expect(onStop).toHaveBeenCalledOnce();
 
     fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "new guidance" } });
-    fireEvent.click(screen.getByLabelText("Send"));
+    fireEvent.click(getSendButton());
     expect(onSubmit).toHaveBeenCalledWith("new guidance");
   });
 
@@ -88,7 +92,7 @@ describe("Composer", () => {
     fireEvent.click(screen.getByText("Read only"));
     expect(onGrant).toHaveBeenCalledWith("read_only");
     fireEvent.click(screen.getByLabelText("Choose permission scope"));
-    fireEvent.click(screen.getByText("All"));
+    fireEvent.click(screen.getByText("Full access"));
     expect(onGrant).toHaveBeenCalledWith("all");
   });
 
@@ -663,6 +667,46 @@ describe("Workbench components", () => {
     expect(container.querySelector(".timelineItemShell.fromLeft .event.assistant_delta")).not.toBeNull();
   });
 
+  it("keeps latin streaming assistant chunks readable when provider omits spaces", () => {
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "running",
+          events: [
+            {
+              id: "event_delta_latin_1",
+              taskId: "task_1",
+              type: "assistant_delta",
+              createdAt: new Date().toISOString(),
+              summary: "Let",
+              payload: { streamId: "stream_latin", delta: "Let" }
+            },
+            {
+              id: "event_delta_latin_2",
+              taskId: "task_1",
+              type: "assistant_delta",
+              createdAt: new Date().toISOString(),
+              summary: "me",
+              payload: { streamId: "stream_latin", delta: "me" }
+            },
+            {
+              id: "event_delta_latin_3",
+              taskId: "task_1",
+              type: "assistant_delta",
+              createdAt: new Date().toISOString(),
+              summary: "search",
+              payload: { streamId: "stream_latin", delta: "search" }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Let me search")).toBeInTheDocument();
+  });
+
   it("shows a lightweight running indicator while a response is still open", () => {
     const { container } = render(
       <Timeline
@@ -728,8 +772,8 @@ describe("Workbench components", () => {
 
     expect(merged.events).toHaveLength(2);
     expect(merged.acceptedEvents).toHaveLength(3);
-    expect(merged.events[0]?.summary).toBe("chunk-0chunk-1chunk-2");
-    expect(merged.events[0]?.payload["delta"]).toBe("chunk-0chunk-1chunk-2");
+    expect(merged.events[0]?.summary).toBe("chunk-0 chunk-1 chunk-2");
+    expect(merged.events[0]?.payload["delta"]).toBe("chunk-0 chunk-1 chunk-2");
     expect(merged.events[1]?.type).toBe("tool_result");
   });
 
@@ -927,8 +971,7 @@ describe("Workbench components", () => {
   });
 
   it("renders permission grants, revoke actions, and localized preferences", () => {
-    const onGrant = vi.fn();
-    const onRevoke = vi.fn();
+    const onMode = vi.fn();
     const onPreference = vi.fn();
     const grant: GlobalPermissionGrant = {
       id: "global_permission_host_observation",
@@ -944,7 +987,10 @@ describe("Workbench components", () => {
       contextMode: "auto",
       customModelContextWindow: 128000,
       maxTokensPerRequest: 128000,
+      permissionMode: "ask",
       autoApprove: "none",
+      autoApproveStrategy: "ask",
+      autoApproveRiskCategories: [],
       llmApprovalMode: "off",
       showThinking: true,
       language: "zh-CN",
@@ -972,21 +1018,26 @@ describe("Workbench components", () => {
         language="zh-CN"
         permissions={[grant]}
         preferences={preferences}
-        onGrant={onGrant}
-        onRevoke={onRevoke}
+        onPermissionModeChange={onMode}
         onPreference={onPreference}
       />
     );
 
-    expect(screen.getByRole("heading", { name: "权限与偏好" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "权限审批" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "重置为 Ask" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: /自定义/ }));
-    fireEvent.click(screen.getByLabelText("取消自动通过 主机观察"));
-    expect(onRevoke).toHaveBeenCalledWith("host_observation");
-    fireEvent.click(screen.getByRole("radio", { name: /Read only/ }));
-    expect(onGrant).toHaveBeenCalledWith("workspace_read");
+    fireEvent.click(screen.getByLabelText("取消 主机观察"));
+    expect(onMode).toHaveBeenCalledWith("custom", []);
+    fireEvent.click(screen.getByRole("radio", { name: /只读/ }));
+    expect(onMode).toHaveBeenCalledWith("read_only", ["host_observation", "workspace_read"]);
+    fireEvent.click(screen.getByRole("radio", { name: /完全访问/ }));
+    const fullAccessDialog = screen.getByRole("dialog", { name: "确认完全访问" });
+    expect(fullAccessDialog).toBeInTheDocument();
+    fireEvent.click(within(fullAccessDialog).getByText("取消"));
+    fireEvent.click(screen.getByRole("radio", { name: /自动审批/ }));
+    expect(onMode).toHaveBeenCalledWith("auto_approval", ["host_observation", "workspace_read", "network"]);
     fireEvent.click(screen.getByLabelText("LLM 自动审批（实验）"));
-    fireEvent.click(screen.getByRole("option", { name: "仅非 destructive" }));
+    fireEvent.click(screen.getByRole("option", { name: "仅非破坏性" }));
     expect(onPreference).toHaveBeenCalledWith(expect.objectContaining({ llmApprovalMode: "non_destructive" }));
 
     rerender(
@@ -995,8 +1046,7 @@ describe("Workbench components", () => {
         permissions={[grant]}
         preferences={preferences}
         preferencesOnly={true}
-        onGrant={onGrant}
-        onRevoke={onRevoke}
+        onPermissionModeChange={onMode}
         onPreference={onPreference}
       />
     );
@@ -1590,6 +1640,7 @@ describe("Workbench components", () => {
             contextMode: "auto",
             customModelContextWindow: 128000,
             maxTokensPerRequest: 128000,
+            permissionMode: "ask",
             autoApprove: "none",
             llmApprovalMode: "off",
             showThinking: true,
@@ -1636,7 +1687,7 @@ describe("Workbench components", () => {
     render(<App />);
     expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "check host" } });
-    fireEvent.click(screen.getByLabelText("Send"));
+    fireEvent.click(getSendButton());
 
     expect(await screen.findByText("Reads host state")).toBeInTheDocument();
     expect(createTask).toHaveBeenCalledWith("check host", undefined);
@@ -1644,7 +1695,7 @@ describe("Workbench components", () => {
     await waitFor(() => expect(screen.getByText("Top process: node")).toBeInTheDocument());
 
     fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "second goal" } });
-    fireEvent.click(screen.getByLabelText("Send"));
+    fireEvent.click(getSendButton());
     await waitFor(() => expect(sendMessage).toHaveBeenCalledWith("/api/tasks/task_1/messages", "second goal"));
     expect(createTask).toHaveBeenCalledTimes(1);
   });
@@ -1762,8 +1813,8 @@ describe("Workbench components", () => {
     await waitFor(() => expect(grantCalls).toEqual(["host_observation"]));
 
     fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "check this folder" } });
-    await waitFor(() => expect(screen.getByLabelText("Send")).not.toBeDisabled());
-    fireEvent.click(screen.getByLabelText("Send"));
+    await waitFor(() => expect(getSendButton()).not.toBeDisabled());
+    fireEvent.click(getSendButton());
     expect(createCalls).toHaveLength(0);
 
     releasePermissionMutation();
@@ -1825,7 +1876,7 @@ describe("Workbench components", () => {
     render(<App />);
     expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "/target repair the failing check" } });
-    fireEvent.click(screen.getByLabelText("Send"));
+    fireEvent.click(getSendButton());
 
     const dialog = await screen.findByRole("dialog", { name: "Start /target" });
     expect(createBodies).toHaveLength(0);
@@ -1922,6 +1973,7 @@ describe("Workbench components", () => {
             contextMode: "auto",
             customModelContextWindow: 128000,
             maxTokensPerRequest: 128000,
+            permissionMode: "ask",
             autoApprove: "none",
             llmApprovalMode: "off",
             showThinking: true,
@@ -1986,6 +2038,7 @@ describe("Workbench components", () => {
             contextMode: "auto",
             customModelContextWindow: 128000,
             maxTokensPerRequest: 128000,
+            permissionMode: "ask",
             autoApprove: "none",
             llmApprovalMode: "off",
             showThinking: true,
@@ -2014,7 +2067,7 @@ describe("Workbench components", () => {
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/settings/providers");
     fireEvent.click(screen.getByText("Permissions"));
-    expect(await screen.findByText("Permissions and preferences")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Permissions" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/settings/permissions");
     fireEvent.click(screen.getByText("Scheduled tasks"));
     expect(await screen.findByRole("heading", { name: "Scheduled tasks" })).toBeInTheDocument();
@@ -2045,7 +2098,10 @@ function defaultPreferences(language: "zh-CN" | "en-US"): UserPreferences {
     contextMode: "auto",
     customModelContextWindow: 128000,
     maxTokensPerRequest: 128000,
+    permissionMode: "ask",
     autoApprove: "none",
+    autoApproveStrategy: "ask",
+    autoApproveRiskCategories: [],
     llmApprovalMode: "off",
     showThinking: true,
     language,
