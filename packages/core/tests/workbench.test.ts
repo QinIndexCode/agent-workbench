@@ -524,9 +524,47 @@ describe("ContextAssembler", () => {
     const combined = `${knownFiles}\n${history}`;
 
     expect(knownFiles).toContain(content);
-    expect(history).toContain("content recorded in Known Files");
+    expect(history).toContain("Known Files");
     expect(history).not.toContain(content);
     expect(combined.match(/UNIQUE_READ_FILE_CONTENT/g)).toHaveLength(1);
+  });
+
+  it("keeps medium read_file content complete in Known Files when it fits the file budget", () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const content = Array.from({ length: 700 }, (_, index) =>
+      index === 620 ? `line ${index + 1}: TARGET_PERMISSION_COPY` : `line ${index + 1}: filler content`
+    ).join("\n");
+    const task: TaskDetail = {
+      id: "task_medium_file_context",
+      title: "Medium file context",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_read_medium",
+          taskId: "task_medium_file_context",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool completed",
+          payload: {
+            toolName: "read_file",
+            ok: true,
+            output: JSON.stringify({ path: "src/i18n.ts", content, hash: "hash_medium", partial: false, totalLines: 700, mode: "full" })
+          }
+        }
+      ]
+    };
+
+    const tracker = assembler.getFileStateTracker(task.id);
+    tracker.updateFromToolResult(task.events[0]!);
+    const knownFiles = tracker.buildFileStateTable();
+
+    expect(knownFiles).toContain("complete content");
+    expect(knownFiles).toContain("700 lines");
+    expect(knownFiles).toContain("TARGET_PERMISSION_COPY");
   });
 
   it("rebuilds tool calls and results as role messages for the next model turn", async () => {
@@ -3554,7 +3592,54 @@ describe("OpenAIModelClient", () => {
       expect(turn.kind).toBe("empty_response");
       expect(turn.usage?.inputTokens).toBe(9);
       expect(traceResponse?.["kind"]).toBe("empty_response");
+      expect((traceResponse?.["rawPayload"] as Record<string, unknown> | undefined)?.["finishReasons"]).toEqual(["stop"]);
       expect(JSON.stringify(traceResponse)).not.toContain("I could not produce a result");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("parses legacy OpenAI-compatible streaming function_call chunks as tool calls", async () => {
+    const server = createServer((request, response) => {
+      request.on("data", () => undefined);
+      request.on("end", () => {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { function_call: { name: "read_file", arguments: "{\"path\":" } } }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { function_call: { arguments: "\"package.json\"}" } }, finish_reason: "function_call" }], usage: { prompt_tokens: 11, completion_tokens: 3 } })}\n\n`);
+        response.write("data: [DONE]\n\n");
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const client = new OpenAIModelClient({
+        apiKey: "test-key",
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        model: "legacy-function-call-model"
+      });
+      const task: TaskDetail = {
+        id: "task_openai_legacy_function_call",
+        title: "Legacy function call fixture",
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [{ id: "event_goal", taskId: "task_openai_legacy_function_call", type: "user_message", createdAt: nowIso(), summary: "读取 package", payload: {} }]
+      };
+
+      const turn = await client.next(task, {
+        streamId: "stream_openai_legacy_function",
+        onAssistantDelta: async () => undefined,
+        onThinkingDelta: async () => undefined
+      });
+
+      expect(turn.kind).toBe("tool_calls");
+      expect(turn.kind === "tool_calls" ? turn.calls[0] : undefined).toMatchObject({
+        toolName: "read_file",
+        args: { path: "package.json" }
+      });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -3710,6 +3795,34 @@ describe("ShellToolExecutor", () => {
     expect(result.ok).toBe(true);
     expect(result.output).toContain("权限审批");
     expect(result.output).not.toContain("�");
+  });
+
+  it("searches workspace files with OR terms and returns snippets rather than full file content", async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), "scc-search-files-"));
+    try {
+      mkdirSync(join(workRoot, "src"), { recursive: true });
+      writeFileSync(join(workRoot, "src", "copy.ts"), "export const fullAccess = '完全访问';\nexport const auto = '自动审批';\n");
+      const executor = new ShellToolExecutor();
+
+      const result = await executor.execute(
+        {
+          id: createId("tool_call"),
+          toolName: "search_files",
+          args: { query: "仅非破坏性|自动审批|完全访问", path: "src" }
+        },
+        { workRoot }
+      );
+      const parsed = JSON.parse(result.output) as { kind: string; note: string; matches: Array<{ line?: number; text?: string; matchedTerm?: string }> };
+
+      expect(result.ok).toBe(true);
+      expect(parsed.kind).toBe("workspace_file_search");
+      expect(parsed.note).toContain("read_file");
+      expect(parsed.matches.map((match) => match.matchedTerm)).toContain("完全访问");
+      expect(parsed.matches.map((match) => match.matchedTerm)).toContain("自动审批");
+      expect(parsed.matches.every((match) => (match.text ?? "").length < 260)).toBe(true);
+    } finally {
+      rmSync(workRoot, { recursive: true, force: true });
+    }
   });
 
   it("executes file tools relative to the task work root and rejects path escapes", async () => {

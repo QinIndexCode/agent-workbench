@@ -5,6 +5,7 @@ import { api } from "./api.js";
 import { ProviderBrandIcon } from "./components/ProviderBrandIcon.js";
 import { SupportDialog } from "./components/SupportDialog.js";
 import { TaskList } from "./components/TaskList.js";
+import { TaskThread } from "./components/TaskThread.js";
 import type { ComposerMode, ComposerPermissionMode, PermissionPreset } from "./components/Composer.js";
 import type { LibrarySection } from "./components/LibraryView.js";
 import type { SettingsSection } from "./components/SettingsView.js";
@@ -24,7 +25,6 @@ const SettingsView = lazy(() => import("./components/SettingsView.js").then((mod
 const ScheduledTasksPanel = lazy(() => import("./components/ScheduledTasksPanel.js").then((module) => ({ default: module.ScheduledTasksPanel })));
 const SkillCuratorPanel = lazy(() => import("./components/SkillCuratorPanel.js").then((module) => ({ default: module.SkillCuratorPanel })));
 const SkillPanel = lazy(() => import("./components/SkillPanel.js").then((module) => ({ default: module.SkillPanel })));
-const TaskThread = lazy(() => import("./components/TaskThread.js").then((module) => ({ default: module.TaskThread })));
 const WebSearchPanel = lazy(() => import("./components/WebSearchPanel.js").then((module) => ({ default: module.WebSearchPanel })));
 
 const allRiskCategories: RiskCategory[] = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
@@ -47,6 +47,8 @@ export function App() {
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [optimisticPermissionPreset, setOptimisticPermissionPreset] = useState<ComposerPermissionMode | null>(null);
+  const [optimisticPermissionMode, setOptimisticPermissionMode] = useState<PermissionMode | null>(null);
+  const [optimisticPermissionRisks, setOptimisticPermissionRisks] = useState<RiskCategory[] | null>(null);
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [targetConfirmation, setTargetConfirmation] = useState<{ goal: string; attachmentIds: string[] } | null>(null);
@@ -384,6 +386,8 @@ export function App() {
                 permissions={data.permissions}
                 preferences={data.preferences}
                 startCustom={settingsStartCustom}
+                optimisticMode={optimisticPermissionMode}
+                optimisticRisks={optimisticPermissionRisks}
                 onStartCustomConsumed={() => setSettingsStartCustom(false)}
                 onPermissionModeChange={(mode, risks) => applyPermissionMode(mode, risks)}
                 onPreference={(patch) => void updatePreference(patch)}
@@ -438,6 +442,8 @@ export function App() {
                 permissions={data.permissions}
                 preferences={data.preferences}
                 preferencesOnly
+                optimisticMode={optimisticPermissionMode}
+                optimisticRisks={optimisticPermissionRisks}
                 onPermissionModeChange={(mode, risks) => applyPermissionMode(mode, risks)}
                 onPreference={(patch) => void updatePreference(patch)}
               />
@@ -561,7 +567,14 @@ export function App() {
     const optimisticPreset: ComposerPermissionMode = mode === "full_access" ? "all" : mode === "read_only" ? "read_only" : mode === "custom" ? "custom" : "ask";
     const target = new Set<RiskCategory>(targetRisksForPermissionMode(mode, selectedRisks));
     const preferencePatch = preferencesForPermissionMode(mode, selectedRisks);
-    return runPermissionMutation(optimisticPreset, target, preferencePatch, `User selected ${mode} permission mode from the workbench UI.`);
+    setOptimisticPermissionMode(mode);
+    setOptimisticPermissionRisks([...target]);
+    const ok = await runPermissionMutation(optimisticPreset, target, preferencePatch, `User selected ${mode} permission mode from the workbench UI.`);
+    if (ok) {
+      setOptimisticPermissionMode(null);
+      setOptimisticPermissionRisks(null);
+    }
+    return ok;
   }
 
   async function runPermissionMutation(
@@ -600,6 +613,8 @@ export function App() {
     } catch (error) {
       setPermissionError(error instanceof Error ? error.message : String(error));
       setOptimisticPermissionPreset(null);
+      setOptimisticPermissionMode(null);
+      setOptimisticPermissionRisks(null);
       return false;
     } finally {
       if (permissionMutationRef.current === mutation) {

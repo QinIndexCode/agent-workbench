@@ -385,26 +385,38 @@ export class ShellToolExecutor implements ToolExecutor {
     try {
       const query = String(call.args["query"] ?? "");
       if (!query.trim()) return this.result(call, false, "Missing query.");
+      const terms = parseSearchTerms(query);
       const root = this.resolveWorkspacePath(String(call.args["path"] ?? "."), this.rootFor(options));
       await emitToolProgress(options, { status: "running", targetPath: root, operation: "search", message: "Scanning workspace files.", progress: { processed: 0, unit: "files" } });
       const files = await walk(root, 300);
-      const matches: Array<{ path: string; line?: number; text?: string }> = [];
+      const matches: Array<{ path: string; line?: number; text?: string; matchedTerm?: string }> = [];
       for (const file of files) {
         if (matches.length >= 100) break;
-        if (file.toLowerCase().includes(query.toLowerCase())) {
-          matches.push({ path: file });
+        const pathTerm = findMatchedTerm(file, terms);
+        if (pathTerm) {
+          matches.push({ path: file, matchedTerm: pathTerm });
           continue;
         }
         if (!isTextFile(file)) continue;
         const content = await readFile(file, "utf8").catch(() => "");
         const lines = content.split(/\r?\n/);
-        const index = lines.findIndex((line) => line.toLowerCase().includes(query.toLowerCase()));
-        if (index >= 0) {
-          const text = lines[index]?.slice(0, 240);
-          matches.push(text ? { path: file, line: index + 1, text } : { path: file, line: index + 1 });
+        const matchedTermsInFile = new Set<string>();
+        for (const [index, line] of lines.entries()) {
+          if (matches.length >= 100 || matchedTermsInFile.size >= terms.length) break;
+          const matchedTerm = findMatchedTerm(line, terms);
+          if (!matchedTerm || matchedTermsInFile.has(matchedTerm)) continue;
+          matchedTermsInFile.add(matchedTerm);
+          const text = line.slice(0, 240);
+          matches.push(text ? { path: file, line: index + 1, text, matchedTerm } : { path: file, line: index + 1, matchedTerm });
         }
       }
-      return this.result(call, true, JSON.stringify({ query, matches }, null, 2));
+      return this.result(call, true, JSON.stringify({
+        kind: "workspace_file_search",
+        query,
+        terms,
+        note: "search_files returns matching project paths and line snippets only. Use read_file with the returned path, and offset/limit when needed, to inspect complete content.",
+        matches
+      }, null, 2));
     } catch (error) {
       return this.result(call, false, error instanceof Error ? error.message : String(error));
     }
@@ -568,6 +580,19 @@ function appendLimitedBuffer(current: Buffer<ArrayBufferLike>, chunk: Buffer | s
   const nextChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
   const next = Buffer.concat([current, nextChunk]);
   return next.length <= maxBytes ? next : next.subarray(next.length - maxBytes);
+}
+
+function parseSearchTerms(query: string): string[] {
+  const terms = query
+    .split("|")
+    .map((term) => term.trim())
+    .filter(Boolean);
+  return terms.length > 0 ? terms : [query.trim()];
+}
+
+function findMatchedTerm(value: string, terms: string[]): string {
+  const normalized = value.toLowerCase();
+  return terms.find((term) => normalized.includes(term.toLowerCase())) ?? "";
 }
 
 function decodeCommandOutput(buffer: Buffer<ArrayBufferLike>): string {

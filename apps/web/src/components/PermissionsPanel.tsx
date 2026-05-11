@@ -31,6 +31,8 @@ export function PermissionsPanel({
   preferences,
   preferencesOnly = false,
   startCustom = false,
+  optimisticMode = null,
+  optimisticRisks = null,
   onStartCustomConsumed,
   onPermissionModeChange,
   onPreference
@@ -40,6 +42,8 @@ export function PermissionsPanel({
   preferences: UserPreferences | null;
   preferencesOnly?: boolean;
   startCustom?: boolean;
+  optimisticMode?: PermissionMode | null;
+  optimisticRisks?: RiskCategory[] | null;
   onStartCustomConsumed?: () => void;
   onPermissionModeChange?: (mode: PermissionMode, selectedRisks: RiskCategory[]) => void;
   onPreference: (patch: PreferencesPatch) => void;
@@ -51,8 +55,8 @@ export function PermissionsPanel({
   const savedMode = derivePermissionMode(preferences, grants);
   const [pendingMode, setPendingMode] = useState<PermissionMode | null>(null);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
-  const displayedMode = pendingMode ?? savedMode;
-  const selectedRisks = risksForMode(displayedMode, grants, savedRuleCategories);
+  const displayedMode = optimisticMode ?? pendingMode ?? savedMode;
+  const selectedRisks = optimisticMode && optimisticRisks ? optimisticRisks : risksForMode(displayedMode, grants, savedRuleCategories);
   const selectedSet = new Set<RiskCategory>(selectedRisks);
 
   useEffect(() => {

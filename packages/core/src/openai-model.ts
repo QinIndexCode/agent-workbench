@@ -229,7 +229,8 @@ export class OpenAIModelClient implements ModelClient {
         : {
             kind: "empty_response" as const,
             reason: "OpenAI-compatible stream ended without content or tool calls.",
-            ...(streamed.usage ? { usage: streamed.usage } : {})
+            ...(streamed.usage ? { usage: streamed.usage } : {}),
+            rawPayload: streamed.diagnostics
           };
       await emitModelTrace(stream, {
         kind: "response",
@@ -246,7 +247,8 @@ export class OpenAIModelClient implements ModelClient {
             kind: "empty_response",
             reason: "OpenAI-compatible stream ended without content or tool calls.",
             ...(stream?.streamId ? { streamId: stream.streamId } : {}),
-            ...(streamed.usage ? { usage: streamed.usage } : {})
+            ...(streamed.usage ? { usage: streamed.usage } : {}),
+            rawPayload: streamed.diagnostics
           };
     } catch (error) {
       await emitModelTrace(stream, {
@@ -444,14 +446,19 @@ interface StreamToolCallPart {
 async function consumeChatCompletionStream(
   stream: AsyncIterable<unknown>,
   handlers?: ModelStreamHandlers
-): Promise<{ content: string; calls: ToolCall[]; usage?: ModelUsage }> {
+): Promise<{ content: string; calls: ToolCall[]; usage?: ModelUsage; diagnostics: Record<string, unknown> }> {
   let content = "";
   const toolParts = new Map<number, StreamToolCallPart>();
   let usage: ModelUsage | undefined;
+  let chunkCount = 0;
+  const finishReasons = new Set<string>();
 
   for await (const chunk of stream) {
+    chunkCount += 1;
     if (handlers?.signal?.aborted) throw new Error("Model request cancelled by user.");
     const delta = readStreamDelta(chunk);
+    const finishReason = readStreamFinishReason(chunk);
+    if (finishReason) finishReasons.add(finishReason);
     const chunkUsage = extractOpenAIUsage(chunk);
     if (chunkUsage) usage = chunkUsage;
     if (!delta) continue;
@@ -478,6 +485,14 @@ async function consumeChatCompletionStream(
       }
       toolParts.set(index, current);
     }
+
+    if (isRecord(delta["function_call"])) {
+      const fn = delta["function_call"];
+      const current = toolParts.get(0) ?? { arguments: "" };
+      if (typeof fn["name"] === "string") current.name = fn["name"];
+      if (typeof fn["arguments"] === "string") current.arguments += fn["arguments"];
+      toolParts.set(0, current);
+    }
   }
 
   const calls: ToolCall[] = [...toolParts.entries()]
@@ -488,7 +503,15 @@ async function consumeChatCompletionStream(
       toolName: part.name ?? "unknown_tool",
       args: parseArgs(part.arguments || "{}")
     }));
-  return { content, calls, ...(usage ? { usage } : {}) };
+  return {
+    content,
+    calls,
+    ...(usage ? { usage } : {}),
+    diagnostics: {
+      chunkCount,
+      finishReasons: [...finishReasons]
+    }
+  };
 }
 
 export function createModelClientFromEnvironment(
@@ -935,6 +958,13 @@ function readStreamDelta(chunk: unknown): Record<string, unknown> | null {
   return choice["delta"];
 }
 
+function readStreamFinishReason(chunk: unknown): string {
+  if (!isRecord(chunk) || !Array.isArray(chunk["choices"])) return "";
+  const choice = chunk["choices"][0];
+  if (!isRecord(choice)) return "";
+  return typeof choice["finish_reason"] === "string" ? choice["finish_reason"] : "";
+}
+
 function extractOpenAIUsage(chunk: unknown): ModelUsage | undefined {
   if (!isRecord(chunk) || !isRecord(chunk["usage"])) return undefined;
   const usage = chunk["usage"];
@@ -1046,7 +1076,7 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "read_file",
-        description: "Read file content inside the task folder. By default the tool returns the complete file when it is small or medium sized; use offset/limit only for targeted ranges in very large files. Use this instead of run_command for file reads. If the path is uncertain, call list_files or search_files first.",
+        description: "Read project file content inside the task folder. This is the only file tool that returns file body text. By default it returns the complete file when it is small or medium sized; for large files or known line hits, use offset/limit to read a targeted range. If the path is uncertain, call list_files or search_files first.",
         parameters: strictObject({
           path: { type: "string" },
           offset: { type: "number", description: "Optional 1-based start line for targeted very large file reads." },
@@ -1100,9 +1130,9 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "search_files",
-        description: "Search project file paths and text content.",
+        description: "Search live workspace file paths and text lines. Returns matching file paths, line numbers, and short snippets only; it does not return full file contents. Supports simple OR terms separated by |. Use read_file on a returned path to inspect complete content.",
         parameters: strictObject({
-          query: { type: "string" },
+          query: { type: "string", description: "Literal text to find in project file paths or lines. Use term1|term2 for simple OR search." },
           path: { type: "string", description: "Directory to search, default project root" }
         }, ["query"])
       }
@@ -1283,9 +1313,9 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "knowledge_search",
-        description: "Search the user's indexed local Knowledge library for reusable facts, notes, files, and references. Use this when stored knowledge may answer the task.",
+        description: "Search the user's indexed local Knowledge library: saved notes, uploaded references, reusable facts, and curated snippets. This does not search the live workspace source tree; use search_files/read_file for current project files. Knowledge results are background references and may be stale until verified against live files.",
         parameters: strictObject({
-          query: { type: "string", description: "Focused semantic search query." },
+          query: { type: "string", description: "Focused knowledge-library search query." },
           projectId: { type: "string", description: "Knowledge project id, default default." },
           limit: { type: "number", description: "Number of chunks, default 5, max 12." }
         }, ["query"])

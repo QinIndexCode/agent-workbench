@@ -27,7 +27,7 @@ const MAX_INTEGRATIONS_DISPLAY = 12;
 const MAX_USER_SUMMARY_TRUNCATE = 2200;
 const MAX_PLAN_SUMMARY_TRUNCATE = 1000;
 const MAX_FILE_TRACKER_FILES = 8;
-const MAX_FILE_CONTENT_LENGTH = 6000;
+const MAX_FILE_CONTENT_LENGTH = 48000;
 const SUMMARY_HIGH_PRESSURE_RATIO = 0.9;
 const LOW_BUDGET_THRESHOLD = 3000;
 const LOW_BUDGET_EVENT_THRESHOLD = 60;
@@ -349,6 +349,7 @@ export class ContextAssembler {
       "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
       "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
       "If you need a file but are unsure it exists, list or search first instead of guessing paths such as README.md.",
+      "Tool distinction: search_files searches the live workspace and returns path/line snippets only; read_file returns live file content; knowledge_search searches the saved Knowledge library and is not proof of current files.",
       "When reporting a debug fix, base the root cause and final summary only on observed tool output and source code; do not speculate about code you did not see.",
       "After debugging or editing code, the final answer should include the observed failure, exact root cause expression or file location when known, changed files, and verification result.",
       "Keep normal answers concise, calm, and product-like.",
@@ -581,12 +582,15 @@ export interface FileState {
   contentHash: string;
   lastModified: string;
   isPartial: boolean;
+  totalChars?: number;
+  totalLines?: number;
+  mode?: string;
 }
 
 export class FileStateTracker {
   private states = new Map<string, FileState>();
-  private readonly maxFiles = 8;
-  private readonly maxContentLength = 6000;
+  private readonly maxFiles = MAX_FILE_TRACKER_FILES;
+  private readonly maxContentLength = MAX_FILE_CONTENT_LENGTH;
 
   updateFromToolResult(event: TaskEvent): void {
     if (event.type !== "tool_result") return;
@@ -599,7 +603,14 @@ export class FileStateTracker {
       const parsed = parseJson(output);
       const path = String(parsed["path"] ?? "");
       const content = String(parsed["content"] ?? "");
-      if (path && content) this.set(path, content, event.createdAt, Boolean(parsed["partial"]));
+      if (path && content) {
+        const metadata: Partial<Pick<FileState, "totalChars" | "totalLines" | "mode">> = { totalChars: content.length };
+        if (typeof parsed["totalLines"] === "number") metadata.totalLines = parsed["totalLines"];
+        if (typeof parsed["mode"] === "string") metadata.mode = parsed["mode"];
+        this.set(path, content, event.createdAt, Boolean(parsed["partial"]), {
+          ...metadata
+        });
+      }
       return;
     }
 
@@ -621,7 +632,14 @@ export class FileStateTracker {
     const lines = ["## Known Files (do not guess content)"];
     for (const state of this.states.values()) {
       lines.push(`\n### ${state.path}`);
-      if (state.isPartial) lines.push("(partial content)");
+      const metadata = [
+        state.isPartial ? "context excerpt" : "complete content",
+        state.totalLines !== undefined ? `${state.totalLines} lines` : "",
+        state.totalChars !== undefined ? `${state.totalChars} chars` : "",
+        state.mode ? `read_file mode=${state.mode}` : ""
+      ].filter(Boolean).join(", ");
+      if (metadata) lines.push(`(${metadata})`);
+      if (state.isPartial) lines.push("If exact omitted lines are needed, call search_files for line hits or read_file with offset/limit for the target range.");
       lines.push("```");
       lines.push(state.content);
       lines.push("```");
@@ -629,13 +647,14 @@ export class FileStateTracker {
     return lines.join("\n");
   }
 
-  private set(path: string, content: string, lastModified: string, isPartial: boolean): void {
+  private set(path: string, content: string, lastModified: string, isPartial: boolean, metadata: Partial<Pick<FileState, "totalChars" | "totalLines" | "mode">> = {}): void {
     this.states.set(path, {
       path,
       content: content.slice(0, this.maxContentLength),
       contentHash: hash(content),
       lastModified,
-      isPartial: isPartial || content.length > this.maxContentLength
+      isPartial: isPartial || content.length > this.maxContentLength,
+      ...metadata
     });
     this.prune();
   }
@@ -813,7 +832,9 @@ function toolResultContentForRole(event: TaskEvent, tracker?: FileStateTracker):
       path: parsed["path"],
       hash: parsed["hash"],
       partial: Boolean(parsed["partial"]),
-      output: "read_file content recorded in Known Files; use that file state instead of repeating the body here."
+      mode: parsed["mode"],
+      totalLines: parsed["totalLines"],
+      output: "read_file content is recorded in Known Files when context budget allows. If the visible Known Files excerpt does not include the exact lines needed, call search_files for line hits or read_file with offset/limit for the target range."
     });
   }
   return stableJson({

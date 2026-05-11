@@ -128,7 +128,7 @@ export function useWorkbenchData(): WorkbenchData {
   const lastSuccessfulSyncAtRef = useRef<number | null>(null);
 
   async function refresh(nextId?: string | null) {
-    const results = await Promise.allSettled([
+    const requests = [
       api.listTasks(),
       api.listTaskFolders(),
       api.listTaskMemories(),
@@ -149,7 +149,24 @@ export function useWorkbenchData(): WorkbenchData {
       api.listMcpTools(),
       api.listScheduledTasks(),
       api.listWebSearchProviders()
-    ]);
+    ] as const;
+    const allResults = Promise.allSettled(requests);
+
+    const criticalResults = await Promise.allSettled([requests[0], requests[1], requests[8], requests[9], requests[15]]);
+    const criticalTasks = settledValue<TaskDetail[]>(criticalResults[0]) ?? [];
+    const criticalFolders = settledValue<TaskFolderRecord[]>(criticalResults[1]) ?? [];
+    const criticalPermissions = settledValue<GlobalPermissionGrant[]>(criticalResults[2]) ?? [];
+    const criticalPreferences = settledValue<UserPreferences>(criticalResults[3]) ?? null;
+    const criticalProviders = settledValue<ModelProviderRecord[]>(criticalResults[4]) ?? [];
+    setTasks(criticalTasks);
+    setTaskFolders(criticalFolders);
+    setPermissions(criticalPermissions);
+    setPreferences(criticalPreferences);
+    setModelProviders(criticalProviders);
+    await syncSelectionFromTaskList(criticalTasks, nextId, false);
+    markSyncSuccess();
+
+    const results = await allResults;
     const list = settledValue<TaskDetail[]>(results[0]) ?? [];
     const nextTaskFolders = settledValue<TaskFolderRecord[]>(results[1]) ?? [];
     const nextMemories = settledValue<TaskMemory[]>(results[2]) ?? [];
