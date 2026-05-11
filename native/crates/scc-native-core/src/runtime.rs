@@ -72,6 +72,13 @@ impl AgentRuntime {
         self.store.get_task(&task.id)?.ok_or_else(|| anyhow!("task disappeared"))
     }
 
+    pub async fn append_user_message(&self, task_id: &str, content: &str) -> Result<TaskDetail> {
+        self.add_event(task_id, TaskEventType::UserMessage, content, json!({"content":content}))?;
+        self.set_status(task_id, TaskStatus::Running)?;
+        self.run_task(task_id).await?;
+        self.store.get_task(task_id)?.ok_or_else(|| anyhow!("task disappeared"))
+    }
+
     pub async fn run_task(&self, task_id: &str) -> Result<()> {
         for _ in 0..MAX_MODEL_TURNS_PER_RUN {
             let task = self.store.get_task(task_id)?.ok_or_else(|| anyhow!("Task not found: {task_id}"))?;
