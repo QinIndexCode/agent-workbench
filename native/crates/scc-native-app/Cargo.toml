@@ -1,0 +1,19 @@
+[package]
+name = "scc-native-app"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+eframe.workspace = true
+egui.workspace = true
+scc-native-core = { path = "../scc-native-core" }
+scc-native-shared = { path = "../scc-native-shared" }
+serde_json.workspace = true
+tokio.workspace = true
+
+[[bin]]
+name = "scc-native"
+path = "src/main.rs"

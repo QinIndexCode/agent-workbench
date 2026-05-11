@@ -9,5 +9,6 @@ workspace
 coverage
 playwright-report
 test-results
+native/target
 *.tsbuildinfo
 *.d.ts.map
