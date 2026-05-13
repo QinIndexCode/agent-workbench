@@ -2285,6 +2285,7 @@ describe("AgentWorkbench", () => {
       expect(String(requestMessages[0]?.at(-1)?.["content"] ?? "")).not.toContain("Active Node");
       expect(requestMessages[1]?.some((message) => message["role"] === "tool")).toBe(true);
       expect(String(requestMessages[1]?.find((message) => Array.isArray(message["tool_calls"]))?.["reasoning_content"] ?? "")).toBe("I should inspect the workspace before answering.");
+      expect(requestMessages[1]?.find((message) => Array.isArray(message["tool_calls"]))?.["content"]).toBe("");
       expect(String(requestMessages[1]?.find((message) => message["role"] === "tool")?.["content"] ?? "")).toContain("README.md");
       expect(String(requestMessages[1]?.[0]?.["content"] ?? "")).not.toContain("## Known Files");
       const lastUser = requestMessages[1]?.filter((message) => message["role"] === "user").at(-1);
@@ -3906,6 +3907,7 @@ describe("OpenAIModelClient", () => {
       expect(messages[4]?.["tool_calls"]).toEqual([
         { id: "call_list", type: "function", function: { name: "list_files", arguments: "{\"path\":\".\"}" } }
       ]);
+      expect(messages[4]?.["content"]).toBe("");
       expect(messages[4]?.["reasoning_content"]).toBe("I should inspect the workspace before writing the page.");
       expect(messages[5]?.["tool_call_id"]).toBe("call_list");
       const lastUser = messages.filter((message) => message["role"] === "user").at(-1);
@@ -3983,7 +3985,172 @@ describe("OpenAIModelClient", () => {
       expect(completed.status).toBe("completed");
       expect(requestCount).toBe(2);
       expect(planResult?.payload["reasoningContent"]).toBe("I should update the visible plan before editing files.");
+      expect(planMessage?.["content"]).toBe("");
       expect(planMessage?.["reasoning_content"]).toBe("I should update the visible plan before editing files.");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("serializes Anthropic tool history without OpenAI null-content placeholders", async () => {
+    const capturedRequests: Array<Record<string, unknown>> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        capturedRequests.push(JSON.parse(body) as Record<string, unknown>);
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({
+          content: [{ type: "text", text: "done" }],
+          usage: { input_tokens: 12, output_tokens: 3 }
+        }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      const assembler = new ContextAssembler(store);
+      const client = new OpenAIModelClient({
+        apiKey: "unused",
+        contextAssembler: assembler,
+        providerResolver: async () => ({
+          providerId: "provider_anthropic",
+          protocol: "anthropic_messages",
+          apiKey: "test-key",
+          baseURL: `http://127.0.0.1:${port}`,
+          model: "claude-test"
+        })
+      });
+      const task: TaskDetail = {
+        id: "task_anthropic_tool_history",
+        title: "Anthropic fixture",
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [
+          { id: "event_anthropic_user", taskId: "task_anthropic_tool_history", type: "user_message", createdAt: nowIso(), summary: "inspect files", payload: {} },
+          {
+            id: "event_anthropic_tool_requested",
+            taskId: "task_anthropic_tool_history",
+            type: "tool_requested",
+            createdAt: nowIso(),
+            summary: "list_files",
+            payload: { toolCallId: "call_anthropic_list", toolName: "list_files", args: { path: "." } }
+          },
+          {
+            id: "event_anthropic_tool_result",
+            taskId: "task_anthropic_tool_history",
+            type: "tool_result",
+            createdAt: nowIso(),
+            summary: "Tool completed",
+            payload: { toolCallId: "call_anthropic_list", toolName: "list_files", args: { path: "." }, ok: true, output: "[]" }
+          }
+        ]
+      };
+
+      const turn = await client.next(task);
+      const request = capturedRequests[0];
+      const messages = request?.["messages"] as Array<Record<string, unknown>>;
+      const assistant = messages.find((message) => message["role"] === "assistant");
+      const assistantContent = assistant?.["content"] as Array<Record<string, unknown>>;
+      const toolResultUser = messages.find((message) => {
+        const content = message["content"];
+        return message["role"] === "user" && Array.isArray(content) && content.some((part) => part["type"] === "tool_result");
+      });
+
+      expect(turn.kind).toBe("final");
+      expect(capturedRequests).toHaveLength(1);
+      expect(JSON.stringify(request)).not.toContain(":null");
+      expect(assistantContent).toContainEqual({ type: "tool_use", id: "call_anthropic_list", name: "list_files", input: { path: "." } });
+      expect(toolResultUser).toBeTruthy();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("serializes Gemini tool history without OpenAI null-content placeholders", async () => {
+    const capturedRequests: Array<Record<string, unknown>> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        capturedRequests.push(JSON.parse(body) as Record<string, unknown>);
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({
+          candidates: [{ content: { parts: [{ text: "done" }] } }],
+          usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 3, totalTokenCount: 15 }
+        }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      const assembler = new ContextAssembler(store);
+      const client = new OpenAIModelClient({
+        apiKey: "unused",
+        contextAssembler: assembler,
+        providerResolver: async () => ({
+          providerId: "provider_gemini",
+          protocol: "gemini",
+          apiKey: "test-key",
+          baseURL: `http://127.0.0.1:${port}/v1beta`,
+          model: "gemini-test"
+        })
+      });
+      const task: TaskDetail = {
+        id: "task_gemini_tool_history",
+        title: "Gemini fixture",
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [
+          { id: "event_gemini_user", taskId: "task_gemini_tool_history", type: "user_message", createdAt: nowIso(), summary: "inspect files", payload: {} },
+          {
+            id: "event_gemini_tool_requested",
+            taskId: "task_gemini_tool_history",
+            type: "tool_requested",
+            createdAt: nowIso(),
+            summary: "list_files",
+            payload: { toolCallId: "call_gemini_list", toolName: "list_files", args: { path: "." } }
+          },
+          {
+            id: "event_gemini_tool_result",
+            taskId: "task_gemini_tool_history",
+            type: "tool_result",
+            createdAt: nowIso(),
+            summary: "Tool completed",
+            payload: { toolCallId: "call_gemini_list", toolName: "list_files", args: { path: "." }, ok: true, output: "[]" }
+          }
+        ]
+      };
+
+      const turn = await client.next(task);
+      const request = capturedRequests[0];
+      const contents = request?.["contents"] as Array<Record<string, unknown>>;
+      const modelContent = contents.find((content) => content["role"] === "model");
+      const modelParts = modelContent?.["parts"] as Array<Record<string, unknown>>;
+      const toolResultUser = contents.find((content) => {
+        const parts = content["parts"];
+        return content["role"] === "user" && Array.isArray(parts) && parts.some((part) => "functionResponse" in part);
+      });
+
+      expect(turn.kind).toBe("final");
+      expect(capturedRequests).toHaveLength(1);
+      expect(JSON.stringify(request)).not.toContain(":null");
+      expect(modelParts).toContainEqual({ functionCall: { name: "list_files", args: { path: "." } } });
+      expect(toolResultUser).toBeTruthy();
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

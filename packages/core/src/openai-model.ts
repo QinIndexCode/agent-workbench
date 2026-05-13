@@ -604,7 +604,7 @@ function toOpenAIChatMessages(
     if (toolCalls.length === 0) return [{ role: "assistant", content: message.content ?? "" }];
     const assistantMessage: Record<string, unknown> = {
       role: "assistant",
-      content: message.content ?? null,
+      content: message.content ?? "",
       tool_calls: toolCalls.map((call) => ({
         id: call.id,
         type: "function",

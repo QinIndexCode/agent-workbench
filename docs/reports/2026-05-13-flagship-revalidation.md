@@ -4,11 +4,12 @@
 
 ## 阻断项
 
+- live smoke report was generated for a different source fingerprint: 3fca905dcf314b4f24b65ac0133e1a5e772898d7c0d08e2857b6a8cf8211786e.
 - Live smoke failed: provider configuration (provider_configuration).
 
 ## 本轮门禁结果
 
-- source fingerprint: 3fca905dcf314b4f24b65ac0133e1a5e772898d7c0d08e2857b6a8cf8211786e
+- source fingerprint: 2225c18fe03fe2a71f0a5db1a4703bc546f62e8ddea02342126a3eabfd034e62
 - lint: passed (data/test-reports/flagship-quality/lint.log)
 - typecheck: passed (data/test-reports/flagship-quality/typecheck.log)
 - unit: passed (data/test-reports/flagship-quality/unit.log)
