@@ -19,7 +19,7 @@ SCC Agent Workbench is rebuilt as an agent-first local workbench. The runtime ow
 
 ## Model Provider
 
-The server uses `OPENAI_API_KEY` when present. If it is not set, it looks for a key in `dont_touch_(APIKEY).md`. Without a key, the workbench falls back to a small local planner so the permission and tool loop still runs offline.
+The server uses `OPENAI_API_KEY` when present. If you explicitly set `SCC_API_KEY_FILE`, it can also load a provider definition from that file for one-time bootstrap or migration. Plaintext key files are not loaded implicitly. Without a configured provider, the workbench falls back to a small local planner so the permission and tool loop still runs offline.
 
 ## Commands
 

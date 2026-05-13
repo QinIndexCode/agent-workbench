@@ -79,6 +79,8 @@ import type {
 const apiBase = import.meta.env["VITE_API_BASE"] ?? "";
 const REQUEST_TIMEOUT_MS = 30000;
 const TASK_EVENT_WINDOW = 600;
+const SESSION_BOOTSTRAP_PATH = "/api/session/bootstrap";
+const SESSION_HEADER = "x-scc-session";
 
 export interface RequestMeta {
   startTime: number;
@@ -89,6 +91,7 @@ export interface RequestMeta {
 }
 
 let lastRequestMeta: RequestMeta | null = null;
+let sessionTokenPromise: Promise<string> | null = null;
 
 export function getLastRequestMeta(): RequestMeta | null {
   return lastRequestMeta;
@@ -135,9 +138,11 @@ function parseBackendError(bodyText: string): string | null {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, options: { auth?: boolean; retryUnauthorized?: boolean } = {}): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
+  const auth = options.auth !== false;
+  if (auth) headers.set(SESSION_HEADER, await getSessionToken());
 
   const controller = new AbortController();
   const timeoutId = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -158,6 +163,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
     if (!response.ok) {
       const bodyText = await response.text().catch(() => "");
+      if (response.status === 401 && auth && options.retryUnauthorized !== false) {
+        sessionTokenPromise = null;
+        return request(path, init, { ...options, retryUnauthorized: false });
+      }
       throw new Error(getFriendlyErrorMessage(response, bodyText));
     }
     if (response.status === 204) return undefined as T;
@@ -179,11 +188,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 }
 
+async function getSessionToken(): Promise<string> {
+  if (!sessionTokenPromise) sessionTokenPromise = bootstrapSessionToken();
+  return sessionTokenPromise;
+}
+
+async function bootstrapSessionToken(): Promise<string> {
+  const response = await fetch(`${apiBase}${SESSION_BOOTSTRAP_PATH}`);
+  if (!response.ok) {
+    const bodyText = await response.text().catch(() => "");
+    throw new Error(getFriendlyErrorMessage(response, bodyText));
+  }
+  const payload = (await response.json()) as { sessionToken?: unknown };
+  const sessionToken = typeof payload.sessionToken === "string" ? payload.sessionToken : "";
+  if (!sessionToken) throw new Error("后端没有返回有效的本地会话令牌。");
+  return sessionToken;
+}
+
 export const api = {
-  taskEventsWebSocketUrl(taskId: string): string {
+  async taskEventsWebSocketUrl(taskId: string): Promise<string> {
     const url = new URL(`${apiBase}/api/tasks/${taskId}/events/ws`, window.location.origin);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("eventLimit", String(TASK_EVENT_WINDOW));
+    url.searchParams.set("session", await getSessionToken());
     return url.toString();
   },
   generateTaskTitle(goal: string, language?: string | null, useLocalFallback = false): Promise<TaskTitleResponse> {
@@ -473,6 +500,6 @@ export const api = {
     return request(`/api/integrations/${integrationId}/disconnect`, { method: "POST" });
   },
   healthCheck(): Promise<{ ok: boolean }> {
-    return request("/health");
+    return request("/health", undefined, { auth: false });
   }
 };

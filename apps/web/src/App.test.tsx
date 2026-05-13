@@ -6,7 +6,7 @@ import type { GlobalPermissionGrant, IntegrationProviderConfig, KnowledgeItem, M
 import { App } from "./App.js";
 import { ApprovalCard } from "./components/ApprovalCard.js";
 import { Composer } from "./components/Composer.js";
-import { CompactList, LearningPanel } from "./components/LearningPanel.js";
+import { CompactList } from "./components/LearningPanel.js";
 import { McpPanel } from "./components/McpPanel.js";
 import { KnowledgePanel } from "./components/KnowledgePanel.js";
 import { IntegrationsPanel } from "./components/IntegrationsPanel.js";
@@ -19,13 +19,15 @@ import { TaskList } from "./components/TaskList.js";
 import { TaskThread } from "./components/TaskThread.js";
 import { Timeline } from "./components/Timeline.js";
 import { WebSearchPanel } from "./components/WebSearchPanel.js";
-import { coalesceRealtimeEvents, parseRealtimeMessage } from "./useWorkbenchData.js";
+import { coalesceRealtimeEvents, mergeSelectedTaskShell, parseRealtimeMessage } from "./useWorkbenchData.js";
 
 afterEach(() => {
   cleanup();
   window.history.replaceState(null, "", "/");
   vi.unstubAllGlobals();
 });
+
+const TEST_SESSION_TOKEN = "app-test-session";
 
 function getSendButton(): HTMLElement {
   return screen.queryByLabelText("Send") ?? screen.getByLabelText("发送");
@@ -202,7 +204,6 @@ describe("Workbench components", () => {
         onFilesSelected={vi.fn()}
         onRemoveAttachment={vi.fn()}
         onOpenConnect={vi.fn()}
-        onOpenPermissionSettings={vi.fn()}
         onOpenCustomPermissions={vi.fn()}
         onRestoreCustomPermissions={vi.fn()}
         hasCustomSnapshot={false}
@@ -346,6 +347,97 @@ describe("Workbench components", () => {
     expect(screen.queryByText("View raw output")).not.toBeInTheDocument();
   });
 
+  it("shows loaded skills in both the timeline and the task side panel", () => {
+    const now = new Date().toISOString();
+    const skillTask: TaskDetail = {
+      ...task,
+      status: "running",
+      events: [
+        {
+          id: "event_skill_user",
+          taskId: "task_1",
+          type: "user_message",
+          createdAt: now,
+          summary: "Check the deployment flow",
+          payload: {}
+        },
+        {
+          id: "event_skill_loaded",
+          taskId: "task_1",
+          type: "skill_loaded",
+          createdAt: now,
+          summary: "Deployment checklist",
+          payload: {
+            skillId: "skill_deploy",
+            title: "Deployment checklist",
+            status: "candidate",
+            source: "reflection_pattern",
+            matchReason: "Matched the release and deploy signals in the current task.",
+            matchedSignals: ["deploy", "release"],
+            requiredTools: ["read_file", "run_command"],
+            requiredContext: ["release-notes"],
+            readOnlySuggestion: true
+          }
+        },
+        {
+          id: "event_skill_skipped",
+          taskId: "task_1",
+          type: "skill_load_skipped",
+          createdAt: now,
+          summary: "Skipped candidate",
+          payload: {
+            requested: "Legacy release steps",
+            reason: "Candidate skill is not active yet.",
+            title: "Legacy release steps",
+            status: "candidate",
+            source: "task_memory",
+            matchedSignals: ["release"]
+          }
+        }
+      ],
+      approvals: [],
+      pendingGuidance: []
+    };
+
+    render(
+      <TaskThread
+        task={skillTask}
+        busy={false}
+        error={null}
+        language="en-US"
+        engineStatus="running"
+        preferences={null}
+        attachments={[]}
+        attachmentBusy={false}
+        attachmentError={null}
+        modelLabel="mimo-v2.5"
+        modelOptions={[{ label: "Mimo v2.5", value: "mimo-v2.5" }]}
+        permissionPreset="ask"
+        permissionScopeLabel="Approval"
+        onModelChange={vi.fn()}
+        onFilesSelected={vi.fn()}
+        onRemoveAttachment={vi.fn()}
+        onOpenConnect={vi.fn()}
+        onOpenCustomPermissions={vi.fn()}
+        onRestoreCustomPermissions={vi.fn()}
+        hasCustomSnapshot={false}
+        onPermissionPresetChange={vi.fn()}
+        onOpenTasks={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+        onRetryTitle={vi.fn()}
+        onUseLocalTitle={vi.fn()}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getAllByText("Deployment checklist").length).toBeGreaterThan(1);
+    expect(screen.getAllByText("Matched the release and deploy signals in the current task.").length).toBeGreaterThan(1);
+    expect(screen.getByText("Skills in this task")).toBeInTheDocument();
+    expect(screen.getByText("Skipped candidates")).toBeInTheDocument();
+    expect(screen.getByText("Candidate skill is not active yet.")).toBeInTheDocument();
+  });
+
   it("windows very large timelines so old events do not overload the DOM", () => {
     const events = Array.from({ length: 390 }, (_, index) => ({
       id: `event_window_${index}`,
@@ -450,6 +542,36 @@ describe("Workbench components", () => {
     expect(screen.queryByText(/UI preview truncated/)).not.toBeInTheDocument();
   });
 
+  it("preserves selected task events when a list refresh only returns shell data", () => {
+    const detailedTask: TaskDetail = {
+      ...task,
+      status: "running",
+      events: [
+        {
+          id: "event_plan",
+          taskId: "task_1",
+          type: "conversation_summary_created",
+          createdAt: new Date().toISOString(),
+          summary: "Compacted earlier context",
+          payload: {}
+        }
+      ]
+    };
+    const shellTask: TaskDetail = {
+      ...detailedTask,
+      updatedAt: new Date(Date.now() + 1000).toISOString(),
+      events: [],
+      pendingGuidance: []
+    };
+
+    const merged = mergeSelectedTaskShell(detailedTask, shellTask);
+
+    expect(merged.status).toBe("running");
+    expect(merged.updatedAt).toBe(shellTask.updatedAt);
+    expect(merged.events).toHaveLength(1);
+    expect(merged.events[0]?.type).toBe("conversation_summary_created");
+  });
+
   it("keeps tool evidence collapsed, path-focused, and free of placeholder text", () => {
     const { container } = render(
       <Timeline
@@ -485,6 +607,92 @@ describe("Workbench components", () => {
     expect(summary).toHaveAttribute("aria-expanded", "true");
     expect(container.querySelector(".toolResultDetails")).toHaveClass("open");
     expect(screen.getByText(/actual returned content/)).toBeInTheDocument();
+  });
+
+  it("keeps large read_file output out of the inline timeline body", () => {
+    const hugeReadMarker = "VERY_LARGE_INLINE_READ_PAYLOAD";
+    const { container } = render(
+      <Timeline
+        task={{
+          ...task,
+          events: [
+            {
+              id: "event_tool_large_read",
+              taskId: "task_1",
+              type: "tool_result",
+              createdAt: new Date().toISOString(),
+              summary: "Tool completed",
+              payload: {
+                toolName: "read_file",
+                ok: true,
+                args: { path: "src/index.html" },
+                output: JSON.stringify({
+                  path: "src/index.html",
+                  mode: "full",
+                  sizeBytes: 42959,
+                  totalLines: 765,
+                  partial: false,
+                  content: `${hugeReadMarker}\n${"filler line\n".repeat(500)}`
+                })
+              }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    const summary = screen.getByRole("button", { name: /index\.html/ });
+    fireEvent.click(summary);
+    expect(container.querySelector(".toolResultDetails")).toHaveClass("open");
+    expect(screen.getByText(/Large change: inline view shows only path, status, and line counts|Large output: inline view shows the summary and path only/)).toBeInTheDocument();
+    expect(screen.queryByText(hugeReadMarker)).not.toBeInTheDocument();
+  });
+
+  it("hides legacy streaming preambles for turns that continued into tools", () => {
+    const { container } = render(
+      <Timeline
+        task={{
+          ...task,
+          events: [
+            {
+              id: "event_legacy_thinking",
+              taskId: "task_1",
+              type: "thinking_delta",
+              createdAt: new Date().toISOString(),
+              summary: "Need to inspect the file first.",
+              payload: { streamId: "stream_legacy", delta: "Need to inspect the file first." }
+            },
+            {
+              id: "event_legacy_delta",
+              taskId: "task_1",
+              type: "assistant_delta",
+              createdAt: new Date().toISOString(),
+              summary: "Now let me read the file.",
+              payload: { streamId: "stream_legacy", delta: "Now let me read the file." }
+            },
+            {
+              id: "event_legacy_tool",
+              taskId: "task_1",
+              type: "tool_result",
+              createdAt: new Date().toISOString(),
+              summary: "Tool completed",
+              payload: {
+                toolCallId: "tool_call_legacy",
+                toolName: "read_file",
+                ok: true,
+                output: JSON.stringify({ path: "src/index.html", mode: "large_preview", partial: true, totalLines: 700, content: "preview" })
+              }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByText("Now let me read the file.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Need to inspect the file first.")).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".event.tool_result")).toHaveLength(1);
   });
 
   it("merges running tool progress and final results into one path-focused card", () => {
@@ -1440,6 +1648,7 @@ describe("Workbench components", () => {
         folders={defaultFolders()}
         integrations={[provider]}
         language="en-US"
+        onOpenDocs={vi.fn()}
         onConnect={onConnect}
         onCreate={onCreate}
         onDelete={onDelete}
@@ -1458,6 +1667,18 @@ describe("Workbench components", () => {
     fireEvent.change(screen.getByDisplayValue("Discord Ops"), { target: { value: "Discord Support" } });
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(onUpdate).toHaveBeenCalledWith("integration_discord", expect.objectContaining({ label: "Discord Support" })));
+
+    fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
+    fireEvent.click(screen.getByLabelText("Provider"));
+    expect(screen.getByText("Slack")).toBeInTheDocument();
+    expect(screen.getByText("Telegram")).toBeInTheDocument();
+    expect(screen.getByText("WeCom")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Slack"));
+    const addIntegrationForm = screen.getByRole("form", { name: "Add integration" });
+    expect(
+      within(addIntegrationForm).getAllByText(/Events API and URL verification/i).length
+    ).toBeGreaterThan(0);
+    fireEvent.click(within(addIntegrationForm).getByRole("button", { name: "×" }));
 
     fireEvent.click(screen.getByLabelText("Delete Discord Ops"));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Delete integration?" })).getByRole("button", { name: "Delete" }));
@@ -1600,10 +1821,7 @@ describe("Workbench components", () => {
     });
     const sendMessage = vi.fn();
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
+    stubAuthedFetch(async (url, init) => {
         if (url === "/api/task-folders") return jsonResponse([{ id: "default", name: "Default", sortOrder: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }]);
         if (url === "/api/tasks" && init?.method === "POST") {
           const body = JSON.parse(String(init.body)) as { goal: string; title?: string };
@@ -1681,8 +1899,7 @@ describe("Workbench components", () => {
           });
         }
         return jsonResponse([]);
-      })
-    );
+      });
 
     render(<App />);
     expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
@@ -1698,6 +1915,80 @@ describe("Workbench components", () => {
     fireEvent.click(getSendButton());
     await waitFor(() => expect(sendMessage).toHaveBeenCalledWith("/api/tasks/task_1/messages", "second goal"));
     expect(createTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads only task-shell data on the task route before opening side surfaces", async () => {
+    const requests: string[] = [];
+    stubAuthedFetch(async (url) => {
+        requests.push(url);
+        if (url === "/health") return jsonResponse({ ok: true });
+        if (url === "/api/tasks") return jsonResponse([]);
+        if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+        if (url === "/api/preferences") return jsonResponse(defaultPreferences("zh-CN"));
+        if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+        return jsonResponse([]);
+      });
+
+    render(<App />);
+    expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
+
+    expect(requests).toEqual(expect.arrayContaining(["/health", "/api/tasks", "/api/task-folders", "/api/preferences"]));
+    expect(requests).not.toEqual(expect.arrayContaining(["/api/permissions/global", "/api/model-providers"]));
+    expect(requests).not.toEqual(expect.arrayContaining([
+      "/api/skills",
+      "/api/skill-curator",
+      "/api/reflections",
+      "/api/project-memories",
+      "/api/knowledge",
+      "/api/mcp/servers",
+      "/api/integrations",
+      "/api/scheduled-tasks",
+      "/api/web-search/providers"
+    ]));
+  });
+
+  it("does not immediately re-fetch transcript after creating a running task", async () => {
+    const now = new Date().toISOString();
+    const created: TaskDetail = {
+      ...task,
+      id: "task_create_once",
+      title: "Cold create",
+      status: "running",
+      approvals: [],
+      events: [
+        {
+          id: "event_created_goal",
+          taskId: "task_create_once",
+          type: "user_message",
+          createdAt: now,
+          summary: "帮我检查这个页面为什么首屏有点慢",
+          payload: {}
+        }
+      ]
+    };
+    const requests: string[] = [];
+    stubAuthedFetch(async (url, init) => {
+        const method = init?.method ?? "GET";
+        requests.push(`${method} ${url}`);
+        if (url === "/health") return jsonResponse({ ok: true });
+        if (url === "/api/tasks" && method === "POST") return jsonResponse(created);
+        if (url === "/api/tasks") return jsonResponse([]);
+        if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+        if (url === "/api/preferences") return jsonResponse(defaultPreferences("zh-CN"));
+        if (url === "/api/tasks/task_create_once" || url.startsWith("/api/tasks/task_create_once?")) return jsonResponse(created);
+        if (url === "/api/tasks/task_create_once/transcript") return jsonResponse(created.events);
+        if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+        return jsonResponse([]);
+      });
+
+    render(<App />);
+    expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "帮我检查这个页面为什么首屏有点慢" } });
+    fireEvent.click(getSendButton());
+
+    expect(await screen.findByRole("heading", { name: "Cold create" })).toBeInTheDocument();
+    expect(requests.filter((entry) => entry.includes("/api/tasks/task_create_once/transcript"))).toHaveLength(0);
+    expect(requests.filter((entry) => entry.includes("/api/tasks/task_create_once?eventLimit=") || entry.endsWith(" /api/tasks/task_create_once"))).toHaveLength(1);
   });
 
   it("keeps a created running task visible when transcript hydration times out", async () => {
@@ -1721,10 +2012,7 @@ describe("Workbench components", () => {
     };
     let currentTasks: TaskDetail[] = [];
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
+    stubAuthedFetch(async (url, init) => {
         const method = init?.method ?? "GET";
         if (url === "/health") return jsonResponse({ ok: true });
         if (url === "/api/task-folders") return jsonResponse(defaultFolders());
@@ -1738,8 +2026,7 @@ describe("Workbench components", () => {
         if (url === "/api/tasks/task_long/transcript") throw new Error("后端响应超时。模型处理时间较长，请稍后重试或检查后端服务状态。");
         if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
         return jsonResponse([]);
-      })
-    );
+      });
 
     render(<App />);
     expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
@@ -1770,10 +2057,7 @@ describe("Workbench components", () => {
       releasePermissionMutation = resolve;
     });
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
+    stubAuthedFetch(async (url, init) => {
         const method = init?.method ?? "GET";
         if (url === "/health") return jsonResponse({ ok: true });
         if (url === "/api/task-folders") return jsonResponse(defaultFolders());
@@ -1803,8 +2087,7 @@ describe("Workbench components", () => {
         if (url === "/api/tasks/task_permission/transcript") return jsonResponse(created.events);
         if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
         return jsonResponse([]);
-      })
-    );
+      });
 
     render(<App />);
     expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
@@ -1836,10 +2119,7 @@ describe("Workbench components", () => {
     const grantCalls: RiskCategory[] = [];
     const createBodies: Array<{ goal: string; runMode?: string }> = [];
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
+    stubAuthedFetch(async (url, init) => {
         const method = init?.method ?? "GET";
         if (url === "/api/task-folders") return jsonResponse(defaultFolders());
         if (url === "/api/preferences") return jsonResponse(defaultPreferences("en-US"));
@@ -1870,8 +2150,7 @@ describe("Workbench components", () => {
         if (url === "/api/tasks/task_target/transcript") return jsonResponse(created.events);
         if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
         return jsonResponse([]);
-      })
-    );
+      });
 
     render(<App />);
     expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
@@ -1880,10 +2159,12 @@ describe("Workbench components", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "Start /target" });
     expect(createBodies).toHaveLength(0);
-    expect(within(dialog).getByRole("button", { name: "Start target mode" })).toBeDisabled();
+    const startButton = within(dialog).getByRole("button", { name: "Start target mode" });
+    expect(startButton).toBeDisabled();
 
     fireEvent.click(within(dialog).getByRole("radio", { name: /Read only/ }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Start target mode" }));
+    await waitFor(() => expect(startButton).not.toBeDisabled());
+    fireEvent.click(startButton);
 
     await waitFor(() => expect(grantCalls).toEqual(["host_observation", "workspace_read"]));
     await waitFor(() => expect(createBodies).toEqual([expect.objectContaining({ goal: "repair the failing check", runMode: "target" })]));
@@ -1937,10 +2218,7 @@ describe("Workbench components", () => {
       windowedTask.events[0]!
     ];
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
+    stubAuthedFetch(async (url) => {
         if (url === "/api/task-folders") return jsonResponse([{ id: "default", name: "Default", sortOrder: 0, createdAt: now, updatedAt: now }]);
         if (url === "/api/tasks") return jsonResponse([windowedTask]);
         if (url === "/api/tasks/task_1" || url.startsWith("/api/tasks/task_1?")) return jsonResponse(windowedTask);
@@ -1992,8 +2270,7 @@ describe("Workbench components", () => {
           });
         }
         return jsonResponse([]);
-      })
-    );
+      });
 
     render(<App />);
 
@@ -2004,10 +2281,9 @@ describe("Workbench components", () => {
   });
 
   it("moves governance surfaces into settings", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
+    const requests: string[] = [];
+    stubAuthedFetch(async (url) => {
+        requests.push(url);
         if (url === "/api/task-folders") return jsonResponse([{ id: "default", name: "Default", sortOrder: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }]);
         if (url === "/api/tasks") return jsonResponse([]);
         if (
@@ -2057,14 +2333,14 @@ describe("Workbench components", () => {
           });
         }
         return jsonResponse([]);
-      })
-    );
+      });
 
     render(<App />);
-    expect(await screen.findByText("Model: not configured")).toBeInTheDocument();
-    expect(screen.queryByText("gpt-5.4-mini")).not.toBeInTheDocument();
+    expect(await screen.findByText("New Task")).toBeInTheDocument();
+    expect(requests).not.toContain("/api/model-providers");
     fireEvent.click(await screen.findByText("Settings"));
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    await waitFor(() => expect(requests).toContain("/api/model-providers"));
     expect(window.location.pathname).toBe("/settings/providers");
     fireEvent.click(screen.getByText("Permissions"));
     expect(await screen.findByRole("heading", { name: "Permissions" })).toBeInTheDocument();
@@ -2076,7 +2352,87 @@ describe("Workbench components", () => {
     expect(await screen.findByRole("heading", { name: "Web search" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/settings/search");
   });
+
+  it("opens section-specific docs from settings primers and returns to the same settings section", async () => {
+    const requests: string[] = [];
+    stubAuthedFetch(async (url) => {
+      requests.push(url);
+      if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+      if (url === "/api/tasks") return jsonResponse([]);
+      if (url === "/api/preferences") return jsonResponse(defaultPreferences("en-US"));
+      if (
+        url === "/api/model-providers" ||
+        url === "/api/permissions/global" ||
+        url === "/api/mcp/servers" ||
+        url === "/api/mcp/tools" ||
+        url === "/api/integrations" ||
+        url === "/api/scheduled-tasks" ||
+        url === "/api/web-search/providers" ||
+        isWorkbenchCollectionEndpoint(url)
+      ) {
+        return jsonResponse([]);
+      }
+      return jsonResponse([]);
+    });
+
+    render(<App />);
+    expect(await screen.findByText("New Task")).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByText("Settings"));
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Integrations" }));
+    expect(await screen.findByRole("heading", { name: "Integrations" })).toBeInTheDocument();
+    await waitFor(() => expect(requests).toContain("/api/integrations"));
+
+    fireEvent.click(screen.getByRole("button", { name: "View guide" }));
+    expect(await screen.findByRole("heading", { name: "Docs" })).toBeInTheDocument();
+    expect(await screen.findByText("Supported platforms")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/docs/integrations");
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Integrations" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/settings/integrations");
+  });
+
+  it("loads docs routes directly for a specific settings section", async () => {
+    stubAuthedFetch(async (url) => {
+      if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+      if (url === "/api/tasks") return jsonResponse([]);
+      if (url === "/api/preferences") return jsonResponse(defaultPreferences("en-US"));
+      if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+      return jsonResponse([]);
+    });
+
+    window.history.replaceState({}, "", "/docs/search");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "文档" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByRole("heading", { name: "网络搜索" }).length).toBeGreaterThan(0));
+    expect(window.location.pathname).toBe("/docs/search");
+
+    fireEvent.click(screen.getByRole("button", { name: "English" }));
+    expect(await screen.findByRole("heading", { name: "Docs" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByRole("heading", { name: "Web Search" }).length).toBeGreaterThan(0));
+    expect(screen.getByText("Configure search providers for the built-in web_search tool and understand its permission boundary.")).toBeInTheDocument();
+  });
 });
+
+function stubAuthedFetch(handler: (url: string, init?: RequestInit) => Promise<Response> | Response): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/session/bootstrap") return jsonResponse({ sessionToken: TEST_SESSION_TOKEN });
+      if (url.startsWith("/api/") && url !== "/health") {
+        const headers = new Headers(init?.headers);
+        expect(headers.get("x-scc-session")).toBe(TEST_SESSION_TOKEN);
+      }
+      return handler(url, init);
+    })
+  );
+}
 
 function jsonResponse(value: unknown): Response {
   return {

@@ -11,13 +11,15 @@ export interface PermissionState {
 }
 
 const destructivePattern =
-  /\b(remove-item|rm|del|erase|shutdown|restart-computer|stop-process|kill|rd|rmdir|unlink|chmod|chown)\b|\bformat(?:\.com)?\s+[a-z]:/i;
+  /\b(remove-item|rm|del|erase|shutdown|restart-computer|stop-process|kill|rd|rmdir|unlink|chmod|chown|rimraf|rmsync|unlinksync|rmdirsync|removesync)\b|\b(?:fs|node:fs)\.(?:rm|unlink|rmdir)(?:sync)?\b|\bos\.(?:remove|unlink|rmdir)\b|\bshutil\.rmtree\b|\bformat(?:\.com)?\s+[a-z]:/i;
 const writePattern =
-  /\b(set-content|add-content|out-file|new-item|move-item|copy-item|apply-patch|git commit|git push|mv|cp|mkdir|touch)\b|>>|>|echo.*>|printf.*>/i;
-const networkPattern = /\b(invoke-webrequest|curl|wget|fetch|npm install|npm view|git fetch|git pull|wget|nc|netcat|telnet|ssh|scp|ftp|sftp)\b/i;
+  /\b(set-content|add-content|out-file|new-item|move-item|copy-item|apply-patch|git commit|mv|cp|mkdir|touch)\b|>>|>|echo.*>|printf.*>/i;
+const networkPattern = /\b(invoke-webrequest|curl|wget|fetch|npm(?:\.cmd)?\s+view|pnpm\s+view|yarn\s+info|git fetch|wget|nc|netcat|telnet|ssh|scp|ftp|sftp)\b/i;
+const networkMutationPattern =
+  /\b(git\s+(?:push|pull|clone)|npm(?:\.cmd)?\s+(?:install|i|ci|update|uninstall|remove|add)|pnpm\s+(?:install|add|remove|update)|yarn\s+(?:install|add|remove|upgrade)|bun\s+(?:install|add|remove|update))\b/i;
 const hostObservationPattern =
   /\b(get-process|tasklist|systeminfo|get-ciminstance|get-service|get-counter|wmic|ps|top|whoami|id|uname|hostname)\b/i;
-const workspaceReadPattern = /\b(get-content|select-string|rg|dir|ls|get-childitem|git status|git diff|cat|find|grep|head|tail)\b/i;
+const workspaceReadPattern = /\b(dir|ls|get-childitem|tree|git status|git diff|git show)\b/i;
 
 export class PermissionEngine {
   assess(toolName: string, args: Record<string, unknown>): RiskAssessment {
@@ -61,10 +63,15 @@ export class PermissionEngine {
       if (destructivePattern.test(command)) {
         return { category: "destructive", reason: "Command can stop processes, remove data, or alter the host." };
       }
-      if (networkPattern.test(command)) {
-        return { category: "network", reason: "Command can reach external services or change dependencies." };
+      const reachesNetwork = networkPattern.test(command) || networkMutationPattern.test(command);
+      const mutatesWorkspace = writePattern.test(command) || networkMutationPattern.test(command);
+      if (reachesNetwork && mutatesWorkspace) {
+        return { category: "shell", reason: "Command combines external access with local or remote mutation and needs explicit shell review." };
       }
-      if (writePattern.test(command)) {
+      if (reachesNetwork) {
+        return { category: "network", reason: "Command can reach external services without an obvious local mutation." };
+      }
+      if (mutatesWorkspace) {
         return { category: "workspace_write", reason: "Command can write or mutate local files." };
       }
       if (hostObservationPattern.test(command)) {

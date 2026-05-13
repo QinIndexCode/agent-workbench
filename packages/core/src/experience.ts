@@ -124,6 +124,7 @@ export function shouldPromoteToSkill(pattern: PatternRecord): boolean {
   if (total < 5) return false;
   if (pattern.successCount / total < 0.75) return false;
   if (pattern.status !== "stable") return false;
+  if (pattern.content.toolSequence.length < 2) return false;
   return pattern.confidence >= 0.8;
 }
 
@@ -166,7 +167,7 @@ export function promotePatternToSkill(pattern: PatternRecord): SkillRecord {
     },
     version: 1,
     corrections: [],
-    status: "active",
+    status: "candidate",
     relatedPatterns: [pattern.id],
     createdAt: now,
     lastUsedAt: now,
@@ -176,11 +177,6 @@ export function promotePatternToSkill(pattern: PatternRecord): SkillRecord {
 
 export function promoteExperience(experience: ExperienceRecord): SkillRecord {
   const now = nowIso();
-  const canAutoActivate =
-    experience.readOnly &&
-    experience.assessment.goalAchieved &&
-    experience.toolsUsed.length > 0 &&
-    !/could not be loaded|model provider failed|no provider is configured/i.test(experience.result);
   return {
     id: createId("skill"),
     sourceMemoryIds: [experience.id],
@@ -225,7 +221,7 @@ export function promoteExperience(experience: ExperienceRecord): SkillRecord {
     },
     version: 1,
     corrections: [],
-    status: canAutoActivate ? "active" : "candidate",
+    status: "candidate",
     relatedPatterns: [],
     createdAt: now,
     lastUsedAt: now,
@@ -293,6 +289,7 @@ export function shouldPromoteExperienceToSkill(experience: ExperienceRecord): bo
   if (experience.assessment.suggestedPatterns.length === 0) return false;
   if (experience.meta.outcome !== "success") return false;
   if (isLowValueSkillResult(experience.result) || isLowValueSkillResult(experience.body)) return false;
+  if (isOneOffLikeText(experience.goal) || isOneOffLikeText(experience.result) || isOneOffLikeText(experience.body)) return false;
   return true;
 }
 
@@ -302,9 +299,16 @@ export function skillFingerprint(skill: SkillRecord): string {
   const keywords = normalized.applicability.keywords
     .flatMap(tokenize)
     .filter((token) => token.length > 1 || /[\u4e00-\u9fa5]/.test(token));
+  const requiredTools = stableTokens(normalized.applicability.requiredTools.flatMap(tokenize)).slice(0, 12);
+  const requiredContext = stableTokens(normalized.applicability.requiredContext.flatMap(tokenize)).slice(0, 12);
+  const exclusions = stableTokens(normalized.applicability.exclusions.flatMap(tokenize)).slice(0, 12);
   return JSON.stringify({
     title: stableTokens(titleTokens).slice(0, 18),
-    keywords: stableTokens(keywords).slice(0, 24)
+    keywords: stableTokens(keywords).slice(0, 24),
+    requiredTools,
+    requiredContext,
+    exclusions,
+    bodyShape: normalizedBodyShape(normalized.body)
   });
 }
 
@@ -323,7 +327,7 @@ export function listSkillDuplicateGroups(skills: SkillRecord[]): SkillDuplicateG
       return {
         fingerprint,
         canonicalSkillId: sorted[0]!.id,
-        reason: "Same normalized title, keywords, required tools, and context.",
+        reason: "Same normalized goal, tool sequence, required context, exclusions, and body structure.",
         skills: sorted
       };
     });
@@ -512,7 +516,26 @@ function normalizeSkillStatus(value: unknown): SkillRecord["status"] {
 }
 
 function isLowValueSkillResult(value: string): boolean {
-  return /could not be loaded|model provider failed|no provider is configured|tool failed|command failed|unable to check|missing capability/i.test(value);
+  return /could not be loaded|model provider failed|no provider is configured|tool failed|command failed|unable to check|missing capability|i can help|let me know|done\b|completed\b/i.test(value);
+}
+
+function isOneOffLikeText(value: string): boolean {
+  return /current machine|当前机器|single run|one-off|一次性|prior task result|临时|temp|tmp|session token|localhost|127\.0\.0\.1|created scc task/i.test(value);
+}
+
+function normalizedBodyShape(value: string): string[] {
+  const lines = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 12)
+    .map((line) => {
+      if (/^#{1,6}\s/.test(line)) return `heading:${line.replace(/^#{1,6}\s*/, "").toLowerCase()}`;
+      if (/^\d+\.\s/.test(line)) return "ordered-step";
+      if (/^-\s/.test(line)) return "bullet-step";
+      return tokenize(line).slice(0, 4).join("_");
+    });
+  return stableTokens(lines);
 }
 
 function compareCanonicalSkill(left: SkillRecord, right: SkillRecord): number {
@@ -602,7 +625,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 function sanitizeSensitiveText(input: string): string {
   return input
     .replace(/(password|pwd|secret|token|key)\s*[=:]\s*\S+/gi, "$1=***")
-    .replace(/\b(sk|ak)-[a-zA-Z0-9_\-]{10,}\b/g, "***")
+    .replace(/\b(sk|ak)-[a-zA-Z0-9_-]{10,}\b/g, "***")
     .replace(/C:\\Users\\[^\\\s]+/g, "C:\\Users\\$USER")
     .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, "***@***.***");
 }

@@ -3,6 +3,7 @@ import type { McpServerConfig, McpServerCreateRequest, McpServerPatchRequest, Mc
 import { Edit3, Plug, Plus, Search, Server, Trash2, Unplug, Wrench } from "lucide-react";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { SettingsEmptyStateCard, SettingsPrimer, describeActionError } from "./SettingsAssist.js";
 
 const riskCategories: RiskCategory[] = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
 
@@ -22,6 +23,7 @@ type McpDraft = {
 
 export function McpPanel({
   language,
+  onOpenDocs,
   servers,
   tools,
   onCreate,
@@ -31,10 +33,11 @@ export function McpPanel({
   onDelete
 }: {
   language?: string | null;
+  onOpenDocs?: (() => void) | undefined;
   servers: McpServerWithStatus[];
   tools: McpToolSummary[];
-  onCreate: (input: McpServerCreateRequest) => void;
-  onUpdate: (serverId: string, input: McpServerPatchRequest) => void;
+  onCreate: (input: McpServerCreateRequest) => Promise<McpServerConfig | void> | McpServerConfig | void;
+  onUpdate: (serverId: string, input: McpServerPatchRequest) => Promise<McpServerConfig | void> | McpServerConfig | void;
   onConnect: (serverId: string) => void;
   onDisconnect: (serverId: string) => void;
   onDelete: (serverId: string) => void;
@@ -45,6 +48,7 @@ export function McpPanel({
   const [draft, setDraft] = useState<McpDraft>(() => emptyDraft());
   const [toolFilter, setToolFilter] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const safeServers = Array.isArray(servers) ? servers : [];
   const safeTools = Array.isArray(tools) ? tools : [];
   const visibleTools = safeTools.filter((tool) =>
@@ -66,6 +70,15 @@ export function McpPanel({
         </button>
       </header>
 
+      <SettingsPrimer
+        language={language}
+        summary={text.primer.summary}
+        focus={text.primer.focus}
+        impact={text.primer.impact}
+        nextStep={text.primer.nextStep}
+        onOpenDocs={onOpenDocs}
+      />
+
       <section className="mcpListPanel">
         <div className="panelHeader">
           <div>
@@ -76,10 +89,15 @@ export function McpPanel({
         </div>
         <div className="mcpRows">
           {safeServers.length === 0 ? (
-            <div className="emptyState">
-              <Server size={18} aria-hidden="true" />
-              <span>{text.emptyServers}</span>
-            </div>
+          <SettingsEmptyStateCard
+            language={language}
+            title={text.emptyServersTitle}
+            body={text.emptyServers}
+            hint={text.emptyServersHint}
+            actionLabel={text.emptyServersAction}
+            actionAriaLabel={text.emptyServersAction}
+            onAction={startCreate}
+          />
           ) : null}
           {safeServers.map((server) => (
             <article className={server.status?.connected ? "mcpServerListRow connected" : "mcpServerListRow"} key={server.id}>
@@ -127,6 +145,9 @@ export function McpPanel({
             <input aria-label={text.filterTools} placeholder={text.filter} value={toolFilter} onChange={(event) => setToolFilter(event.target.value)} />
           </label>
         </div>
+        <p className="inlineNotice">
+          <span>{text.overrideHint}</span>
+        </p>
         <div className="mcpToolRows">
           {safeTools.length === 0 ? (
             <div className="emptyState">
@@ -153,7 +174,7 @@ export function McpPanel({
         <div className="modalBackdrop stdBackdrop" role="presentation" onClick={(e) => { if (e.target === e.currentTarget) setDialogOpen(false); }}>
           <form aria-label={editing ? text.edit : text.add} className="stdModal" onSubmit={(event) => {
             event.preventDefault();
-            if (canSubmit) save();
+            if (canSubmit) void save();
           }}>
             <div className="stdHeader">
               <h3>{editing ? text.edit : text.add}</h3>
@@ -222,6 +243,7 @@ export function McpPanel({
                   <span aria-hidden="true" />
                 </button>
               </div>
+              {formError ? <p className="formError" role="alert">{formError}</p> : null}
             </div>
             <div className="stdFooter">
               <button className="stdCancelBtn" type="button" onClick={() => setDialogOpen(false)}>
@@ -254,16 +276,19 @@ export function McpPanel({
   function startCreate() {
     setEditing(null);
     setDraft(emptyDraft());
+    setFormError(null);
     setDialogOpen(true);
   }
 
   function startEdit(server: McpServerWithStatus) {
     setEditing(server);
     setDraft(draftFromServer(server));
+    setFormError(null);
     setDialogOpen(true);
   }
 
-  function save() {
+  async function save() {
+    setFormError(null);
     const toolRiskOverrides = draft.overrideTool.trim() ? { [draft.overrideTool.trim()]: draft.overrideRisk } : {};
     const base = {
       label: draft.label.trim(),
@@ -278,9 +303,13 @@ export function McpPanel({
       draft.transport === "stdio"
         ? { ...base, command: draft.command.trim(), url: undefined }
         : { ...base, url: draft.url.trim(), command: undefined };
-    if (editing) onUpdate(editing.id, input);
-    else onCreate(input);
-    setDialogOpen(false);
+    try {
+      if (editing) await onUpdate(editing.id, input);
+      else await onCreate(input);
+      setDialogOpen(false);
+    } catch (error) {
+      setFormError(describeActionError(error));
+    }
   }
 }
 
@@ -341,12 +370,16 @@ function getMcpCopy(language?: string | null) {
     tools: zh ? "tools" : "tools",
     discoveredTools: zh ? "已发现工具" : "Discovered tools",
     toolHint: zh ? "工具被 Agent 使用时会作为普通工具证据进入时间线。" : "When the agent uses these tools, results appear as normal tool evidence.",
-    emptyServers: zh ? "还没有 MCP 服务器。" : "No MCP servers yet.",
+    emptyServersTitle: zh ? "还没有 MCP 服务器" : "No MCP servers yet",
+    emptyServers: zh ? "先添加一个本地 stdio 或 streamable HTTP 服务，连接后才会发现工具列表。" : "Add a local stdio server or a streamable HTTP endpoint before SCC can discover tools.",
+    emptyServersHint: zh ? "第一次接入建议先用一个最小测试服务，确认连接、断开和工具发现都正常。" : "For the first setup, use a minimal test server so you can verify connect, disconnect, and tool discovery quickly.",
+    emptyServersAction: zh ? "添加第一个服务器" : "Add your first server",
     emptyTools: zh ? "连接服务器后会显示工具。" : "Connect a server to discover tools.",
     noEndpoint: zh ? "未配置入口" : "No endpoint",
     unknownServer: zh ? "未知服务器" : "unknown server",
     filter: zh ? "筛选工具" : "filter tools",
     filterTools: zh ? "筛选 MCP 工具" : "Filter MCP tools",
+    overrideHint: zh ? "风险覆盖只影响你点名的单个工具，不会把整台 MCP 服务器统一降级成更低风险。" : "Risk overrides apply only to the named tool. They do not downgrade every tool from the same MCP server.",
     connect: zh ? "连接服务器" : "Connect server",
     disconnect: zh ? "断开连接" : "Disconnect server",
     editServer: (label: string) => (zh ? `编辑 ${label}` : `Edit ${label}`),
@@ -365,6 +398,12 @@ function getMcpCopy(language?: string | null) {
     save: zh ? "保存" : "Save",
     deleteTitle: zh ? "删除服务器" : "Delete server",
     deleteAction: zh ? "删除" : "Delete",
-    deleteWarning: zh ? "删除后该服务器的连接状态和自定义风险覆盖将一并清除。" : "Deleting removes the server connection state and any custom risk overrides."
+    deleteWarning: zh ? "删除后该服务器的连接状态和自定义风险覆盖将一并清除。" : "Deleting removes the server connection state and any custom risk overrides.",
+    primer: {
+      summary: zh ? "MCP 把外部工具接到 SCC 里，但它们仍然要经过同一套风险审批和时间线记录。" : "MCP connects external tools into SCC, but they still pass through the same approval flow and timeline evidence.",
+      focus: zh ? "配置服务入口、连接状态和工具发现；必要时只为个别工具重标风险。" : "Configure server entrypoints, connection state, and tool discovery; override risk only for specific tools when needed.",
+      impact: zh ? "会影响 Agent 是否能发现外部工具、这些工具的风险分类，以及断线后的可用性反馈。" : "Changes affect whether the agent can discover external tools, how their risk is classified, and how outages show up in the UI.",
+      nextStep: zh ? "先接入一个简单服务验证连通性，再逐步增加真正要给 Agent 使用的工具。" : "Connect one simple server first, confirm discovery works, then add the real tools you want the agent to use."
+    }
   };
 }

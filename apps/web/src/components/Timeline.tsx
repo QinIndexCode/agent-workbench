@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import type { ApprovalDecision, TaskDetail, TaskEvent, ToolApproval } from "@scc/shared";
-import { ArrowDown, BookOpen, ChevronDown, Copy, Eye, FileText, Globe2, List as ListIcon, PencilLine, Plug, Search, Terminal, Wrench } from "lucide-react";
+import { ArrowDown, BookOpen, ChevronDown, Copy, Eye, FileText, Globe2, List as ListIcon, PencilLine, Plug, Search, Sparkles, Terminal, Wrench } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import { MarkdownText } from "./MarkdownText.js";
+import { describeSkillSource, describeSkillStatus, parseLoadedSkillEvent } from "./skillUx.js";
 
 const visibleEventTypes = new Set<TaskEvent["type"]>([
   "user_message",
@@ -18,6 +19,7 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
   "tool_started",
   "tool_progress",
   "tool_result",
+  "skill_loaded",
   "model_empty_response",
   "task_checkpoint_created",
   "task_rollback_completed",
@@ -28,6 +30,9 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
 
 const FOLLOW_BOTTOM_DISTANCE = 120;
 const MAX_RENDERED_TIMELINE_ITEMS = 360;
+const LARGE_READ_FILE_SUMMARY_BYTES = 24 * 1024;
+const LARGE_READ_FILE_SUMMARY_LINES = 360;
+const LARGE_READ_FILE_SUMMARY_CHARS = 24 * 1024;
 
 export function Timeline({
   language,
@@ -433,7 +438,7 @@ function TimelineEvent({
       : formatRunningToolOutput(progress, language);
     const summaryText = result ? parsed?.summary : String(progress["message"] ?? eventSummaryForTool(item));
     const previewText = result ? parsed?.preview : String(progress["tail"] ?? "");
-    const summaryOnly = displayMode === "summary_only" || isLargeChange(changes);
+    const summaryOnly = displayMode === "summary_only" || isLargeChange(changes) || isLargeReadFileOutput(toolName, parsed?.meta);
     return (
       <article className="event tool_result">
         <div className={`${ok ? "toolResultDetails" : "toolResultDetails failed"} runningState-${status}${toolOpen ? " open" : ""}`}>
@@ -463,6 +468,7 @@ function TimelineEvent({
                 <Copy size={14} />
               </button>
               <ToolProgressMeta payload={progress} language={language} />
+              {renderToolSemanticNote(toolName, parsed?.meta, language)}
               {summaryText ? <MarkdownText content={summaryText} /> : previewText ? <pre className="toolInlineOutput">{previewText}</pre> : null}
               {parsed?.citations.length ? (
                 <div className="citationList">
@@ -488,6 +494,34 @@ function TimelineEvent({
   }
 
   const event = item.event;
+  if (event.type === "skill_loaded") {
+    const loadedSkill = parseLoadedSkillEvent(event);
+    if (!loadedSkill) return null;
+    return (
+      <article className="event skill_loaded">
+        <div className="inlineNotice">
+          <span>{zh ? "Skill 已命中" : "Skill matched"}</span>
+        </div>
+        <div className="libraryPreviewHeader">
+          <div>
+            <h3><Sparkles size={15} aria-hidden="true" /> {loadedSkill.title}</h3>
+            <p>{loadedSkill.matchReason}</p>
+          </div>
+        </div>
+        <dl className="libraryMetaGrid">
+          <div><dt>{zh ? "状态" : "Status"}</dt><dd>{describeSkillStatus(loadedSkill.status, language)}</dd></div>
+          <div><dt>{zh ? "来源" : "Source"}</dt><dd>{describeSkillSource(loadedSkill.source, language)}</dd></div>
+          <div><dt>{zh ? "Skill ID" : "Skill ID"}</dt><dd>{loadedSkill.skillId}</dd></div>
+          <div><dt>{zh ? "信号" : "Signals"}</dt><dd>{loadedSkill.matchedSignals.join(", ") || (zh ? "无" : "None")}</dd></div>
+          <div><dt>{zh ? "工具" : "Tools"}</dt><dd>{loadedSkill.requiredTools.join(", ") || (zh ? "无" : "None")}</dd></div>
+          <div><dt>{zh ? "上下文" : "Context"}</dt><dd>{loadedSkill.requiredContext.join(", ") || (zh ? "无" : "None")}</dd></div>
+        </dl>
+        {loadedSkill.readOnlySuggestion ? (
+          <p className="toolSemanticNote">{zh ? "这条 Skill 以只读建议形式加入当前任务，不会强制写入流程。" : "This skill was loaded as a read-only suggestion and does not force a write path."}</p>
+        ) : null}
+      </article>
+    );
+  }
   if (event.reverted) {
     return (
       <article className={`event note reverted ${event.type}`}>
@@ -581,6 +615,7 @@ function TimelineEvent({
     const ok = Boolean(event.payload["ok"] ?? false);
     const visibleOutput = parsed.display.trim() || parsed.summary || parsed.preview || (zh ? "没有可展示的工具返回内容。" : "No visible tool output.");
     const fullTarget = fullToolTarget(event.payload, parsed);
+    const summaryOnly = parsed.displayMode === "summary_only" || isLargeChange(parsed.changes) || isLargeReadFileOutput(toolName, parsed.meta);
     return (
       <article className="event tool_result">
         <div className={`${ok ? "toolResultDetails" : "toolResultDetails failed"}${toolOpen ? " open" : ""}`}>
@@ -608,6 +643,7 @@ function TimelineEvent({
               >
                 <Copy size={14} />
               </button>
+              {renderToolSemanticNote(toolName, parsed.meta, language)}
               {parsed.summary ? <MarkdownText content={parsed.summary} /> : parsed.preview ? <pre className="toolInlineOutput">{parsed.preview}</pre> : null}
               {parsed.citations.length > 0 ? (
                 <div className="citationList">
@@ -619,7 +655,11 @@ function TimelineEvent({
                 </div>
               ) : null}
               {parsed.rawOutputRef ? <code className="rawRef">{parsed.rawOutputRef}</code> : null}
-              <pre className="toolResultRaw">{visibleOutput.slice(0, 8000)}</pre>
+              {summaryOnly ? (
+                <p className="toolLargeChangeNote">{zh ? "输出较大，行内仅显示摘要和路径；完整调试数据保留在 trace 中。" : "Large output: inline view shows the summary and path only. Full debug data remains in the trace."}</p>
+              ) : (
+                <pre className="toolResultRaw">{visibleOutput.slice(0, 8000)}</pre>
+              )}
               {copied ? <span className="toolCopiedHint">{zh ? "已复制" : "Copied"}</span> : null}
             </div>
           </div>
@@ -780,6 +820,7 @@ function buildTimelineItems(events: TaskEvent[]): TimelineItem[] {
       .map((event) => String(event.payload["streamId"] ?? ""))
       .filter(Boolean)
   );
+  const hiddenToolTurnStreams = collectToolTurnStreams(events, finalStreamIds);
   const items: TimelineItem[] = [];
   const streamItems = new Map<string, Extract<TimelineItem, { kind: "stream" }>>();
   const toolItems = new Map<string, Extract<TimelineItem, { kind: "tool" }>>();
@@ -787,6 +828,7 @@ function buildTimelineItems(events: TaskEvent[]): TimelineItem[] {
     if (event.type === "assistant_delta" || event.type === "thinking_delta") {
       const streamId = String(event.payload["streamId"] ?? event.id);
       if (event.type === "assistant_delta" && finalStreamIds.has(streamId)) continue;
+       if (hiddenToolTurnStreams.has(streamId)) continue;
       const key = `${event.type}:${streamId}`;
       let stream = streamItems.get(key);
       if (!stream) {
@@ -815,6 +857,55 @@ function buildTimelineItems(events: TaskEvent[]): TimelineItem[] {
     const summary = item.summary.trim();
     return summary.length > 0 && !containsInlineToolMarkup(summary);
   });
+}
+
+function collectToolTurnStreams(events: TaskEvent[], finalStreamIds: Set<string>): Set<string> {
+  const lastStreamEventIndex = new Map<string, number>();
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    if (event?.type !== "assistant_delta" && event?.type !== "thinking_delta") continue;
+    const streamId = String(event.payload["streamId"] ?? event.id);
+    if (!streamId || finalStreamIds.has(streamId)) continue;
+    lastStreamEventIndex.set(streamId, index);
+  }
+
+  const hidden = new Set<string>();
+  for (const [streamId, index] of lastStreamEventIndex.entries()) {
+    const follower = nextMeaningfulEventAfterStream(events, index, streamId);
+    if (follower && isToolLifecycleEvent(follower.type)) hidden.add(streamId);
+  }
+  return hidden;
+}
+
+function nextMeaningfulEventAfterStream(events: TaskEvent[], startIndex: number, streamId: string): TaskEvent | null {
+  for (let index = startIndex + 1; index < events.length; index += 1) {
+    const event = events[index];
+    if (!event) continue;
+    if (event.type === "assistant_delta" || event.type === "thinking_delta") {
+      const nextStreamId = String(event.payload["streamId"] ?? event.id);
+      if (nextStreamId === streamId) continue;
+      return event;
+    }
+    if (
+      event.type === "tool_requested" ||
+      event.type === "tool_started" ||
+      event.type === "tool_progress" ||
+      event.type === "tool_result" ||
+      event.type === "assistant_message" ||
+      event.type === "user_message" ||
+      event.type === "attachment_added" ||
+      event.type === "guidance_pending" ||
+      event.type === "user_input_requested" ||
+      event.type === "approval_pending"
+    ) {
+      return event;
+    }
+  }
+  return null;
+}
+
+function isToolLifecycleEvent(type: TaskEvent["type"]): boolean {
+  return type === "tool_requested" || type === "tool_started" || type === "tool_progress" || type === "tool_result";
 }
 
 function limitTimelineItems(items: TimelineItem[], language?: string | null, visibleLimit = MAX_RENDERED_TIMELINE_ITEMS): TimelineItem[] {
@@ -922,7 +1013,16 @@ function renderToolIcon(toolName: string): ReactNode {
   return <Wrench size={14} />;
 }
 
-function parseToolOutput(output: string): { summary: string; preview: string; display: string; rawOutputRef?: string; displayMode?: string; citations: Array<{ key: string; title: string; heading?: string; source?: string; excerpt: string }>; changes?: { path: string; addedLines: number; removedLines: number; operation?: string } } {
+function parseToolOutput(output: string): {
+  summary: string;
+  preview: string;
+  display: string;
+  rawOutputRef?: string;
+  displayMode?: string;
+  citations: Array<{ key: string; title: string; heading?: string; source?: string; excerpt: string }>;
+  changes?: { path: string; addedLines: number; removedLines: number; operation?: string };
+  meta?: Record<string, unknown>;
+} {
   try {
     const parsed = JSON.parse(output) as Record<string, unknown>;
     const rawSummary = typeof parsed["summary"] === "string" ? parsed["summary"] : "";
@@ -937,6 +1037,7 @@ function parseToolOutput(output: string): { summary: string; preview: string; di
       preview: summary ? "" : firstUsefulToolPreview(parsed),
       display: compact,
       citations,
+      meta: parsed,
       ...(changes ? { changes } : {}),
       ...(displayMode ? { displayMode } : {}),
       ...(rawOutputRef ? { rawOutputRef } : {})
@@ -1004,7 +1105,7 @@ function toolNameForItem(item: Extract<TimelineItem, { kind: "tool" }>): string 
 
 function toolStatusForItem(item: Extract<TimelineItem, { kind: "tool" }>): "running" | "completed" | "failed" {
   const result = toolResultEvent(item);
-  if (result) return Boolean(result.payload["ok"] ?? false) ? "completed" : "failed";
+  if (result) return result.payload["ok"] === true ? "completed" : "failed";
   const status = String(toolLatestProgressPayload(item)["status"] ?? "");
   return status === "completed" || status === "failed" ? status : "running";
 }
@@ -1020,6 +1121,19 @@ function extractPayloadChanges(payload: Record<string, unknown>): { path: string
 function isLargeChange(changes?: { addedLines: number; removedLines: number } | undefined): boolean {
   if (!changes) return false;
   return changes.addedLines + changes.removedLines > 160;
+}
+
+function isLargeReadFileOutput(toolName: string, meta: Record<string, unknown> | undefined): boolean {
+  if (toolName !== "read_file" || !meta) return false;
+  const mode = String(meta["mode"] ?? "");
+  if (mode === "range") return false;
+  if (meta["partial"] === true) return true;
+  const totalLines = Number(meta["totalLines"] ?? NaN);
+  if (Number.isFinite(totalLines) && totalLines > LARGE_READ_FILE_SUMMARY_LINES) return true;
+  const sizeBytes = Number(meta["sizeBytes"] ?? NaN);
+  if (Number.isFinite(sizeBytes) && sizeBytes > LARGE_READ_FILE_SUMMARY_BYTES) return true;
+  const content = typeof meta["content"] === "string" ? meta["content"] : "";
+  return content.length > LARGE_READ_FILE_SUMMARY_CHARS;
 }
 
 function formatToolStatus(status: "running" | "completed" | "failed", language?: string | null | undefined): string {
@@ -1050,13 +1164,54 @@ function ToolProgressMeta({ payload, language }: { payload: Record<string, unkno
   return <small className="toolProgressMeta">{zh ? "进度" : "Progress"}: {text}</small>;
 }
 
+function renderToolSemanticNote(toolName: string, meta: Record<string, unknown> | undefined, language?: string | null | undefined) {
+  const zh = language === "zh-CN";
+  if (toolName === "search_files") {
+    return (
+      <p className="toolSemanticNote">
+        {zh
+          ? "search_files 只返回工作区匹配路径、行号和片段，不返回完整文件正文；需要全文时继续调用 read_file。"
+          : "search_files returns live workspace paths, line numbers, and snippets only. Use read_file for full file content."}
+      </p>
+    );
+  }
+  if (toolName === "knowledge_search") {
+    return (
+      <p className="toolSemanticNote">
+        {zh
+          ? "knowledge_search 搜索资料库中的已保存知识，不代表当前工作区文件现状；需要核对源码时继续使用 search_files 或 read_file。"
+          : "knowledge_search queries saved library knowledge, not live workspace files. Use search_files or read_file to verify current source."}
+      </p>
+    );
+  }
+  if (toolName === "read_file") {
+    const mode = String(meta?.["mode"] ?? "");
+    const partial = meta?.["partial"] === true;
+    const large = isLargeReadFileOutput(toolName, meta);
+    const note =
+      mode === "full" && !partial && !large
+        ? zh
+          ? "本次返回的是完整文件内容。"
+          : "This read returned the full file content."
+        : mode === "range"
+          ? zh
+            ? "本次只返回指定范围的文件内容；如需其他位置，请继续按范围读取。"
+            : "This read returned only the requested range. Read another range if you need different lines."
+          : zh
+            ? "本次是大文件预览或预算受限读取；如需精确位置，请继续按范围读取。"
+            : "This read is a large-file preview or a budget-limited read. Request another range for exact lines.";
+    return <p className="toolSemanticNote">{note}</p>;
+  }
+  return null;
+}
+
 function isPlaceholderToolSummary(value: string): boolean {
   return /^(tool evidence returned\.?|tool evidence returned[:：].*|工具证据已返回。?|工具证据已返回[:：].*)$/i.test(value.trim());
 }
 
 function stringifyToolDisplay(parsed: Record<string, unknown>, summary: string): string {
   if (summary) return summary;
-  const { summary: _summary, ...rest } = parsed;
+  const { summary: _unusedSummary, ...rest } = parsed;
   return JSON.stringify(rest, null, 2);
 }
 

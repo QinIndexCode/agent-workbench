@@ -332,13 +332,6 @@ function hashToken(token: string): number {
   return hash | 0;
 }
 
-function cosine(left: number[], right: number[]): number {
-  const length = Math.min(left.length, right.length);
-  let dot = 0;
-  for (let index = 0; index < length; index += 1) dot += (left[index] ?? 0) * (right[index] ?? 0);
-  return Math.max(0, Math.min(1, dot));
-}
-
 function isIndexableKnowledge(item: KnowledgeItem): boolean {
   if (!item.content.trim()) return false;
   if (item.size && item.size > 1_500_000) return false;

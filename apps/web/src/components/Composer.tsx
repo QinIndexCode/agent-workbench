@@ -78,7 +78,6 @@ export function Composer({
   onRemoveAttachment,
   onFolderChange,
   onModelChange,
-  onOpenPermissionSettings,
   onOpenCustomPermissions,
   onRestoreCustomPermissions,
   hasCustomSnapshot = false,
@@ -108,7 +107,6 @@ export function Composer({
   onRemoveAttachment?: (attachmentId: string) => Promise<void> | void;
   onFolderChange?: ((folderId: string) => void) | undefined;
   onModelChange?: (modelId: string) => void;
-  onOpenPermissionSettings?: () => void;
   onOpenCustomPermissions?: () => void;
   onRestoreCustomPermissions?: () => void;
   hasCustomSnapshot?: boolean;
@@ -535,12 +533,8 @@ function getPermissionOptions(labels: ReturnType<typeof getUiCopy>["composer"]):
 }
 
 function resize(element: HTMLTextAreaElement, reset = false) {
-  // 先获取当前高度，用于平滑过渡
-  const currentHeight = element.style.height || `${element.offsetHeight}px`;
-  // 临时设置高度为 auto 来获取真实内容高度
   element.style.height = "auto";
   const targetHeight = reset ? "72px" : `${Math.min(element.scrollHeight, 180)}px`;
-  // 强制浏览器布局，确保过渡效果能生效
   void element.offsetHeight;
   element.style.height = targetHeight;
 }

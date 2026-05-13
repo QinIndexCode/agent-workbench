@@ -4,6 +4,7 @@ import { BookMarked, Database, Edit3, Plus, Save, Scissors, Search, Trash2, User
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { MarkdownText } from "./MarkdownText.js";
+import { SettingsPrimer } from "./SettingsAssist.js";
 
 type MemoryDocKey = "user" | "project";
 type ProjectMemoryCategory = ProjectMemoryCreateRequest["category"];
@@ -23,6 +24,7 @@ export function ProjectMemoryPanel({
   language,
   memories,
   query = "",
+  onOpenDocs,
   onCompactProjectMemory,
   onCreate,
   onDelete,
@@ -37,6 +39,7 @@ export function ProjectMemoryPanel({
   language?: string | null;
   memories: ProjectMemory[];
   query?: string;
+  onOpenDocs?: (() => void) | undefined;
   onCompactProjectMemory: (folderId: string) => Promise<MemoryDocumentCompactResult>;
   onCreate: (input: ProjectMemoryCreateRequest) => Promise<void> | void;
   onDelete: (id: string) => Promise<void> | void;
@@ -113,7 +116,7 @@ export function ProjectMemoryPanel({
     <section className="memoryPanel">
       <header className="libraryPanelHero">
         <div>
-          <h3>{text.title}</h3>
+          <h2>{text.title}</h2>
           <p>{text.subtitle}</p>
         </div>
         <button className="subtleButton iconText" type="button" onClick={() => { setEditingMemoryId(null); setDraft(emptyDraft()); setDraftOpen(true); }}>
@@ -121,6 +124,14 @@ export function ProjectMemoryPanel({
           {text.newMemory}
         </button>
       </header>
+      <SettingsPrimer
+        language={language}
+        summary={text.primer.summary}
+        focus={text.primer.focus}
+        impact={text.primer.impact}
+        nextStep={text.primer.nextStep}
+        onOpenDocs={onOpenDocs}
+      />
 
       {error ? <p className="formError">{error}</p> : null}
       {compactResult ? (
@@ -128,7 +139,7 @@ export function ProjectMemoryPanel({
       ) : null}
 
       <div className="knowledgeGrid memoryGrid libraryManagerGrid">
-        <aside className="knowledgeListPane">
+        <div aria-label={text.title} className="knowledgeListPane" role="region">
           <div className="memoryDocList">
             <button className={activeDoc === "user" ? "knowledgeRow selected" : "knowledgeRow"} type="button" onClick={() => setActiveDoc("user")}>
               <span className="providerIcon"><UserRound size={15} /></span>
@@ -172,7 +183,7 @@ export function ProjectMemoryPanel({
               </article>
             ))}
           </div>
-        </aside>
+        </div>
 
         <section className="knowledgeDetailPane libraryPreviewPane">
           <div className="libraryPreviewHeader">
@@ -425,6 +436,12 @@ function getMemoryCopy(language?: string | null) {
     deleteTitle: zh ? "删除项目记忆？" : "Delete project memory?",
     deleteBody: (title: string) => zh ? `“${title}” 会从结构化项目记忆中移除。` : `"${title}" will be removed from structured project memory.`,
     charCount: (chars: number, limit?: number) => limit ? `${chars} / ${limit}` : `${chars}`,
-    compacted: (before: number, after: number, lines: number) => zh ? `已压缩项目记忆：${before} -> ${after} 字符，移除 ${lines} 行。` : `Compacted project memory: ${before} -> ${after} chars, removed ${lines} lines.`
+    compacted: (before: number, after: number, lines: number) => zh ? `已压缩项目记忆：${before} -> ${after} 字符，移除 ${lines} 行。` : `Compacted project memory: ${before} -> ${after} chars, removed ${lines} lines.`,
+    primer: {
+      summary: zh ? "这里保存长期有效的用户画像、项目记忆文档，以及结构化的项目事实。" : "This page stores durable user profile notes, project memory documents, and structured project facts.",
+      focus: zh ? "把真正会反复影响任务判断的内容留在这里，而不是把一次性的任务输出堆进长期记忆。" : "Keep only information that repeatedly affects task decisions here instead of dumping one-off task output into durable memory.",
+      impact: zh ? "会影响新任务启动时的背景上下文、长期约定是否被保留，以及记忆是否会逐渐失真或膨胀。" : "Changes affect startup context for new tasks, whether long-term conventions are retained, and whether memory stays compact instead of drifting or bloating.",
+      nextStep: zh ? "先更新 USER.md 或 MEMORY.md，再按分类补结构化项目事实；如果文档膨胀，再执行压缩。" : "Update USER.md or MEMORY.md first, then add structured facts by category. Compact the document if it starts growing noisy."
+    }
   };
 }

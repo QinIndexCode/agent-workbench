@@ -1,0 +1,63 @@
+name: live-quality
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+      - release/**
+
+jobs:
+  live-model-quality:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      SCC_LIVE_MODEL_SMOKE: "1"
+      SCC_LIVE_MODEL_REQUIRED: "1"
+      SCC_STRESS_LEVEL: "5"
+      OPENAI_API_KEY: ${{ secrets.SCC_OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.SCC_OPENAI_BASE_URL }}
+      SCC_MODEL: ${{ secrets.SCC_OPENAI_MODEL }}
+      OPENAI_PROVIDER: ${{ secrets.SCC_OPENAI_PROVIDER }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Verify live smoke secrets
+        shell: pwsh
+        run: |
+          if (-not $env:OPENAI_API_KEY) { throw "Missing secret SCC_OPENAI_API_KEY" }
+          if (-not $env:OPENAI_BASE_URL) { throw "Missing secret SCC_OPENAI_BASE_URL" }
+
+      - name: Install dependencies
+        run: npm.cmd ci
+
+      - name: Run flagship non-live quality suite
+        run: npm.cmd run quality:full
+
+      - name: Run live model smoke
+        run: npm.cmd run smoke:live-model
+
+      - name: Refresh flagship report
+        if: always()
+        env:
+          SCC_FLAGSHIP_REPORT_REQUIRED: "1"
+        run: node scripts/write-flagship-report.mjs
+
+      - name: Upload live quality artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-quality-artifacts
+          path: |
+            data/test-reports/live-model-smoke/**
+            docs/reports/*flagship-revalidation.md
+          if-no-files-found: warn

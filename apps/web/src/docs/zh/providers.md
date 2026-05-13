@@ -1,30 +1,43 @@
-# Model Providers
+# 模型配置
 
-SCC 通过统一的抽象层支持多种模型服务商。配置信息存储在本地，API Key 写入本地数据目录。
+模型配置页用于把真正可执行任务的模型入口接到 SCC。没有可用 Provider 时，任务、标题生成和继续会话都可能受限。
 
-## 支持协议
+## 这页会影响什么
 
-### OpenAI-compatible
-兼容 OpenAI API 格式的服务商：
-- OpenAI
-- Azure OpenAI
-- 其他兼容服务
+- 当前任务默认用哪个模型
+- 可用模型的上下文窗口大小
+- 主模型失败后是否允许回退到备用 Provider
+- 本地保存了哪些 API Key
 
-### Anthropic Messages
-Anthropic 的 Messages API：
-- Claude 3.5 Sonnet
-- Claude 3 Opus
-- Claude 3 Haiku
+## 推荐的首次配置
 
-### Gemini
-Google 的 Gemini API：
-- Gemini 1.5 Pro
-- Gemini 1.5 Flash
+1. 先只添加一个你确定能正常返回结果的 Provider。
+2. 保存后确认它已经成为“当前使用”。
+3. 运行一次真实任务或标题生成，确认链路通畅。
+4. 再决定是否补充备用 Provider。
 
-## 配置步骤
+## 常见字段如何理解
 
-1. 进入设置页面的 **Providers** 标签
-2. 选择协议类型
-3. 填写 API Key 和基础 URL（如使用自定义端点）
-4. 指定默认模型和上下文窗口大小
-5. 保存配置
+### 协议 / Preset vendor
+
+用于选择预设供应商或协议类型。预设通常会自带推荐模型和默认 Base URL。
+
+### Base URL
+
+用于指定实际请求入口。自定义兼容服务时尤其要核对。
+
+### 模型
+
+可以从预设中选，也可以手动填自定义模型 ID。
+
+### Context window
+
+决定单次请求可用的上下文规模。手动填写时，要确保与你实际模型能力匹配。
+
+### Available to tasks
+
+关闭后会保留配置和密钥，但任务不会选择它。
+
+### Make active
+
+保存后立即切换到该 Provider，适合首次配置或明确准备迁移时使用。

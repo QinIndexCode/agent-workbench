@@ -1,27 +1,28 @@
 # MCP
 
-Model Context Protocol (MCP) is an open protocol for connecting external tool services.
+The MCP page connects external tool servers into SCC and keeps those tools inside the same approval, evidence, and timeline system as built-in tools.
 
-## Features
+## Supported transport types
 
-- Unified tool discovery and calling interface
-- Tools run in independent processes
-- Dynamic tool list synchronization
+### stdio
 
-## Configuring Local Services
+Best for local scripts or local services. You normally provide:
 
-1. Go to the **MCP** tab in Settings
-2. Click **Add Service**
-3. Enter the service name, launch command, and arguments
-4. After saving, the system will attempt to connect and fetch the tool list
+- command
+- arguments
+- optional working directory
 
-## Configuring Remote Services
+### streamable HTTP
 
-- Streamable HTTP transport is supported for remote MCP endpoints
-- Tool lists are synced automatically after entering the endpoint
+Best for remote MCP endpoints. You normally provide just the URL.
 
-## Usage
+## What risk overrides actually do
 
-- The model generates MCP tool calls when needed
-- Execution is handled per the current permission policy
-- Results are appended to the task timeline
+Risk overrides do **not** downgrade an entire server. They only remap the risk class for one named tool.
+
+## Best first validation
+
+1. Add one small MCP server
+2. Connect it successfully
+3. Confirm its tools appear in the discovered-tool list
+4. Disconnect it and confirm discovery disappears

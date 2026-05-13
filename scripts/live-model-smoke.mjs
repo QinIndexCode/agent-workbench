@@ -2,9 +2,20 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { sourceFingerprint } from "./source-fingerprint.mjs";
 
-if (process.env.SCC_LIVE_MODEL_SMOKE !== "1") {
-  console.log("Skipping live model smoke. Set SCC_LIVE_MODEL_SMOKE=1 to run it.");
+const root = resolve(process.cwd());
+
+const liveSmokeRequested = process.env.SCC_LIVE_MODEL_SMOKE === "1";
+const liveSmokeRequired = process.env.SCC_LIVE_MODEL_REQUIRED === "1";
+
+if (!liveSmokeRequested) {
+  const message = "Skipping live model smoke. Set SCC_LIVE_MODEL_SMOKE=1 to run it.";
+  if (liveSmokeRequired) {
+    console.error(`${message} This run marked live smoke as required.`);
+    process.exit(1);
+  }
+  console.log(message);
   process.exit(0);
 }
 
@@ -29,6 +40,8 @@ const stressLevel = Math.max(1, Number(process.env.SCC_STRESS_LEVEL ?? "1") || 1
 
 const report = {
   generatedAt: nowIso(),
+  sourceFingerprint: sourceFingerprint(root),
+  required: liveSmokeRequired,
   stressLevel,
   provider: {
     baseURL: redactUrl(config.baseURL),
@@ -296,6 +309,129 @@ if (stressLevel >= 4) {
   });
 }
 
+if (stressLevel >= 5) {
+  await runCase("long debug follow-up with context compaction", async () => {
+    const fixture = createFixtureProject("long-follow-up");
+    try {
+      writeFixture(fixture.root, "package.json", JSON.stringify({ type: "module", scripts: { test: "node tests/math.test.mjs && node tests/totals.test.mjs" } }, null, 2));
+      writeFixture(
+        fixture.root,
+        "src/totals.mjs",
+        "export function renderTotal(items) {\n  return '$0.00';\n}\n"
+      );
+      const { workbench, store, folderId } = await createLiveWorkbench(fixture.root);
+      let task = await workbench.createTask(
+        [
+          "这是一个长任务验证。先运行 npm test，定位失败测试，读取相关源码，再只修改必要文件。",
+          "必须重新运行 npm test，确认 math 和 totals 两组测试都通过。",
+          "最终回答要基于真实工具证据，写出根因、修改文件和验证结果。"
+        ].join("\n"),
+        "Live long debug",
+        folderId,
+        [],
+        {
+          runMode: "target",
+          targetLimits: {
+            maxModelTurns: 48,
+            maxToolCalls: 120,
+            maxWallTimeMs: 240_000
+          }
+        }
+      );
+      task = await settleApprovals(workbench, task, () => "allow_for_task", 18);
+      const fixedMath = readFileSync(join(fixture.root, "src", "math.mjs"), "utf8");
+      const fixedTotals = readFileSync(join(fixture.root, "src", "totals.mjs"), "utf8");
+      assert(task.status === "completed", `expected completed, got ${task.status}`);
+      assert(toolOutputs(task).join("\n").includes("math tests passed"), "math fixture did not pass before follow-up");
+      assert(toolOutputs(task).join("\n").includes("totals tests passed"), "totals fixture did not pass before follow-up");
+      assert(fixedMath.includes("reduce"), "math source was not fixed before follow-up");
+      assert(fixedTotals.includes("reduce") && fixedTotals.includes("toFixed"), "totals source was not fixed before follow-up");
+
+      await workbench.rollbackTask(task.id);
+      const restoredMath = readFileSync(join(fixture.root, "src", "math.mjs"), "utf8");
+      const restoredTotals = readFileSync(join(fixture.root, "src", "totals.mjs"), "utf8");
+      assert(restoredMath.includes("return numbers.length;"), "rollback did not restore math source before follow-up");
+      assert(restoredTotals.includes("return '$0.00';"), "rollback did not restore totals source before follow-up");
+
+      task = await seedLongConversationHistory(store, await workbench.getTask(task.id), "LONG-FOLLOW-UP-MARKER", 22);
+      await workbench.updatePreferences({ maxTokensPerRequest: 2600 });
+      const toolRequestCountBeforeFollowUp = task.events.filter((event) => event.type === "tool_requested").length;
+      let continued = await workbench.appendMessage(
+        task.id,
+        [
+          "继续这个同一个任务。",
+          "请基于之前真实执行过的工具证据和刚刚 rollback 的结果，输出一个 JSON 对象，不要使用 Markdown、不要使用代码围栏、不要添加 JSON 之外的解释。",
+          "不要重新运行 npm test，也不要再次编辑文件。",
+          "你必须使用 read_file 核对 rollback 后的 src/math.mjs 与 src/totals.mjs；不要读取其他文件，也不要调用除 read_file 之外的工具。",
+          "只允许基于你已经看到的 npm test 输出、src/math.mjs 和 src/totals.mjs 的真实内容回答，不要猜测不存在的函数或文件，不要使用“可能”“也许”或类似推测词。",
+          "JSON 必须包含这些字段：",
+          "- originalFailures.math.expected",
+          "- originalFailures.math.actual",
+          "- originalFailures.math.expression",
+          "- originalFailures.totals.expected",
+          "- originalFailures.totals.actual",
+          "- originalFailures.totals.expression",
+          "- modifiedFiles",
+          "- rollbackSucceeded",
+          "- currentMathExpression",
+          "- currentTotalsExpression",
+          "- restoredToOriginalBuggyState",
+          "真实断言值必须是：sum([2, 3, 5]) 期望 10、实际 3；renderTotal([{ price: 2 }, { price: 5.5 }]) 期望 '$7.50'、实际 '$0.00'。",
+          "modifiedFiles 必须列出之前真正被 edit_file 修改过的相对路径；本场景应为 [\"src/math.mjs\", \"src/totals.mjs\"]。",
+          "rollback 后当前源码必须反映恢复后的真实表达式。不要新建任务。"
+        ].join("\n")
+      );
+      continued = await settleApprovals(
+        workbench,
+        continued,
+        (approval) => (approval.riskCategory === "workspace_read" ? "allow_for_task" : "deny"),
+        8
+      );
+      const summaries = await workbench.listConversationSummaries(task.id);
+      const followUpToolRequests = continued.events.filter((event) => event.type === "tool_requested").slice(toolRequestCountBeforeFollowUp);
+      const followUpReadPaths = followUpToolRequests
+        .filter((event) => event.payload?.toolName === "read_file")
+        .map((event) => String(event.payload?.args?.path ?? ""));
+      const assistant = assistantText(continued);
+      const assistantJson = parseAssistantJson(assistant);
+      const modifiedFiles = normalizeStringArray(assistantJson.modifiedFiles);
+      const longEvidence = evidence(continued, {
+        summaries: summaries.length,
+        assistant: excerpt(assistant),
+        restoredMath: excerpt(restoredMath),
+        restoredTotals: excerpt(restoredTotals),
+        followUpReadPaths
+      }).evidence;
+      assertWithEvidence(continued.id === task.id, "follow-up changed task id", longEvidence);
+      assertWithEvidence(continued.status === "completed", `expected completed, got ${continued.status}`, longEvidence);
+      assertWithEvidence(summaries.length > 0 || continued.events.some((event) => event.type === "conversation_summary_created"), "long follow-up did not compact context", longEvidence);
+      assertWithEvidence(followUpToolRequests.every((event) => event.payload?.toolName === "read_file"), "follow-up called tools other than read_file", longEvidence);
+      assertWithEvidence(followUpReadPaths.every((path) => path.endsWith("src/math.mjs") || path.endsWith("src/totals.mjs")), "follow-up re-read files outside the allowed rollback scope", longEvidence);
+      assertWithEvidence(followUpReadPaths.some((path) => path.endsWith("src/math.mjs")), "follow-up did not re-read src/math.mjs after rollback", longEvidence);
+      assertWithEvidence(followUpReadPaths.some((path) => path.endsWith("src/totals.mjs")), "follow-up did not re-read src/totals.mjs after rollback", longEvidence);
+      assertWithEvidence(Array.isArray(assistantJson.modifiedFiles), "follow-up JSON omitted modifiedFiles", longEvidence);
+      assertWithEvidence(modifiedFiles.some((value) => value.endsWith("src/math.mjs")), "follow-up JSON omitted src/math.mjs", longEvidence);
+      assertWithEvidence(modifiedFiles.some((value) => value.endsWith("src/totals.mjs")), "follow-up JSON omitted src/totals.mjs", longEvidence);
+      assertWithEvidence(assistantJson.rollbackSucceeded === true, "follow-up JSON did not confirm rollback success", longEvidence);
+      assertWithEvidence(assistantJson.restoredToOriginalBuggyState === true, "follow-up JSON did not confirm restored buggy state", longEvidence);
+      assertWithEvidence(normalizeExpression(assistantJson.currentMathExpression) === "return numbers.length;", "follow-up JSON reported the wrong restored math expression", longEvidence);
+      assertWithEvidence(normalizeExpression(assistantJson.currentTotalsExpression) === "return '$0.00';", "follow-up JSON reported the wrong restored totals expression", longEvidence);
+      assertWithEvidence(Number(assistantJson.originalFailures?.math?.expected) === 10, "follow-up JSON reported the wrong math expected value", longEvidence);
+      assertWithEvidence(Number(assistantJson.originalFailures?.math?.actual) === 3, "follow-up JSON reported the wrong math actual value", longEvidence);
+      assertWithEvidence(normalizeExpression(assistantJson.originalFailures?.math?.expression) === "return numbers.length;", "follow-up JSON reported the wrong math failure expression", longEvidence);
+      assertWithEvidence(normalizeQuotedValue(assistantJson.originalFailures?.totals?.expected) === "$7.50", "follow-up JSON reported the wrong totals expected value", longEvidence);
+      assertWithEvidence(normalizeQuotedValue(assistantJson.originalFailures?.totals?.actual) === "$0.00", "follow-up JSON reported the wrong totals actual value", longEvidence);
+      assertWithEvidence(normalizeExpression(assistantJson.originalFailures?.totals?.expression) === "return '$0.00';", "follow-up JSON reported the wrong totals failure expression", longEvidence);
+      assertWithEvidence(assistant.includes("LONG-FOLLOW-UP-MARKER") || summaries.length > 0, "long follow-up lost the compaction marker context", longEvidence);
+      assertWithEvidence(Number(longEvidence.traceMaxEntryBytes ?? 0) <= 20_000, "trace entries grew beyond the long-task budget", longEvidence);
+      assertWithEvidence(Number(longEvidence.traceBytes ?? 0) <= 450_000, "trace output grew beyond the long-task budget", longEvidence);
+      return { status: "passed", evidence: longEvidence };
+    } finally {
+      fixture.cleanup();
+    }
+  });
+}
+
 await runCase("pending guidance consumption", async () => {
   const fixture = createFixtureProject("guidance");
   try {
@@ -408,6 +544,11 @@ await runCase("knowledge rag citation", async () => {
 });
 
 const failed = report.cases.filter((item) => item.status === "failed");
+report.summary = {
+  totalCases: report.cases.length,
+  passedCases: report.cases.filter((item) => item.status === "passed").length,
+  failedCases: failed.length
+};
 const outDir = resolve("data", "test-reports", "live-model-smoke");
 await mkdir(outDir, { recursive: true });
 await writeFile(resolve(outDir, "report.json"), JSON.stringify(report, null, 2), "utf8");
@@ -460,22 +601,27 @@ async function runCase(name, fn) {
   const started = Date.now();
   try {
     const result = await withTimeout(fn(), 180_000, name);
+    const evidencePayload = result?.evidence ?? result ?? {};
+    assertTraceBudgets(evidencePayload);
     report.cases.push({
       name,
       status: "passed",
       durationMs: Date.now() - started,
-      evidence: result.evidence ?? result
+      evidence: evidencePayload
     });
     console.log(`PASS ${name}`);
   } catch (error) {
+    const evidencePayload = error instanceof EvidenceError ? error.evidence : {};
+    const failureClass = classifyFailure(name, error, evidencePayload);
     report.cases.push({
       name,
       status: "failed",
       durationMs: Date.now() - started,
+      failureClass,
       error: sanitizeError(error),
-      evidence: error instanceof EvidenceError ? error.evidence : {}
+      evidence: evidencePayload
     });
-    console.error(`FAIL ${name}: ${sanitizeError(error)}`);
+    console.error(`FAIL ${name} [${failureClass}]: ${sanitizeError(error)}`);
   }
 }
 
@@ -485,12 +631,14 @@ function evidence(task, extra = {}) {
     riskCategory: event.payload?.riskCategory,
     argsPreview: event.payload?.argsPreview
   }));
+  const metrics = taskMetrics(task);
   return {
     status: "passed",
     evidence: {
       taskId: task.id,
       status: task.status,
       workRoot: task.workRoot,
+      ...metrics,
       assistant: excerpt(assistantText(task), 10000),
       ...extra,
       eventCounts: eventCounts(task),
@@ -527,9 +675,9 @@ function createFixtureProject(name) {
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-async function seedLongConversationHistory(store, task, marker) {
+async function seedLongConversationHistory(store, task, marker, noteCount = 34) {
   const seeded = { ...task, events: [...task.events] };
-  for (let index = 0; index < 34; index++) {
+  for (let index = 0; index < noteCount; index++) {
     const content = [
       `Synthetic long-context note ${index + 1}.`,
       index === 2 ? `Important stable marker: ${marker}.` : "Routine maintenance detail.",
@@ -556,7 +704,34 @@ function writeFixture(root, path, content) {
 }
 
 function assistantText(task) {
-  return task.events.filter((event) => event.type === "assistant_message").map((event) => event.summary).join("\n");
+  return [...task.events].reverse().find((event) => event.type === "assistant_message")?.summary ?? "";
+}
+
+function parseAssistantJson(text) {
+  const raw = String(text ?? "").trim();
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced?.[1] ?? raw).trim();
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start < 0 || end <= start) throw new Error("assistant did not return a JSON object");
+  return JSON.parse(candidate.slice(start, end + 1));
+}
+
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+}
+
+function normalizeExpression(value) {
+  let text = String(value ?? "").trim().replace(/\s+/g, " ");
+  if (!text) return "";
+  if (!/^return\b/.test(text)) text = `return ${text}`;
+  return text.endsWith(";") ? text : `${text};`;
+}
+
+function normalizeQuotedValue(value) {
+  const text = String(value ?? "").trim();
+  return text.replace(/^['"`]|['"`]$/g, "");
 }
 
 function toolOutputs(task) {
@@ -577,6 +752,44 @@ function eventCounts(task) {
   return counts;
 }
 
+function taskMetrics(task) {
+  const trace = readTraceMetrics(task);
+  const createdAt = Date.parse(task.createdAt ?? "");
+  const updatedAt = Date.parse(task.updatedAt ?? "");
+  const latencyMs = Number.isFinite(createdAt) && Number.isFinite(updatedAt) ? Math.max(0, updatedAt - createdAt) : undefined;
+  const approvalCount = task.events.filter((event) => event.type === "approval_pending" || event.type === "approval_resolved" || event.type === "approval_auto_granted").length;
+  const rollbackUsed = task.events.some((event) => event.type === "task_rollback_completed" || event.type === "task_rollback_failed");
+  const contextCompactionObserved = task.events.some((event) => event.type === "conversation_summary_created" || event.type === "context_overflow_recovered");
+  return {
+    latencyMs,
+    eventCount: task.events.length,
+    approvalCount,
+    rollbackUsed,
+    contextCompactionObserved,
+    ...trace
+  };
+}
+
+function readTraceMetrics(task) {
+  const tracePath = join(task.workRoot ?? process.cwd(), "data", "logs", "model-traces", task.id, "trace.jsonl");
+  if (!existsSync(tracePath)) {
+    return { tracePath, traceArtifactPath: null, traceLines: 0, traceBytes: 0, traceMaxEntryBytes: 0 };
+  }
+  const raw = readFileSync(tracePath, "utf8");
+  const lines = raw.split("\n").filter(Boolean);
+  const artifactDir = resolve("data", "test-reports", "live-model-smoke", "traces");
+  mkdirSync(artifactDir, { recursive: true });
+  const traceArtifactPath = resolve(artifactDir, `${task.id}.jsonl`);
+  writeFileSync(traceArtifactPath, raw, "utf8");
+  return {
+    tracePath,
+    traceArtifactPath,
+    traceLines: lines.length,
+    traceBytes: Buffer.byteLength(raw, "utf8"),
+    traceMaxEntryBytes: lines.reduce((max, line) => Math.max(max, Buffer.byteLength(line, "utf8")), 0)
+  };
+}
+
 function excerpt(value, max = 10000) {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 }
@@ -587,6 +800,14 @@ function assert(condition, message) {
 
 function assertWithEvidence(condition, message, evidencePayload) {
   if (!condition) throw new EvidenceError(message, evidencePayload);
+}
+
+function assertTraceBudgets(evidencePayload) {
+  if (!evidencePayload || typeof evidencePayload !== "object") return;
+  const traceMaxEntryBytes = Number(evidencePayload.traceMaxEntryBytes ?? 0);
+  const traceBytes = Number(evidencePayload.traceBytes ?? 0);
+  assertWithEvidence(traceMaxEntryBytes <= 20_000, "trace entries grew beyond the flagship per-entry budget", evidencePayload);
+  assertWithEvidence(traceBytes <= 450_000, "trace output grew beyond the flagship task budget", evidencePayload);
 }
 
 function sanitizeError(error) {
@@ -606,11 +827,34 @@ function redactUrl(value) {
 }
 
 function markdownReport(data) {
-  const lines = ["# SCC Live Mimo Smoke", "", `Generated: ${data.generatedAt}`, "", `Provider: ${data.provider.baseURL}`, `Model: ${data.provider.model}`, ""];
+  const lines = [
+    "# SCC Live Mimo Smoke",
+    "",
+    `Generated: ${data.generatedAt}`,
+    `Required gate: ${data.required ? "yes" : "no"}`,
+    `Summary: ${data.summary?.passedCases ?? 0}/${data.summary?.totalCases ?? data.cases.length} passed`,
+    "",
+    `Provider: ${data.provider.baseURL}`,
+    `Model: ${data.provider.model}`,
+    ""
+  ];
   for (const item of data.cases) {
     lines.push(`## ${item.status === "passed" ? "PASS" : "FAIL"} ${item.name}`);
     lines.push("");
     lines.push(`Duration: ${item.durationMs}ms`);
+    if (item.failureClass) lines.push(`Failure class: ${item.failureClass}`);
+    if (item.evidence) {
+      const metrics = [
+        item.evidence.latencyMs !== undefined ? `latency=${item.evidence.latencyMs}ms` : null,
+        item.evidence.eventCount !== undefined ? `events=${item.evidence.eventCount}` : null,
+        item.evidence.approvalCount !== undefined ? `approvals=${item.evidence.approvalCount}` : null,
+        item.evidence.traceLines !== undefined ? `traceLines=${item.evidence.traceLines}` : null,
+        item.evidence.traceBytes !== undefined ? `traceBytes=${item.evidence.traceBytes}` : null,
+        item.evidence.rollbackUsed !== undefined ? `rollback=${item.evidence.rollbackUsed}` : null,
+        item.evidence.contextCompactionObserved !== undefined ? `contextCompaction=${item.evidence.contextCompactionObserved}` : null
+      ].filter(Boolean);
+      if (metrics.length > 0) lines.push(`Metrics: ${metrics.join(" | ")}`);
+    }
     if (item.error) lines.push(`Error: ${item.error}`);
     if (item.evidence?.assistant) {
       lines.push("");
@@ -635,4 +879,33 @@ function withTimeout(promise, timeoutMs, label) {
     timer = setTimeout(() => reject(new Error(`Timed out: ${label}`)), timeoutMs);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function classifyFailure(name, error, evidencePayload) {
+  const message = `${name} ${sanitizeError(error)}`.toLowerCase();
+  if (message.includes("trace") || Number(evidencePayload?.traceBytes ?? 0) > 450_000 || Number(evidencePayload?.traceMaxEntryBytes ?? 0) > 20_000) {
+    return "trace_bloat";
+  }
+  if (message.includes("approval") || message.includes("deny") || message.includes("riskcategory") || message.includes("waiting approval")) {
+    return "permission_approval";
+  }
+  if (message.includes("assistant") || message.includes("json") || message.includes("summary") || message.includes("marker") || message.includes("speculated")) {
+    return "model_behavior";
+  }
+  if (
+    message.includes("read_file") ||
+    message.includes("edit_file") ||
+    message.includes("search_files") ||
+    message.includes("list_files") ||
+    message.includes("outside the workspace") ||
+    message.includes("checkpoint") ||
+    message.includes("rollback") ||
+    message.includes("npm test")
+  ) {
+    return "tooling_or_workspace";
+  }
+  if (message.includes("ui")) {
+    return "ui_display";
+  }
+  return "runtime_or_unknown";
 }

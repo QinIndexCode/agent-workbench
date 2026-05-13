@@ -79,7 +79,7 @@ export function AccordionSelect({
         </span>
         <ChevronDown className="accordionSelectChevron" size={15} aria-hidden="true" />
       </button>
-      <div className="accordionSelectPanel" id={`${id}-panel`} role="listbox">
+      <div aria-label={`${ariaLabel} options`} className="accordionSelectPanel" id={`${id}-panel`} role="listbox">
         {options.map((option) => (
           <button
             aria-selected={option.value === value}

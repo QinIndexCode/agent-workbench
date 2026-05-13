@@ -1,4 +1,5 @@
 import type { PatternRecord, ReflectionSession, SkillConflict, TaskMemory } from "@scc/shared";
+import { describeReflectionPhase, describeReflectionStatus } from "./skillUx.js";
 
 export function LearningPanel({
   memories,
@@ -58,8 +59,8 @@ export function LearningPanel({
         title="Reflections"
         rows={safeReflections.slice(0, 4).map((item) => ({
           id: item.id,
-          label: item.progress?.phase ?? "reflection",
-          meta: item.status
+          label: describeReflectionPhase(item.progress?.phase ?? "reflection"),
+          meta: describeReflectionStatus(item.status)
         }))}
       />
     </section>

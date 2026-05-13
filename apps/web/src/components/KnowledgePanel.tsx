@@ -3,6 +3,7 @@ import type { KnowledgeCreateRequest, KnowledgeItem, KnowledgeModelAssetKind, Kn
 import { BrainCircuit, Download, Edit3, FileText, FileUp, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { MarkdownText } from "./MarkdownText.js";
+import { SettingsPrimer } from "./SettingsAssist.js";
 
 type KnowledgeDraft = {
   title: string;
@@ -16,6 +17,7 @@ export function KnowledgePanel({
   items,
   language,
   query = "",
+  onOpenDocs,
   onCreate,
   onDelete,
   onReindex,
@@ -30,6 +32,7 @@ export function KnowledgePanel({
   items: KnowledgeItem[];
   language?: string | null;
   query?: string;
+  onOpenDocs?: (() => void) | undefined;
   onCreate: (input: KnowledgeCreateRequest) => Promise<void> | void;
   onDelete: (id: string) => Promise<void> | void;
   onReindex?: (id: string) => Promise<void> | void;
@@ -114,7 +117,7 @@ export function KnowledgePanel({
     <section className="knowledgePanel">
       <header className="libraryPanelHero">
         <div>
-          <h3>{text.title}</h3>
+          <h2>{text.title}</h2>
           <p>{text.subtitle}</p>
         </div>
         <div className="inlineActions">
@@ -136,69 +139,17 @@ export function KnowledgePanel({
         </div>
         <input hidden multiple ref={fileRef} type="file" onChange={(event) => void uploadFiles(event.currentTarget.files)} />
       </header>
-
-      {onLoadModels || onDownloadModel ? (
-        <section className="knowledgeModelCard">
-          <div className="knowledgeModelHeader">
-            <span className="prefSectionIcon"><BrainCircuit size={16} aria-hidden="true" /></span>
-            <div>
-              <h3>{text.modelTitle}</h3>
-              <p>{text.modelSubtitle}</p>
-            </div>
-          </div>
-          <div className="knowledgeModelAssets">
-            {(modelStatus?.assets ?? []).map((asset) => (
-              <article className={asset.exists ? "knowledgeModelAsset ready" : "knowledgeModelAsset"} key={asset.kind}>
-                <strong>{asset.label}</strong>
-                <span>{asset.exists ? text.ready : asset.configured ? text.missing : text.notConfigured}</span>
-                <small title={asset.path ?? ""}>{asset.path ?? text.noPath}{asset.size ? ` · ${formatBytes(asset.size)}` : ""}</small>
-              </article>
-            ))}
-          </div>
-          <form
-            className="knowledgeModelDownload"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void downloadModel();
-            }}
-          >
-            <select aria-label={text.modelKind} value={modelKind} onChange={(event) => setModelKind(event.target.value as KnowledgeModelAssetKind)}>
-              <option value="fasttext_vectors">fastText .vec/.txt</option>
-              <option value="tiny_reranker_model">Tiny reranker .onnx</option>
-              <option value="tiny_reranker_vocab">Tiny reranker vocab.txt</option>
-            </select>
-            <input aria-label={text.modelUrl} placeholder={text.modelUrlPlaceholder} value={modelUrl} onChange={(event) => setModelUrl(event.target.value)} />
-            <input aria-label={text.modelFileName} placeholder={text.modelFileNamePlaceholder} value={modelFileName} onChange={(event) => setModelFileName(event.target.value)} />
-            <button className="subtleButton iconText" disabled={modelBusy || !modelUrl.trim()} type="submit">
-              <Download size={14} />
-              {modelBusy ? text.downloading : text.download}
-            </button>
-          </form>
-          <div className="knowledgeModelToggles">
-            <label>
-              <input
-                checked={preferences?.knowledgeActiveInjection ?? true}
-                type="checkbox"
-                onChange={(event) => void onPreference?.({ knowledgeActiveInjection: event.currentTarget.checked })}
-              />
-              {text.activeInjection}
-            </label>
-            <label>
-              <input
-                checked={preferences?.knowledgeTinyRerankerEnabled ?? false}
-                disabled={!hasReadyAsset(modelStatus, "tiny_reranker_model") || !hasReadyAsset(modelStatus, "tiny_reranker_vocab")}
-                type="checkbox"
-                onChange={(event) => void onPreference?.({ knowledgeTinyRerankerEnabled: event.currentTarget.checked })}
-              />
-              {text.tinyReranker}
-            </label>
-          </div>
-          {modelError ? <p className="knowledgeError">{modelError}</p> : null}
-        </section>
-      ) : null}
+      <SettingsPrimer
+        language={language}
+        summary={text.primer.summary}
+        focus={text.primer.focus}
+        impact={text.primer.impact}
+        nextStep={text.primer.nextStep}
+        onOpenDocs={onOpenDocs}
+      />
 
       <div className="knowledgeGrid libraryManagerGrid">
-        <aside className="knowledgeListPane">
+        <div aria-label={text.title} className="knowledgeListPane" role="region">
           <label className="skillSearch">
             <Search size={15} />
             <input aria-label={text.search} placeholder={text.search} value={localQuery} onChange={(event) => setLocalQuery(event.target.value)} />
@@ -259,7 +210,7 @@ export function KnowledgePanel({
             ))}
           </div>
           <Pagination page={page} pageCount={pageCount} label={text.pageLabel(page + 1, pageCount)} onPage={setPage} />
-        </aside>
+        </div>
 
         <section className="knowledgeDetailPane libraryPreviewPane">
           {selected ? (
@@ -355,6 +306,65 @@ export function KnowledgePanel({
           )}
         </section>
       </div>
+      {onLoadModels || onDownloadModel ? (
+        <details className="knowledgeModelCard">
+          <summary className="knowledgeModelHeader">
+            <span className="prefSectionIcon"><BrainCircuit size={16} aria-hidden="true" /></span>
+            <div>
+              <h3>{text.modelTitle}</h3>
+              <p>{text.modelSubtitle}</p>
+            </div>
+          </summary>
+          <div className="knowledgeModelAssets">
+            {(modelStatus?.assets ?? []).map((asset) => (
+              <article className={asset.exists ? "knowledgeModelAsset ready" : "knowledgeModelAsset"} key={asset.kind}>
+                <strong>{asset.label}</strong>
+                <span>{asset.exists ? text.ready : asset.configured ? text.missing : text.notConfigured}</span>
+                <small title={asset.path ?? ""}>{asset.path ?? text.noPath}{asset.size ? ` · ${formatBytes(asset.size)}` : ""}</small>
+              </article>
+            ))}
+          </div>
+          <form
+            className="knowledgeModelDownload"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void downloadModel();
+            }}
+          >
+            <select aria-label={text.modelKind} value={modelKind} onChange={(event) => setModelKind(event.target.value as KnowledgeModelAssetKind)}>
+              <option value="fasttext_vectors">fastText .vec/.txt</option>
+              <option value="tiny_reranker_model">Tiny reranker .onnx</option>
+              <option value="tiny_reranker_vocab">Tiny reranker vocab.txt</option>
+            </select>
+            <input aria-label={text.modelUrl} placeholder={text.modelUrlPlaceholder} value={modelUrl} onChange={(event) => setModelUrl(event.target.value)} />
+            <input aria-label={text.modelFileName} placeholder={text.modelFileNamePlaceholder} value={modelFileName} onChange={(event) => setModelFileName(event.target.value)} />
+            <button className="subtleButton iconText" disabled={modelBusy || !modelUrl.trim()} type="submit">
+              <Download size={14} />
+              {modelBusy ? text.downloading : text.download}
+            </button>
+          </form>
+          <div className="knowledgeModelToggles">
+            <label>
+              <input
+                checked={preferences?.knowledgeActiveInjection ?? true}
+                type="checkbox"
+                onChange={(event) => void onPreference?.({ knowledgeActiveInjection: event.currentTarget.checked })}
+              />
+              {text.activeInjection}
+            </label>
+            <label>
+              <input
+                checked={preferences?.knowledgeTinyRerankerEnabled ?? false}
+                disabled={!hasReadyAsset(modelStatus, "tiny_reranker_model") || !hasReadyAsset(modelStatus, "tiny_reranker_vocab")}
+                type="checkbox"
+                onChange={(event) => void onPreference?.({ knowledgeTinyRerankerEnabled: event.currentTarget.checked })}
+              />
+              {text.tinyReranker}
+            </label>
+          </div>
+          {modelError ? <p className="knowledgeError">{modelError}</p> : null}
+        </details>
+      ) : null}
 
       {modalMode ? (
         <div className="modalOverlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setModalMode(null)}>
@@ -647,6 +657,12 @@ function getKnowledgeCopy(language?: string | null) {
     tinyReranker: zh ? "启用 Tiny ONNX 重排器" : "Enable Tiny ONNX reranker",
     size: zh ? "大小" : "Size",
     none: zh ? "无" : "None",
-    pageLabel: (page: number, total: number) => zh ? `第 ${page} / ${total} 页` : `Page ${page} / ${total}`
+    pageLabel: (page: number, total: number) => zh ? `第 ${page} / ${total} 页` : `Page ${page} / ${total}`,
+    primer: {
+      summary: zh ? "知识库保存可复用资料和引用片段，用来补充当前任务，而不是代替实时工作区检查。" : "Knowledge stores reusable notes and citation-ready material that supports a task without replacing live workspace inspection.",
+      focus: zh ? "优先管理条目内容、标签和索引质量；本地检索模型只是高级增强，不该抢占首屏。" : "Prioritize item content, tagging, and index quality. Local retrieval models are an advanced enhancement and should not dominate the first screen.",
+      impact: zh ? "会影响 knowledge_search 的命中质量、主动注入摘要的稳定性，以及用户能否快速找回可信资料。" : "Changes affect knowledge_search quality, active knowledge brief stability, and how quickly users can recover trusted reference material.",
+      nextStep: zh ? "先整理内容和标签，再在 Advanced 区按需开启本地模型和重排器。" : "Clean up content and tags first, then enable local models and rerankers from the Advanced section only if needed."
+    }
   };
 }

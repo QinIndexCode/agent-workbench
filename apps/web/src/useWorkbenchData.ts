@@ -68,6 +68,8 @@ export interface WorkbenchData {
   backendHealthy: boolean | null;
   abortController: AbortController | null;
   refresh: (nextId?: string | null) => Promise<void>;
+  loadPermissions: (force?: boolean) => Promise<void>;
+  loadModelProviders: (force?: boolean) => Promise<void>;
   selectTask: (taskId: string) => Promise<void>;
   clearSelection: () => void;
   patchTask: (taskId: string, input: TaskPatchRequest) => Promise<void>;
@@ -79,17 +81,26 @@ export interface WorkbenchData {
   deleteTaskFolder: (folderId: string, options: TaskFolderDeleteRequest) => Promise<void>;
   runTaskAction: (action: () => Promise<TaskDetail>) => Promise<void>;
   runSideAction: (action: () => Promise<unknown>) => Promise<void>;
+  runSideActionResult: <T>(action: () => Promise<T>, options?: { rethrow?: boolean }) => Promise<T>;
   cancelBusy: () => void;
 }
 
-export function useWorkbenchData(): WorkbenchData {
+export interface WorkbenchLoadProfile {
+  activeView?: "tasks" | "history" | "library" | "docs" | "settings";
+  librarySection?: "skills" | "curator" | "knowledge" | "memory" | "reflections";
+  settingsSection?: "providers" | "permissions" | "mcp" | "integrations" | "scheduled" | "search" | "preferences";
+}
+
+const defaultLoadProfile: WorkbenchLoadProfile = { activeView: "tasks" };
+
+export function useWorkbenchData(loadProfile: WorkbenchLoadProfile = defaultLoadProfile): WorkbenchData {
   const [tasks, setTasks] = useState<TaskDetail[]>([]);
   const [taskFolders, setTaskFolders] = useState<TaskFolderRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selected, setSelected] = useState<TaskDetail | null>(null);
   const [selectedTranscript, setSelectedTranscript] = useState<TaskTranscriptItem[]>([]);
-  const [memories, setMemories] = useState<TaskMemory[]>([]);
-  const [patterns, setPatterns] = useState<PatternRecord[]>([]);
+  const [memories] = useState<TaskMemory[]>([]);
+  const [patterns] = useState<PatternRecord[]>([]);
   const [skills, setSkills] = useState<SkillRecord[]>([]);
   const [skillConflicts, setSkillConflicts] = useState<SkillConflict[]>([]);
   const [skillCurator, setSkillCurator] = useState<SkillCuratorItem[]>([]);
@@ -99,7 +110,7 @@ export function useWorkbenchData(): WorkbenchData {
   const [reflections, setReflections] = useState<ReflectionSession[]>([]);
   const [projectMemories, setProjectMemories] = useState<ProjectMemory[]>([]);
   const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeItem[]>([]);
-  const [promptCacheStats, setPromptCacheStats] = useState<PromptCacheStats[]>([]);
+  const [promptCacheStats] = useState<PromptCacheStats[]>([]);
   const [integrations, setIntegrations] = useState<IntegrationProviderConfig[]>([]);
   const [modelProviders, setModelProviders] = useState<ModelProviderRecord[]>([]);
   const [mcpServers, setMcpServers] = useState<Array<McpServerConfig & { status: McpServerStatus }>>([]);
@@ -126,88 +137,147 @@ export function useWorkbenchData(): WorkbenchData {
   const backgroundPollRef = useRef(0);
   const lastRealtimeAtRef = useRef<number | null>(null);
   const lastSuccessfulSyncAtRef = useRef<number | null>(null);
+  const realtimeConnectedRef = useRef(false);
+  const transcriptHydrationRef = useRef<Record<string, boolean>>({});
+  const loadProfileRef = useRef<WorkbenchLoadProfile>(loadProfile);
+  const lastActiveViewRef = useRef(loadProfile.activeView);
+  const loadedLibrarySectionsRef = useRef<Record<NonNullable<WorkbenchLoadProfile["librarySection"]>, boolean>>({
+    skills: false,
+    curator: false,
+    knowledge: false,
+    memory: false,
+    reflections: false
+  });
+  const loadedSettingsSectionsRef = useRef<Record<NonNullable<WorkbenchLoadProfile["settingsSection"]>, boolean>>({
+    providers: false,
+    permissions: false,
+    mcp: false,
+    integrations: false,
+    scheduled: false,
+    search: false,
+    preferences: true
+  });
+
+  useEffect(() => {
+    realtimeConnectedRef.current = realtimeConnected;
+  }, [realtimeConnected]);
+
+  useEffect(() => {
+    loadProfileRef.current = loadProfile;
+  }, [loadProfile]);
 
   async function refresh(nextId?: string | null) {
-    const requests = [
+    await refreshCore(nextId);
+    await ensureVisibleSurfaceLoaded();
+  }
+
+  async function refreshCore(nextId?: string | null, options: { loadTranscript?: boolean } = {}) {
+    const results = await Promise.allSettled([
       api.listTasks(),
       api.listTaskFolders(),
-      api.listTaskMemories(),
-      api.listPatterns(),
-      api.listSkills(),
-      api.listSkillConflicts(),
-      api.listSkillCurator(),
-      api.listSkillDuplicates(),
-      api.listGlobalPermissions(),
-      api.getPreferences(),
-      api.listReflections(),
-      api.listProjectMemories(),
-      api.listKnowledgeItems(),
-      api.listPromptCacheStats(),
-      api.listIntegrations(),
-      api.listModelProviders(),
-      api.listMcpServers(),
-      api.listMcpTools(),
-      api.listScheduledTasks(),
-      api.listWebSearchProviders()
-    ] as const;
-    const allResults = Promise.allSettled(requests);
-
-    const criticalResults = await Promise.allSettled([requests[0], requests[1], requests[8], requests[9], requests[15]]);
-    const criticalTasks = settledValue<TaskDetail[]>(criticalResults[0]) ?? [];
-    const criticalFolders = settledValue<TaskFolderRecord[]>(criticalResults[1]) ?? [];
-    const criticalPermissions = settledValue<GlobalPermissionGrant[]>(criticalResults[2]) ?? [];
-    const criticalPreferences = settledValue<UserPreferences>(criticalResults[3]) ?? null;
-    const criticalProviders = settledValue<ModelProviderRecord[]>(criticalResults[4]) ?? [];
-    setTasks(criticalTasks);
-    setTaskFolders(criticalFolders);
-    setPermissions(criticalPermissions);
-    setPreferences(criticalPreferences);
-    setModelProviders(criticalProviders);
-    await syncSelectionFromTaskList(criticalTasks, nextId, false);
-    markSyncSuccess();
-
-    const results = await allResults;
-    const list = settledValue<TaskDetail[]>(results[0]) ?? [];
+      api.getPreferences()
+    ] as const);
+    const nextTasks = settledValue<TaskDetail[]>(results[0]) ?? [];
     const nextTaskFolders = settledValue<TaskFolderRecord[]>(results[1]) ?? [];
-    const nextMemories = settledValue<TaskMemory[]>(results[2]) ?? [];
-    const nextPatterns = settledValue<PatternRecord[]>(results[3]) ?? [];
-    const nextSkills = settledValue<SkillRecord[]>(results[4]) ?? [];
-    const nextSkillConflicts = settledValue<SkillConflict[]>(results[5]) ?? [];
-    const nextSkillCurator = settledValue<SkillCuratorItem[]>(results[6]) ?? [];
-    const nextSkillDuplicates = settledValue<SkillDuplicateGroup[]>(results[7]) ?? [];
-    const nextPermissions = settledValue<GlobalPermissionGrant[]>(results[8]) ?? [];
-    const nextPreferences = settledValue<UserPreferences>(results[9]) ?? null;
-    const nextReflections = settledValue<ReflectionSession[]>(results[10]) ?? [];
-    const nextProjectMemories = settledValue<ProjectMemory[]>(results[11]) ?? [];
-    const nextKnowledgeItems = settledValue<KnowledgeItem[]>(results[12]) ?? [];
-    const nextPromptCacheStats = settledValue<PromptCacheStats[]>(results[13]) ?? [];
-    const nextIntegrations = settledValue<IntegrationProviderConfig[]>(results[14]) ?? [];
-    const nextModelProviders = settledValue<ModelProviderRecord[]>(results[15]) ?? [];
-    const nextMcpServers = settledValue<Array<McpServerConfig & { status: McpServerStatus }>>(results[16]) ?? [];
-    const nextMcpTools = settledValue<McpToolSummary[]>(results[17]) ?? [];
-    const nextScheduledTasks = settledValue<ScheduledTask[]>(results[18]) ?? [];
-    const nextWebSearchProviders = settledValue<WebSearchProviderConfig[]>(results[19]) ?? [];
-    setTasks(list);
+    const nextPreferences = settledValue<UserPreferences>(results[2]) ?? null;
+    setTasks(nextTasks);
     setTaskFolders(nextTaskFolders);
-    await syncSelectionFromTaskList(list, nextId, true);
-    setMemories(nextMemories);
-    setPatterns(nextPatterns);
-    setSkills(nextSkills);
-    setSkillConflicts(nextSkillConflicts);
-    setSkillCurator(nextSkillCurator);
-    setSkillDuplicates(nextSkillDuplicates);
-    setPermissions(nextPermissions);
     setPreferences(nextPreferences);
-    setReflections(nextReflections);
-    setProjectMemories(nextProjectMemories);
-    setKnowledgeItems(nextKnowledgeItems);
-    setPromptCacheStats(nextPromptCacheStats);
-    setIntegrations(nextIntegrations);
-    setModelProviders(nextModelProviders);
-    setMcpServers(nextMcpServers);
-    setMcpTools(nextMcpTools);
-    setScheduledTasks(nextScheduledTasks);
-    setWebSearchProviders(nextWebSearchProviders);
+    await syncSelectionFromTaskList(nextTasks, nextId, false);
+    const transcriptTaskId = selectedIdRef.current;
+    if (options.loadTranscript && transcriptTaskId) {
+      try {
+        const transcript = await api.listTaskTranscript(transcriptTaskId);
+        applySelectedTranscript(transcriptTaskId, transcript);
+      } catch (error) {
+        recordBackgroundSyncFailure(error);
+      }
+    }
+    markSyncSuccess();
+  }
+
+  async function ensureVisibleSurfaceLoaded(force = false) {
+    const profile = loadProfileRef.current;
+    if (profile.activeView === "library") {
+      await ensureLibrarySectionLoaded(profile.librarySection ?? "skills", force);
+      return;
+    }
+    if (profile.activeView === "settings") {
+      await ensureSettingsSectionLoaded(profile.settingsSection ?? "providers", force);
+      return;
+    }
+  }
+
+  async function ensureLibrarySectionLoaded(section: NonNullable<WorkbenchLoadProfile["librarySection"]>, force = false) {
+    if (!force && loadedLibrarySectionsRef.current[section]) return;
+    switch (section) {
+      case "skills": {
+        const results = await Promise.allSettled([api.listSkills(), api.listSkillConflicts(), api.listSkillDuplicates(), api.listReflections()] as const);
+        setSkills(settledValue<SkillRecord[]>(results[0]) ?? []);
+        setSkillConflicts(settledValue<SkillConflict[]>(results[1]) ?? []);
+        setSkillDuplicates(settledValue<SkillDuplicateGroup[]>(results[2]) ?? []);
+        setReflections(settledValue<ReflectionSession[]>(results[3]) ?? []);
+        break;
+      }
+      case "curator": {
+        const results = await Promise.allSettled([api.listSkillCurator(), api.listReflections()] as const);
+        setSkillCurator(settledValue<SkillCuratorItem[]>(results[0]) ?? []);
+        setReflections(settledValue<ReflectionSession[]>(results[1]) ?? []);
+        break;
+      }
+      case "knowledge": {
+        setKnowledgeItems(await api.listKnowledgeItems());
+        break;
+      }
+      case "memory": {
+        setProjectMemories(await api.listProjectMemories());
+        break;
+      }
+      case "reflections": {
+        const results = await Promise.allSettled([api.listReflections(), api.listSkillConflicts(), api.listSkillDuplicates()] as const);
+        setReflections(settledValue<ReflectionSession[]>(results[0]) ?? []);
+        setSkillConflicts(settledValue<SkillConflict[]>(results[1]) ?? []);
+        setSkillDuplicates(settledValue<SkillDuplicateGroup[]>(results[2]) ?? []);
+        break;
+      }
+    }
+    loadedLibrarySectionsRef.current[section] = true;
+    markSyncSuccess();
+  }
+
+  async function ensureSettingsSectionLoaded(section: NonNullable<WorkbenchLoadProfile["settingsSection"]>, force = false) {
+    if (!force && loadedSettingsSectionsRef.current[section]) return;
+    switch (section) {
+      case "providers": {
+        setModelProviders(await api.listModelProviders());
+        break;
+      }
+      case "permissions": {
+        setPermissions(await api.listGlobalPermissions());
+        break;
+      }
+      case "mcp": {
+        const results = await Promise.allSettled([api.listMcpServers(), api.listMcpTools()] as const);
+        setMcpServers(settledValue<Array<McpServerConfig & { status: McpServerStatus }>>(results[0]) ?? []);
+        setMcpTools(settledValue<McpToolSummary[]>(results[1]) ?? []);
+        break;
+      }
+      case "integrations": {
+        setIntegrations(await api.listIntegrations());
+        break;
+      }
+      case "scheduled": {
+        setScheduledTasks(await api.listScheduledTasks());
+        break;
+      }
+      case "search": {
+        setWebSearchProviders(await api.listWebSearchProviders());
+        break;
+      }
+      default:
+        break;
+    }
+    loadedSettingsSectionsRef.current[section] = true;
     markSyncSuccess();
   }
 
@@ -219,6 +289,7 @@ export function useWorkbenchData(): WorkbenchData {
   }
 
   async function syncSelectionFromTaskList(list: TaskDetail[], nextId?: string | null, loadTranscript = false) {
+    const previousSelectedId = selectedIdRef.current;
     const hasExplicitNext = nextId !== undefined;
     const preferredId = hasExplicitNext ? nextId : selectedIdRef.current;
     const preferredExists = preferredId ? list.some((task) => task.id === preferredId) : false;
@@ -233,14 +304,20 @@ export function useWorkbenchData(): WorkbenchData {
       setSelectedTranscript([]);
       return;
     }
+    if (previousSelectedId !== id) {
+      transcriptHydrationRef.current[id] = false;
+      setSelectedTranscript([]);
+    }
     if (!loadTranscript) {
       const nextSelected = list.find((task) => task.id === id) ?? null;
-      if (nextSelected) setSelected(nextSelected);
+      if (nextSelected) {
+        setSelected((current) => mergeSelectedTaskShell(current, nextSelected));
+      }
       return;
     }
     const [nextSelected, nextTranscript] = await Promise.all([api.getTask(id), api.listTaskTranscript(id)]);
     setSelected(nextSelected);
-    setSelectedTranscript(nextTranscript);
+    applySelectedTranscript(id, nextTranscript);
   }
 
   useEffect(() => {
@@ -249,11 +326,12 @@ export function useWorkbenchData(): WorkbenchData {
       window.clearInterval(refreshTimerRef.current);
     }
     refreshTimerRef.current = window.setInterval(() => {
+      if (loadProfileRef.current.activeView !== "tasks") return;
       const cycleLength = realtimeConnected ? 10 : 5;
       backgroundPollRef.current = (backgroundPollRef.current + 1) % cycleLength;
       const shouldFullRefresh = backgroundPollRef.current === 0;
       if (shouldFullRefresh) {
-        void refresh().catch(recordBackgroundSyncFailure);
+        void refreshCore(undefined).catch(recordBackgroundSyncFailure);
         return;
       }
       void refreshTaskShell(undefined, !realtimeConnected).catch(recordBackgroundSyncFailure);
@@ -265,6 +343,18 @@ export function useWorkbenchData(): WorkbenchData {
       }
     };
   }, [realtimeConnected]);
+
+  useEffect(() => {
+    const previousView = lastActiveViewRef.current;
+    lastActiveViewRef.current = loadProfile.activeView;
+    if (loadProfile.activeView === "tasks") {
+      if (previousView !== "tasks") {
+        void refreshCore(selectedIdRef.current).catch(recordBackgroundSyncFailure);
+      }
+      return;
+    }
+    void ensureVisibleSurfaceLoaded().catch(recordBackgroundSyncFailure);
+  }, [loadProfile.activeView, loadProfile.librarySection, loadProfile.settingsSection]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -279,6 +369,21 @@ export function useWorkbenchData(): WorkbenchData {
     }, 5000);
     return () => window.clearInterval(timer);
   }, [realtimeConnected]);
+
+  useEffect(() => {
+    if (loadProfile.activeView !== "tasks" || !selectedId) return;
+    if (transcriptHydrationRef.current[selectedId]) return;
+    if (selected && selected.id === selectedId && isRealtimeDrivenTaskStatus(selected.status)) return;
+    const taskId = selectedId;
+    const timer = window.setTimeout(() => {
+      if (selectedIdRef.current !== taskId || transcriptHydrationRef.current[taskId]) return;
+      void api.listTaskTranscript(taskId).then((transcript) => {
+        applySelectedTranscript(taskId, transcript);
+        markSyncSuccess();
+      }).catch(recordBackgroundSyncFailure);
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [loadProfile.activeView, selected, selectedId]);
 
   useEffect(() => {
     async function checkHealth() {
@@ -313,65 +418,71 @@ export function useWorkbenchData(): WorkbenchData {
         return;
       }
       try {
-        const ws = new WebSocket(api.taskEventsWebSocketUrl(currentTaskId));
-        wsRef.current = ws;
-        ws.onopen = () => {
-          if (wsCancelRef.current) {
-            ws.close();
-            return;
-          }
-          markRealtimeSeen();
-          setRealtimeConnected(true);
-          reconnectAttempt = 0;
-        };
-        ws.onclose = () => {
+        void api.taskEventsWebSocketUrl(currentTaskId).then((url) => {
           if (wsCancelRef.current) return;
-          setRealtimeConnected(false);
-          scheduleReconnect();
-        };
-        ws.onerror = () => {
-          if (wsCancelRef.current) return;
-          setRealtimeConnected(false);
-          try { ws.close(); } catch { /* ignore */ }
-        };
-        ws.onmessage = (message) => {
-          if (wsCancelRef.current) return;
-          try {
+          const ws = new WebSocket(url);
+          wsRef.current = ws;
+          ws.onopen = () => {
+            if (wsCancelRef.current) {
+              ws.close();
+              return;
+            }
             markRealtimeSeen();
-            const parsed = parseRealtimeMessage(message.data);
-            if (!parsed) return;
-            if (parsed.type === "heartbeat") {
-              return;
-            }
-            if (parsed.type === "snapshot") {
-              wsEventQueueRef.current = [];
-              if (wsFlushTimerRef.current !== null) {
-                window.clearTimeout(wsFlushTimerRef.current);
-                wsFlushTimerRef.current = null;
+            setRealtimeConnected(true);
+            reconnectAttempt = 0;
+          };
+          ws.onclose = () => {
+            if (wsCancelRef.current) return;
+            setRealtimeConnected(false);
+            scheduleReconnect();
+          };
+          ws.onerror = () => {
+            if (wsCancelRef.current) return;
+            setRealtimeConnected(false);
+            try { ws.close(); } catch { /* ignore */ }
+          };
+          ws.onmessage = (message) => {
+            if (wsCancelRef.current) return;
+            try {
+              markRealtimeSeen();
+              const parsed = parseRealtimeMessage(message.data);
+              if (!parsed) return;
+              if (parsed.type === "heartbeat") {
+                return;
               }
-              setSelected((current) => {
-                if (!current || current.id !== currentTaskId) return current;
-                return { ...current, events: parsed.events };
-              });
-              markSyncSuccess();
-              if (parsed.transcript) {
-                setSelectedTranscript(parsed.transcript);
-              } else {
-                void api.listTaskTranscript(currentTaskId).then((transcript) => {
-                  if (!wsCancelRef.current && selectedIdRef.current === currentTaskId) {
-                    setSelectedTranscript(transcript);
+              if (parsed.type === "snapshot") {
+                wsEventQueueRef.current = [];
+                if (wsFlushTimerRef.current !== null) {
+                  window.clearTimeout(wsFlushTimerRef.current);
+                  wsFlushTimerRef.current = null;
+                }
+                setSelected((current) => {
+                  if (!current || current.id !== currentTaskId) return current;
+                  return { ...current, events: parsed.events };
+                });
+                markSyncSuccess();
+                if (parsed.transcript) {
+                  applySelectedTranscript(currentTaskId, parsed.transcript);
+                } else {
+                  void api.listTaskTranscript(currentTaskId).then((transcript) => {
+                    if (wsCancelRef.current) return;
+                    applySelectedTranscript(currentTaskId, transcript);
                     markSyncSuccess();
-                  }
-                }).catch(recordBackgroundSyncFailure);
+                  }).catch(recordBackgroundSyncFailure);
+                }
+                return;
               }
-              return;
+              wsEventQueueRef.current.push(parsed.event);
+              scheduleRealtimeFlush(currentTaskId);
+            } catch (e) {
+              console.warn("Failed to handle WebSocket message:", e);
             }
-            wsEventQueueRef.current.push(parsed.event);
-            scheduleRealtimeFlush(currentTaskId);
-          } catch (e) {
-            console.warn("Failed to handle WebSocket message:", e);
-          }
-        };
+          };
+        }).catch((error) => {
+          if (wsCancelRef.current) return;
+          recordBackgroundSyncFailure(error);
+          scheduleReconnect();
+        });
       } catch (e) {
         console.warn("Failed to create WebSocket:", e);
         scheduleReconnect();
@@ -434,21 +545,14 @@ export function useWorkbenchData(): WorkbenchData {
   async function selectTask(taskId: string) {
     newTaskModeRef.current = false;
     selectedIdRef.current = taskId;
+    transcriptHydrationRef.current[taskId] = false;
     setSelectedId(taskId);
+    setSelectedTranscript([]);
     const nextSelected = await api.getTask(taskId);
     if (selectedIdRef.current !== taskId) return;
     setSelected(nextSelected);
     setTasks((current) => upsertTask(current, nextSelected));
     markSyncSuccess();
-    try {
-      const nextTranscript = await api.listTaskTranscript(taskId);
-      if (selectedIdRef.current === taskId) {
-        setSelectedTranscript(nextTranscript);
-        markSyncSuccess();
-      }
-    } catch (error) {
-      recordBackgroundSyncFailure(error);
-    }
   }
 
   function clearSelection() {
@@ -478,7 +582,7 @@ export function useWorkbenchData(): WorkbenchData {
       const updated = await api.patchTask(taskId, input);
       if (selectedIdRef.current === taskId) {
         setSelected(updated);
-        setSelectedTranscript(await api.listTaskTranscript(taskId));
+        applySelectedTranscript(taskId, await api.listTaskTranscript(taskId));
       }
       await refresh(selectedIdRef.current);
     });
@@ -506,7 +610,7 @@ export function useWorkbenchData(): WorkbenchData {
       const result = await api.revertTaskTurn(taskId, latest.id);
       draft = result.draft;
       setSelected(result.task);
-      setSelectedTranscript(await api.listTaskTranscript(taskId));
+      applySelectedTranscript(taskId, await api.listTaskTranscript(taskId));
       await refresh(taskId);
     });
     return draft;
@@ -518,7 +622,7 @@ export function useWorkbenchData(): WorkbenchData {
       const result = await api.revertTaskTurn(taskId, turnId);
       draft = result.draft;
       setSelected(result.task);
-      setSelectedTranscript(await api.listTaskTranscript(taskId));
+      applySelectedTranscript(taskId, await api.listTaskTranscript(taskId));
       await refresh(taskId);
     });
     return draft;
@@ -547,14 +651,21 @@ export function useWorkbenchData(): WorkbenchData {
     });
   }
 
-  async function runSideAction(action: () => Promise<unknown>) {
+  async function runSideActionResult<T>(action: () => Promise<T>, options: { rethrow?: boolean } = {}): Promise<T> {
+    let result!: T;
     await run(async () => {
-      await action();
-      await refresh(selectedId);
-    });
+      result = await action();
+      await refreshCore(selectedIdRef.current);
+      await ensureVisibleSurfaceLoaded(true);
+    }, options);
+    return result;
   }
 
-  async function run(action: () => Promise<void>) {
+  async function runSideAction(action: () => Promise<unknown>) {
+    await runSideActionResult(action);
+  }
+
+  async function run(action: () => Promise<void>, options: { rethrow?: boolean } = {}) {
     const controller = new AbortController();
     abortControllerRef.current = controller;
     setBusy(true);
@@ -565,6 +676,7 @@ export function useWorkbenchData(): WorkbenchData {
     } catch (err) {
       if (controller.signal.aborted) return;
       setError(err instanceof Error ? err.message : String(err));
+      if (options.rethrow) throw err;
     } finally {
       if (!controller.signal.aborted) {
         setBusy(false);
@@ -584,6 +696,7 @@ export function useWorkbenchData(): WorkbenchData {
   function activateTask(task: TaskDetail) {
     newTaskModeRef.current = false;
     selectedIdRef.current = task.id;
+    transcriptHydrationRef.current[task.id] = false;
     setSelectedId(task.id);
     setSelected(task);
     setSelectedTranscript(compactTaskEventsForTranscript(task.events));
@@ -593,17 +706,11 @@ export function useWorkbenchData(): WorkbenchData {
 
   async function hydrateSelectedTask(taskId: string) {
     try {
-      const [nextSelected, nextTranscript] = await Promise.all([api.getTask(taskId), api.listTaskTranscript(taskId)]);
+      const nextSelected = await api.getTask(taskId);
       if (selectedIdRef.current !== taskId) return;
       setSelected(nextSelected);
-      setSelectedTranscript(nextTranscript);
       setTasks((current) => upsertTask(current, nextSelected));
       markSyncSuccess();
-    } catch (error) {
-      recordBackgroundSyncFailure(error);
-    }
-    try {
-      await refreshTaskShell(taskId, false);
     } catch (error) {
       recordBackgroundSyncFailure(error);
     }
@@ -625,6 +732,12 @@ export function useWorkbenchData(): WorkbenchData {
 
   function recordBackgroundSyncFailure(error: unknown) {
     setSyncWarning(error instanceof Error ? error.message : String(error));
+  }
+
+  function applySelectedTranscript(taskId: string, transcript: TaskTranscriptItem[]) {
+    transcriptHydrationRef.current[taskId] = true;
+    if (selectedIdRef.current !== taskId) return;
+    setSelectedTranscript(transcript);
   }
 
   return {
@@ -662,6 +775,8 @@ export function useWorkbenchData(): WorkbenchData {
     backendHealthy,
     abortController: abortControllerRef.current,
     refresh,
+    loadPermissions: (force = false) => ensureSettingsSectionLoaded("permissions", force),
+    loadModelProviders: (force = false) => ensureSettingsSectionLoaded("providers", force),
     selectTask,
     clearSelection,
     patchTask,
@@ -673,6 +788,7 @@ export function useWorkbenchData(): WorkbenchData {
     deleteTaskFolder,
     runTaskAction,
     runSideAction,
+    runSideActionResult,
     cancelBusy
   };
 }
@@ -689,6 +805,10 @@ function upsertTask(tasks: TaskDetail[], task: TaskDetail): TaskDetail[] {
   return next;
 }
 
+function isRealtimeDrivenTaskStatus(status: TaskDetail["status"]): boolean {
+  return status === "running" || status === "waiting_for_user" || status === "waiting_approval";
+}
+
 function compactTaskEventsForTranscript(events: TaskEvent[]): TaskTranscriptItem[] {
   return events
     .filter((event) => isClientTranscriptEvent(event) && !isInlineToolMarkupEvent(event))
@@ -700,6 +820,18 @@ function approvalFromEvent(event: TaskEvent, approvals: ToolApproval[]): ToolApp
   const approval = event.payload["approval"] as ToolApproval | undefined;
   if (!approval || approvals.some((item) => item.id === approval.id)) return approvals;
   return [...approvals, approval];
+}
+
+export function mergeSelectedTaskShell(current: TaskDetail | null, incoming: TaskDetail): TaskDetail {
+  if (!current || current.id !== incoming.id) return incoming;
+  const preserveEvents = incoming.events.length === 0 && current.events.length > 0;
+  const preservePendingGuidance = incoming.pendingGuidance.length === 0 && current.pendingGuidance.length > 0;
+  return {
+    ...current,
+    ...incoming,
+    events: preserveEvents ? current.events : incoming.events,
+    pendingGuidance: preservePendingGuidance ? current.pendingGuidance : incoming.pendingGuidance
+  };
 }
 
 export function parseRealtimeMessage(value: unknown):

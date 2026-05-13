@@ -8,6 +8,7 @@ import type {
   GlobalPermissionGrantSchema,
   DiscordInteractionRequestSchema,
   EmbeddingProviderConfigSchema,
+  EncryptedSecretRefSchema,
   FeishuEventRequestSchema,
   IntegrationChannelBindingSchema,
   IntegrationMessageSchema,
@@ -59,6 +60,7 @@ import type {
   PromptCacheStatsSchema,
   ReflectionSessionSchema,
   RiskCategorySchema,
+  SlackEventRequestSchema,
   SkillCorrectionRequestSchema,
   SkillBulkDeleteRequestSchema,
   SkillCreateRequestSchema,
@@ -102,11 +104,13 @@ import type {
   TaskTurnEditRequestSchema,
   TaskTurnRevertResultSchema,
   TaskTurnSchema,
+  TelegramUpdateRequestSchema,
   TaskStatusSchema,
   ToolApprovalSchema,
   ToolCallSchema,
   ToolResultSchema,
   UserPreferencesSchema,
+  WecomCallbackRequestSchema,
   WebSearchProviderConfigSchema,
   WebSearchProviderCreateRequestSchema,
   WebSearchProviderKindSchema,
@@ -164,6 +168,7 @@ export type PromptCachePolicy = z.infer<typeof PromptCachePolicySchema>;
 export type PromptCacheStats = z.infer<typeof PromptCacheStatsSchema>;
 export type ProviderProtocol = z.infer<typeof ProviderProtocolSchema>;
 export type ModelPreset = z.infer<typeof ModelPresetSchema>;
+export type EncryptedSecretRef = z.infer<typeof EncryptedSecretRefSchema>;
 export type ModelProviderRecord = z.infer<typeof ModelProviderRecordSchema>;
 export type ModelProviderCreateRequest = z.infer<typeof ModelProviderCreateRequestSchema>;
 export type ModelProviderPatchRequest = z.infer<typeof ModelProviderPatchRequestSchema>;
@@ -198,6 +203,9 @@ export type IntegrationMessage = z.infer<typeof IntegrationMessageSchema>;
 export type IntegrationTaskLink = z.infer<typeof IntegrationTaskLinkSchema>;
 export type DiscordInteractionRequest = z.infer<typeof DiscordInteractionRequestSchema>;
 export type FeishuEventRequest = z.infer<typeof FeishuEventRequestSchema>;
+export type SlackEventRequest = z.infer<typeof SlackEventRequestSchema>;
+export type TelegramUpdateRequest = z.infer<typeof TelegramUpdateRequestSchema>;
+export type WecomCallbackRequest = z.infer<typeof WecomCallbackRequestSchema>;
 export type TaskMemory = z.infer<typeof TaskMemorySchema>;
 export type PatternRecord = z.infer<typeof PatternRecordSchema>;
 export type SkillRecord = z.infer<typeof SkillRecordSchema>;

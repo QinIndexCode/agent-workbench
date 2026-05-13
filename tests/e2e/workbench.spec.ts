@@ -2,15 +2,21 @@ import { expect, test } from "@playwright/test";
 
 const riskCategories = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
 const apiBase = "http://127.0.0.1:5181";
+const SESSION_HEADER = "x-scc-session";
+
+let sessionHeaders: Record<string, string> = {};
 
 test.beforeEach(async ({ request }) => {
+  const bootstrap = await request.get(`${apiBase}/api/session/bootstrap`);
+  const { sessionToken } = await bootstrap.json();
+  sessionHeaders = { [SESSION_HEADER]: sessionToken };
   for (const risk of riskCategories) {
-    await request.delete(`${apiBase}/api/permissions/global/${risk}`);
+    await request.delete(`${apiBase}/api/permissions/global/${risk}`, { headers: sessionHeaders });
   }
-  await request.patch(`${apiBase}/api/preferences`, { data: { language: "en-US" } });
+  await request.patch(`${apiBase}/api/preferences`, { data: { language: "en-US" }, headers: sessionHeaders });
 });
 
-test("creates a host observation task and shows approval", async ({ page, request }, testInfo) => {
+test("creates a host observation task and shows approval", async ({ page }, testInfo) => {
   await page.goto("/");
   await openNavItem(page, "New Task");
   await page.getByLabel("Task input").fill("帮我看一下当前桌面运行的软件有哪些，性能占用最高的是哪些");
@@ -48,8 +54,7 @@ test("creates a host observation task and shows approval", async ({ page, reques
     expect(expandedThinking.actionsOpacity).toBe("1");
     await page.locator(".thinkingSummary").first().click();
     await expect.poll(async () => (await thinkingMetrics(page)).shellHeight).toBeLessThanOrEqual(1);
-    const reclapsedThinking = await thinkingMetrics(page);
-    expect(recollapsedThinking.eventHeight).toBeLessThanOrEqual(38);
+    expect((await thinkingMetrics(page)).eventHeight).toBeLessThanOrEqual(38);
   }
 
   await page.locator(".toolResultSummary").first().click();
@@ -117,9 +122,10 @@ test("covers support, docs, settings subpages, and visual overflow probes", asyn
 
 test("manages task folders from the sidebar on desktop and mobile", async ({ page, request }, testInfo) => {
   const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
-  const folder = await (await request.post(`${apiBase}/api/task-folders`, { data: { name: `Ops ${suffix}` } })).json();
+  const folder = await (await request.post(`${apiBase}/api/task-folders`, { data: { name: `Ops ${suffix}` }, headers: sessionHeaders })).json();
   const taskResponse = await request.post(`${apiBase}/api/tasks`, {
-    data: { goal: `Folder task ${suffix}`, title: `Folder ${suffix}`, folderId: folder.id }
+    data: { goal: `Folder task ${suffix}`, title: `Folder ${suffix}`, folderId: folder.id },
+    headers: sessionHeaders
   });
   expect(taskResponse.status()).toBe(201);
 
@@ -145,7 +151,8 @@ test("manages task folders from the sidebar on desktop and mobile", async ({ pag
   await expect(renamedTaskRow).toHaveCount(0);
 
   const second = await (await request.post(`${apiBase}/api/tasks`, {
-    data: { goal: `Folder cleanup ${suffix}`, title: `Cleanup ${suffix}`, folderId: folder.id }
+    data: { goal: `Folder cleanup ${suffix}`, title: `Cleanup ${suffix}`, folderId: folder.id },
+    headers: sessionHeaders
   })).json();
   await page.reload();
   await openTaskDrawer(page);
@@ -153,7 +160,7 @@ test("manages task folders from the sidebar on desktop and mobile", async ({ pag
   await page.getByLabel(`Delete folder Ops ${suffix}`).click();
   await expect(page.locator(".confirmDialog")).toContainText("real disk directory will not be deleted");
   await page.locator(".confirmDialog").getByRole("button", { name: "Delete folder" }).click();
-  await expect.poll(async () => (await request.get(`${apiBase}/api/tasks/${second.id}`)).status()).toBe(404);
+  await expect.poll(async () => (await request.get(`${apiBase}/api/tasks/${second.id}`, { headers: sessionHeaders })).status()).toBe(404);
   await expect(page.locator(".folderTreeMain").filter({ hasText: `Ops ${suffix}` })).toHaveCount(0);
 });
 
@@ -166,7 +173,7 @@ test("manages model providers and MCP servers from settings", async ({ page }, t
   await page.getByRole("button", { name: "Add model" }).click();
   const providerDialog = page.locator('form[aria-label="Add model"]');
   await expect(providerDialog).toBeVisible();
-  await providerDialog.getByLabel("Preset vendor").click();
+  await providerDialog.getByRole("button", { name: "Preset vendor" }).click();
   await page.getByRole("option", { name: "Mimo" }).click();
   await providerDialog.getByLabel("API Key").fill(`e2e-mimo-key-${suffix}`);
   await providerDialog.getByRole("button", { name: "Save" }).click();
@@ -187,7 +194,7 @@ test("manages model providers and MCP servers from settings", async ({ page }, t
   const mcpDialog = page.locator('form[aria-label="Add server"]');
   await expect(mcpDialog).toBeVisible();
   await mcpDialog.getByLabel("Server label").fill(`E2E MCP ${suffix}`);
-  await mcpDialog.getByLabel("Transport").click();
+  await mcpDialog.getByRole("button", { name: "Transport" }).click();
   await page.getByRole("option", { name: "streamable http" }).click();
   await mcpDialog.getByLabel("URL").fill("http://127.0.0.1:59999/mcp");
   await mcpDialog.getByRole("button", { name: "Save" }).click();
@@ -203,6 +210,177 @@ test("manages model providers and MCP servers from settings", async ({ page }, t
   await mimoRow.getByLabel("Delete model").click();
   await page.locator(".confirmDialog").getByRole("button", { name: "Delete model" }).click();
   await expect(mimoRow).toHaveCount(0);
+});
+
+test("manages permissions, integrations, scheduled tasks, search providers, and preferences from settings", async ({ page, request }, testInfo) => {
+  test.setTimeout(90_000);
+  const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
+  const integrationName = `E2E Discord ${suffix}`;
+  const integrationUpdatedName = `${integrationName} Updated`;
+  const scheduledName = `E2E Schedule ${suffix}`;
+  const scheduledUpdatedName = `${scheduledName} Updated`;
+  const searchName = `E2E Search ${suffix}`;
+  const searchUpdatedName = `${searchName} Updated`;
+
+  await page.goto("/");
+  await openNavItem(page, /Settings/);
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Permissions", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Permissions" })).toBeVisible();
+  await page.getByRole("radio", { name: "Read only" }).click();
+  await expect.poll(async () => {
+    const grants = await (await request.get(`${apiBase}/api/permissions/global`, { headers: sessionHeaders })).json();
+    return [...grants].map((grant: { riskCategory: string }) => grant.riskCategory).sort().join(",");
+  }).toBe("host_observation,workspace_read");
+
+  await page.getByRole("button", { name: "Integrations", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Integrations" })).toBeVisible();
+  await page.locator(".settingsPanel").getByRole("button", { name: "View guide" }).click();
+  await expect(page.getByRole("heading", { name: "Docs" })).toBeVisible();
+  await expect(page).toHaveURL(/\/docs\/integrations$/);
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page).toHaveURL(/\/settings\/integrations$/);
+
+  await page.locator(".settingsPanel .panelHero").getByRole("button", { name: "Add integration" }).click();
+  const integrationDialog = page.locator('form[aria-label="Add integration"]');
+  await expect(integrationDialog).toBeVisible();
+  await integrationDialog.getByLabel("Name").fill(integrationName);
+  await integrationDialog.getByLabel("Bot token").fill(`bot-${suffix}`);
+  await integrationDialog.getByLabel("Public key").fill(`public-${suffix}`);
+  await integrationDialog.getByLabel("App ID").fill(`app-${suffix}`);
+  await integrationDialog.getByLabel("Callback URL").fill(`https://example.com/${suffix}`);
+  await integrationDialog.getByRole("button", { name: "Save" }).click();
+  const integrationRow = page.locator(".providerRow").filter({ hasText: integrationName });
+  await expect(integrationRow).toBeVisible();
+  await expect.poll(async () => {
+    const integrations = await (await request.get(`${apiBase}/api/integrations`, { headers: sessionHeaders })).json();
+    return integrations.some((item: { label: string }) => item.label === integrationName);
+  }).toBe(true);
+
+  await integrationRow.getByLabel(`Edit integration ${integrationName}`).click();
+  const editIntegrationDialog = page.locator('form[aria-label="Edit integration"]');
+  await expect(editIntegrationDialog).toBeVisible();
+  await editIntegrationDialog.getByLabel("Name").fill(integrationUpdatedName);
+  await editIntegrationDialog.getByLabel("Can receive messages").click();
+  await editIntegrationDialog.getByRole("button", { name: "Save" }).click();
+  const integrationUpdatedRow = page.locator(".providerRow").filter({ hasText: integrationUpdatedName });
+  await expect(integrationUpdatedRow).toBeVisible();
+  await expect.poll(async () => {
+    const integrations = await (await request.get(`${apiBase}/api/integrations`, { headers: sessionHeaders })).json();
+    const match = integrations.find((item: { label: string }) => item.label === integrationUpdatedName);
+    return match ? String(Boolean(match.enabled)) : "missing";
+  }).toBe("true");
+
+  await integrationUpdatedRow.getByLabel(`Delete ${integrationUpdatedName}`).click();
+  await page.locator(".confirmDialog").getByRole("button", { name: "Delete" }).click();
+  await expect(integrationUpdatedRow).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Scheduled tasks", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Scheduled tasks" })).toBeVisible();
+  await page.locator(".settingsPanel .panelHero").getByRole("button", { name: "New" }).click();
+  const scheduleDialog = page.locator('form[aria-label="New scheduled task"]');
+  await expect(scheduleDialog).toBeVisible();
+  await scheduleDialog.getByLabel("Task name").fill(scheduledName);
+  await scheduleDialog.getByLabel("Run time").fill("09:15");
+  await scheduleDialog.getByLabel("Task prompt").fill("Create a compact daily operational summary.");
+  await scheduleDialog.getByRole("button", { name: "Create" }).click();
+  const scheduledRow = page.locator(".scheduledTaskRow").filter({ hasText: scheduledName });
+  await expect(scheduledRow).toBeVisible();
+  await expect.poll(async () => {
+    const tasks = await (await request.get(`${apiBase}/api/scheduled-tasks`, { headers: sessionHeaders })).json();
+    return tasks.some((item: { title: string }) => item.title === scheduledName);
+  }).toBe(true);
+
+  await scheduledRow.getByLabel("Pause scheduled task").click();
+  await expect.poll(async () => {
+    const tasks = await (await request.get(`${apiBase}/api/scheduled-tasks`, { headers: sessionHeaders })).json();
+    const match = tasks.find((item: { title: string }) => item.title === scheduledName);
+    return match?.status ?? "missing";
+  }).toBe("paused");
+  await scheduledRow.getByLabel("Resume scheduled task").click();
+  await expect.poll(async () => {
+    const tasks = await (await request.get(`${apiBase}/api/scheduled-tasks`, { headers: sessionHeaders })).json();
+    const match = tasks.find((item: { title: string }) => item.title === scheduledName);
+    return match?.status ?? "missing";
+  }).toBe("active");
+
+  await scheduledRow.getByLabel("Edit scheduled task").click();
+  const editScheduledDialog = page.locator('form[aria-label="Edit scheduled task"]');
+  await expect(editScheduledDialog).toBeVisible();
+  await editScheduledDialog.getByLabel("Task name").fill(scheduledUpdatedName);
+  await editScheduledDialog.getByRole("button", { name: "Save" }).click();
+  const scheduledUpdatedRow = page.locator(".scheduledTaskRow").filter({ hasText: scheduledUpdatedName });
+  await expect(scheduledUpdatedRow).toBeVisible();
+  await scheduledUpdatedRow.getByLabel("Delete scheduled task").click();
+  await page.locator(".confirmDialog").getByRole("button", { name: "Delete" }).click();
+  await expect(scheduledUpdatedRow).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Web search", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Web search" })).toBeVisible();
+  await page.locator(".settingsPanel .panelHero").getByRole("button", { name: "Add" }).click();
+  const searchDialog = page.locator('form[aria-label="Add search provider"]');
+  await expect(searchDialog).toBeVisible();
+  await searchDialog.getByLabel("Label").fill(searchName);
+  await searchDialog.getByRole("button", { name: "Save" }).click();
+  const searchRow = page.locator(".providerRow").filter({ hasText: searchName });
+  await expect(searchRow).toBeVisible();
+  await expect.poll(async () => {
+    const providers = await (await request.get(`${apiBase}/api/web-search/providers`, { headers: sessionHeaders })).json();
+    return providers.some((item: { label: string }) => item.label === searchName);
+  }).toBe(true);
+
+  await searchRow.getByLabel(`Edit search provider ${searchName}`).click();
+  const editSearchDialog = page.locator('form[aria-label="Edit search provider"]');
+  await expect(editSearchDialog).toBeVisible();
+  await editSearchDialog.getByLabel("Label").fill(searchUpdatedName);
+  await editSearchDialog.getByRole("button", { name: "Select search provider kind" }).click();
+  await page.getByRole("option", { name: "Custom" }).click();
+  await editSearchDialog.getByLabel("Endpoint").fill("https://example.com/search?q={query}&limit={limit}");
+  await editSearchDialog.getByLabel("Available for search").click();
+  await editSearchDialog.getByRole("button", { name: "Save" }).click();
+  const searchUpdatedRow = page.locator(".providerRow").filter({ hasText: searchUpdatedName });
+  await expect(searchUpdatedRow).toBeVisible();
+  await expect.poll(async () => {
+    const providers = await (await request.get(`${apiBase}/api/web-search/providers`, { headers: sessionHeaders })).json();
+    const match = providers.find((item: { label: string }) => item.label === searchUpdatedName);
+    return match ? `${match.kind}:${String(Boolean(match.enabled))}` : "missing";
+  }).toBe("custom:false");
+
+  await searchUpdatedRow.getByLabel(`Delete search provider ${searchUpdatedName}`).click();
+  await page.locator(".confirmDialog").getByRole("button", { name: "Delete" }).click();
+  await expect(searchUpdatedRow).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Preferences", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Agent preferences" })).toBeVisible();
+  await page.getByRole("button", { name: "Appearance theme" }).click();
+  await page.getByRole("option", { name: "Light" }).click();
+  await page.getByRole("button", { name: "Response detail" }).click();
+  await page.getByRole("option", { name: "Detailed" }).click();
+  await expect.poll(async () => {
+    const preferences = await (await request.get(`${apiBase}/api/preferences`, { headers: sessionHeaders })).json();
+    return `${preferences.theme}:${preferences.responseDetail}`;
+  }).toBe("light:detailed");
+  await page.reload();
+  await expect(page).toHaveURL(/\/settings\/preferences$/);
+  await expect(page.getByRole("button", { name: "Appearance theme" })).toContainText("Light");
+  await expect(page.getByRole("button", { name: "Response detail" })).toContainText("Detailed");
+});
+
+test("keeps settings and docs usable on mobile, including section guide links", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/settings/preferences");
+  await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agent preferences", exact: true })).toBeVisible();
+  expect(await horizontalOverflow(page)).toBeLessThanOrEqual(1);
+
+  await page.locator(".settingsPanel").getByRole("button", { name: "View guide" }).click();
+  await expect(page.getByRole("heading", { name: "Docs" })).toBeVisible();
+  await expect(page).toHaveURL(/\/docs\/preferences$/);
+  expect(await horizontalOverflow(page)).toBeLessThanOrEqual(1);
+  await expect(page.locator(".docsArticle")).toBeVisible();
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page).toHaveURL(/\/settings\/preferences$/);
 });
 
 test("loads the library memory route directly", async ({ page }) => {
@@ -221,7 +399,8 @@ test("loads the library memory route directly", async ({ page }) => {
 test("covers library, reflection, and history management", async ({ page, request }, testInfo) => {
   const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
   const taskResponse = await request.post(`${apiBase}/api/tasks`, {
-    data: { goal: `E2E history cleanup ${suffix}`, title: `History ${suffix}` }
+    data: { goal: `E2E history cleanup ${suffix}`, title: `History ${suffix}` },
+    headers: sessionHeaders
   });
   const task = await taskResponse.json();
   await page.goto("/");
@@ -286,7 +465,7 @@ test("covers library, reflection, and history management", async ({ page, reques
   await expect(historyRow).toBeVisible();
   await historyRow.getByLabel(new RegExp(`Delete History ${suffix}`)).click();
   await expect(historyRow).toHaveCount(0);
-  expect((await request.get(`${apiBase}/api/tasks/${task.id}`)).status()).toBe(404);
+  expect((await request.get(`${apiBase}/api/tasks/${task.id}`, { headers: sessionHeaders })).status()).toBe(404);
 
   await openNavItem(page, /Library/);
   await skillRow.getByLabel(`Delete E2E Skill ${suffix}`).click();
@@ -361,6 +540,15 @@ async function thinkingMetrics(page: import("@playwright/test").Page): Promise<{
       shellHeight: shell?.getBoundingClientRect().height ?? 0
     };
   });
+}
+
+async function horizontalOverflow(page: import("@playwright/test").Page): Promise<number> {
+  return page.evaluate(() =>
+    Math.max(
+      document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      document.body.scrollWidth - document.body.clientWidth
+    )
+  );
 }
 
 async function submitInput(page: import("@playwright/test").Page): Promise<void> {

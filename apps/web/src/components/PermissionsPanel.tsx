@@ -17,6 +17,7 @@ import {
 import { getUiCopy } from "../i18n.js";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { SettingsPrimer } from "./SettingsAssist.js";
 
 const riskCategories: RiskCategory[] = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
 const readOnlyRiskCategories: RiskCategory[] = ["host_observation", "workspace_read"];
@@ -27,6 +28,7 @@ type PermissionMode = UserPreferences["permissionMode"];
 
 export function PermissionsPanel({
   language,
+  onOpenDocs,
   permissions,
   preferences,
   preferencesOnly = false,
@@ -38,6 +40,7 @@ export function PermissionsPanel({
   onPreference
 }: {
   language?: string | null;
+  onOpenDocs?: (() => void) | undefined;
   permissions: GlobalPermissionGrant[];
   preferences: UserPreferences | null;
   preferencesOnly?: boolean;
@@ -79,6 +82,15 @@ export function PermissionsPanel({
         </div>
       </div>
 
+      <SettingsPrimer
+        language={language}
+        summary={preferencesOnly ? text.preferencesPrimer.summary : text.primer.summary}
+        focus={preferencesOnly ? text.preferencesPrimer.focus : text.primer.focus}
+        impact={preferencesOnly ? text.preferencesPrimer.impact : text.primer.impact}
+        nextStep={preferencesOnly ? text.preferencesPrimer.nextStep : text.primer.nextStep}
+        onOpenDocs={onOpenDocs}
+      />
+
       {!preferencesOnly ? (
         <>
           <section className="permissionModePanel">
@@ -111,6 +123,9 @@ export function PermissionsPanel({
                 <p>{coverageDescription(text, displayedMode)}</p>
               </div>
             </div>
+            <p className="inlineNotice warning">
+              <span>{text.coverageNotice}</span>
+            </p>
             <div className="permissionRows">
               {riskCategories.map((risk) => {
                 const riskCopy = text.risks[risk];
@@ -208,6 +223,9 @@ export function PermissionsPanel({
 
       {preferencesOnly ? (
         <>
+          <p className="inlineNotice">
+            <span>{text.preferencesNotice}</span>
+          </p>
           <div className="prefSection">
             <div className="prefSectionHeader">
               <span className="prefSectionIcon">

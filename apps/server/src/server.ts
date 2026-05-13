@@ -1,6 +1,7 @@
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { randomBytes } from "node:crypto";
 import {
   AgentWorkbench,
   CompositeToolExecutor,
@@ -12,6 +13,7 @@ import {
   WebSearchToolExecutor,
   createModelClientFromEnvironment,
   loadOpenAiProviderConfig,
+  parseWecomCallbackXml,
   type OpenAIProviderConfigWithName,
   type ResolvedModelProviderConfig
 } from "@scc/core";
@@ -40,6 +42,7 @@ import {
   ProjectMemoryPatchRequestSchema,
   ScheduledTaskCreateRequestSchema,
   ScheduledTaskPatchRequestSchema,
+  SlackEventRequestSchema,
   SkillBulkDeleteRequestSchema,
   SkillCorrectionRequestSchema,
   SkillCreateRequestSchema,
@@ -56,15 +59,17 @@ import {
   TaskTitleRequestSchema,
   TaskDeleteRequestSchema,
   TaskAttachmentUploadRequestSchema,
+  TelegramUpdateRequestSchema,
   type ModelProviderRecord,
   type ModelPreset,
   type TaskDetail,
   type TaskEvent,
   type TaskTranscriptItem,
+  WecomCallbackRequestSchema,
   WebSearchProviderCreateRequestSchema,
   WebSearchProviderPatchRequestSchema
 } from "@scc/shared";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { ZodError, z } from "zod";
 import { createSccMcpServer } from "./scc-mcp-server.js";
 import { SqliteWorkbenchStore } from "./sqlite-store.js";
@@ -79,6 +84,19 @@ const LIST_EVENT_WINDOW = 0;
 const MAX_UI_OUTPUT_CHARS = 12000;
 const MAX_UI_SUMMARY_CHARS = 8000;
 const TASK_WS_HEARTBEAT_MS = 10_000;
+const SESSION_HEADER = "x-scc-session";
+const LOCALHOST_ALLOWED_ORIGINS = [
+  "http://127.0.0.1:5173",
+  "http://localhost:5173",
+  "http://127.0.0.1:5182",
+  "http://localhost:5182",
+  "http://127.0.0.1:4173",
+  "http://localhost:4173"
+] as const;
+
+interface RequestWithRawBody extends FastifyRequest {
+  rawBody?: string;
+}
 
 function parseEventWindow(query: unknown, fallback = DEFAULT_EVENT_WINDOW): number {
   const value = z.object({ eventLimit: z.coerce.number().int().nonnegative().optional() }).safeParse(query);
@@ -240,7 +258,44 @@ export interface AppOptions {
 }
 
 export async function createApp(options: AppOptions = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: options.logger ?? true });
+  const app = Fastify({
+    logger:
+      options.logger === false
+        ? false
+        : {
+            serializers: {
+              req(request) {
+                return {
+                  method: request.method,
+                  url: sanitizeUrlForLogs(request.url),
+                  host: request.host,
+                  remoteAddress: request.ip
+                };
+              }
+            },
+            redact: {
+              paths: [`req.headers.${SESSION_HEADER}`],
+              censor: "[redacted-session]"
+            }
+          }
+  });
+  const sessionToken = createSessionToken();
+  const allowedOrigins = resolveAllowedOrigins();
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser(/^application\/([a-z0-9.+-]+\+)?json(?:;.*)?$/i, { parseAs: "string" }, (request, body, done) => {
+    try {
+      const rawBody = typeof body === "string" ? body : body.toString("utf8");
+      (request as RequestWithRawBody).rawBody = rawBody;
+      done(null, rawBody.trim().length > 0 ? JSON.parse(rawBody) : {});
+    } catch (error) {
+      done(error as Error, undefined);
+    }
+  });
+  app.addContentTypeParser(/^(application|text)\/xml(?:;.*)?$/i, { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as RequestWithRawBody).rawBody = rawBody;
+    done(null, rawBody);
+  });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ZodError) {
       return reply.code(400).send({ error: "Invalid request", issues: error.issues });
@@ -253,11 +308,33 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     });
   });
   await app.register(cors, {
-    origin: true,
+    origin(origin, callback) {
+      callback(null, !origin || isAllowedOrigin(origin, allowedOrigins));
+    },
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["content-type"]
+    allowedHeaders: ["content-type", SESSION_HEADER]
   });
   await app.register(websocket);
+  app.addHook("onRequest", async (request, reply) => {
+    if (request.method === "OPTIONS") return;
+    const origin = request.headers.origin;
+    if (origin && !isAllowedOrigin(origin, allowedOrigins)) {
+      return reply.code(403).send({ error: "Origin not allowed." });
+    }
+    const path = requestPathname(request);
+    if (isPublicPath(path)) return;
+    if (/^\/api\/tasks\/[^/]+\/events\/ws$/i.test(path) || request.raw.headers.upgrade === "websocket") {
+      const session = readRequestQueryValue(request, "session");
+      if (!session || session !== sessionToken) {
+        return reply.code(401).send({ error: "Missing or invalid session token." });
+      }
+      return;
+    }
+    const session = readSessionHeader(request.headers[SESSION_HEADER]);
+    if (session !== sessionToken) {
+      return reply.code(401).send({ error: "Missing or invalid session token." });
+    }
+  });
 
   const events = new TaskEventBroadcaster();
   const runtime = options.workbench
@@ -280,6 +357,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   });
 
   app.get("/health", async () => ({ ok: true }));
+  app.get("/api/session/bootstrap", async () => ({ sessionToken }));
 
   app.get("/api/tasks", async () => (await workbench.listTasks()).map((task) => taskForTransport(task, LIST_EVENT_WINDOW)));
 
@@ -926,20 +1004,122 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.post("/api/integrations/discord/interactions", async (request, reply) => {
     const input = DiscordInteractionRequestSchema.parse(request.body);
+    const signature = String(request.headers["x-signature-ed25519"] ?? "");
+    const timestamp = String(request.headers["x-signature-timestamp"] ?? "");
+    const rawBody = (request as RequestWithRawBody).rawBody ?? JSON.stringify(request.body ?? {});
     try {
-      return await workbench.handleDiscordInteraction(input);
+      if (input.type === 1) {
+        await workbench.handleDiscordInteraction(input, { rawBody, signature, timestamp }).catch((error) => {
+          throw error;
+        });
+        return { type: 1 };
+      }
+      const task = await workbench.handleDiscordInteraction(input, { rawBody, signature, timestamp });
+      if (!task) {
+        return {
+          type: 4,
+          data: { content: "Verified Discord interaction, but this payload is not yet supported." }
+        };
+      }
+      return {
+        type: 4,
+        data: { content: `Created SCC task: ${task.title}` },
+        taskId: task.id
+      };
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      const statusCode = /signature|public key/i.test(message) ? 401 : 400;
+      return reply.code(statusCode).send({ error: message });
     }
   });
 
   app.post("/api/integrations/feishu/events", async (request, reply) => {
     const input = FeishuEventRequestSchema.parse(request.body);
-    if (input.challenge) return { challenge: input.challenge };
     try {
-      return (await workbench.handleFeishuEvent(input)) ?? { ok: true, ignored: true };
+      const task = await workbench.handleFeishuEvent(input);
+      if (input.challenge) return { challenge: input.challenge };
+      return task ? { ok: true, taskId: task.id } : { ok: true, ignored: true, reason: "Verified Feishu event, but this payload is not yet supported." };
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      const statusCode = /verification token/i.test(message) ? 401 : 400;
+      return reply.code(statusCode).send({ error: message });
+    }
+  });
+
+  app.post("/api/integrations/slack/events", async (request, reply) => {
+    const input = SlackEventRequestSchema.parse(request.body);
+    const signature = String(request.headers["x-slack-signature"] ?? "");
+    const timestamp = String(request.headers["x-slack-request-timestamp"] ?? "");
+    const rawBody = (request as RequestWithRawBody).rawBody ?? JSON.stringify(request.body ?? {});
+    try {
+      const task = await workbench.handleSlackEvent(input, { rawBody, signature, timestamp });
+      if (input.type === "url_verification" && input.challenge) return { challenge: input.challenge };
+      return task ? { ok: true, taskId: task.id } : { ok: true, ignored: true, reason: "Verified Slack event, but this payload is not yet supported." };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const statusCode = /signature|signing secret/i.test(message) ? 401 : 400;
+      return reply.code(statusCode).send({ error: message });
+    }
+  });
+
+  app.post("/api/integrations/telegram/updates", async (request, reply) => {
+    const input = TelegramUpdateRequestSchema.parse(request.body);
+    const secretToken = String(request.headers["x-telegram-bot-api-secret-token"] ?? "");
+    try {
+      const task = await workbench.handleTelegramUpdate(input, { secretToken });
+      return task ? { ok: true, taskId: task.id } : { ok: true, ignored: true, reason: "Verified Telegram update, but this payload is not yet supported." };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const statusCode = /secret token/i.test(message) ? 401 : 400;
+      return reply.code(statusCode).send({ error: message });
+    }
+  });
+
+  app.get("/api/integrations/wecom/callback", async (request, reply) => {
+    const query = z.object({
+      integrationId: z.string().optional(),
+      msg_signature: z.string().default(""),
+      timestamp: z.string().default(""),
+      nonce: z.string().default(""),
+      echostr: z.string().default("")
+    }).parse(request.query);
+    try {
+      const echo = await workbench.verifyWecomCallback(query.integrationId, {
+        msgSignature: query.msg_signature,
+        timestamp: query.timestamp,
+        nonce: query.nonce,
+        echostr: query.echostr
+      });
+      return reply.type("text/plain").send(echo);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const statusCode = /signature|token|aes/i.test(message) ? 401 : 400;
+      return reply.code(statusCode).send({ error: message });
+    }
+  });
+
+  app.post("/api/integrations/wecom/callback", async (request, reply) => {
+    const query = z.object({
+      integrationId: z.string().optional(),
+      msg_signature: z.string().default(""),
+      timestamp: z.string().default(""),
+      nonce: z.string().default("")
+    }).parse(request.query);
+    const rawBody = (request as RequestWithRawBody).rawBody ?? String(request.body ?? "");
+    const parsedBody = typeof request.body === "string" ? parseWecomCallbackXml(request.body) : WecomCallbackRequestSchema.parse(request.body);
+    const input = WecomCallbackRequestSchema.parse({ ...parsedBody, ...(query.integrationId ? { integrationId: query.integrationId } : {}) });
+    try {
+      const task = await workbench.handleWecomCallback(input, {
+        msgSignature: query.msg_signature,
+        timestamp: query.timestamp,
+        nonce: query.nonce,
+        rawBody
+      });
+      return task ? { ok: true, taskId: task.id } : { ok: true, ignored: true, reason: "Verified WeCom callback, but this payload is not yet supported." };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const statusCode = /signature|token|aes/i.test(message) ? 401 : 400;
+      return reply.code(statusCode).send({ error: message });
     }
   });
 
@@ -1058,6 +1238,59 @@ function redactSensitiveText(input: string): string {
   return input
     .replace(/\bsk-[A-Za-z0-9_\-*]{8,}/g, "[redacted-api-key]")
     .replace(/(OPENAI_API_KEY\s*=\s*)\S+/gi, "$1[redacted]");
+}
+
+function createSessionToken(): string {
+  return randomBytes(24).toString("hex");
+}
+
+function resolveAllowedOrigins(): Set<string> {
+  const configured = (process.env["SCC_ALLOWED_ORIGINS"] ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return new Set([...LOCALHOST_ALLOWED_ORIGINS, ...configured]);
+}
+
+function isAllowedOrigin(origin: string, allowedOrigins: Set<string>): boolean {
+  return allowedOrigins.has(origin);
+}
+
+function sanitizeUrlForLogs(url: string | undefined): string {
+  if (!url) return "/";
+  return url.replace(/([?&]session=)[^&]+/gi, "$1[redacted-session]");
+}
+
+function requestPathname(request: FastifyRequest): string {
+  try {
+    return new URL(request.raw.url ?? "/", "http://127.0.0.1").pathname;
+  } catch {
+    return request.raw.url?.split("?")[0] ?? "/";
+  }
+}
+
+function readRequestQueryValue(request: FastifyRequest, key: string): string | null {
+  try {
+    return new URL(request.raw.url ?? "/", "http://127.0.0.1").searchParams.get(key);
+  } catch {
+    return null;
+  }
+}
+
+function isPublicPath(path: string): boolean {
+  return (
+    path === "/health" ||
+    path === "/api/session/bootstrap" ||
+    path === "/api/integrations/discord/interactions" ||
+    path === "/api/integrations/feishu/events" ||
+    path === "/api/integrations/slack/events" ||
+    path === "/api/integrations/telegram/updates" ||
+    path === "/api/integrations/wecom/callback"
+  );
+}
+
+function readSessionHeader(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? value[0] ?? "" : value ?? "";
 }
 
 function safeSocketSend(socket: { send: (data: string) => void }, payload: Record<string, unknown>): void {

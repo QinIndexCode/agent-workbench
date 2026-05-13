@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, Languages } from "lucide-react";
+import "../styles/settings.css";
 import { MarkdownText } from "./MarkdownText.js";
 import { docMetas, getDocTitle, loadDocContent, type DocsSection } from "../docs/index.js";
 
@@ -34,24 +35,27 @@ function setDocsLanguage(lang: string): void {
 }
 
 export function DocsView({
+  activeSection,
   language,
-  onBack
+  onBack,
+  onSection
 }: {
+  activeSection: DocsSection;
   language?: string | null;
   onBack: () => void;
+  onSection: (section: DocsSection) => void;
 }) {
   const [docsLang, setDocsLang] = useState<string>(() => getDocsLanguage(language));
-  const [activeId, setActiveId] = useState<DocsSection>(docMetas[0]!.id);
   const [content, setContent] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const zh = docsLang === "zh" || docsLang === "zh-CN";
 
-  const activeMeta = docMetas.find((doc) => doc.id === activeId) ?? docMetas[0]!;
+  const activeMeta = docMetas.find((doc) => doc.id === activeSection) ?? docMetas[0]!;
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    loadDocContent(activeId, docsLang)
+    loadDocContent(activeSection, docsLang)
       .then((text) => {
         if (!cancelled) {
           setContent(text);
@@ -67,7 +71,7 @@ export function DocsView({
     return () => {
       cancelled = true;
     };
-  }, [activeId, docsLang, activeMeta]);
+  }, [activeSection, docsLang, activeMeta]);
 
   function toggleLanguage() {
     const next = zh ? "en" : "zh-CN";
@@ -84,7 +88,7 @@ export function DocsView({
         </button>
         <div>
           <h1>{zh ? "文档" : "Docs"}</h1>
-          <p>{zh ? "产品说明、模型配置和权限语义" : "Product notes, model setup, and permission semantics"}</p>
+          <p>{zh ? "按主题查看设置说明、模型配置和排障手册" : "Browse settings guides, model setup, and troubleshooting playbooks"}</p>
         </div>
         <button
           className="subtleButton iconText docsLangSwitch"
@@ -102,10 +106,10 @@ export function DocsView({
             const Icon = doc.icon;
             return (
               <button
-                className={doc.id === activeId ? "docsTocItem selected" : "docsTocItem"}
+                className={doc.id === activeSection ? "docsTocItem selected" : "docsTocItem"}
                 type="button"
                 key={doc.id}
-                onClick={() => setActiveId(doc.id)}
+                onClick={() => onSection(doc.id)}
               >
                 <span className="docsTocItemLabel">
                   <Icon size={15} aria-hidden="true" />
@@ -119,7 +123,7 @@ export function DocsView({
           <div className="docsArticleHeader">
             <div>
               <h2>{getDocTitle(activeMeta, docsLang)}</h2>
-              <p>{zh ? "清晰、可搜索、可逐步扩展的本地说明。" : "Readable local documentation that can grow over time."}</p>
+              <p>{activeMeta.summary[zh ? "zh" : "en"] ?? activeMeta.summary.en}</p>
             </div>
           </div>
           <div className="docBody">

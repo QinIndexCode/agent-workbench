@@ -2,13 +2,16 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { mkdir, open, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, resolve, sep } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { ToolCall, ToolResult } from "@scc/shared";
 import { createId, nowIso } from "./ids.js";
+import { resolveWorkspacePathStrict } from "./path-guards.js";
 import { defaultTaskWorkRoot } from "./workspace-root.js";
 
 const DEFAULT_READ_RANGE_LINES = 200;
-const READ_FILE_FULL_INLINE_BYTES = 256 * 1024;
+const READ_FILE_FULL_INLINE_BYTES = 96 * 1024;
+const READ_FILE_FULL_INLINE_LINES = 360;
+const READ_FILE_FULL_INLINE_CHARS = 24 * 1024;
 const READ_FILE_RESULT_INLINE_CHARS = 320 * 1024;
 const LARGE_FILE_HEAD_LINES = 220;
 const LARGE_FILE_TAIL_LINES = 120;
@@ -86,13 +89,14 @@ export class ShellToolExecutor implements ToolExecutor {
   }
 
   private async runCommand(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
-    const command = String(call.args["command"] ?? "");
-    if (!command.trim()) {
+    const rawCommand = String(call.args["command"] ?? "");
+    if (!rawCommand.trim()) {
       return this.result(call, false, "Missing command.");
     }
     if (options.signal?.aborted) {
       return this.result(call, false, "Command cancelled before it started.");
     }
+    const command = normalizeCommandForExecution(rawCommand);
 
     const shell = process.platform === "win32" ? "powershell.exe" : "bash";
     const args =
@@ -100,7 +104,7 @@ export class ShellToolExecutor implements ToolExecutor {
         ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]
         : ["-lc", command];
     const root = this.rootFor(options);
-    const cwd = this.resolveWorkspacePath(String(call.args["cwd"] ?? "."), root);
+    const cwd = await this.resolveWorkspacePath(String(call.args["cwd"] ?? "."), root);
     const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
     await emitToolProgress(options, { status: "running", operation: "run_command", message: "Command process started.", progress: { processed: 0, unit: "bytes" } });
 
@@ -176,7 +180,7 @@ export class ShellToolExecutor implements ToolExecutor {
 
   private async readFile(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     try {
-      const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
+      const path = await this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
       const hasExplicitRange = Object.hasOwn(call.args, "offset") || Object.hasOwn(call.args, "limit");
       const info = await stat(path);
       await emitToolProgress(options, {
@@ -197,6 +201,7 @@ export class ShellToolExecutor implements ToolExecutor {
             {
               path,
               mode: "range",
+              displayMode: "inline",
               offset,
               limit,
               sizeBytes: info.size,
@@ -213,7 +218,10 @@ export class ShellToolExecutor implements ToolExecutor {
       }
 
       const profile = await readTextFileProfile(path, info.size);
-      const isFull = info.size <= READ_FILE_FULL_INLINE_BYTES;
+      const isFull =
+        info.size <= READ_FILE_FULL_INLINE_BYTES &&
+        profile.totalLines <= READ_FILE_FULL_INLINE_LINES &&
+        profile.content.length <= READ_FILE_FULL_INLINE_CHARS;
       return this.result(
         call,
         true,
@@ -222,6 +230,7 @@ export class ShellToolExecutor implements ToolExecutor {
             ? {
                 path,
                 mode: "full",
+                displayMode: "inline",
                 sizeBytes: info.size,
                 totalLines: profile.totalLines,
                 content: profile.content,
@@ -231,6 +240,7 @@ export class ShellToolExecutor implements ToolExecutor {
             : {
                 path,
                 mode: "large_preview",
+                displayMode: "summary_only",
                 sizeBytes: info.size,
                 totalLines: profile.totalLines,
                 content: profile.preview,
@@ -253,7 +263,7 @@ export class ShellToolExecutor implements ToolExecutor {
     call: ToolCall,
     options: ToolExecutionOptions
   ): Promise<{ path: string; current: string; currentHash: string; existed: boolean } | ToolResult> {
-    const path = this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
+    const path = await this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
     const expectedHash = String(call.args["expectedHash"] ?? "");
     if (!expectedHash) {
       return this.result(call, false, "Missing expectedHash. Read the file first, or use __new__ when creating a new file.");
@@ -281,6 +291,7 @@ export class ShellToolExecutor implements ToolExecutor {
       const { path, current, existed } = validation;
 
       const lines = current.split(/\r?\n/);
+      const appliedEdits: Array<{ startLine: number; endLine: number; beforeText: string; afterText: string }> = [];
       const normalized = edits
         .map((edit) => {
           if (!isRecord(edit)) throw new Error("Invalid edit entry.");
@@ -301,11 +312,19 @@ export class ShellToolExecutor implements ToolExecutor {
         if (edit.startLine > lines.length + 1 || edit.endLine > lines.length) {
           return this.conflictResult(call, path, String(call.args["expectedHash"] ?? ""), hash(current), `Edit range ${edit.startLine}-${edit.endLine} no longer matches the file. The file may have been modified by another user or agent; read it again before editing.`);
         }
+        const existingText = lines.slice(edit.startLine - 1, edit.endLine).join("\n");
         if (edit.expectedText !== undefined) {
-          const existingText = lines.slice(edit.startLine - 1, edit.endLine).join("\n");
           if (normalizeNewlines(existingText) !== normalizeNewlines(edit.expectedText)) {
             return this.conflictResult(call, path, String(call.args["expectedHash"] ?? ""), hash(current), `Expected text for lines ${edit.startLine}-${edit.endLine} did not match current file content. The file may have been modified by another user or agent; read it again before editing.`);
           }
+        }
+        if (appliedEdits.length < 3) {
+          appliedEdits.push({
+            startLine: edit.startLine,
+            endLine: edit.endLine,
+            beforeText: previewEditText(existingText),
+            afterText: previewEditText(edit.newText)
+          });
         }
         const replacement = edit.newText.length > 0 ? edit.newText.split(/\r?\n/) : [];
         lines.splice(edit.startLine - 1, edit.endLine - edit.startLine + 1, ...replacement);
@@ -331,6 +350,7 @@ export class ShellToolExecutor implements ToolExecutor {
           hash: hash(next),
           changed: current !== next,
           changes,
+          editsApplied: appliedEdits.reverse(),
           displayMode: isLargeChange(changes, next) ? "summary_only" : "inline"
         }, null, 2)
       );
@@ -386,7 +406,7 @@ export class ShellToolExecutor implements ToolExecutor {
       const query = String(call.args["query"] ?? "");
       if (!query.trim()) return this.result(call, false, "Missing query.");
       const terms = parseSearchTerms(query);
-      const root = this.resolveWorkspacePath(String(call.args["path"] ?? "."), this.rootFor(options));
+      const root = await this.resolveWorkspacePath(String(call.args["path"] ?? "."), this.rootFor(options));
       await emitToolProgress(options, { status: "running", targetPath: root, operation: "search", message: "Scanning workspace files.", progress: { processed: 0, unit: "files" } });
       const files = await walk(root, 300);
       const matches: Array<{ path: string; line?: number; text?: string; matchedTerm?: string }> = [];
@@ -424,7 +444,7 @@ export class ShellToolExecutor implements ToolExecutor {
 
   private async listFiles(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     try {
-      const root = this.resolveWorkspacePath(String(call.args["path"] ?? "."), this.rootFor(options));
+      const root = await this.resolveWorkspacePath(String(call.args["path"] ?? "."), this.rootFor(options));
       const recursive = Boolean(call.args["recursive"] ?? false);
       await emitToolProgress(options, { status: "running", targetPath: root, operation: "list", message: "Listing workspace files.", progress: { processed: 0, unit: "files" } });
       const files = recursive ? await walk(root, 500) : await list(root);
@@ -449,8 +469,8 @@ export class ShellToolExecutor implements ToolExecutor {
     return resolve(options.workRoot?.trim() || this.workspaceRoot);
   }
 
-  private resolveWorkspacePath(input: string, root: string): string {
-    return resolveWorkspacePath(root, input);
+  private async resolveWorkspacePath(input: string, root: string): Promise<string> {
+    return resolveWorkspacePathStrict(root, input);
   }
 
   private async conflictResult(call: ToolCall, path: string, expectedHash: string, actualHash: string, reason: string): Promise<ToolResult> {
@@ -472,24 +492,62 @@ export class ShellToolExecutor implements ToolExecutor {
   }
 }
 
-function resolveWorkspacePath(root: string, input: string): string {
-  if (!input.trim()) throw new Error("Missing path.");
-  const resolvedRoot = resolve(root);
-  const full = resolve(resolvedRoot, input);
-  const compareRoot = process.platform === "win32" ? resolvedRoot.toLowerCase() : resolvedRoot;
-  const compareFull = process.platform === "win32" ? full.toLowerCase() : full;
-  if (compareFull !== compareRoot && !compareFull.startsWith(compareRoot + sep)) {
-    throw new Error(`Path is outside the workspace: ${input}`);
-  }
-  return full;
-}
-
 function hash(content: string): string {
   return createHash("sha256").update(content).digest("hex").slice(0, 16);
 }
 
 function normalizeNewlines(value: string): string {
   return value.replace(/\r\n/g, "\n");
+}
+
+function normalizeCommandForExecution(command: string): string {
+  if (process.platform !== "win32") return command;
+  let current = command.trim();
+  for (let depth = 0; depth < 2; depth += 1) {
+    const unwrapped = unwrapWindowsPowerShellCommand(current);
+    if (!unwrapped || unwrapped === current) break;
+    current = unwrapped;
+  }
+  return current;
+}
+
+function unwrapWindowsPowerShellCommand(command: string): string {
+  const shellMatch = /^(?:powershell|powershell\.exe|pwsh|pwsh\.exe)\b\s*([\s\S]*)$/i.exec(command.trim());
+  if (!shellMatch) return command;
+  let rest = shellMatch[1]?.trim() ?? "";
+  if (!rest) return command;
+  while (rest.length > 0) {
+    if (/^-noprofile\b/i.test(rest)) {
+      rest = rest.replace(/^-noprofile\b\s*/i, "").trim();
+      continue;
+    }
+    if (/^-noninteractive\b/i.test(rest)) {
+      rest = rest.replace(/^-noninteractive\b\s*/i, "").trim();
+      continue;
+    }
+    if (/^-nologo\b/i.test(rest)) {
+      rest = rest.replace(/^-nologo\b\s*/i, "").trim();
+      continue;
+    }
+    if (/^-executionpolicy\b/i.test(rest)) {
+      rest = rest.replace(/^-executionpolicy\b\s+\S+\s*/i, "").trim();
+      continue;
+    }
+    break;
+  }
+  if (/^-encodedcommand\b/i.test(rest)) return command;
+  const commandMatch = /^(?:-command|-c)\b\s*([\s\S]*)$/i.exec(rest);
+  if (!commandMatch) return command;
+  const inner = unwrapOuterShellQuotes(commandMatch[1]?.trim() ?? "");
+  return inner || command;
+}
+
+function unwrapOuterShellQuotes(value: string): string {
+  if (value.length < 2) return value;
+  const quote = value[0];
+  if ((quote !== "\"" && quote !== "'") || value.at(-1) !== quote) return value;
+  const unquoted = value.slice(1, -1);
+  return quote === "\"" ? unquoted.replace(/""/g, "\"") : unquoted.replace(/''/g, "'");
 }
 
 function lineChangeSummary(
@@ -536,9 +594,11 @@ function isLargeChange(changes: { addedLines: number; removedLines: number }, co
 }
 
 async function list(root: string): Promise<string[]> {
+  const rootInfo = await stat(root).catch(() => null);
+  if (rootInfo?.isFile()) return [root];
   const entries = await readdir(root, { withFileTypes: true });
   return entries
-    .filter((entry) => !entry.name.startsWith(".") && entry.name !== "node_modules")
+    .filter((entry) => !entry.name.startsWith(".") && entry.name !== "node_modules" && !entry.isSymbolicLink())
     .map((entry) => resolve(root, entry.name));
 }
 
@@ -552,6 +612,7 @@ async function walk(root: string, maxFiles: number): Promise<string[]> {
       if (entry.name === "node_modules" || entry.name === "dist" || entry.name === "coverage" || entry.name.startsWith(".")) {
         continue;
       }
+      if (entry.isSymbolicLink()) continue;
       const full = resolve(dir, entry.name);
       if (entry.isDirectory()) await visit(full);
       else output.push(full);
@@ -571,15 +632,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function appendLimited(current: string, chunk: string, maxChars: number): string {
-  const next = current + chunk;
-  return next.length <= maxChars ? next : next.slice(-maxChars);
-}
-
 function appendLimitedBuffer(current: Buffer<ArrayBufferLike>, chunk: Buffer | string, maxBytes: number): Buffer<ArrayBufferLike> {
   const nextChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
   const next = Buffer.concat([current, nextChunk]);
   return next.length <= maxBytes ? next : next.subarray(next.length - maxBytes);
+}
+
+function previewEditText(value: string, maxChars = 240): string {
+  const compact = normalizeNewlines(value).trim();
+  if (!compact) return "";
+  return compact.length <= maxChars ? compact : `${compact.slice(0, maxChars - 3)}...`;
 }
 
 function parseSearchTerms(query: string): string[] {
@@ -638,10 +700,6 @@ async function readTextFileProfile(path: string, sizeBytes: number): Promise<{ c
   consumeLine(carry);
 
   const content = contentParts.join("");
-  if (collectFullContent) {
-    return { content, preview: content, totalLines, hash: hasher.digest("hex").slice(0, 16) };
-  }
-
   const omittedLines = Math.max(0, totalLines - headLines.length - tailLines.length);
   const preview = [
     `[Large file preview: ${sizeBytes} bytes, ${totalLines} lines. Full content is retained on disk and was not inserted into this tool result.]`,
@@ -649,6 +707,9 @@ async function readTextFileProfile(path: string, sizeBytes: number): Promise<{ c
     omittedLines > 0 ? `... (${omittedLines} lines omitted; use read_file with offset/limit or search_files for targeted sections) ...` : "",
     ...tailLines
   ].filter(Boolean).join("\n");
+  if (collectFullContent) {
+    return { content, preview, totalLines, hash: hasher.digest("hex").slice(0, 16) };
+  }
   return { content: "", preview, totalLines, hash: hasher.digest("hex").slice(0, 16) };
 }
 

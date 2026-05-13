@@ -170,7 +170,9 @@ export class OpenAIModelClient implements ModelClient {
     }
     const client = this.clientFor(baseURL, apiKey);
     const callSignal = this.createCallSignal(stream?.signal);
-    const messages = toOpenAIChatMessages(contextMessages(context, task));
+    const messages = toOpenAIChatMessages(contextMessages(context, task), {
+      replayReasoningContent: requiresOpenAIReasoningReplay(model, baseURL)
+    });
     const request: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
       model,
       messages,
@@ -211,6 +213,7 @@ export class OpenAIModelClient implements ModelClient {
             response: {
               kind: "tool_calls",
               calls,
+              ...(streamed.reasoning ? { reasoningContent: streamed.reasoning } : {}),
               ...(streamed.usage ? { usage: streamed.usage } : {})
             }
           }
@@ -219,16 +222,23 @@ export class OpenAIModelClient implements ModelClient {
           kind: "tool_calls",
           calls,
           ...(stream?.streamId ? { streamId: stream.streamId } : {}),
+          ...(streamed.reasoning ? { reasoningContent: streamed.reasoning } : {}),
           ...(streamed.usage ? { usage: streamed.usage } : {})
         };
       }
 
       const content = streamed.content.trim();
       const finalResponse = content
-        ? { kind: "final" as const, message: content, ...(streamed.usage ? { usage: streamed.usage } : {}) }
+        ? {
+            kind: "final" as const,
+            message: content,
+            ...(streamed.reasoning ? { reasoningContent: streamed.reasoning } : {}),
+            ...(streamed.usage ? { usage: streamed.usage } : {})
+          }
         : {
             kind: "empty_response" as const,
             reason: "OpenAI-compatible stream ended without content or tool calls.",
+            ...(streamed.reasoning ? { reasoningContent: streamed.reasoning } : {}),
             ...(streamed.usage ? { usage: streamed.usage } : {}),
             rawPayload: streamed.diagnostics
           };
@@ -242,11 +252,18 @@ export class OpenAIModelClient implements ModelClient {
         }
       });
       return content
-        ? { kind: "final", message: content, ...(stream?.streamId ? { streamId: stream.streamId } : {}), ...(streamed.usage ? { usage: streamed.usage } : {}) }
+        ? {
+            kind: "final",
+            message: content,
+            ...(stream?.streamId ? { streamId: stream.streamId } : {}),
+            ...(streamed.reasoning ? { reasoningContent: streamed.reasoning } : {}),
+            ...(streamed.usage ? { usage: streamed.usage } : {})
+          }
         : {
             kind: "empty_response",
             reason: "OpenAI-compatible stream ended without content or tool calls.",
             ...(stream?.streamId ? { streamId: stream.streamId } : {}),
+            ...(streamed.reasoning ? { reasoningContent: streamed.reasoning } : {}),
             ...(streamed.usage ? { usage: streamed.usage } : {}),
             rawPayload: streamed.diagnostics
           };
@@ -446,8 +463,9 @@ interface StreamToolCallPart {
 async function consumeChatCompletionStream(
   stream: AsyncIterable<unknown>,
   handlers?: ModelStreamHandlers
-): Promise<{ content: string; calls: ToolCall[]; usage?: ModelUsage; diagnostics: Record<string, unknown> }> {
+): Promise<{ content: string; reasoning: string; calls: ToolCall[]; usage?: ModelUsage; diagnostics: Record<string, unknown> }> {
   let content = "";
+  let reasoning = "";
   const toolParts = new Map<number, StreamToolCallPart>();
   let usage: ModelUsage | undefined;
   let chunkCount = 0;
@@ -464,7 +482,10 @@ async function consumeChatCompletionStream(
     if (!delta) continue;
 
     const thinking = extractReasoningDelta(delta);
-    if (thinking) await handlers?.onThinkingDelta(thinking);
+    if (thinking) {
+      reasoning += thinking;
+      await handlers?.onThinkingDelta(thinking);
+    }
 
     const text = typeof delta["content"] === "string" ? delta["content"] : "";
     if (text) {
@@ -505,6 +526,7 @@ async function consumeChatCompletionStream(
     }));
   return {
     content,
+    reasoning,
     calls,
     ...(usage ? { usage } : {}),
     diagnostics: {
@@ -565,7 +587,8 @@ function systemTextFromMessages(messages: CanonicalModelMessage[]): string {
 }
 
 function toOpenAIChatMessages(
-  messages: CanonicalModelMessage[]
+  messages: CanonicalModelMessage[],
+  options: { replayReasoningContent?: boolean } = {}
 ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
   return messages.flatMap((message): OpenAI.Chat.Completions.ChatCompletionMessageParam[] => {
     if (message.role === "system") return [{ role: "system", content: message.content }];
@@ -579,7 +602,7 @@ function toOpenAIChatMessages(
     }
     const toolCalls = message.toolCalls ?? [];
     if (toolCalls.length === 0) return [{ role: "assistant", content: message.content ?? "" }];
-    return [{
+    const assistantMessage: Record<string, unknown> = {
       role: "assistant",
       content: message.content ?? null,
       tool_calls: toolCalls.map((call) => ({
@@ -590,7 +613,11 @@ function toOpenAIChatMessages(
           arguments: JSON.stringify(call.args ?? {})
         }
       }))
-    }];
+    };
+    if (options.replayReasoningContent && message.reasoningContent) {
+      assistantMessage["reasoning_content"] = message.reasoningContent;
+    }
+    return [assistantMessage as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam];
   });
 }
 
@@ -787,7 +814,7 @@ interface OpenAIProviderSection {
   config: OpenAIProviderConfig;
 }
 
-export function loadOpenAiConfig(filePath = process.env["SCC_API_KEY_FILE"] ?? "dont_touch_(APIKEY).md"): OpenAIProviderConfig {
+export function loadOpenAiConfig(filePath = normalizeApiKeyFilePath(process.env["SCC_API_KEY_FILE"])): OpenAIProviderConfig {
   const fileConfig = loadOpenAiProviderConfig(filePath);
   const apiKey = process.env["OPENAI_API_KEY"] ?? fileConfig.apiKey;
   const baseURL = process.env["OPENAI_BASE_URL"] ?? process.env["OPENAI_BASEURL"] ?? process.env["SCC_OPENAI_BASE_URL"] ?? fileConfig.baseURL;
@@ -800,13 +827,14 @@ export function loadOpenAiConfig(filePath = process.env["SCC_API_KEY_FILE"] ?? "
 }
 
 export function loadOpenAiProviderConfig(
-  filePath = process.env["SCC_API_KEY_FILE"] ?? "dont_touch_(APIKEY).md"
+  filePath = normalizeApiKeyFilePath(process.env["SCC_API_KEY_FILE"])
 ): OpenAIProviderConfigWithName {
   const section = loadOpenAiConfigFileSection(filePath);
   return section ? { ...section.config, providerName: section.name } : {};
 }
 
-function loadOpenAiConfigFileSection(filePath: string): OpenAIProviderSection | undefined {
+function loadOpenAiConfigFileSection(filePath?: string): OpenAIProviderSection | undefined {
+  if (!filePath) return undefined;
   const resolvedPath = resolveApiKeyPath(filePath);
   if (!existsSync(resolvedPath)) return undefined;
 
@@ -895,10 +923,28 @@ function cleanHeading(line: string): string {
   return line.replace(/^#+\s*/, "").trim();
 }
 
+function normalizeApiKeyFilePath(filePath: string | undefined): string | undefined {
+  const trimmed = filePath?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
 function normalizeBaseURL(value?: string): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   return trimmed.replace(/\/chat\/completions\/?$/i, "");
+}
+
+function requiresOpenAIReasoningReplay(
+  model: string,
+  baseURL: string | undefined
+): boolean {
+  if (model.trim().toLowerCase().startsWith("mimo-")) return true;
+  if (!baseURL) return false;
+  try {
+    return new URL(baseURL).hostname.toLowerCase().endsWith("xiaomimimo.com");
+  } catch {
+    return baseURL.toLowerCase().includes("xiaomimimo.com");
+  }
 }
 
 function classifyModelError(error: unknown): string {
@@ -1030,22 +1076,6 @@ function extractReasoningDelta(delta: Record<string, unknown>): string {
   return "";
 }
 
-function extractToolCalls(toolCalls: unknown): ToolCall[] {
-  if (!Array.isArray(toolCalls)) return [];
-  const calls: ToolCall[] = [];
-  for (const item of toolCalls) {
-    if (!isRecord(item) || item["type"] !== "function" || !isRecord(item["function"])) continue;
-    const fn = item["function"];
-    const rawArgs = typeof fn["arguments"] === "string" ? fn["arguments"] : "{}";
-    calls.push({
-      id: createId("tool_call"),
-      toolName: String(fn["name"] ?? "unknown_tool"),
-      args: parseArgs(rawArgs)
-    });
-  }
-  return calls;
-}
-
 function toolDefinitions(): ModelToolDefinition[] {
   return [
     {
@@ -1065,9 +1095,9 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "run_command",
-        description: "Request a local shell command. The application classifies risk and may ask the user before running it.",
+        description: "Request a local shell command for scripts, builds, tests, or host/process inspection. The application classifies risk and may ask the user before running it. Do not use run_command to read workspace file bodies or search project text when list_files, search_files, or read_file can answer the question.",
         parameters: strictObject({
-          command: { type: "string", description: "The command to run. Prefer read-only observation unless the user asked for changes." },
+          command: { type: "string", description: "The command to run. Prefer read-only observation unless the user asked for changes. For workspace file inspection, prefer list_files/search_files/read_file instead of shell cat/type/Get-Content/grep." },
           cwd: { type: "string", description: "Working directory inside the task folder. Defaults to the task folder root." }
         }, ["command"])
       }
@@ -1076,11 +1106,11 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "read_file",
-        description: "Read project file content inside the task folder. This is the only file tool that returns file body text. By default it returns the complete file when it is small or medium sized; for large files or known line hits, use offset/limit to read a targeted range. If the path is uncertain, call list_files or search_files first.",
+        description: "Read project file content inside the task folder. This is the only file tool that returns file body text. Whole-file reads are only appropriate for genuinely small files. For long HTML/CSS/JSON/log files or files with hundreds of lines, start with search_files and then use offset/limit to read the exact range you need. If the path is uncertain, call list_files or search_files first.",
         parameters: strictObject({
           path: { type: "string" },
-          offset: { type: "number", description: "Optional 1-based start line for targeted very large file reads." },
-          limit: { type: "number", description: "Optional maximum lines for targeted very large file reads." }
+          offset: { type: "number", description: "Optional 1-based start line for targeted file reads. Prefer this for long files after search_files identifies the relevant section." },
+          limit: { type: "number", description: "Optional maximum lines for targeted file reads. Keep ranges tight when the file is large." }
         }, ["path"])
       }
     },
@@ -1130,7 +1160,7 @@ function toolDefinitions(): ModelToolDefinition[] {
       type: "function",
       function: {
         name: "search_files",
-        description: "Search live workspace file paths and text lines. Returns matching file paths, line numbers, and short snippets only; it does not return full file contents. Supports simple OR terms separated by |. Use read_file on a returned path to inspect complete content.",
+        description: "Search live workspace file paths and text lines. Returns matching file paths, line numbers, and short snippets only; it does not return full file contents. Supports simple OR terms separated by |. Use this before read_file when the file is large or the exact location is unknown.",
         parameters: strictObject({
           query: { type: "string", description: "Literal text to find in project file paths or lines. Use term1|term2 for simple OR search." },
           path: { type: "string", description: "Directory to search, default project root" }

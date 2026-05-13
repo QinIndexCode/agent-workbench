@@ -121,6 +121,135 @@
   line-height: 1.45;
 }
 
+.settingsPrimer {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 16px 18px;
+  background: color-mix(in srgb, var(--surface-container) 84%, var(--accent-soft) 16%);
+  border: 1px solid color-mix(in srgb, var(--accent-border) 62%, var(--border) 38%);
+  border-radius: var(--radius);
+}
+
+.settingsPrimerHeader {
+  display: flex;
+  gap: 14px;
+  align-items: start;
+  justify-content: space-between;
+}
+
+.settingsPrimerCopy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settingsPrimerEyebrow {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settingsPrimerCopy p {
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.settingsPrimerGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.settingsPrimerCell {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 11px 12px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.settingsPrimerCell span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.settingsPrimerCell p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.settingsEmptyStateCard {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+  padding: 16px;
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+
+.settingsEmptyIcon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+}
+
+.settingsEmptyCopy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settingsEmptyCopy strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.settingsEmptyCopy p,
+.settingsEmptyCopy small {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.settingsEmptyCopy p {
+  color: var(--muted-strong);
+  font-size: 13px;
+}
+
+.settingsEmptyCopy small,
+.settingsEmptyActions span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.settingsEmptyActions {
+  display: grid;
+  gap: 7px;
+  justify-items: end;
+  align-content: start;
+}
+
 .panelError {
   padding: 14px;
   background: var(--danger-bg);
@@ -396,7 +525,16 @@
 .accordionSelectOptionIcon {
   display: grid;
   place-items: center;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
   color: var(--muted-strong);
+}
+
+.accordionSelectInlineIcon svg,
+.accordionSelectOptionIcon svg,
+.providerIcon svg {
+  display: block;
 }
 
 .accordionSelectChevron {
@@ -1500,6 +1638,13 @@
   background: var(--accent-soft);
   border: 1px solid var(--accent-border);
   border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.providerIcon svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
 }
 
 .primaryInlineButton {
@@ -2475,6 +2620,10 @@
   border-bottom: 1px solid #e5e7eb;
 }
 
+.docsTopbar > div {
+  min-width: 0;
+}
+
 .docsTopbar .docsLangSwitch {
   margin-left: auto;
 }
@@ -2862,6 +3011,7 @@
 }
 
 .libraryContentHeader h2,
+.libraryPanelHero h2,
 .libraryPanelHero h3,
 .libraryPreviewHeader h3 {
   margin: 0;
@@ -3812,6 +3962,24 @@ p.knowledgeHighlights span {
     padding-inline: 14px;
   }
 
+  .docsTopbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: start;
+    padding-top: 14px;
+    padding-bottom: 14px;
+  }
+
+  .docsTopbar h1 {
+    font-size: 20px;
+  }
+
+  .docsTopbar p {
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
   .docsLayout {
     gap: 16px;
     padding: 18px 14px 32px;
@@ -3821,15 +3989,35 @@ p.knowledgeHighlights span {
     position: static;
     display: flex;
     overflow-x: auto;
-    padding-bottom: 2px;
+    gap: 8px;
+    padding-bottom: 6px;
+    scroll-snap-type: x proximity;
   }
 
   .docsTocItem {
-    min-width: 180px;
+    min-width: 168px;
+    min-height: 54px;
+    scroll-snap-align: start;
   }
 
   .docsArticle {
-    padding: 18px;
+    padding: 18px 14px;
+  }
+
+  .docsArticleHeader {
+    gap: 10px;
+    margin-bottom: 18px;
+    padding-bottom: 16px;
+  }
+
+  .docsArticleHeader h2 {
+    font-size: 28px;
+  }
+
+  .docBody {
+    padding-top: 14px;
+    font-size: 14px;
+    line-height: 1.7;
   }
 
   .libraryHeader,
@@ -3875,6 +4063,19 @@ p.knowledgeHighlights span {
   .duplicateBanner,
   .editorHeader {
     display: grid;
+  }
+
+  .settingsPrimerHeader {
+    display: grid;
+  }
+
+  .settingsPrimerGrid,
+  .settingsEmptyStateCard {
+    grid-template-columns: 1fr;
+  }
+
+  .settingsEmptyActions {
+    justify-items: start;
   }
 
   .skillGrid {

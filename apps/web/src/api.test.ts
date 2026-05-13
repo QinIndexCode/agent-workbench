@@ -1,25 +1,44 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { api } from "./api.js";
 
 const fetchMock = vi.fn();
+const sessionToken = "session-token-test";
 
-beforeEach(() => {
+let api: typeof import("./api.js")["api"];
+
+function jsonResponse(value: unknown): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => value
+  } as Response;
+}
+
+beforeEach(async () => {
   fetchMock.mockReset();
+  vi.resetModules();
   vi.stubGlobal("fetch", fetchMock);
+  ({ api } = await import("./api.js"));
 });
 
 describe("api client", () => {
   it("sends task and approval requests", async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ id: "task_1", status: "completed" })
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/session/bootstrap")) return jsonResponse({ sessionToken });
+      return jsonResponse({ id: "task_1", status: "completed" });
     });
 
     await expect(api.createTask("hello", "Greeting")).resolves.toMatchObject({ id: "task_1" });
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/session/bootstrap");
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/tasks",
-      expect.objectContaining({ method: "POST", body: JSON.stringify({ goal: "hello", title: "Greeting" }) })
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ goal: "hello", title: "Greeting" }),
+        headers: expect.any(Headers)
+      })
     );
+    expect(((fetchMock.mock.lastCall?.[1] as RequestInit).headers as Headers).get("x-scc-session")).toBe(sessionToken);
 
     await api.createTask("hello");
     expect(fetchMock).toHaveBeenLastCalledWith(
@@ -110,10 +129,29 @@ describe("api client", () => {
     expect(fetchMock).toHaveBeenLastCalledWith("/api/permissions/global/host_observation", expect.objectContaining({ method: "DELETE" }));
     expect(revokeInit.headers).toBeInstanceOf(Headers);
     expect((revokeInit.headers as Headers).has("content-type")).toBe(false);
+    expect((revokeInit.headers as Headers).get("x-scc-session")).toBe(sessionToken);
   });
 
   it("raises failed responses", async () => {
-    fetchMock.mockResolvedValue({ ok: false, text: async () => "bad request" });
-    await expect(api.listTasks()).rejects.toThrow("bad request");
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/session/bootstrap")) return jsonResponse({ sessionToken });
+      return {
+        ok: false,
+        status: 400,
+        text: async () => "bad request"
+      } as Response;
+    });
+    await expect(api.listTasks()).rejects.toThrow("请求参数有误，请检查输入后重试。");
+  });
+
+  it("adds the session token to websocket task URLs", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://127.0.0.1:5173" } } as unknown as Window & typeof globalThis);
+    fetchMock.mockImplementation(async () => jsonResponse({ sessionToken }));
+
+    const url = await api.taskEventsWebSocketUrl("task_42");
+    expect(url).toContain("/api/tasks/task_42/events/ws");
+    expect(url).toContain("session=session-token-test");
+    expect(url).toContain("eventLimit=600");
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createCipheriv, createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -10,8 +11,48 @@ import type { TaskDetail, TaskEvent, ToolCall, ToolResult } from "@scc/shared";
 import { createApp } from "../src/server.js";
 import { SqliteWorkbenchStore } from "../src/sqlite-store.js";
 
-function createTestApp(options: Parameters<typeof createApp>[0] = {}) {
-  return createApp({ logger: false, ...options });
+const SESSION_HEADER = "x-scc-session";
+
+type TestApp = Awaited<ReturnType<typeof createApp>> & {
+  injectRaw: Awaited<ReturnType<typeof createApp>>["inject"];
+};
+
+async function createTestApp(options: Parameters<typeof createApp>[0] = {}): Promise<TestApp> {
+  const app = (await createApp({ logger: false, ...options })) as TestApp;
+  const injectRaw = app.inject.bind(app);
+  let sessionToken: string | null = null;
+
+  async function getSessionToken(): Promise<string> {
+    if (sessionToken) return sessionToken;
+    const response = await injectRaw({ method: "GET", url: "/api/session/bootstrap" });
+    sessionToken = String(response.json<{ sessionToken: string }>().sessionToken);
+    return sessionToken;
+  }
+
+  app.injectRaw = injectRaw;
+  app.inject = (async (optionsOrUrl: Parameters<TestApp["injectRaw"]>[0]) => {
+    const request = typeof optionsOrUrl === "string" ? { method: "GET", url: optionsOrUrl } : { ...optionsOrUrl };
+    const pathname = new URL(request.url, "http://127.0.0.1").pathname;
+    const headers = new Headers(request.headers as HeadersInit | undefined);
+    if (isPublicTestPath(pathname) || headers.has(SESSION_HEADER)) {
+      return injectRaw(optionsOrUrl);
+    }
+    headers.set(SESSION_HEADER, await getSessionToken());
+    return injectRaw({ ...request, headers: Object.fromEntries(headers.entries()) });
+  }) as TestApp["inject"];
+  return app;
+}
+
+function isPublicTestPath(pathname: string): boolean {
+  return (
+    pathname === "/health" ||
+    pathname === "/api/session/bootstrap" ||
+    pathname === "/api/integrations/discord/interactions" ||
+    pathname === "/api/integrations/feishu/events" ||
+    pathname === "/api/integrations/slack/events" ||
+    pathname === "/api/integrations/telegram/updates" ||
+    pathname === "/api/integrations/wecom/callback"
+  );
 }
 
 class StubToolExecutor {
@@ -33,7 +74,54 @@ class SlowFinalModelClient implements ModelClient {
   }
 }
 
+class StaticFinalModelClient implements ModelClient {
+  async next(): Promise<ModelTurn> {
+    return { kind: "final", message: "Accepted." };
+  }
+}
+
 describe("server API", () => {
+  it("bootstraps a local session token and rejects missing or cross-origin protected requests", async () => {
+    const app = await createApp({ logger: false, workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore() }) });
+    const bootstrap = await app.inject({ method: "GET", url: "/api/session/bootstrap" });
+    const sessionToken = String(bootstrap.json<{ sessionToken: string }>().sessionToken);
+
+    expect(bootstrap.statusCode).toBe(200);
+    expect(sessionToken.length).toBeGreaterThan(20);
+    expect((await app.inject({ method: "GET", url: "/api/tasks" })).statusCode).toBe(401);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/api/tasks",
+          headers: { [SESSION_HEADER]: sessionToken, origin: "https://evil.example.com" }
+        })
+      ).statusCode
+    ).toBe(403);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/api/tasks",
+          headers: { [SESSION_HEADER]: sessionToken, origin: "http://127.0.0.1:5173" }
+        })
+      ).statusCode
+    ).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: "/api/tasks",
+          headers: { [SESSION_HEADER]: sessionToken, origin: "http://127.0.0.1:5175" }
+        })
+      ).statusCode
+    ).toBe(403);
+    expect((await app.inject({ method: "GET", url: "/api/tasks", headers: { [SESSION_HEADER]: sessionToken } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/session/bootstrap", headers: { origin: "http://localhost:9999" } })).statusCode).toBe(403);
+
+    await app.close();
+  });
+
   it("keeps task list and task snapshots lightweight for large streamed histories", async () => {
     const store = new InMemoryWorkbenchStore();
     const now = new Date().toISOString();
@@ -754,6 +842,8 @@ describe("server API", () => {
         kind: "discord",
         label: "Discord Ops",
         botToken: "discord-secret-9876",
+        publicKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        callbackUrl: "https://discord.example.test/interactions",
         defaultFolderId: "default",
         defaultPermissionPreset: "ask",
         enabled: false
@@ -777,7 +867,317 @@ describe("server API", () => {
     await app.close();
   });
 
-  it("bootstraps a Mimo model provider from the local API key document without exposing the key", async () => {
+  it("verifies Discord webhook signatures and handles ping plus supported interactions", async () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const publicKeyDer = publicKey.export({ format: "der", type: "spki" });
+    const publicKeyHex = Buffer.from(publicKeyDer).subarray(-32).toString("hex");
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new StaticFinalModelClient()
+    });
+    const integration = await workbench.createIntegrationProvider({
+      kind: "discord",
+      label: "Discord Ops",
+      publicKey: publicKeyHex,
+      callbackUrl: "https://discord.example.test/interactions",
+      defaultFolderId: "default",
+      defaultPermissionPreset: "ask",
+      enabled: true
+    });
+    const app = await createTestApp({ workbench });
+
+    const pingPayload = { id: "ping_1", integrationId: integration.id, type: 1, channel_id: "channel_1" };
+    const pingBody = JSON.stringify(pingPayload);
+    const pingTimestamp = String(Date.now());
+    const pingSignature = sign(null, Buffer.from(`${pingTimestamp}${pingBody}`, "utf8"), privateKey).toString("hex");
+
+    const ping = await app.inject({
+      method: "POST",
+      url: "/api/integrations/discord/interactions",
+      payload: pingPayload,
+      headers: {
+        "x-signature-ed25519": pingSignature,
+        "x-signature-timestamp": pingTimestamp
+      }
+    });
+    expect(ping.statusCode).toBe(200);
+    expect(ping.json()).toEqual({ type: 1 });
+
+    const bad = await app.inject({
+      method: "POST",
+      url: "/api/integrations/discord/interactions",
+      payload: pingPayload,
+      headers: {
+        "x-signature-ed25519": "00",
+        "x-signature-timestamp": pingTimestamp
+      }
+    });
+    expect(bad.statusCode).toBe(401);
+
+    const interactionPayload = {
+      id: "interaction_1",
+      integrationId: integration.id,
+      type: 2,
+      channel_id: "channel_1",
+      data: {
+        name: "task",
+        options: [{ name: "prompt", value: "Summarize this Discord task" }]
+      },
+      user: { id: "user_1" }
+    };
+    const interactionBody = JSON.stringify(interactionPayload);
+    const interactionTimestamp = String(Date.now() + 1);
+    const interactionSignature = sign(null, Buffer.from(`${interactionTimestamp}${interactionBody}`, "utf8"), privateKey).toString("hex");
+    const interaction = await app.inject({
+      method: "POST",
+      url: "/api/integrations/discord/interactions",
+      payload: interactionPayload,
+      headers: {
+        "x-signature-ed25519": interactionSignature,
+        "x-signature-timestamp": interactionTimestamp
+      }
+    });
+    expect(interaction.statusCode).toBe(200);
+    expect(interaction.json<{ type: number; taskId?: string }>().type).toBe(4);
+    expect(interaction.json<{ type: number; taskId?: string }>().taskId).toBeTruthy();
+
+    await app.close();
+  });
+
+  it("verifies Feishu events and returns challenge or task acknowledgements", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new StaticFinalModelClient()
+    });
+    const integration = await workbench.createIntegrationProvider({
+      kind: "feishu",
+      label: "Feishu Ops",
+      verificationToken: "feishu-verify-token",
+      callbackUrl: "https://feishu.example.test/events",
+      defaultFolderId: "default",
+      defaultPermissionPreset: "ask",
+      enabled: true
+    });
+    const app = await createTestApp({ workbench });
+
+    const challenge = await app.inject({
+      method: "POST",
+      url: "/api/integrations/feishu/events",
+      payload: {
+        integrationId: integration.id,
+        challenge: "challenge-token",
+        type: "url_verification",
+        token: "feishu-verify-token"
+      }
+    });
+    expect(challenge.statusCode).toBe(200);
+    expect(challenge.json()).toEqual({ challenge: "challenge-token" });
+
+    const bad = await app.inject({
+      method: "POST",
+      url: "/api/integrations/feishu/events",
+      payload: {
+        integrationId: integration.id,
+        type: "event_callback",
+        token: "wrong-token",
+        event: {
+          message: { message_id: "msg_1", chat_id: "chat_1", content: JSON.stringify({ text: "hello" }) }
+        }
+      }
+    });
+    expect(bad.statusCode).toBe(401);
+
+    const message = await app.inject({
+      method: "POST",
+      url: "/api/integrations/feishu/events",
+      payload: {
+        integrationId: integration.id,
+        type: "event_callback",
+        token: "feishu-verify-token",
+        event: {
+          message: {
+            message_id: "msg_2",
+            chat_id: "chat_2",
+            message_type: "text",
+            content: JSON.stringify({ text: "Create a Feishu task" })
+          },
+          sender: {
+            sender_id: { open_id: "open_user_1" }
+          }
+        }
+      }
+    });
+    expect(message.statusCode).toBe(200);
+    expect(message.json<{ ok: boolean; taskId?: string }>().ok).toBe(true);
+    expect(message.json<{ ok: boolean; taskId?: string }>().taskId).toBeTruthy();
+
+    await app.close();
+  });
+
+  it("verifies Slack events and Telegram updates before creating tasks", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new StaticFinalModelClient()
+    });
+    const slack = await workbench.createIntegrationProvider({
+      kind: "slack",
+      label: "Slack Ops",
+      signingSecret: "slack-secret-123",
+      callbackUrl: "https://slack.example.test/events",
+      defaultFolderId: "default",
+      defaultPermissionPreset: "ask",
+      enabled: true
+    });
+    const telegram = await workbench.createIntegrationProvider({
+      kind: "telegram",
+      label: "Telegram Ops",
+      botToken: "telegram-bot-123",
+      secretToken: "telegram-secret-456",
+      callbackUrl: "https://telegram.example.test/updates",
+      defaultFolderId: "default",
+      defaultPermissionPreset: "ask",
+      enabled: true
+    });
+    const app = await createTestApp({ workbench });
+
+    const challengePayload = {
+      integrationId: slack.id,
+      type: "url_verification",
+      challenge: "challenge-slack",
+      event: { channel: "C1" }
+    };
+    const challengeBody = JSON.stringify(challengePayload);
+    const challengeTimestamp = String(Date.now());
+    const challengeSignature = slackSignature("slack-secret-123", challengeTimestamp, challengeBody);
+
+    const challenge = await app.injectRaw({
+      method: "POST",
+      url: "/api/integrations/slack/events",
+      payload: challengePayload,
+      headers: {
+        "x-slack-signature": challengeSignature,
+        "x-slack-request-timestamp": challengeTimestamp
+      }
+    });
+    expect(challenge.statusCode).toBe(200);
+    expect(challenge.json()).toEqual({ challenge: "challenge-slack" });
+
+    const badSlack = await app.injectRaw({
+      method: "POST",
+      url: "/api/integrations/slack/events",
+      payload: challengePayload,
+      headers: {
+        "x-slack-signature": "v0=bad",
+        "x-slack-request-timestamp": challengeTimestamp
+      }
+    });
+    expect(badSlack.statusCode).toBe(401);
+
+    const slackMessagePayload = {
+      integrationId: slack.id,
+      type: "event_callback",
+      event_id: "slack_event_1",
+      event: {
+        type: "message",
+        user: "user_1",
+        text: "Create a Slack task",
+        channel: "channel_1",
+        ts: "1711111111.100"
+      }
+    };
+    const slackMessageBody = JSON.stringify(slackMessagePayload);
+    const slackMessageTimestamp = String(Date.now() + 1);
+    const slackMessageSignature = slackSignature("slack-secret-123", slackMessageTimestamp, slackMessageBody);
+    const slackMessage = await app.injectRaw({
+      method: "POST",
+      url: "/api/integrations/slack/events",
+      payload: slackMessagePayload,
+      headers: {
+        "x-slack-signature": slackMessageSignature,
+        "x-slack-request-timestamp": slackMessageTimestamp
+      }
+    });
+    expect(slackMessage.statusCode).toBe(200);
+    expect(slackMessage.json<{ ok: boolean; taskId?: string }>().ok).toBe(true);
+    expect(slackMessage.json<{ ok: boolean; taskId?: string }>().taskId).toBeTruthy();
+
+    const telegramMessage = await app.injectRaw({
+      method: "POST",
+      url: "/api/integrations/telegram/updates",
+      payload: {
+        integrationId: telegram.id,
+        update_id: 12,
+        message: {
+          message_id: 34,
+          text: "Create a Telegram task",
+          chat: { id: "chat_1", type: "private" },
+          from: { id: "sender_1", first_name: "Test" }
+        }
+      },
+      headers: {
+        "x-telegram-bot-api-secret-token": "telegram-secret-456"
+      }
+    });
+    expect(telegramMessage.statusCode).toBe(200);
+    expect(telegramMessage.json<{ ok: boolean; taskId?: string }>().ok).toBe(true);
+    expect(telegramMessage.json<{ ok: boolean; taskId?: string }>().taskId).toBeTruthy();
+
+    const badTelegram = await app.injectRaw({
+      method: "POST",
+      url: "/api/integrations/telegram/updates",
+      payload: {
+        integrationId: telegram.id,
+        update_id: 13,
+        message: { message_id: 35, text: "ignored", chat: { id: "chat_2" } }
+      },
+      headers: {
+        "x-telegram-bot-api-secret-token": "wrong-secret"
+      }
+    });
+    expect(badTelegram.statusCode).toBe(401);
+
+    await app.close();
+  });
+
+  it("verifies the WeCom callback handshake before accepting inbound callbacks", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new StaticFinalModelClient()
+    });
+    const integration = await workbench.createIntegrationProvider({
+      kind: "wecom",
+      label: "WeCom Ops",
+      wecomToken: "wecom-token-123",
+      wecomEncodingAesKey: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+      callbackUrl: "https://wecom.example.test/callback",
+      defaultFolderId: "default",
+      defaultPermissionPreset: "ask",
+      enabled: true
+    });
+    const app = await createTestApp({ workbench });
+
+    const timestamp = String(Date.now());
+    const nonce = "nonce-1";
+    const echostr = encryptWecomEcho("abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG", "<xml>ok</xml>", "corp-test");
+    const signature = wecomSignature("wecom-token-123", timestamp, nonce, echostr);
+
+    const handshake = await app.injectRaw({
+      method: "GET",
+      url: `/api/integrations/wecom/callback?integrationId=${integration.id}&msg_signature=${encodeURIComponent(signature)}&timestamp=${encodeURIComponent(timestamp)}&nonce=${encodeURIComponent(nonce)}&echostr=${encodeURIComponent(echostr)}`
+    });
+    expect(handshake.statusCode).toBe(200);
+    expect(handshake.body).toBe("<xml>ok</xml>");
+
+    const badHandshake = await app.injectRaw({
+      method: "GET",
+      url: `/api/integrations/wecom/callback?integrationId=${integration.id}&msg_signature=bad&timestamp=${encodeURIComponent(timestamp)}&nonce=${encodeURIComponent(nonce)}&echostr=${encodeURIComponent(echostr)}`
+    });
+    expect(badHandshake.statusCode).toBe(401);
+
+    await app.close();
+  });
+
+  it("bootstraps a Mimo model provider from an explicit API key document without exposing the key", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scc-server-bootstrap-"));
     const previous = {
       dbPath: process.env["SCC_DB_PATH"],
@@ -834,7 +1234,10 @@ describe("server API", () => {
     });
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
     const client = new Client({ name: "scc-server-test", version: "1.0.0" }, { capabilities: {} });
-    const transport = new StreamableHTTPClientTransport(new URL(`${address}/api/mcp/server`));
+    const bootstrap = await fetch(`${address}/api/session/bootstrap`).then(async (response) => response.json() as Promise<{ sessionToken: string }>);
+    const transport = new StreamableHTTPClientTransport(new URL(`${address}/api/mcp/server`), {
+      requestInit: { headers: { [SESSION_HEADER]: bootstrap.sessionToken } }
+    });
 
     try {
       await client.connect(transport as never);
@@ -862,7 +1265,36 @@ function restoreEnv(name: string, value: string | undefined): void {
   process.env[name] = value;
 }
 
-async function waitForTask(app: Awaited<ReturnType<typeof createApp>>, taskId: string, predicate: (task: TaskDetail) => boolean): Promise<TaskDetail> {
+function slackSignature(secret: string, timestamp: string, rawBody: string): string {
+  const digest = createHmac("sha256", secret).update(`v0:${timestamp}:${rawBody}`).digest("hex");
+  return `v0=${digest}`;
+}
+
+function wecomSignature(token: string, timestamp: string, nonce: string, encryptedValue: string): string {
+  return createHash("sha1").update([token, timestamp, nonce, encryptedValue].sort().join("")).digest("hex");
+}
+
+function encryptWecomEcho(encodingAesKey: string, plainText: string, corpId: string): string {
+  const aesKey = Buffer.from(`${encodingAesKey}=`, "base64");
+  const random = Buffer.from("1234567890abcdef", "utf8");
+  const message = Buffer.from(plainText, "utf8");
+  const corp = Buffer.from(corpId, "utf8");
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(message.length, 0);
+  const raw = Buffer.concat([random, length, message, corp]);
+  const padded = pkcs7Pad(raw, 32);
+  const cipher = createCipheriv("aes-256-cbc", aesKey, aesKey.subarray(0, 16));
+  cipher.setAutoPadding(false);
+  return Buffer.concat([cipher.update(padded), cipher.final()]).toString("base64");
+}
+
+function pkcs7Pad(buffer: Buffer, blockSize: number): Buffer {
+  const remainder = buffer.length % blockSize;
+  const padding = remainder === 0 ? blockSize : blockSize - remainder;
+  return Buffer.concat([buffer, Buffer.alloc(padding, padding)]);
+}
+
+async function waitForTask(app: TestApp, taskId: string, predicate: (task: TaskDetail) => boolean): Promise<TaskDetail> {
   for (let attempt = 0; attempt < 30; attempt++) {
     const task = (await app.inject(`/api/tasks/${taskId}`)).json() as TaskDetail;
     if (predicate(task)) return task;

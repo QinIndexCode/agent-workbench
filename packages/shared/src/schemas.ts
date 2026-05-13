@@ -150,6 +150,7 @@ export const TaskEventSchema = z.object({
     "reflection_started",
     "reflection_completed",
     "skill_loaded",
+    "skill_load_skipped",
     "skill_promoted"
   ]),
   createdAt: z.string(),
@@ -946,7 +947,7 @@ export const KnowledgeUploadRequestSchema = z
   })
   .strict();
 
-export const IntegrationKindSchema = z.enum(["discord", "feishu"]);
+export const IntegrationKindSchema = z.enum(["discord", "feishu", "slack", "telegram", "wecom"]);
 
 export const IntegrationStatusSchema = z.enum(["disabled", "setup_pending", "connecting", "connected", "error"]);
 
@@ -957,9 +958,15 @@ export const IntegrationProviderConfigSchema = z.object({
   status: IntegrationStatusSchema.default("disabled"),
   enabled: z.boolean().default(false),
   botTokenRef: EncryptedSecretRefSchema.optional(),
-  signingSecretRef: EncryptedSecretRefSchema.optional(),
   appId: z.string().optional(),
   appSecretRef: EncryptedSecretRefSchema.optional(),
+  publicKey: z.string().optional(),
+  verificationTokenRef: EncryptedSecretRefSchema.optional(),
+  encryptKeyRef: EncryptedSecretRefSchema.optional(),
+  signingSecretRef: EncryptedSecretRefSchema.optional(),
+  secretTokenRef: EncryptedSecretRefSchema.optional(),
+  wecomTokenRef: EncryptedSecretRefSchema.optional(),
+  wecomEncodingAesKeyRef: EncryptedSecretRefSchema.optional(),
   callbackUrl: z.string().optional(),
   defaultFolderId: z.string().default("default"),
   defaultPermissionPreset: z.enum(["ask", "read_only", "custom", "all"]).default("ask"),
@@ -974,9 +981,15 @@ export const IntegrationProviderCreateRequestSchema = z
     kind: IntegrationKindSchema,
     label: z.string().min(1),
     botToken: z.string().optional(),
-    signingSecret: z.string().optional(),
     appId: z.string().optional(),
     appSecret: z.string().optional(),
+    publicKey: z.string().optional(),
+    verificationToken: z.string().optional(),
+    encryptKey: z.string().optional(),
+    signingSecret: z.string().optional(),
+    secretToken: z.string().optional(),
+    wecomToken: z.string().optional(),
+    wecomEncodingAesKey: z.string().optional(),
     callbackUrl: z.string().optional(),
     defaultFolderId: z.string().default("default"),
     defaultPermissionPreset: z.enum(["ask", "read_only", "custom", "all"]).default("ask"),
@@ -987,8 +1000,13 @@ export const IntegrationProviderCreateRequestSchema = z
 export const IntegrationProviderPatchRequestSchema = IntegrationProviderCreateRequestSchema.partial()
   .extend({
     clearBotToken: z.boolean().optional(),
+    clearAppSecret: z.boolean().optional(),
+    clearVerificationToken: z.boolean().optional(),
+    clearEncryptKey: z.boolean().optional(),
     clearSigningSecret: z.boolean().optional(),
-    clearAppSecret: z.boolean().optional()
+    clearSecretToken: z.boolean().optional(),
+    clearWecomToken: z.boolean().optional(),
+    clearWecomEncodingAesKey: z.boolean().optional()
   })
   .strict();
 
@@ -1025,30 +1043,153 @@ export const IntegrationTaskLinkSchema = z.object({
 export const DiscordInteractionRequestSchema = z
   .object({
     integrationId: z.string().optional(),
-    channelId: z.string().min(1),
-    messageId: z.string().min(1),
-    userId: z.string().optional(),
-    text: z.string().min(1)
+    id: z.string().optional(),
+    application_id: z.string().optional(),
+    type: z.number().int(),
+    data: z
+      .object({
+        name: z.string().optional(),
+        options: z
+          .array(
+            z.object({
+              name: z.string(),
+              type: z.number().int().optional(),
+              value: z.union([z.string(), z.number(), z.boolean()]).optional()
+            })
+          )
+          .optional()
+      })
+      .passthrough()
+      .optional(),
+    channel_id: z.string().optional(),
+    guild_id: z.string().optional(),
+    token: z.string().optional(),
+    member: z.record(z.unknown()).optional(),
+    user: z
+      .object({
+        id: z.string().optional(),
+        username: z.string().optional()
+      })
+      .passthrough()
+      .optional()
   })
-  .strict();
+  .passthrough();
 
 export const FeishuEventRequestSchema = z
   .object({
     integrationId: z.string().optional(),
+    token: z.string().optional(),
     challenge: z.string().optional(),
+    type: z.string().optional(),
+    schema: z.string().optional(),
+    header: z
+      .object({
+        event_id: z.string().optional(),
+        event_type: z.string().optional(),
+        token: z.string().optional(),
+        tenant_key: z.string().optional(),
+        app_id: z.string().optional(),
+        create_time: z.string().optional()
+      })
+      .passthrough()
+      .optional(),
+    event_id: z.string().optional(),
     event: z
       .object({
         message: z
           .object({
             message_id: z.string().optional(),
             chat_id: z.string().optional(),
+            chat_type: z.string().optional(),
+            message_type: z.string().optional(),
             content: z.string().optional()
           })
           .optional(),
-        sender: z.record(z.unknown()).optional()
+        sender: z
+          .object({
+            sender_id: z.record(z.unknown()).optional(),
+            sender_type: z.string().optional()
+          })
+          .passthrough()
+          .optional()
+      })
+      .passthrough()
+      .optional(),
+    encrypt: z.string().optional()
+  })
+  .passthrough();
+
+export const SlackEventRequestSchema = z
+  .object({
+    integrationId: z.string().optional(),
+    token: z.string().optional(),
+    type: z.string().optional(),
+    challenge: z.string().optional(),
+    team_id: z.string().optional(),
+    api_app_id: z.string().optional(),
+    event_id: z.string().optional(),
+    event_time: z.number().int().optional(),
+    event: z
+      .object({
+        type: z.string().optional(),
+        user: z.string().optional(),
+        text: z.string().optional(),
+        channel: z.string().optional(),
+        ts: z.string().optional(),
+        thread_ts: z.string().optional(),
+        subtype: z.string().optional(),
+        bot_id: z.string().optional()
       })
       .passthrough()
       .optional()
+  })
+  .passthrough();
+
+export const TelegramUpdateRequestSchema = z
+  .object({
+    integrationId: z.string().optional(),
+    update_id: z.number().int().optional(),
+    message: z
+      .object({
+        message_id: z.number().int().optional(),
+        date: z.number().int().optional(),
+        text: z.string().optional(),
+        chat: z
+          .object({
+            id: z.union([z.string(), z.number()]).optional(),
+            type: z.string().optional(),
+            title: z.string().optional(),
+            username: z.string().optional()
+          })
+          .passthrough()
+          .optional(),
+        from: z
+          .object({
+            id: z.union([z.string(), z.number()]).optional(),
+            username: z.string().optional(),
+            first_name: z.string().optional(),
+            last_name: z.string().optional()
+          })
+          .passthrough()
+          .optional()
+      })
+      .passthrough()
+      .optional(),
+    channel_post: z.record(z.unknown()).optional()
+  })
+  .passthrough();
+
+export const WecomCallbackRequestSchema = z
+  .object({
+    integrationId: z.string().optional(),
+    toUserName: z.string().optional(),
+    fromUserName: z.string().optional(),
+    createTime: z.union([z.string(), z.number()]).optional(),
+    msgType: z.string().optional(),
+    content: z.string().optional(),
+    msgId: z.string().optional(),
+    agentID: z.union([z.string(), z.number()]).optional(),
+    encrypt: z.string().optional()
   })
   .passthrough();
 
@@ -1196,6 +1337,11 @@ export const SkillCuratorItemSchema = z.object({
   skillIds: z.array(z.string()).default([]),
   memoryIds: z.array(z.string()).default([]),
   confidence: z.number().min(0).max(1).optional(),
+  sourceTaskCount: z.number().int().nonnegative().optional(),
+  successRate: z.number().min(0).max(1).optional(),
+  evidence: z.array(z.string()).default([]),
+  blockedReasons: z.array(z.string()).default([]),
+  dedupBasis: z.array(z.string()).default([]),
   createdAt: z.string()
 });
 

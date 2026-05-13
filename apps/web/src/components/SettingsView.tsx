@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Menu, Cpu, Shield, Blocks, SlidersHorizontal, CalendarClock, Search, Cable } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
+import "../styles/settings.css";
 import { PanelBoundary } from "./PanelBoundary.js";
 
 export type SettingsSection = "providers" | "permissions" | "mcp" | "integrations" | "scheduled" | "search" | "preferences";

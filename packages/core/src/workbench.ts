@@ -2,6 +2,7 @@ import type {
   ApprovalDecision,
   ConversationSummary,
   ExperienceRecord,
+  EncryptedSecretRef,
   GlobalPermissionGrant,
   DiscordInteractionRequest,
   FeishuEventRequest,
@@ -32,6 +33,7 @@ import type {
   ProjectMemoryPatchRequest,
   ReflectionSession,
   RiskCategory,
+  SlackEventRequest,
   ScheduledTask,
   ScheduledTaskCreateRequest,
   ScheduledTaskPatchRequest,
@@ -66,6 +68,7 @@ import type {
   TaskDeleteResult,
   TaskDetail,
   TaskEvent,
+  TelegramUpdateRequest,
   MemoryDocument,
   MemoryDocumentPatch,
   MemoryDocumentCompactResult,
@@ -73,13 +76,14 @@ import type {
   ToolCall,
   ToolResult,
   UserPreferences,
+  WecomCallbackRequest,
   WebSearchProviderConfig,
   WebSearchProviderCreateRequest,
   WebSearchProviderPatchRequest
 } from "@scc/shared";
 import { createHash } from "node:crypto";
-import { appendFile, copyFile, mkdir, readdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { appendFile, copyFile, mkdir, readdir, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, relative, resolve } from "node:path";
 import { ContextAssembler } from "./context-assembler.js";
 import {
   createExperience,
@@ -94,10 +98,33 @@ import {
 } from "./experience.js";
 import { FallbackModelClient, type ModelClient, type ModelTraceEvent, type ModelUsage } from "./fallback-model.js";
 import { createId, nowIso } from "./ids.js";
+import {
+  decryptWecomPayload,
+  describeIntegrationSource,
+  ensureFeishuVerificationToken,
+  extractDiscordUserId,
+  extractFeishuSenderId,
+  extractSlackUserId,
+  extractTelegramUserId,
+  extractWecomSenderId,
+  initialIntegrationStatus,
+  looksReadOnlySkillBody,
+  parseDiscordInteractionText,
+  parseFeishuMessageText,
+  parseSlackEventText,
+  parseTelegramMessageText,
+  parseWecomCallbackXml,
+  parseWecomMessageText,
+  verifyDiscordRequestSignature,
+  verifySlackRequestSignature,
+  verifyTelegramSecretToken,
+  verifyWecomSignature
+} from "./integrations.js";
 import { indexKnowledgeItem, searchKnowledge } from "./knowledge-rag.js";
 import { downloadKnowledgeModelAsset, getKnowledgeModelStatus } from "./knowledge-models.js";
 import type { ResolvedModelProviderConfig } from "./openai-model.js";
 import { PermissionEngine, type PermissionState, type RiskAssessment } from "./permission-engine.js";
+import { canonicalizeExistingDirectory, resolveWorkspacePathStrict } from "./path-guards.js";
 import { LocalSecretBox, maskSecret, sanitizeSensitiveText, sanitizeSensitiveValue } from "./secrets.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
 import { completionBlocker, verificationResultFromToolEvent } from "./task-graph.js";
@@ -130,6 +157,20 @@ const MAX_TOOL_CALLS_PER_TURN = 8;
 const MAX_STATE_ONLY_TOOL_TURNS = 2;
 const MAX_PARALLEL_READ_ONLY_TOOLS = 4;
 const AUTO_RENAME_ASSISTANT_CHARS = 240;
+const TRACE_MAX_STRING_CHARS = 4000;
+const TRACE_MAX_ARRAY_ITEMS = 24;
+const TRACE_MAX_OBJECT_KEYS = 24;
+const TRACE_MAX_DEPTH = 5;
+const TRACE_PROGRESS_MIN_INTERVAL_MS = 1_500;
+const TRACE_PROGRESS_BYTES_STEP = 16 * 1024;
+const TRACE_PROGRESS_LINE_STEP = 40;
+const TRACE_PROGRESS_ITEM_STEP = 1;
+const TRACE_PROGRESS_TAIL_CHARS = 320;
+const TRACE_PROGRESS_MESSAGE_CHARS = 240;
+const TRACE_MODEL_EXCERPT_CHARS = 360;
+const TRACE_MODEL_TOOL_ARG_CHARS = 220;
+const TRACE_MODEL_TOOL_LIMIT = 8;
+const TRACE_ATTENTION_EVIDENCE_LIMIT = 6;
 const DEFAULT_TARGET_LIMITS = {
   maxModelTurns: 80,
   maxToolCalls: 240,
@@ -334,14 +375,12 @@ export class AgentWorkbench {
   }
 
   private async validateFolderRoot(rootPath?: string): Promise<string> {
-    const full = resolve(rootPath?.trim() || defaultTaskWorkRoot());
-    const info = await stat(full).catch(() => null);
-    if (!info?.isDirectory()) throw new Error(`Folder path must exist and be a directory: ${full}`);
-    return full;
+    return canonicalizeExistingDirectory(rootPath?.trim() || defaultTaskWorkRoot());
   }
 
   private async refreshFolderStatus(folder: TaskFolderRecord): Promise<TaskFolderRecord> {
-    const rootPath = resolve(folder.rootPath?.trim() || defaultTaskWorkRoot());
+    const fallbackRoot = resolve(folder.rootPath?.trim() || defaultTaskWorkRoot());
+    const rootPath = await realpath(fallbackRoot).catch(() => fallbackRoot);
     const exists = Boolean((await stat(rootPath).catch(() => null))?.isDirectory());
     return {
       ...folder,
@@ -533,9 +572,8 @@ export class AgentWorkbench {
     const ordered = [...checkpoints].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const earliestByPath = new Map<string, TaskCheckpoint["files"][number]>();
     for (const checkpoint of ordered) {
-      const root = resolve(checkpoint.workRoot || task.workRoot || defaultTaskWorkRoot());
       for (const file of checkpoint.files) {
-        const resolvedPath = resolveTaskPath(root, file.path);
+        const resolvedPath = resolve(file.path);
         const key = process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath;
         if (!earliestByPath.has(key)) earliestByPath.set(key, file);
       }
@@ -1011,7 +1049,15 @@ export class AgentWorkbench {
     const items: SkillCuratorItem[] = [];
 
     for (const skill of skills) {
-      const oneOffSignals = /current machine|当前机器|single run|one-off|一次性|prior task result/i.test(skill.body);
+      const oneOffSignals = /current machine|当前机器|single run|one-off|一次性|prior task result|localhost|127\.0\.0\.1|临时/i.test(skill.body);
+      const sourceTaskCount = Math.max(skill.sourceMemoryIds.length, skill.relatedPatterns.length > 0 ? 5 : 0);
+      const successRate = Number(skill.stats.successRate ?? 0);
+      const evidence = [
+        sourceTaskCount > 0 ? `${sourceTaskCount} linked source task${sourceTaskCount === 1 ? "" : "s"}` : "",
+        skill.applicability.requiredTools.length > 0 ? `Required tools: ${skill.applicability.requiredTools.join(", ")}` : "",
+        skill.applicability.requiredContext.length > 0 ? `Context: ${skill.applicability.requiredContext.join(", ")}` : "",
+        skill.relatedPatterns.length > 0 ? `Derived from ${skill.relatedPatterns.length} reflection pattern(s)` : ""
+      ].filter(Boolean);
       const reason =
         skill.status === "candidate"
           ? "Candidate skills require user review before they influence future tasks."
@@ -1035,6 +1081,11 @@ export class AgentWorkbench {
         skillIds: [skill.id],
         memoryIds: skill.sourceMemoryIds,
         confidence: skill.applicability.minConfidence,
+        ...(sourceTaskCount > 0 ? { sourceTaskCount } : {}),
+        ...(Number.isFinite(successRate) ? { successRate } : {}),
+        evidence,
+        blockedReasons: oneOffSignals ? ["Looks tied to one-off machine or prior task output."] : [],
+        dedupBasis: [],
         createdAt: skill.createdAt || now
       });
     }
@@ -1049,6 +1100,15 @@ export class AgentWorkbench {
         recommendation: "Merge duplicate skills into the canonical record so future matching stays predictable.",
         skillIds: group.skills.map((skill) => skill.id),
         memoryIds: [],
+        blockedReasons: [],
+        dedupBasis: [
+          "normalized goal/title tokens",
+          "required tools",
+          "required context",
+          "exclusions",
+          "body structure"
+        ],
+        evidence: group.skills.map((skill) => `${skill.title} (${skill.status})`).slice(0, 6),
         createdAt: now
       });
     }
@@ -1063,6 +1123,9 @@ export class AgentWorkbench {
         recommendation: "Resolve by editing, suspending, or merging the conflicting skills. SCC will not auto-merge conflicts.",
         skillIds: conflict.skillIds,
         memoryIds: [],
+        evidence: [`Severity: ${conflict.severity}`],
+        blockedReasons: [],
+        dedupBasis: [],
         createdAt: conflict.createdAt
       });
     }
@@ -1075,6 +1138,12 @@ export class AgentWorkbench {
         memory.meta.complexity !== "simple" &&
         memory.meta.outcome === "success";
       if (reusable) continue;
+      const blockedReasons = [
+        !memory.assessment.goalAchieved ? "Task did not finish successfully." : "",
+        memory.meta.complexity === "simple" ? "Too simple to become a reusable skill." : "",
+        memory.toolsUsed.length < 2 ? "Did not establish a stable multi-step tool sequence." : "",
+        memory.meta.hasSideEffects ? "Includes side effects and needs broader repeat evidence first." : ""
+      ].filter(Boolean);
       items.push({
         id: `memory_${memory.id}`,
         kind: "low_value_memory",
@@ -1087,6 +1156,14 @@ export class AgentWorkbench {
         skillIds: [],
         memoryIds: [memory.id],
         confidence: memory.assessment.confidence,
+        sourceTaskCount: 1,
+        evidence: [
+          memory.toolsUsed.length > 0 ? `Tools used: ${memory.toolsUsed.map((tool) => tool.toolName).join(", ")}` : "No tool evidence was captured.",
+          `Outcome: ${memory.meta.outcome}`,
+          `Complexity: ${memory.meta.complexity}`
+        ],
+        blockedReasons,
+        dedupBasis: [],
         createdAt: memory.createdAt
       });
     }
@@ -1564,12 +1641,28 @@ export class AgentWorkbench {
       id,
       kind: input.kind,
       label: input.label,
-      status: input.enabled ? initialIntegrationStatus(input.kind, input.callbackUrl) : "disabled",
+      status: input.enabled ? initialIntegrationStatus(buildIntegrationStatusSnapshot({
+        kind: input.kind,
+        callbackUrl: input.callbackUrl,
+        publicKey: input.publicKey,
+        botTokenConfigured: Boolean(input.botToken),
+        verificationTokenConfigured: Boolean(input.verificationToken),
+        signingSecretConfigured: Boolean(input.signingSecret),
+        secretTokenConfigured: Boolean(input.secretToken),
+        wecomTokenConfigured: Boolean(input.wecomToken),
+        wecomEncodingAesKeyConfigured: Boolean(input.wecomEncodingAesKey)
+      })) : "disabled",
       enabled: input.enabled,
       ...(input.botToken ? { botTokenRef: await this.saveIntegrationSecretRef(id, "botToken", input.botToken) } : {}),
-      ...(input.signingSecret ? { signingSecretRef: await this.saveIntegrationSecretRef(id, "signingSecret", input.signingSecret) } : {}),
       ...(input.appId ? { appId: input.appId } : {}),
       ...(input.appSecret ? { appSecretRef: await this.saveIntegrationSecretRef(id, "appSecret", input.appSecret) } : {}),
+      ...(input.publicKey ? { publicKey: input.publicKey.trim() } : {}),
+      ...(input.verificationToken ? { verificationTokenRef: await this.saveIntegrationSecretRef(id, "verificationToken", input.verificationToken) } : {}),
+      ...(input.encryptKey ? { encryptKeyRef: await this.saveIntegrationSecretRef(id, "encryptKey", input.encryptKey) } : {}),
+      ...(input.signingSecret ? { signingSecretRef: await this.saveIntegrationSecretRef(id, "signingSecret", input.signingSecret) } : {}),
+      ...(input.secretToken ? { secretTokenRef: await this.saveIntegrationSecretRef(id, "secretToken", input.secretToken) } : {}),
+      ...(input.wecomToken ? { wecomTokenRef: await this.saveIntegrationSecretRef(id, "wecomToken", input.wecomToken) } : {}),
+      ...(input.wecomEncodingAesKey ? { wecomEncodingAesKeyRef: await this.saveIntegrationSecretRef(id, "wecomEncodingAesKey", input.wecomEncodingAesKey) } : {}),
       ...(input.callbackUrl ? { callbackUrl: input.callbackUrl } : {}),
       defaultFolderId: input.defaultFolderId,
       defaultPermissionPreset: input.defaultPermissionPreset,
@@ -1585,23 +1678,53 @@ export class AgentWorkbench {
     if (!current) throw new Error(`Integration provider not found: ${integrationId}`);
     if (input.defaultFolderId) await this.resolveTaskFolder(input.defaultFolderId);
     let botTokenRef = current.botTokenRef;
-    let signingSecretRef = current.signingSecretRef;
     let appSecretRef = current.appSecretRef;
+    let verificationTokenRef = current.verificationTokenRef;
+    let encryptKeyRef = current.encryptKeyRef;
+    let signingSecretRef = current.signingSecretRef;
+    let secretTokenRef = current.secretTokenRef;
+    let wecomTokenRef = current.wecomTokenRef;
+    let wecomEncodingAesKeyRef = current.wecomEncodingAesKeyRef;
     if (input.clearBotToken) {
       await this.store.deleteIntegrationSecret(integrationId, "botToken");
       botTokenRef = undefined;
-    }
-    if (input.clearSigningSecret) {
-      await this.store.deleteIntegrationSecret(integrationId, "signingSecret");
-      signingSecretRef = undefined;
     }
     if (input.clearAppSecret) {
       await this.store.deleteIntegrationSecret(integrationId, "appSecret");
       appSecretRef = undefined;
     }
+    if (input.clearVerificationToken) {
+      await this.store.deleteIntegrationSecret(integrationId, "verificationToken");
+      verificationTokenRef = undefined;
+    }
+    if (input.clearEncryptKey) {
+      await this.store.deleteIntegrationSecret(integrationId, "encryptKey");
+      encryptKeyRef = undefined;
+    }
+    if (input.clearSigningSecret) {
+      await this.store.deleteIntegrationSecret(integrationId, "signingSecret");
+      signingSecretRef = undefined;
+    }
+    if (input.clearSecretToken) {
+      await this.store.deleteIntegrationSecret(integrationId, "secretToken");
+      secretTokenRef = undefined;
+    }
+    if (input.clearWecomToken) {
+      await this.store.deleteIntegrationSecret(integrationId, "wecomToken");
+      wecomTokenRef = undefined;
+    }
+    if (input.clearWecomEncodingAesKey) {
+      await this.store.deleteIntegrationSecret(integrationId, "wecomEncodingAesKey");
+      wecomEncodingAesKeyRef = undefined;
+    }
     if (input.botToken) botTokenRef = await this.saveIntegrationSecretRef(integrationId, "botToken", input.botToken);
-    if (input.signingSecret) signingSecretRef = await this.saveIntegrationSecretRef(integrationId, "signingSecret", input.signingSecret);
     if (input.appSecret) appSecretRef = await this.saveIntegrationSecretRef(integrationId, "appSecret", input.appSecret);
+    if (input.verificationToken) verificationTokenRef = await this.saveIntegrationSecretRef(integrationId, "verificationToken", input.verificationToken);
+    if (input.encryptKey) encryptKeyRef = await this.saveIntegrationSecretRef(integrationId, "encryptKey", input.encryptKey);
+    if (input.signingSecret) signingSecretRef = await this.saveIntegrationSecretRef(integrationId, "signingSecret", input.signingSecret);
+    if (input.secretToken) secretTokenRef = await this.saveIntegrationSecretRef(integrationId, "secretToken", input.secretToken);
+    if (input.wecomToken) wecomTokenRef = await this.saveIntegrationSecretRef(integrationId, "wecomToken", input.wecomToken);
+    if (input.wecomEncodingAesKey) wecomEncodingAesKeyRef = await this.saveIntegrationSecretRef(integrationId, "wecomEncodingAesKey", input.wecomEncodingAesKey);
     const enabled = input.enabled ?? current.enabled;
     const callbackUrl = input.callbackUrl !== undefined ? input.callbackUrl : current.callbackUrl;
     const kind = input.kind ?? current.kind;
@@ -1610,25 +1733,50 @@ export class AgentWorkbench {
       ...(input.kind ? { kind: input.kind } : {}),
       ...(input.label ? { label: input.label } : {}),
       ...(botTokenRef ? { botTokenRef } : {}),
-      ...(signingSecretRef ? { signingSecretRef } : {}),
       ...(input.appId !== undefined ? { appId: input.appId } : {}),
       ...(appSecretRef ? { appSecretRef } : {}),
+      ...(input.publicKey !== undefined ? { publicKey: input.publicKey.trim() || undefined } : {}),
+      ...(verificationTokenRef ? { verificationTokenRef } : {}),
+      ...(encryptKeyRef ? { encryptKeyRef } : {}),
+      ...(signingSecretRef ? { signingSecretRef } : {}),
+      ...(secretTokenRef ? { secretTokenRef } : {}),
+      ...(wecomTokenRef ? { wecomTokenRef } : {}),
+      ...(wecomEncodingAesKeyRef ? { wecomEncodingAesKeyRef } : {}),
       ...(callbackUrl ? { callbackUrl } : {}),
       ...(input.defaultFolderId ? { defaultFolderId: input.defaultFolderId } : {}),
       ...(input.defaultPermissionPreset ? { defaultPermissionPreset: input.defaultPermissionPreset } : {}),
       enabled,
-      status: enabled ? initialIntegrationStatus(kind, callbackUrl) : "disabled",
+      status: enabled ? initialIntegrationStatus(buildIntegrationStatusSnapshot({
+        kind,
+        callbackUrl,
+        publicKey: input.publicKey !== undefined ? input.publicKey.trim() : current.publicKey,
+        botTokenConfigured: Boolean(botTokenRef),
+        verificationTokenConfigured: Boolean(verificationTokenRef),
+        signingSecretConfigured: Boolean(signingSecretRef),
+        secretTokenConfigured: Boolean(secretTokenRef),
+        wecomTokenConfigured: Boolean(wecomTokenRef),
+        wecomEncodingAesKeyConfigured: Boolean(wecomEncodingAesKeyRef)
+      })) : "disabled",
       updatedAt: nowIso()
     };
     if (!botTokenRef) delete updated.botTokenRef;
-    if (!signingSecretRef) delete updated.signingSecretRef;
     if (!appSecretRef) delete updated.appSecretRef;
+    if (!verificationTokenRef) delete updated.verificationTokenRef;
+    if (!encryptKeyRef) delete updated.encryptKeyRef;
+    if (!signingSecretRef) delete updated.signingSecretRef;
+    if (!secretTokenRef) delete updated.secretTokenRef;
+    if (!wecomTokenRef) delete updated.wecomTokenRef;
+    if (!wecomEncodingAesKeyRef) delete updated.wecomEncodingAesKeyRef;
+    if (!updated.publicKey) delete updated.publicKey;
     if (!callbackUrl) delete updated.callbackUrl;
     await this.store.saveIntegrationProvider(updated);
     return updated;
   }
 
   async deleteIntegrationProvider(integrationId: string): Promise<void> {
+    for (const secretName of ["botToken", "appSecret", "verificationToken", "encryptKey", "signingSecret", "secretToken", "wecomToken", "wecomEncodingAesKey"] as const) {
+      await this.store.deleteIntegrationSecret(integrationId, secretName);
+    }
     await this.store.deleteIntegrationProvider(integrationId);
   }
 
@@ -1638,7 +1786,17 @@ export class AgentWorkbench {
     const updated: IntegrationProviderConfig = {
       ...current,
       enabled: true,
-      status: initialIntegrationStatus(current.kind, current.callbackUrl) === "setup_pending" ? "setup_pending" : "connected",
+      status: initialIntegrationStatus(buildIntegrationStatusSnapshot({
+        kind: current.kind,
+        callbackUrl: current.callbackUrl,
+        publicKey: current.publicKey,
+        botTokenConfigured: Boolean(current.botTokenRef),
+        verificationTokenConfigured: Boolean(current.verificationTokenRef),
+        signingSecretConfigured: Boolean(current.signingSecretRef),
+        secretTokenConfigured: Boolean(current.secretTokenRef),
+        wecomTokenConfigured: Boolean(current.wecomTokenRef),
+        wecomEncodingAesKeyConfigured: Boolean(current.wecomEncodingAesKeyRef)
+      })) === "setup_pending" ? "setup_pending" : "connected",
       connectedAt: nowIso(),
       lastError: undefined,
       updatedAt: nowIso()
@@ -1655,18 +1813,103 @@ export class AgentWorkbench {
     return updated;
   }
 
-  async handleDiscordInteraction(input: DiscordInteractionRequest): Promise<TaskDetail> {
+  async handleDiscordInteraction(
+    input: DiscordInteractionRequest,
+    envelope: { rawBody: string; signature: string; timestamp: string }
+  ): Promise<TaskDetail | null> {
     const provider = await this.resolveIntegrationForMessage("discord", input.integrationId);
-    return this.createTaskFromIntegration(provider, input.text, input.channelId, input.messageId, input.userId);
+    verifyDiscordRequestSignature(provider.publicKey, envelope.signature, envelope.timestamp, envelope.rawBody);
+    const text = parseDiscordInteractionText(input);
+    const channelId = input.channel_id ?? "";
+    const externalMessageId = input.id ?? createId("discord_message");
+    const senderId = extractDiscordUserId(input);
+    if (!text || !channelId) return null;
+    return this.createTaskFromIntegration(provider, text, channelId, externalMessageId, senderId);
   }
 
   async handleFeishuEvent(input: FeishuEventRequest): Promise<TaskDetail | null> {
+    const provider = await this.resolveIntegrationForMessage("feishu", input.integrationId);
+    const verificationToken = await this.readIntegrationSecretValue(provider.verificationTokenRef, "verificationToken");
+    ensureFeishuVerificationToken(input, verificationToken);
     const message = input.event?.message;
     const text = parseFeishuMessageText(message?.content);
     const channelId = message?.chat_id ?? "";
     if (!text || !channelId) return null;
-    const provider = await this.resolveIntegrationForMessage("feishu", input.integrationId);
-    return this.createTaskFromIntegration(provider, text, channelId, message?.message_id ?? createId("feishu_message"));
+    const senderId = extractFeishuSenderId(input);
+    return this.createTaskFromIntegration(provider, text, channelId, message?.message_id ?? createId("feishu_message"), senderId);
+  }
+
+  async handleSlackEvent(
+    input: SlackEventRequest,
+    envelope: { rawBody: string; signature: string; timestamp: string }
+  ): Promise<TaskDetail | null> {
+    const provider = await this.resolveIntegrationForMessage("slack", input.integrationId);
+    const signingSecret = await this.readIntegrationSecretValue(provider.signingSecretRef, "signingSecret");
+    verifySlackRequestSignature(signingSecret, envelope.signature, envelope.timestamp, envelope.rawBody);
+    const text = parseSlackEventText(input);
+    const channelId = String(input.event?.channel ?? "").trim();
+    if (!text || !channelId) return null;
+    return this.createTaskFromIntegration(
+      provider,
+      text,
+      channelId,
+      String(input.event_id ?? input.event?.ts ?? createId("slack_message")),
+      extractSlackUserId(input)
+    );
+  }
+
+  async handleTelegramUpdate(
+    input: TelegramUpdateRequest,
+    envelope: { secretToken: string }
+  ): Promise<TaskDetail | null> {
+    const provider = await this.resolveIntegrationForMessage("telegram", input.integrationId);
+    const expectedSecret = await this.readIntegrationSecretValue(provider.secretTokenRef, "secretToken");
+    verifyTelegramSecretToken(expectedSecret, envelope.secretToken);
+    const text = parseTelegramMessageText(input);
+    const chat = recordFromUnknown(input.message)["chat"];
+    const channelId = String(recordFromUnknown(chat)["id"] ?? "").trim();
+    if (!text || !channelId) return null;
+    return this.createTaskFromIntegration(
+      provider,
+      text,
+      channelId,
+      String(recordFromUnknown(input.message)["message_id"] ?? input.update_id ?? createId("telegram_message")),
+      extractTelegramUserId(input)
+    );
+  }
+
+  async handleWecomCallback(
+    input: WecomCallbackRequest,
+    envelope: { msgSignature: string; timestamp: string; nonce: string; echostr?: string | undefined; rawBody?: string | undefined }
+  ): Promise<TaskDetail | null> {
+    const provider = await this.resolveIntegrationForMessage("wecom", input.integrationId);
+    const token = await this.readIntegrationSecretValue(provider.wecomTokenRef, "wecomToken");
+    const aesKey = await this.readIntegrationSecretValue(provider.wecomEncodingAesKeyRef, "wecomEncodingAesKey");
+    const encryptedValue = input.encrypt ?? envelope.echostr ?? "";
+    verifyWecomSignature(token, envelope.msgSignature, envelope.timestamp, envelope.nonce, encryptedValue);
+    const xml = input.encrypt ? decryptWecomPayload(aesKey, input.encrypt) : (envelope.rawBody ?? "");
+    const parsed = input.encrypt ? parseWecomCallbackXml(xml) : input;
+    const text = parseWecomMessageText(parsed);
+    const channelId = String(parsed.toUserName ?? parsed.agentID ?? "wecom").trim();
+    if (!text || !channelId) return null;
+    return this.createTaskFromIntegration(
+      provider,
+      text,
+      channelId,
+      String(parsed.msgId ?? envelope.timestamp ?? createId("wecom_message")),
+      extractWecomSenderId(parsed)
+    );
+  }
+
+  async verifyWecomCallback(
+    preferredId: string | undefined,
+    envelope: { msgSignature: string; timestamp: string; nonce: string; echostr: string }
+  ): Promise<string> {
+    const provider = await this.resolveIntegrationForMessage("wecom", preferredId);
+    const token = await this.readIntegrationSecretValue(provider.wecomTokenRef, "wecomToken");
+    const aesKey = await this.readIntegrationSecretValue(provider.wecomEncodingAesKeyRef, "wecomEncodingAesKey");
+    verifyWecomSignature(token, envelope.msgSignature, envelope.timestamp, envelope.nonce, envelope.echostr);
+    return decryptWecomPayload(aesKey, envelope.echostr);
   }
 
   private async saveIntegrationSecretRef(integrationId: string, name: string, value: string) {
@@ -1677,6 +1920,14 @@ export class AgentWorkbench {
       ...maskSecret(value),
       updatedAt: secret.updatedAt
     };
+  }
+
+  private async readIntegrationSecretValue(secretRef: EncryptedSecretRef | undefined, name: string): Promise<string | undefined> {
+    if (!secretRef) return undefined;
+    const [integrationId] = secretRef.secretId.split(":", 1);
+    if (!integrationId) return undefined;
+    const encrypted = await this.store.getIntegrationSecret(integrationId, name);
+    return encrypted ? this.secretBox.decrypt(encrypted) : undefined;
   }
 
   private async resolveIntegrationForMessage(kind: IntegrationKind, preferredId?: string): Promise<IntegrationProviderConfig> {
@@ -1947,18 +2198,23 @@ export class AgentWorkbench {
           this.addEvent(task, "assistant_message", blocker, {
             ...(turn.streamId ? { streamId: turn.streamId } : {}),
             completionBlocked: true,
-            blockedFinalMessage: turn.message
+            blockedFinalMessage: turn.message,
+            ...(turn.reasoningContent ? { reasoningContent: turn.reasoningContent } : {})
           });
           this.setStatus(task, "paused");
           await this.store.saveTask(task);
           return task;
         }
-        this.addEvent(task, "assistant_message", turn.message, turn.streamId ? { streamId: turn.streamId } : {});
+        this.addEvent(task, "assistant_message", turn.message, {
+          ...(turn.streamId ? { streamId: turn.streamId } : {}),
+          ...(turn.reasoningContent ? { reasoningContent: turn.reasoningContent } : {})
+        });
         this.setStatus(task, "completed");
         await this.recordExperience(task);
         await this.store.saveTask(task);
         return task;
       }
+      if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId);
 
       const { executable, skipped } = limitToolCallsPerTurn(turn.calls);
       for (const skippedCall of skipped) {
@@ -1973,7 +2229,7 @@ export class AgentWorkbench {
         return task;
       }
 
-      const latest = await this.processToolCalls(task, executable);
+      const latest = await this.processToolCalls(task, executable, turn.reasoningContent);
       if (!latest) return task;
       Object.assign(task, latest);
     }
@@ -2029,7 +2285,7 @@ export class AgentWorkbench {
     }
   }
 
-  private async processToolCalls(task: TaskDetail, calls: ToolCall[]): Promise<TaskDetail | null> {
+  private async processToolCalls(task: TaskDetail, calls: ToolCall[], reasoningContent?: string): Promise<TaskDetail | null> {
     if (calls.length === 0) return task;
     const preferences = await this.store.getPreferences();
     const globalGrants = await this.store.listGlobalPermissions();
@@ -2045,7 +2301,8 @@ export class AgentWorkbench {
           toolCallId: call.id,
           toolName: call.toolName,
           args: eventArgs,
-          riskCategory: "none"
+          riskCategory: "none",
+          ...(reasoningContent ? { reasoningContent } : {})
         });
         this.addEvent(task, "user_input_requested", String(call.args["question"] ?? "User input required."), {
           toolCallId: call.id,
@@ -2076,6 +2333,7 @@ export class AgentWorkbench {
           toolName: call.toolName,
           args: this.sanitizeForPreferences(call.args, preferences),
           riskCategory: "none",
+          ...(reasoningContent ? { reasoningContent } : {}),
           uiHidden: true
         });
         await this.safeAppendTaskTrace(task, {
@@ -2087,6 +2345,7 @@ export class AgentWorkbench {
           riskCategory: "none",
           uiHidden: true
         });
+        await this.store.saveTask(task);
         const result = await this.executeTool(task.id, call);
         const latest = await this.requiredTask(task.id);
         await this.addToolResultEvent(latest, call, result);
@@ -2104,6 +2363,7 @@ export class AgentWorkbench {
         toolName: call.toolName,
         args: eventArgs,
         riskCategory: assessment.category,
+        ...(reasoningContent ? { reasoningContent } : {}),
         ...eventMetadata
       });
       await this.safeAppendTaskTrace(task, {
@@ -2267,7 +2527,14 @@ export class AgentWorkbench {
     const hasSubstantiveAssistantOutput = afterLastMemory.some((event) =>
       event.type === "assistant_message" && event.summary.trim().length >= 40
     );
-    return hasNewEvidence || hasSubstantiveAssistantOutput;
+    const latestGoal = [...afterLastMemory]
+      .reverse()
+      .find((event) => (event.type === "user_message" || event.type === "guidance_pending" || event.type === "guidance_consumed") && !event.reverted)
+      ?.summary ?? "";
+    const hasNonTrivialAnsweredTurn =
+      nonWhitespaceLength(latestGoal) >= 8 &&
+      afterLastMemory.some((event) => event.type === "assistant_message" && nonWhitespaceLength(event.summary) >= 8);
+    return hasNewEvidence || hasSubstantiveAssistantOutput || hasNonTrivialAnsweredTurn;
   }
 
   private async recordPromptCacheStats(task: TaskDetail, usage?: ModelUsage): Promise<void> {
@@ -2562,19 +2829,38 @@ export class AgentWorkbench {
 
   private createToolProgressSink(taskId: string, call: ToolCall): (progress: ToolProgressUpdate) => Promise<void> {
     let lastAt = 0;
-    let lastKey = "";
-    return async (progress) => {
+    let lastStatus = "";
+    let lastSignature = "";
+    let lastProcessed = Number.NaN;
+    let lastTotal = Number.NaN;
+    return async (incoming) => {
+      const progress = compactToolProgressUpdate(incoming);
       const now = Date.now();
-      const key = JSON.stringify({
+      const signature = JSON.stringify({
         status: progress.status,
-        processed: progress.progress?.processed,
-        total: progress.progress?.total,
+        operation: progress.operation,
+        targetPath: progress.targetPath,
         message: progress.message,
-        changes: progress.changes
+        changes: progress.changes,
+        total: progress.progress?.total,
+        unit: progress.progress?.unit,
+        displayMode: progress.displayMode
       });
-      if (now - lastAt < 250 && key === lastKey) return;
+      const processed = toFiniteNumber(progress.progress?.processed);
+      const total = toFiniteNumber(progress.progress?.total);
+      const status = progress.status ?? "running";
+      const shouldEmit =
+        lastAt === 0 ||
+        status !== lastStatus ||
+        signature !== lastSignature ||
+        progressAdvancedEnough(progress.progress?.unit, processed, lastProcessed, total, lastTotal) ||
+        now - lastAt >= TRACE_PROGRESS_MIN_INTERVAL_MS;
+      if (!shouldEmit) return;
       lastAt = now;
-      lastKey = key;
+      lastStatus = status;
+      lastSignature = signature;
+      lastProcessed = processed;
+      lastTotal = total;
       await this.addToolProgressEvent(taskId, call, progress);
     };
   }
@@ -2582,11 +2868,12 @@ export class AgentWorkbench {
   private async addToolProgressEvent(taskId: string, call: ToolCall, progress: ToolProgressUpdate): Promise<void> {
     const task = await this.requiredTask(taskId);
     const preferences = await this.store.getPreferences().catch(() => undefined);
-    const payload = preferences ? this.sanitizeForPreferences(progress, preferences) : progress;
-    this.addEvent(task, "tool_progress", progress.message ?? call.toolName, {
+    const normalized = compactToolProgressUpdate(progress);
+    const payload = preferences ? this.sanitizeForPreferences(normalized, preferences) : normalized;
+    this.addEvent(task, "tool_progress", normalized.message ?? call.toolName, {
       toolCallId: call.id,
       toolName: call.toolName,
-      status: progress.status ?? "running",
+      status: normalized.status ?? "running",
       ...payload,
       ...(call.toolName === "plan_update" ? { uiHidden: true } : {})
     });
@@ -2596,7 +2883,7 @@ export class AgentWorkbench {
       timestamp: nowIso(),
       toolCallId: call.id,
       toolName: call.toolName,
-      progress
+      progress: summarizeToolProgressForTrace(normalized)
     });
   }
 
@@ -2845,7 +3132,7 @@ export class AgentWorkbench {
     inputPath: string
   ): Promise<{ files: TaskCheckpoint["files"]; truncated: boolean }> {
     if (!inputPath.trim()) return { files: [], truncated: false };
-    const fullPath = resolveTaskPath(task.workRoot || defaultTaskWorkRoot(), inputPath);
+    const fullPath = await resolveTaskPath(task.workRoot || defaultTaskWorkRoot(), inputPath);
     return { files: [await this.snapshotPath(checkpointId, task.workRoot || defaultTaskWorkRoot(), fullPath, 0)], truncated: false };
   }
 
@@ -2853,7 +3140,7 @@ export class AgentWorkbench {
     checkpointId: string,
     task: TaskDetail
   ): Promise<{ files: TaskCheckpoint["files"]; truncated: boolean }> {
-    const root = resolve(task.workRoot || defaultTaskWorkRoot());
+    const root = await canonicalizeExistingDirectory(task.workRoot || defaultTaskWorkRoot());
     const candidates = await collectCheckpointCandidates(root, 80, 2_000_000);
     const files = [];
     for (let index = 0; index < candidates.files.length; index += 1) {
@@ -2863,8 +3150,8 @@ export class AgentWorkbench {
   }
 
   private async snapshotPath(checkpointId: string, workRoot: string, fullPath: string, index: number): Promise<TaskCheckpoint["files"][number]> {
-    const root = resolve(workRoot || defaultTaskWorkRoot());
-    const normalized = resolveTaskPath(root, fullPath);
+    const root = await canonicalizeExistingDirectory(workRoot || defaultTaskWorkRoot());
+    const normalized = await resolveTaskPath(root, fullPath);
     const relativePath = relative(root, normalized) || basename(normalized);
     const info = await stat(normalized).catch(() => null);
     if (!info?.isFile()) {
@@ -2889,9 +3176,9 @@ export class AgentWorkbench {
     let deletedFiles = 0;
     let skippedFiles = 0;
     const files = await this.previewCheckpointFiles(task, checkpoint, filePaths);
-    const selected = this.filterCheckpointFiles(task, checkpoint, filePaths);
+    const selected = await this.filterCheckpointFiles(task, checkpoint, filePaths);
     for (const file of selected) {
-      const target = resolveTaskPath(checkpoint.workRoot || task.workRoot || defaultTaskWorkRoot(), file.path);
+      const target = await resolveTaskPath(checkpoint.workRoot || task.workRoot || defaultTaskWorkRoot(), file.path);
       if (file.existed && file.snapshotPath) {
         await mkdir(dirname(target), { recursive: true });
         await copyFile(file.snapshotPath, target);
@@ -2920,28 +3207,30 @@ export class AgentWorkbench {
     };
   }
 
-  private filterCheckpointFiles(task: TaskDetail, checkpoint: TaskCheckpoint, filePaths?: string[]): TaskCheckpoint["files"] {
+  private async filterCheckpointFiles(task: TaskDetail, checkpoint: TaskCheckpoint, filePaths?: string[]): Promise<TaskCheckpoint["files"]> {
     if (!filePaths || filePaths.length === 0) return checkpoint.files;
-    const root = resolve(checkpoint.workRoot || task.workRoot || defaultTaskWorkRoot());
+    const root = await canonicalizeExistingDirectory(checkpoint.workRoot || task.workRoot || defaultTaskWorkRoot());
     const requested = new Set(
-      filePaths.map((filePath) => {
-        const normalized = resolveTaskPath(root, filePath);
-        return process.platform === "win32" ? normalized.toLowerCase() : normalized;
-      })
+      await Promise.all(
+        filePaths.map(async (filePath) => {
+          const normalized = await resolveTaskPath(root, filePath);
+          return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+        })
+      )
     );
     return checkpoint.files.filter((file) => {
-      const target = resolveTaskPath(root, file.path);
+      const target = resolve(file.path);
       const key = process.platform === "win32" ? target.toLowerCase() : target;
       return requested.has(key);
     });
   }
 
   private async previewCheckpointFiles(task: TaskDetail, checkpoint: TaskCheckpoint, filePaths?: string[]): Promise<TaskRollbackFileChange[]> {
-    const root = resolve(checkpoint.workRoot || task.workRoot || defaultTaskWorkRoot());
-    const selected = this.filterCheckpointFiles(task, checkpoint, filePaths);
+    const root = await canonicalizeExistingDirectory(checkpoint.workRoot || task.workRoot || defaultTaskWorkRoot());
+    const selected = await this.filterCheckpointFiles(task, checkpoint, filePaths);
     const changes: TaskRollbackFileChange[] = [];
     for (const file of selected) {
-      const target = resolveTaskPath(root, file.path);
+      const target = await resolveTaskPath(root, file.path);
       const relativePath = relative(root, target) || basename(target);
       const info = await stat(target).catch(() => null);
       const existsNow = Boolean(info?.isFile());
@@ -3037,6 +3326,7 @@ export class AgentWorkbench {
     const preferences = await this.store.getPreferences();
     const output = this.sanitizeForPreferences(result.output, preferences);
     const args = this.sanitizeForPreferences(call.args, preferences);
+    const reasoningContent = findReasoningContentForToolCall(task, result.toolCallId);
     this.addEvent(task, "tool_result", result.ok ? "Tool completed" : "Tool failed", {
       id: result.id,
       toolCallId: result.toolCallId,
@@ -3044,6 +3334,7 @@ export class AgentWorkbench {
       args,
       ok: result.ok,
       output,
+      ...(reasoningContent ? { reasoningContent } : {}),
       ...(call.toolName === "plan_update" ? { uiHidden: true } : {})
     });
     await this.safeAppendTaskTrace(task, {
@@ -3083,7 +3374,7 @@ export class AgentWorkbench {
       timestamp: event.timestamp,
       streamId: event.streamId,
       ...(event.provider ? { provider: event.provider } : {}),
-      payload: event.payload
+      payload: summarizeModelTracePayload(event.kind, event.payload)
     });
   }
 
@@ -3143,12 +3434,13 @@ export class AgentWorkbench {
     await previous.catch(() => undefined);
     try {
       const tracePath = resolve(task.workRoot || defaultTaskWorkRoot(), "data", "logs", "model-traces", task.id, "trace.jsonl");
-      await mkdir(dirname(tracePath), { recursive: true });
-      await appendFile(tracePath, `${JSON.stringify({
+      const compactEntry = compactTraceEntry({
         taskId: task.id,
         taskStatus: task.status,
         ...entry
-      })}\n`, "utf8");
+      });
+      await mkdir(dirname(tracePath), { recursive: true });
+      await appendFile(tracePath, `${JSON.stringify(compactEntry)}\n`, "utf8");
     } finally {
       release();
       if (this.traceLocks.get(task.id) === queued) this.traceLocks.delete(task.id);
@@ -3343,7 +3635,32 @@ export class AgentWorkbench {
 
   private addLoadedSkillEvents(task: TaskDetail): void {
     for (const skill of this.contextAssembler.drainLoadedSkillEvents(task.id)) {
-      this.addEvent(task, "skill_loaded", skill.title, { skillId: skill.id });
+      this.addEvent(task, "skill_loaded", skill.title, {
+        skillId: skill.id,
+        title: skill.title,
+        status: skill.status,
+        source: describeIntegrationSource(skill),
+        matchReason: "The agent explicitly loaded this active skill from the bounded catalog for the current task.",
+        matchedSignals: skill.applicability.keywords.slice(0, 8),
+        requiredTools: skill.applicability.requiredTools,
+        requiredContext: skill.applicability.requiredContext,
+        readOnlySuggestion: looksReadOnlySkillBody(skill.body, skill.applicability.requiredTools)
+      });
+    }
+    for (const skipped of this.contextAssembler.drainSkippedSkillEvents(task.id)) {
+      this.addEvent(task, "skill_load_skipped", skipped.skill?.title ?? skipped.requested ?? "Skill skipped", {
+        requested: skipped.requested,
+        reason: skipped.reason,
+        ...(skipped.skill
+          ? {
+              skillId: skipped.skill.id,
+              title: skipped.skill.title,
+              status: skipped.skill.status,
+              source: describeIntegrationSource(skipped.skill),
+              matchedSignals: skipped.skill.applicability.keywords.slice(0, 8)
+            }
+          : {})
+      });
     }
   }
 
@@ -3688,26 +4005,365 @@ function countToolResultEvents(task: TaskDetail): number {
   return task.events.filter((event) => event.type === "tool_result" && !event.reverted).length;
 }
 
-function initialIntegrationStatus(kind: IntegrationKind, callbackUrl?: string): IntegrationProviderConfig["status"] {
-  if (kind === "feishu" && !callbackUrl) return "setup_pending";
-  return "connected";
+function buildIntegrationStatusSnapshot(input: {
+  kind: IntegrationKind;
+  callbackUrl: string | undefined;
+  publicKey?: string | undefined;
+  verificationTokenConfigured?: boolean | undefined;
+  signingSecretConfigured?: boolean | undefined;
+  secretTokenConfigured?: boolean | undefined;
+  wecomTokenConfigured?: boolean | undefined;
+  wecomEncodingAesKeyConfigured?: boolean | undefined;
+  botTokenConfigured?: boolean | undefined;
+}) {
+  return input;
 }
 
-function parseFeishuMessageText(content: string | undefined): string {
-  if (!content) return "";
-  try {
-    const parsed = JSON.parse(content) as Record<string, unknown>;
-    const text = parsed["text"] ?? parsed["content"];
-    return typeof text === "string" ? text.trim() : content.trim();
-  } catch {
-    return content.trim();
+function compactToolProgressUpdate(progress: ToolProgressUpdate): ToolProgressUpdate {
+  const message = excerptTraceText(progress.message, TRACE_PROGRESS_MESSAGE_CHARS);
+  const tail = tailTraceText(progress.tail, TRACE_PROGRESS_TAIL_CHARS);
+  return {
+    ...(progress.status ? { status: progress.status } : {}),
+    ...(progress.targetPath ? { targetPath: progress.targetPath } : {}),
+    ...(progress.operation ? { operation: progress.operation } : {}),
+    ...(progress.changes ? { changes: progress.changes } : {}),
+    ...(progress.progress ? { progress: progress.progress } : {}),
+    ...(message ? { message } : {}),
+    ...(tail ? { tail } : {}),
+    ...(progress.displayMode ? { displayMode: progress.displayMode } : {})
+  };
+}
+
+function summarizeToolProgressForTrace(progress: ToolProgressUpdate): Record<string, unknown> {
+  return {
+    ...(progress.status ? { status: progress.status } : {}),
+    ...(progress.operation ? { operation: progress.operation } : {}),
+    ...(progress.targetPath ? { targetPath: progress.targetPath } : {}),
+    ...(progress.progress ? { progress: progress.progress } : {}),
+    ...(progress.displayMode ? { displayMode: progress.displayMode } : {}),
+    ...(progress.message ? { message: progress.message } : {}),
+    ...(progress.tail ? { tail: progress.tail } : {}),
+    ...(progress.changes ? {
+      changes: {
+        path: progress.changes.path,
+        addedLines: progress.changes.addedLines,
+        removedLines: progress.changes.removedLines,
+        ...(progress.changes.operation ? { operation: progress.changes.operation } : {})
+      }
+    } : {})
+  };
+}
+
+function summarizeModelTracePayload(kind: ModelTraceEvent["kind"], payload: Record<string, unknown>): Record<string, unknown> {
+  if (kind === "request") return summarizeModelRequestTracePayload(payload);
+  if (kind === "response") return summarizeModelResponseTracePayload(payload);
+  if (kind === "error") {
+    return {
+      ...(typeof payload["message"] === "string" ? { message: excerptTraceText(payload["message"], TRACE_MODEL_EXCERPT_CHARS) } : {}),
+      ...(typeof payload["stack"] === "string" ? { stackPreview: tailTraceText(payload["stack"], TRACE_MODEL_EXCERPT_CHARS) } : {})
+    };
   }
+  return {
+    ...("fromProviderId" in payload ? { fromProviderId: payload["fromProviderId"] } : {}),
+    ...("toProviderId" in payload ? { toProviderId: payload["toProviderId"] } : {}),
+    ...("fromModel" in payload ? { fromModel: payload["fromModel"] } : {}),
+    ...("toModel" in payload ? { toModel: payload["toModel"] } : {}),
+    ...("category" in payload ? { category: payload["category"] } : {}),
+    ...(typeof payload["reason"] === "string" ? { reason: excerptTraceText(payload["reason"], TRACE_MODEL_EXCERPT_CHARS) } : {})
+  };
 }
 
-function approximateTokenCount(text: string): number {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (!normalized) return 0;
-  return Math.ceil(normalized.length / 4);
+function summarizeModelRequestTracePayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const request = recordFromUnknown(payload["request"]);
+  return {
+    ...("taskStatus" in payload ? { taskStatus: payload["taskStatus"] } : {}),
+    ...("eventCount" in payload ? { eventCount: payload["eventCount"] } : {}),
+    ...(Object.keys(recordFromUnknown(payload["attention"])).length > 0 ? { attention: summarizeTraceAttention(recordFromUnknown(payload["attention"])) } : {}),
+    ...(Object.keys(request).length > 0 ? { request: summarizeModelRequestBody(request) } : {})
+  };
+}
+
+function summarizeModelResponseTracePayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const response = recordFromUnknown(payload["response"]);
+  if (Object.keys(response).length === 0) return {};
+  const usage = summarizeModelUsageForTrace(recordFromUnknown(response["usage"]));
+  const kind = String(response["kind"] ?? "").trim();
+  if (kind === "tool_calls") {
+    const calls = Array.isArray(response["calls"]) ? response["calls"] : [];
+    return {
+      response: {
+        kind,
+        toolCallCount: calls.length,
+        toolCalls: calls.slice(0, TRACE_MODEL_TOOL_LIMIT).map((call) => summarizeToolCallForTrace(recordFromUnknown(call))),
+        omittedToolCalls: Math.max(0, calls.length - TRACE_MODEL_TOOL_LIMIT),
+        ...(usage ? { usage } : {})
+      }
+    };
+  }
+  if (kind === "final") {
+    return {
+      response: {
+        kind,
+        messageExcerpt: excerptTraceText(response["message"], TRACE_MODEL_EXCERPT_CHARS),
+        ...(usage ? { usage } : {})
+      }
+    };
+  }
+  return {
+    response: {
+      kind: kind || "unknown",
+      ...(typeof response["reason"] === "string" ? { reason: excerptTraceText(response["reason"], TRACE_MODEL_EXCERPT_CHARS) } : {}),
+      ...(usage ? { usage } : {})
+    }
+  };
+}
+
+function summarizeTraceAttention(attention: Record<string, unknown>): Record<string, unknown> {
+  const evidenceRefs = Array.isArray(attention["evidenceRefs"]) ? attention["evidenceRefs"].map((item) => String(item ?? "")) : [];
+  const tokenBudget = recordFromUnknown(attention["tokenBudget"]);
+  return {
+    ...(attention["activeNode"] ? { activeNode: compactTraceValue(attention["activeNode"], 0) } : {}),
+    ...(evidenceRefs.length > 0 ? {
+      evidenceRefCount: evidenceRefs.length,
+      evidenceRefs: evidenceRefs.slice(-TRACE_ATTENTION_EVIDENCE_LIMIT),
+      omittedEvidenceRefs: Math.max(0, evidenceRefs.length - TRACE_ATTENTION_EVIDENCE_LIMIT)
+    } : {}),
+    ...(Object.keys(tokenBudget).length > 0 ? { tokenBudget } : {})
+  };
+}
+
+function summarizeModelRequestBody(request: Record<string, unknown>): Record<string, unknown> {
+  const toolNames = extractTraceToolNames(request);
+  return {
+    ...(typeof request["model"] === "string" ? { model: request["model"] } : {}),
+    ...("stream" in request ? { stream: Boolean(request["stream"]) } : {}),
+    ...(Number.isFinite(Number(request["max_tokens"])) ? { maxTokens: Number(request["max_tokens"]) } : {}),
+    ...(Number.isFinite(Number(request["max_completion_tokens"])) ? { maxCompletionTokens: Number(request["max_completion_tokens"]) } : {}),
+    ...(Number.isFinite(Number(request["temperature"])) ? { temperature: Number(request["temperature"]) } : {}),
+    ...(request["tool_choice"] !== undefined ? { toolChoice: compactTraceValue(request["tool_choice"], 0) } : {}),
+    ...(toolNames.length > 0 ? {
+      toolSummary: {
+        count: toolNames.length,
+        names: toolNames.slice(0, TRACE_MODEL_TOOL_LIMIT),
+        omittedNames: Math.max(0, toolNames.length - TRACE_MODEL_TOOL_LIMIT)
+      }
+    } : {}),
+    messageSummary: summarizeTraceMessages(request)
+  };
+}
+
+function summarizeTraceMessages(request: Record<string, unknown>): Record<string, unknown> {
+  const summaries = extractTraceMessageSummaries(request);
+  const roleCounts: Record<string, number> = {};
+  for (const item of summaries) {
+    roleCounts[item.role] = (roleCounts[item.role] ?? 0) + 1;
+  }
+  return {
+    count: summaries.length,
+    roleCounts,
+    ...(findTraceMessageExcerpt(summaries, "system", false) ? { systemExcerpt: findTraceMessageExcerpt(summaries, "system", false) } : {}),
+    ...(findTraceMessageExcerpt(summaries, "user", true) ? { latestUserExcerpt: findTraceMessageExcerpt(summaries, "user", true) } : {}),
+    ...(findTraceMessageExcerpt(summaries, "assistant", true) ? { latestAssistantExcerpt: findTraceMessageExcerpt(summaries, "assistant", true) } : {}),
+    ...(findTraceMessageExcerpt(summaries, "tool", true) ? { latestToolExcerpt: findTraceMessageExcerpt(summaries, "tool", true) } : {})
+  };
+}
+
+function extractTraceMessageSummaries(request: Record<string, unknown>): Array<{ role: string; excerpt: string }> {
+  const output: Array<{ role: string; excerpt: string }> = [];
+  const push = (role: string, value: unknown): void => {
+    const excerpt = excerptTraceText(value, TRACE_MODEL_EXCERPT_CHARS);
+    if (excerpt) output.push({ role, excerpt });
+  };
+
+  const systemInstruction = recordFromUnknown(request["systemInstruction"]);
+  const systemParts = Array.isArray(systemInstruction["parts"]) ? systemInstruction["parts"] : [];
+  for (const part of systemParts) {
+    const text = recordFromUnknown(part)["text"];
+    if (typeof text === "string") push("system", text);
+  }
+
+  if (Array.isArray(request["messages"])) {
+    for (const rawMessage of request["messages"]) {
+      const message = recordFromUnknown(rawMessage);
+      const role = String(message["role"] ?? "unknown");
+      const content = summarizeTraceMessageContent(message["content"]);
+      if (content) push(role, content);
+      const toolCalls = Array.isArray(message["tool_calls"]) ? message["tool_calls"] : [];
+      for (const rawCall of toolCalls.slice(0, TRACE_MODEL_TOOL_LIMIT)) {
+        const call = recordFromUnknown(rawCall);
+        const fn = recordFromUnknown(call["function"]);
+        const argsPreview = excerptTraceText(fn["arguments"], TRACE_MODEL_TOOL_ARG_CHARS);
+        const name = String(fn["name"] ?? "tool");
+        push("assistant", `${name}${argsPreview ? ` ${argsPreview}` : ""}`);
+      }
+    }
+  }
+
+  if (Array.isArray(request["contents"])) {
+    for (const rawContent of request["contents"]) {
+      const content = recordFromUnknown(rawContent);
+      const role = content["role"] === "model" ? "assistant" : String(content["role"] ?? "user");
+      const parts = Array.isArray(content["parts"]) ? content["parts"] : [];
+      const partTexts = parts
+        .map((part) => summarizeTraceMessageContent(part))
+        .filter((item): item is string => Boolean(item));
+      if (partTexts.length > 0) push(role, partTexts.join(" | "));
+    }
+  }
+
+  return output;
+}
+
+function summarizeTraceMessageContent(value: unknown): string {
+  if (typeof value === "string") return excerptTraceText(value, TRACE_MODEL_EXCERPT_CHARS);
+  if (!value) return "";
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((item) => summarizeTraceMessageContent(item))
+      .filter((item): item is string => Boolean(item));
+    return excerptTraceText(parts.join(" | "), TRACE_MODEL_EXCERPT_CHARS);
+  }
+  const record = recordFromUnknown(value);
+  if (typeof record["text"] === "string") return excerptTraceText(record["text"], TRACE_MODEL_EXCERPT_CHARS);
+  if (typeof record["content"] === "string") return excerptTraceText(record["content"], TRACE_MODEL_EXCERPT_CHARS);
+  if (record["tool_result"]) return excerptTraceText(JSON.stringify(record["tool_result"]), TRACE_MODEL_EXCERPT_CHARS);
+  if (record["tool_use_id"]) {
+    return excerptTraceText(`${String(record["type"] ?? "tool_result")} ${String(record["tool_use_id"] ?? "")} ${String(record["content"] ?? "")}`, TRACE_MODEL_EXCERPT_CHARS);
+  }
+  if (record["functionCall"]) {
+    const fn = recordFromUnknown(record["functionCall"]);
+    return excerptTraceText(`${String(fn["name"] ?? "functionCall")} ${JSON.stringify(fn["args"] ?? {})}`, TRACE_MODEL_EXCERPT_CHARS);
+  }
+  if (record["functionResponse"]) {
+    const fn = recordFromUnknown(record["functionResponse"]);
+    return excerptTraceText(`${String(fn["name"] ?? "functionResponse")} ${JSON.stringify(fn["response"] ?? {})}`, TRACE_MODEL_EXCERPT_CHARS);
+  }
+  return excerptTraceText(JSON.stringify(compactTraceValue(record, 0)), TRACE_MODEL_EXCERPT_CHARS);
+}
+
+function extractTraceToolNames(request: Record<string, unknown>): string[] {
+  const names: string[] = [];
+  const tools = Array.isArray(request["tools"]) ? request["tools"] : [];
+  for (const rawTool of tools) {
+    const tool = recordFromUnknown(rawTool);
+    const fn = recordFromUnknown(tool["function"]);
+    if (typeof fn["name"] === "string" && fn["name"].trim()) {
+      names.push(fn["name"].trim());
+      continue;
+    }
+    if (typeof tool["name"] === "string" && tool["name"].trim()) {
+      names.push(tool["name"].trim());
+      continue;
+    }
+    const declarations = Array.isArray(tool["functionDeclarations"]) ? tool["functionDeclarations"] : [];
+    for (const rawDeclaration of declarations) {
+      const declaration = recordFromUnknown(rawDeclaration);
+      if (typeof declaration["name"] === "string" && declaration["name"].trim()) names.push(declaration["name"].trim());
+    }
+  }
+  return names;
+}
+
+function summarizeToolCallForTrace(call: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...(call["id"] ? { id: call["id"] } : {}),
+    ...(call["toolName"] ? { toolName: call["toolName"] } : {}),
+    ...(call["args"] !== undefined ? { argsPreview: excerptTraceText(JSON.stringify(call["args"]), TRACE_MODEL_TOOL_ARG_CHARS) } : {})
+  };
+}
+
+function summarizeModelUsageForTrace(usage: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (Object.keys(usage).length === 0) return undefined;
+  const summary: Record<string, unknown> = {};
+  if (Number.isFinite(Number(usage["inputTokens"]))) summary["inputTokens"] = Number(usage["inputTokens"]);
+  if (Number.isFinite(Number(usage["outputTokens"]))) summary["outputTokens"] = Number(usage["outputTokens"]);
+  if (Number.isFinite(Number(usage["cachedTokens"]))) summary["cachedTokens"] = Number(usage["cachedTokens"]);
+  if (summary["inputTokens"] === undefined && Number.isFinite(Number(usage["prompt_tokens"]))) summary["inputTokens"] = Number(usage["prompt_tokens"]);
+  if (summary["outputTokens"] === undefined && Number.isFinite(Number(usage["completion_tokens"]))) summary["outputTokens"] = Number(usage["completion_tokens"]);
+  return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
+function findTraceMessageExcerpt(
+  messages: Array<{ role: string; excerpt: string }>,
+  role: string,
+  fromEnd: boolean
+): string {
+  const ordered = fromEnd ? [...messages].reverse() : messages;
+  return ordered.find((item) => item.role === role)?.excerpt ?? "";
+}
+
+function progressAdvancedEnough(
+  unit: ToolProgressUpdate["progress"] extends { unit?: infer U } ? U : string | undefined,
+  processed: number,
+  previousProcessed: number,
+  total: number,
+  previousTotal: number
+): boolean {
+  if (!Number.isFinite(processed)) return false;
+  if (!Number.isFinite(previousProcessed) || processed < previousProcessed) return true;
+  if (Number.isFinite(total) && total !== previousTotal && total > 0) return true;
+  const threshold =
+    unit === "bytes"
+      ? TRACE_PROGRESS_BYTES_STEP
+      : unit === "lines"
+        ? TRACE_PROGRESS_LINE_STEP
+        : unit === "files" || unit === "items"
+          ? TRACE_PROGRESS_ITEM_STEP
+          : 8;
+  return processed - previousProcessed >= threshold;
+}
+
+function toFiniteNumber(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : Number.NaN;
+}
+
+function excerptTraceText(value: unknown, maxChars: number): string {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= maxChars) return text;
+  const omitted = text.length - maxChars;
+  return `${text.slice(0, maxChars)} ...[trace excerpt truncated ${omitted} chars]`;
+}
+
+function tailTraceText(value: unknown, maxChars: number): string {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  if (text.length <= maxChars) return text;
+  const omitted = text.length - maxChars;
+  return `[tail truncated ${omitted} chars]\n${text.slice(-maxChars)}`;
+}
+
+function compactTraceEntry(entry: Record<string, unknown>): Record<string, unknown> {
+  return compactTraceValue(sanitizeSensitiveValue(entry), 0) as Record<string, unknown>;
+}
+
+function compactTraceValue(value: unknown, depth: number): unknown {
+  if (typeof value === "string") {
+    if (value.length <= TRACE_MAX_STRING_CHARS) return value;
+    const omitted = value.length - TRACE_MAX_STRING_CHARS;
+    return `${value.slice(0, TRACE_MAX_STRING_CHARS)}\n...[trace truncated ${omitted} chars]`;
+  }
+  if (value === null || typeof value !== "object") return value;
+  if (depth >= TRACE_MAX_DEPTH) return "[trace truncated depth]";
+  if (Array.isArray(value)) {
+    const kept = value.slice(0, TRACE_MAX_ARRAY_ITEMS).map((item) => compactTraceValue(item, depth + 1));
+    if (value.length <= TRACE_MAX_ARRAY_ITEMS) return kept;
+    return [...kept, `[trace truncated ${value.length - TRACE_MAX_ARRAY_ITEMS} items]`];
+  }
+  const entries = Object.entries(recordFromUnknown(value));
+  const compacted: Record<string, unknown> = {};
+  for (const [key, entry] of entries.slice(0, TRACE_MAX_OBJECT_KEYS)) {
+    compacted[key] = compactTraceValue(entry, depth + 1);
+  }
+  if (entries.length > TRACE_MAX_OBJECT_KEYS) {
+    compacted["_traceTruncatedKeys"] = entries.length - TRACE_MAX_OBJECT_KEYS;
+  }
+  return compacted;
+}
+
+function nonWhitespaceLength(text: string): number {
+  return text.replace(/\s+/g, "").trim().length;
 }
 
 function recordFromUnknown(value: unknown): Record<string, unknown> {
@@ -3964,19 +4620,17 @@ function classifyAttachment(fileName: string, mimeType: string): TaskAttachmentK
 }
 
 function sanitizeFileName(fileName: string): string {
-  return basename(fileName).replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").slice(0, 180) || "attachment.bin";
+  const base = basename(fileName);
+  let sanitized = "";
+  for (const char of base) {
+    const code = char.charCodeAt(0);
+    sanitized += code < 32 || /[<>:"/\\|?*]/.test(char) ? "_" : char;
+  }
+  return sanitized.slice(0, 180) || "attachment.bin";
 }
 
-function resolveTaskPath(workRoot: string, input: string): string {
-  if (!input.trim()) throw new Error("Missing path.");
-  const resolvedRoot = resolve(workRoot || defaultTaskWorkRoot());
-  const full = resolve(resolvedRoot, input);
-  const compareRoot = process.platform === "win32" ? resolvedRoot.toLowerCase() : resolvedRoot;
-  const compareFull = process.platform === "win32" ? full.toLowerCase() : full;
-  if (compareFull !== compareRoot && !compareFull.startsWith(compareRoot + sep)) {
-    throw new Error(`Path is outside the workspace: ${input}`);
-  }
-  return full;
+async function resolveTaskPath(workRoot: string, input: string): Promise<string> {
+  return resolveWorkspacePathStrict(workRoot || defaultTaskWorkRoot(), input);
 }
 
 async function collectCheckpointCandidates(
@@ -3999,6 +4653,7 @@ async function collectCheckpointCandidates(
         return;
       }
       if (entry.name === "node_modules" || entry.name === "dist" || entry.name === "coverage" || entry.name === "data" || entry.name.startsWith(".")) continue;
+      if (entry.isSymbolicLink()) continue;
       const full = resolve(dir, entry.name);
       if (entry.isDirectory()) {
         await visit(full);
@@ -4132,6 +4787,16 @@ function findLastEventIndexByType(events: TaskEvent[], type: TaskEvent["type"]):
     if (events[index]?.type === type) return index;
   }
   return -1;
+}
+
+function findReasoningContentForToolCall(task: Pick<TaskDetail, "events">, toolCallId: string): string | undefined {
+  for (let index = task.events.length - 1; index >= 0; index -= 1) {
+    const event = task.events[index];
+    if (!event || String(event.payload["toolCallId"] ?? "") !== toolCallId) continue;
+    const reasoningContent = event.payload["reasoningContent"];
+    if (typeof reasoningContent === "string" && reasoningContent.length > 0) return reasoningContent;
+  }
+  return undefined;
 }
 
 function memoryDescriptor(scope: "user" | "project", folder?: TaskFolderRecord): { path: string; fileName: string; charLimit: number; entryCharLimit: number } {

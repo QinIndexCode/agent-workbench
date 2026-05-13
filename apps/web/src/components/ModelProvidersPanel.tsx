@@ -5,6 +5,7 @@ import { CONTEXT_QUICK_PRESETS, MODEL_PROVIDER_PRESETS, formatTokenAmount, parse
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { ProviderBrandIcon } from "./ProviderBrandIcon.js";
+import { SettingsEmptyStateCard, SettingsPrimer } from "./SettingsAssist.js";
 
 type ProviderDraft = {
   vendor: string;
@@ -24,6 +25,7 @@ export function ModelProvidersPanel({
   activeProviderId,
   currentModelLabel,
   language,
+  onOpenDocs,
   preferences,
   providers,
   onCreate,
@@ -34,12 +36,13 @@ export function ModelProvidersPanel({
   activeProviderId?: string | null;
   currentModelLabel?: string | null;
   language?: string | null;
+  onOpenDocs?: (() => void) | undefined;
   preferences?: UserPreferences | null;
   providers: ModelProviderRecord[];
-  onCreate: (input: ModelProviderCreateRequest) => Promise<void> | void;
+  onCreate: (input: ModelProviderCreateRequest) => Promise<ModelProviderRecord | void> | ModelProviderRecord | void;
   onDelete: (providerId: string) => Promise<void> | void;
   onPreference?: (patch: PreferencesPatch) => Promise<void> | void;
-  onUpdate: (providerId: string, input: ModelProviderPatchRequest) => Promise<void> | void;
+  onUpdate: (providerId: string, input: ModelProviderPatchRequest) => Promise<ModelProviderRecord | void> | ModelProviderRecord | void;
 }) {
   const text = getProviderCopy(language);
   const [editing, setEditing] = useState<ModelProviderRecord | null>(null);
@@ -78,6 +81,15 @@ export function ModelProvidersPanel({
           {text.add}
         </button>
       </header>
+
+      <SettingsPrimer
+        language={language}
+        summary={text.primer.summary}
+        focus={text.primer.focus}
+        impact={text.primer.impact}
+        nextStep={text.primer.nextStep}
+        onOpenDocs={onOpenDocs}
+      />
 
       <section className="activeModelSummary">
         <ProviderBrandIcon modelId={activeProvider?.defaultModelId ?? currentModelLabel ?? null} vendor={activeProvider?.vendor ?? null} />
@@ -124,7 +136,17 @@ export function ModelProvidersPanel({
       ) : null}
 
       <div className="providerRows">
-        {providers.length === 0 ? <p className="muted">{text.empty}</p> : null}
+        {providers.length === 0 ? (
+          <SettingsEmptyStateCard
+            language={language}
+            title={text.emptyTitle}
+            body={text.empty}
+            hint={text.emptyHint}
+            actionLabel={text.addFirstAction}
+            actionAriaLabel={text.addFirstAction}
+            onAction={() => startCreate()}
+          />
+        ) : null}
         {providers.map((provider) => (
           <article className={provider.id === activeProviderId ? "providerRow active" : "providerRow"} key={provider.id}>
             <ProviderBrandIcon modelId={provider.defaultModelId} vendor={provider.vendor} />
@@ -515,7 +537,10 @@ function getProviderCopy(language?: string | null) {
       zh
         ? `将删除 ${label}（${modelId}）的配置和本地保存的密钥。已创建的任务记录不会被删除。`
         : `This removes ${label} (${modelId}) and its locally stored key. Existing task history is kept.`,
-    empty: zh ? "还没有添加模型。" : "No models added yet.",
+    emptyTitle: zh ? "还没有模型配置" : "No model providers yet",
+    empty: zh ? "先添加一个可用模型，SCC 才能真正运行任务、生成标题和继续会话。" : "Add at least one working model provider so SCC can run tasks, generate titles, and continue threads.",
+    emptyHint: zh ? "如果你只是想先验证界面，仍建议先添加一个测试模型并保存密钥。" : "Even for a quick smoke test, it is better to save one real provider first.",
+    addFirstAction: zh ? "添加第一个模型" : "Add your first model",
     currentModel: zh ? "当前使用模型" : "Current model",
     notConfigured: zh ? "未配置" : "Not configured",
     addFirst: zh ? "添加一个模型后即可运行 Agent。" : "Add a model before running the agent.",
@@ -548,6 +573,12 @@ function getProviderCopy(language?: string | null) {
     availableForTasks: zh ? "允许任务使用" : "Available to tasks",
     availableForTasksHint: zh ? "关闭后保留配置和密钥，但不会被任务选择。" : "Keep this configuration and key, but exclude it from task selection.",
     cancel: zh ? "取消" : "Cancel",
-    save: zh ? "保存" : "Save"
+    save: zh ? "保存" : "Save",
+    primer: {
+      summary: zh ? "这里决定任务默认走哪个模型服务，以及主模型失败后可以回退到哪些备用模型。" : "Use this page to decide which model provider tasks use by default and which providers may act as fallbacks.",
+      focus: zh ? "添加真实可用的模型端点、保存密钥、切换当前模型来源。" : "Add real endpoints, keep API keys local, and choose the active provider for new work.",
+      impact: zh ? "会影响标题生成、任务运行、上下文窗口大小以及回退路由。" : "Changes affect title generation, task execution, context window sizing, and fallback routing.",
+      nextStep: zh ? "先保存一个能正常出结果的模型，再按需要添加备用模型。" : "Start with one provider that can answer reliably, then add fallbacks only when you need them."
+    }
   };
 }

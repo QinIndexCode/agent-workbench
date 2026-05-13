@@ -1,11 +1,12 @@
 import type { ApprovalDecision, TaskAttachment, TaskDetail, TaskTranscriptItem, UserPreferences } from "@scc/shared";
 import { AlertCircle, Menu, PanelRightClose, PanelRightOpen, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { getUiCopy } from "../i18n.js";
 import { Composer, type ComposerMode, type ComposerPermissionMode, type PermissionPreset } from "./Composer.js";
 import type { EngineStatus } from "./TaskList.js";
 import { Timeline } from "./Timeline.js";
 import type { ConversationSummary, PromptCacheStats, TaskRollbackPreview, TaskRollbackRequest, TaskRollbackResult } from "@scc/shared";
+import { describeSkillSource, describeSkillStatus, summarizeTaskSkills } from "./skillUx.js";
 
 export function TaskThread({
   task,
@@ -32,7 +33,6 @@ export function TaskThread({
   onRemoveAttachment,
   onFolderChange,
   onOpenConnect,
-  onOpenPermissionSettings,
   onOpenCustomPermissions,
   onRestoreCustomPermissions,
   hasCustomSnapshot,
@@ -75,7 +75,6 @@ export function TaskThread({
   onRemoveAttachment: (attachmentId: string) => Promise<void> | void;
   onFolderChange?: ((folderId: string) => void) | undefined;
   onOpenConnect: () => void;
-  onOpenPermissionSettings: () => void;
   onOpenCustomPermissions: () => void;
   onRestoreCustomPermissions: () => void;
   hasCustomSnapshot: boolean;
@@ -98,24 +97,14 @@ export function TaskThread({
   const mode = getComposerMode(task);
   const text = getUiCopy(language);
   const [draft, setDraft] = useState("");
-  const [elapsedMs, setElapsedMs] = useState(0);
+  const timelineTask = useMemo(() => {
+    if (!task) return null;
+    return transcriptEvents ? { ...task, events: transcriptEvents } : task;
+  }, [task, transcriptEvents]);
 
   useEffect(() => {
     setDraft("");
   }, [task?.id]);
-
-  useEffect(() => {
-    if (!busy || !busySince) {
-      setElapsedMs(0);
-      return;
-    }
-    const interval = window.setInterval(() => {
-      setElapsedMs(Math.round(performance.now() - busySince));
-    }, 200);
-    return () => window.clearInterval(interval);
-  }, [busy, busySince]);
-
-  const showCancelButton = busy && elapsedMs > 5000;
 
   return (
     <section className={task ? "thread" : "thread newTaskThread"} aria-label="Task thread">
@@ -134,7 +123,7 @@ export function TaskThread({
         </button>
       </header>
 
-      {error || titleIssue || showCancelButton ? (
+      {error || titleIssue || (busy && onCancelBusy) ? (
         <div className="threadAlerts">
           {error ? (
             <div className="errorLine" role="status">
@@ -142,12 +131,7 @@ export function TaskThread({
               <span>{formatUserFacingError(error, language)}</span>
             </div>
           ) : null}
-          {showCancelButton && onCancelBusy ? (
-            <button className="cancelBusyButton" type="button" onClick={onCancelBusy} title="取消当前请求">
-              <X size={14} />
-              {formatElapsed(elapsedMs)}
-            </button>
-          ) : null}
+          {busy && onCancelBusy ? <BusyCancelButton busySince={busySince} language={language ?? null} onCancel={onCancelBusy} /> : null}
           {titleIssue ? (
             <div className="titleIssue" role="status">
               <AlertCircle size={16} aria-hidden="true" />
@@ -170,7 +154,7 @@ export function TaskThread({
               <Timeline
                 language={language ?? null}
                 showThinking={preferences?.showThinking ?? true}
-                task={transcriptEvents ? { ...task, events: transcriptEvents } : task}
+                task={timelineTask}
                 onApprovalDecision={onApprovalDecision}
                 onRevertTurn={async (turnId) => {
                   if (!onRevertTurn) return;
@@ -207,7 +191,6 @@ export function TaskThread({
             onRemoveAttachment={onRemoveAttachment}
             onFolderChange={onFolderChange}
             onModelChange={onModelChange}
-            onOpenPermissionSettings={onOpenPermissionSettings}
             onOpenCustomPermissions={onOpenCustomPermissions}
             onRestoreCustomPermissions={onRestoreCustomPermissions}
             hasCustomSnapshot={hasCustomSnapshot}
@@ -231,6 +214,37 @@ export function TaskThread({
   );
 }
 
+const BusyCancelButton = memo(function BusyCancelButton({
+  busySince,
+  language,
+  onCancel
+}: {
+  busySince?: number | null | undefined;
+  language?: string | null | undefined;
+  onCancel: () => void;
+}) {
+  const [elapsedMs, setElapsedMs] = useState(0);
+
+  useEffect(() => {
+    if (!busySince) {
+      setElapsedMs(0);
+      return;
+    }
+    const tick = () => setElapsedMs(Math.round(performance.now() - busySince));
+    tick();
+    const interval = window.setInterval(tick, 200);
+    return () => window.clearInterval(interval);
+  }, [busySince]);
+
+  if (!busySince || elapsedMs <= 5000) return null;
+  return (
+    <button className="cancelBusyButton" type="button" onClick={onCancel} title={language === "zh-CN" ? "取消当前请求" : "Cancel current request"}>
+      <X size={14} />
+      {formatElapsed(elapsedMs)}
+    </button>
+  );
+});
+
 function TaskPlanPanel({
   language,
   task,
@@ -250,6 +264,7 @@ function TaskPlanPanel({
   const steps = derivePlanSteps(task);
   const checkpointCount = task.events.filter((event) => event.type === "task_checkpoint_created").length;
   const hasAudit = task.events.some((event) => event.type === "conversation_summary_created" || event.type === "context_overflow_recovered" || event.type === "token_usage_recorded" || event.type === "prompt_cache_stats" || event.type === "provider_fallback");
+  const skillAudit = summarizeTaskSkills(task);
   const [rollbackPreview, setRollbackPreview] = useState<TaskRollbackPreview | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [rollbackResult, setRollbackResult] = useState<TaskRollbackResult | null>(null);
@@ -276,7 +291,7 @@ function TaskPlanPanel({
       // Ignore storage failures; the panel remains usable for the current session.
     }
   }, [collapsed]);
-  if (steps.length === 0 && checkpointCount === 0 && !hasAudit) return null;
+  if (steps.length === 0 && checkpointCount === 0 && !hasAudit && skillAudit.loaded.length === 0 && skillAudit.skipped.length === 0) return null;
 
   return (
     <>
@@ -324,6 +339,7 @@ function TaskPlanPanel({
             ) : null}
           </div>
           {rollbackError && !rollbackPreview ? <p className="formError">{rollbackError}</p> : null}
+          {skillAudit.loaded.length > 0 || skillAudit.skipped.length > 0 ? <TaskSkillAuditView language={language ?? null} task={task} /> : null}
           {auditOpen ? <ContextAuditView language={language ?? null} summaries={summaries} cacheStats={cacheStats} task={task} /> : null}
           {rollbackPreview ? (
             <div className="rollbackModalBackdrop" role="presentation" onClick={(event) => { if (event.currentTarget === event.target) closeRollback(); }}>
@@ -428,6 +444,55 @@ function TaskPlanPanel({
     setRollbackError(null);
     setRollbackResult(null);
   }
+}
+
+function TaskSkillAuditView({ language, task }: { language?: string | null; task: TaskDetail }) {
+  const zh = language === "zh-CN";
+  const skillAudit = summarizeTaskSkills(task);
+  return (
+    <section className="contextAuditPanel" aria-label={zh ? "本任务 Skill" : "Skills in this task"}>
+      <details open>
+        <summary>{zh ? "本任务 Skill" : "Skills in this task"}</summary>
+        {skillAudit.loaded.length === 0 ? (
+          <p className="muted">{zh ? "当前没有已加载的 Skill。" : "No skill was loaded for this task yet."}</p>
+        ) : (
+          <div className="compactList">
+            {skillAudit.loaded.map((skill) => (
+              <article className="providerRow" key={skill.eventId}>
+                <div>
+                  <strong>{skill.title}</strong>
+                  <small>{describeSkillStatus(skill.status, language)} · {describeSkillSource(skill.source, language)}</small>
+                  <small>{skill.matchReason}</small>
+                  {skill.matchedSignals.length > 0 ? <small>{zh ? "命中信号" : "Matched signals"}: {skill.matchedSignals.join(", ")}</small> : null}
+                  {skill.requiredTools.length > 0 ? <small>{zh ? "工具序列" : "Tool sequence"}: {skill.requiredTools.join(", ")}</small> : null}
+                  {skill.requiredContext.length > 0 ? <small>{zh ? "需要上下文" : "Required context"}: {skill.requiredContext.join(", ")}</small> : null}
+                  {skill.readOnlySuggestion ? <small>{zh ? "仅提供只读建议，不要求写入。": "Loaded as a read-only suggestion, not a forced write flow."}</small> : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </details>
+      {skillAudit.skipped.length > 0 ? (
+        <details>
+          <summary>{zh ? "未加载的候选" : "Skipped candidates"}</summary>
+          <div className="compactList">
+            {skillAudit.skipped.map((skill) => (
+              <article className="providerRow" key={skill.eventId}>
+                <div>
+                  <strong>{skill.title ?? skill.requested}</strong>
+                  <small>{skill.reason}</small>
+                  {skill.status ? <small>{describeSkillStatus(skill.status, language)}</small> : null}
+                  {skill.source ? <small>{describeSkillSource(skill.source, language)}</small> : null}
+                  {skill.matchedSignals.length > 0 ? <small>{zh ? "相关信号" : "Related signals"}: {skill.matchedSignals.join(", ")}</small> : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        </details>
+      ) : null}
+    </section>
+  );
 }
 
 function safeBrowserLocalStorage(): Storage | null {

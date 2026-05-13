@@ -2,11 +2,14 @@ import type { ReflectionSession, SkillConflict, SkillDuplicateGroup } from "@scc
 import { AlertCircle, GitMerge, RefreshCcw, Sparkles, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { useState } from "react";
+import { SettingsPrimer } from "./SettingsAssist.js";
+import { describeReflectionNextStep, describeReflectionPhase, describeReflectionStatus } from "./skillUx.js";
 
 export function ReflectionPanel({
   conflicts,
   duplicates,
   language,
+  onOpenDocs,
   reflections,
   onRunReflection,
   onDeleteReflection,
@@ -15,6 +18,7 @@ export function ReflectionPanel({
   conflicts: SkillConflict[];
   duplicates: SkillDuplicateGroup[];
   language?: string | null;
+  onOpenDocs?: (() => void) | undefined;
   reflections: ReflectionSession[];
   onRunReflection?: () => Promise<void> | void;
   onDeleteReflection?: (id: string) => Promise<void> | void;
@@ -32,7 +36,7 @@ export function ReflectionPanel({
     <section className="reflectionPanel">
       <header className="libraryPanelHero">
         <div>
-          <h3>{text.title}</h3>
+          <h2>{text.title}</h2>
           <p>{text.subtitle}</p>
         </div>
         <div className="inlineActions">
@@ -48,6 +52,14 @@ export function ReflectionPanel({
           </button>
         </div>
       </header>
+      <SettingsPrimer
+        language={language}
+        summary={text.primer.summary}
+        focus={text.primer.focus}
+        impact={text.primer.impact}
+        nextStep={text.primer.nextStep}
+        onOpenDocs={onOpenDocs}
+      />
 
       <div className="reflectionSummaryGrid">
         <article>
@@ -78,13 +90,13 @@ export function ReflectionPanel({
         {safeReflections.slice(0, 12).map((reflection) => (
           <article className="reflectionRow" key={reflection.id}>
             <div>
-              <strong>{reflection.progress.phase}</strong>
-              <p>{reflection.progress.nextStep || text.noNextStep}</p>
+              <strong>{describeReflectionPhase(reflection.progress.phase, language)}</strong>
+              <p>{reflection.progress.nextStep ? describeReflectionNextStep(reflection.progress.nextStep, language) : text.noNextStep}</p>
             </div>
-            <span>{reflection.status}</span>
+            <span>{describeReflectionStatus(reflection.status, language)}</span>
             <small>{new Date(reflection.createdAt).toLocaleString()}</small>
             {onDeleteReflection ? (
-              <button aria-label={`${text.delete} ${reflection.progress.phase}`} className="iconButton dangerIcon" type="button" onClick={() => setDeleteTarget(reflection)}>
+              <button aria-label={`${text.delete} ${describeReflectionPhase(reflection.progress.phase, language)}`} className="iconButton dangerIcon" type="button" onClick={() => setDeleteTarget(reflection)}>
                 <Trash2 size={14} />
               </button>
             ) : null}
@@ -104,7 +116,7 @@ export function ReflectionPanel({
           setDeleteTarget(null);
         }}
       >
-        <p>{deleteTarget ? text.deleteBody(deleteTarget.progress.phase) : ""}</p>
+        <p>{deleteTarget ? text.deleteBody(describeReflectionPhase(deleteTarget.progress.phase, language)) : ""}</p>
       </ConfirmDialog>
       <ConfirmDialog
         open={clearOpen}
@@ -142,6 +154,12 @@ function getReflectionCopy(language?: string | null) {
     conflicts: zh ? "个冲突" : "conflicts",
     emptyTitle: zh ? "还没有反思记录" : "No reflections yet",
     emptyBody: zh ? "完成更多任务后，SCC 会把稳定模式整理为候选建议。" : "After more completed tasks, SCC will summarize stable patterns as suggestions.",
-    noNextStep: zh ? "暂无下一步。" : "No next step."
+    noNextStep: zh ? "暂无下一步。" : "No next step.",
+    primer: {
+      summary: zh ? "反思记录解释系统如何从已完成任务中提取模式、发现重复，以及为什么某些经验还不能晋升。" : "Reflection records explain how the system extracts patterns from completed tasks, finds duplicates, and decides why some experiences still cannot be promoted.",
+      focus: zh ? "优先看阶段说明、下一步和重复/冲突数量，不需要直接阅读内部 memory 原文。" : "Look at the stage summary, next step, and duplicate or conflict counts first. You should not need raw internal memory text here.",
+      impact: zh ? "会影响候选 Skill 何时出现、重复技能是否会被合并，以及 Curator 为什么给出当前建议。" : "Changes affect when candidate skills appear, whether duplicate skills should be merged, and why Curator presents its current recommendations.",
+      nextStep: zh ? "如果某条反思长时间停在等待更多样本，说明当前任务还不足以形成稳定可复用流程。" : "If a reflection stays in a wait-for-more-evidence stage for a long time, the recent tasks still are not stable enough to form a reusable workflow."
+    }
   };
 }

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup, TaskAttachment, UserPreferences } from "@scc/shared";
 import { type AppRoute, useAppRoute } from "./app-router.js";
 import { api } from "./api.js";
@@ -9,6 +9,7 @@ import { TaskThread } from "./components/TaskThread.js";
 import type { ComposerMode, ComposerPermissionMode, PermissionPreset } from "./components/Composer.js";
 import type { LibrarySection } from "./components/LibraryView.js";
 import type { SettingsSection } from "./components/SettingsView.js";
+import type { DocsSection } from "./docs/index.js";
 import { useWorkbenchData } from "./useWorkbenchData.js";
 
 const DocsView = lazy(() => import("./components/DocsView.js").then((module) => ({ default: module.DocsView })));
@@ -32,10 +33,29 @@ const readOnlyRiskCategories: RiskCategory[] = ["host_observation", "workspace_r
 const defaultAutoApprovalRiskCategories: UserPreferences["autoApproveRiskCategories"] = ["host_observation", "workspace_read", "network"];
 const nonDestructiveRiskCategories: UserPreferences["autoApproveRiskCategories"] = ["host_observation", "workspace_read", "workspace_write", "shell", "network"];
 type PermissionMode = UserPreferences["permissionMode"];
+const settingsDocsSections: Record<SettingsSection, DocsSection> = {
+  providers: "providers",
+  permissions: "permissions",
+  mcp: "mcp",
+  integrations: "integrations",
+  scheduled: "scheduled",
+  search: "search",
+  preferences: "preferences"
+};
+const libraryDocsSections: Record<LibrarySection, DocsSection> = {
+  skills: "skills",
+  curator: "curator",
+  knowledge: "knowledge",
+  memory: "memory",
+  reflections: "reflections"
+};
 
 export function App() {
-  const data = useWorkbenchData();
   const [route, navigateRoute] = useAppRoute();
+  const activeView = route.view;
+  const settingsSection: SettingsSection = route.view === "settings" ? route.section : "providers";
+  const librarySection: LibrarySection = route.view === "library" ? route.section : "skills";
+  const data = useWorkbenchData({ activeView, librarySection, settingsSection });
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
   const [previousNonDocsRoute, setPreviousNonDocsRoute] = useState<AppRoute>({ view: "tasks" });
   const [supportOpen, setSupportOpen] = useState(false);
@@ -56,34 +76,50 @@ export function App() {
   const permissionMutationRef = useRef<Promise<void> | null>(null);
   const language = data.preferences?.language ?? "zh-CN";
   const theme = data.preferences?.theme ?? "dark";
-  const activeView = route.view;
   const activeTask = route.view === "tasks" && route.newTask ? null : data.selected;
   const activeTranscript = route.view === "tasks" && route.newTask ? [] : data.selectedTranscript;
   const selectedId = route.view === "tasks" && route.newTask ? null : data.selectedId;
-  const settingsSection: SettingsSection = route.view === "settings" ? route.section : "providers";
-  const librarySection: LibrarySection = route.view === "library" ? route.section : "skills";
   const syncFresh = data.lastSuccessfulSyncAt === null || Date.now() - data.lastSuccessfulSyncAt < 35_000;
   const engineStatus = data.backendHealthy === false || (data.realtimeStale && !syncFresh) ? "attention" : data.realtimeConnected ? "streaming" : "running";
-  const activeProvider = data.modelProviders.find((provider) => provider.id === data.preferences?.activeModelProviderId) ?? data.modelProviders.find((provider) => provider.enabled);
-  const activeModel = activeProvider?.models.find((model) => model.id === activeProvider.defaultModelId) ?? activeProvider?.models[0];
-  const modelLabel = activeProvider && activeModel ? (activeModel.label || activeModel.id) : "not configured";
-  const permissionPreset = optimisticPermissionPreset ?? getPermissionPreset(data.permissions);
+  const activeProvider = useMemo(
+    () => data.modelProviders.find((provider) => provider.id === data.preferences?.activeModelProviderId) ?? data.modelProviders.find((provider) => provider.enabled) ?? null,
+    [data.modelProviders, data.preferences?.activeModelProviderId]
+  );
+  const activeModel = useMemo(
+    () => activeProvider?.models.find((model) => model.id === activeProvider.defaultModelId) ?? activeProvider?.models[0] ?? null,
+    [activeProvider]
+  );
+  const modelLabel = activeProvider && activeModel ? (activeModel.label || activeModel.id) : data.preferences?.defaultModel || "not configured";
+  const permissionPreset = optimisticPermissionPreset ?? getPermissionPreset(data.permissions, data.preferences);
   const permissionScopeLabel = formatPermissionPreset(permissionPreset, language);
   const hasCustomSnapshot = Boolean(data.preferences?.customPermissionSnapshot?.length);
-  const modelOptions = activeProvider
-    ? activeProvider.models.map((model) => ({
-      icon: <ProviderBrandIcon className="providerBadgeInline" modelId={model.id} vendor={activeProvider.vendor} />,
-      label: model.label || model.id,
-      value: model.id
-    }))
-    : [];
-  const taskFolderOptions = data.taskFolders.length > 0
-    ? data.taskFolders.map((folder) => ({
-        label: folder.id === "default" || folder.isDefault ? getDefaultFolderLabel(language) : folder.name,
-        value: folder.id,
-        ...(folder.rootPath ? { description: folder.rootPath } : {})
-      }))
-    : [{ label: language === "zh-CN" ? "默认文件夹" : "Default", value: "default" }];
+  const modelOptions = useMemo(
+    () => {
+      if (activeProvider) {
+        return activeProvider.models.map((model) => ({
+          icon: <ProviderBrandIcon className="providerBadgeInline" modelId={model.id} vendor={activeProvider.vendor} />,
+          label: model.label || model.id,
+          value: model.id
+        }));
+      }
+      if (data.preferences?.defaultModel) {
+        return [{ label: data.preferences.defaultModel, value: data.preferences.defaultModel }];
+      }
+      return [];
+    },
+    [activeProvider, data.preferences?.defaultModel]
+  );
+  const taskFolderOptions = useMemo(
+    () =>
+      data.taskFolders.length > 0
+        ? data.taskFolders.map((folder) => ({
+            label: folder.id === "default" || folder.isDefault ? getDefaultFolderLabel(language) : folder.name,
+            value: folder.id,
+            ...(folder.rootPath ? { description: folder.rootPath } : {})
+          }))
+        : [{ label: language === "zh-CN" ? "默认文件夹" : "Default", value: "default" }],
+    [data.taskFolders, language]
+  );
   const composerFolderValue = activeTaskFolderId;
 
   useEffect(() => {
@@ -231,9 +267,6 @@ export function App() {
           onOpenConnect={() => {
             navigateRoute({ view: "settings", section: "providers" });
           }}
-          onOpenPermissionSettings={() => {
-            navigateRoute({ view: "settings", section: "permissions" });
-          }}
           onOpenCustomPermissions={() => {
             setSettingsStartCustom(true);
             navigateRoute({ view: "settings", section: "permissions" });
@@ -285,6 +318,7 @@ export function App() {
                 duplicates={data.skillDuplicates}
                 conflicts={data.skillConflicts}
                 reflections={data.reflections}
+                onOpenDocs={() => openDocs(libraryDocsSections.skills)}
                 onRunReflection={() => void data.runSideAction(() => api.runReflection())}
                 onCreate={(input) => data.runSideAction(() => api.createSkill(input))}
                 onUpdate={(skillId, input) => data.runSideAction(() => api.patchSkill(skillId, input))}
@@ -299,6 +333,7 @@ export function App() {
                 items={data.skillCurator}
                 language={language}
                 reflections={data.reflections}
+                onOpenDocs={() => openDocs(libraryDocsSections.curator)}
                 onRunReflection={() => void data.runSideAction(() => api.runReflection())}
                 onDeleteReflection={(id) => data.runSideAction(() => api.deleteReflection(id))}
                 onActivateSkill={(skillId) => data.runSideAction(() => api.patchSkill(skillId, { status: "active" }))}
@@ -311,6 +346,7 @@ export function App() {
                 query={libraryQuery}
                 language={language}
                 items={data.knowledgeItems}
+                onOpenDocs={() => openDocs(libraryDocsSections.knowledge)}
                 onCreate={(input) => data.runSideAction(() => api.createKnowledgeItem(input))}
                 onDelete={(id) => data.runSideAction(() => api.deleteKnowledgeItem(id))}
                 onUpdate={(id, input) => data.runSideAction(() => api.patchKnowledgeItem(id, input))}
@@ -334,6 +370,7 @@ export function App() {
                 language={language}
                 memories={data.projectMemories}
                 query={libraryQuery}
+                onOpenDocs={() => openDocs(libraryDocsSections.memory)}
                 onLoadUserProfile={() => api.getUserProfile()}
                 onSaveUserProfile={(content) => api.updateUserProfile({ content })}
                 onLoadProjectMemory={(folderId) => api.getProjectMemory(folderId)}
@@ -350,6 +387,7 @@ export function App() {
                 duplicates={data.skillDuplicates}
                 language={language}
                 reflections={data.reflections}
+                onOpenDocs={() => openDocs(libraryDocsSections.reflections)}
                 onRunReflection={() => void data.runSideAction(() => api.runReflection())}
                 onDeleteReflection={(id) => data.runSideAction(() => api.deleteReflection(id))}
                 onClearReflections={() => data.runSideAction(() => api.clearReflections())}
@@ -358,7 +396,12 @@ export function App() {
           }}
         </LibraryView>
       ) : activeView === "docs" ? (
-        <DocsView language={language} onBack={() => navigateRoute(previousNonDocsRoute)} />
+        <DocsView
+          activeSection={route.view === "docs" ? route.section : "overview"}
+          language={language}
+          onBack={() => navigateRoute(previousNonDocsRoute)}
+          onSection={(section) => navigateRoute({ view: "docs", section })}
+        />
       ) : (
         <SettingsView
           activeSection={settingsSection}
@@ -372,17 +415,19 @@ export function App() {
                 activeProviderId={activeProvider?.id ?? null}
                 currentModelLabel={modelLabel === "not configured" ? null : modelLabel}
                 language={language}
+                onOpenDocs={() => openDocs(settingsDocsSections.providers)}
                 preferences={data.preferences}
                 providers={data.modelProviders}
-                onCreate={(input) => data.runSideAction(() => api.createModelProvider(input))}
+                onCreate={(input) => data.runSideActionResult(() => api.createModelProvider(input), { rethrow: true })}
                 onDelete={(providerId) => data.runSideAction(() => api.deleteModelProvider(providerId))}
                 onPreference={(patch) => data.runSideAction(() => api.updatePreferences(patch))}
-                onUpdate={(providerId, input) => data.runSideAction(() => api.patchModelProvider(providerId, input))}
+                onUpdate={(providerId, input) => data.runSideActionResult(() => api.patchModelProvider(providerId, input), { rethrow: true })}
               />
             ),
             permissions: (
               <PermissionsPanel
                 language={language}
+                onOpenDocs={() => openDocs(settingsDocsSections.permissions)}
                 permissions={data.permissions}
                 preferences={data.preferences}
                 startCustom={settingsStartCustom}
@@ -396,10 +441,11 @@ export function App() {
             mcp: (
               <McpPanel
                 language={language}
+                onOpenDocs={() => openDocs(settingsDocsSections.mcp)}
                 servers={data.mcpServers}
                 tools={data.mcpTools}
-                onCreate={(input) => data.runSideAction(() => api.createMcpServer(input))}
-                onUpdate={(serverId, input) => data.runSideAction(() => api.patchMcpServer(serverId, input))}
+                onCreate={(input) => data.runSideActionResult(() => api.createMcpServer(input), { rethrow: true })}
+                onUpdate={(serverId, input) => data.runSideActionResult(() => api.patchMcpServer(serverId, input), { rethrow: true })}
                 onConnect={(serverId) => data.runSideAction(() => api.connectMcpServer(serverId))}
                 onDisconnect={(serverId) => data.runSideAction(() => api.disconnectMcpServer(serverId))}
                 onDelete={(serverId) => data.runSideAction(() => api.deleteMcpServer(serverId))}
@@ -410,35 +456,39 @@ export function App() {
                 folders={data.taskFolders}
                 integrations={data.integrations}
                 language={language}
+                onOpenDocs={() => openDocs(settingsDocsSections.integrations)}
                 onConnect={(id) => data.runSideAction(() => api.connectIntegration(id))}
-                onCreate={(input) => data.runSideAction(() => api.createIntegration(input))}
+                onCreate={(input) => data.runSideActionResult(() => api.createIntegration(input), { rethrow: true })}
                 onDelete={(id) => data.runSideAction(() => api.deleteIntegration(id))}
                 onDisconnect={(id) => data.runSideAction(() => api.disconnectIntegration(id))}
-                onUpdate={(id, input) => data.runSideAction(() => api.patchIntegration(id, input))}
+                onUpdate={(id, input) => data.runSideActionResult(() => api.patchIntegration(id, input), { rethrow: true })}
               />
             ),
             scheduled: (
               <ScheduledTasksPanel
                 folders={data.taskFolders}
                 language={language}
+                onOpenDocs={() => openDocs(settingsDocsSections.scheduled)}
                 scheduledTasks={data.scheduledTasks}
-                onCreate={(input) => data.runSideAction(() => api.createScheduledTask(input))}
+                onCreate={(input) => data.runSideActionResult(() => api.createScheduledTask(input), { rethrow: true })}
                 onDelete={(taskId) => data.runSideAction(() => api.deleteScheduledTask(taskId))}
-                onUpdate={(taskId, input) => data.runSideAction(() => api.patchScheduledTask(taskId, input))}
+                onUpdate={(taskId, input) => data.runSideActionResult(() => api.patchScheduledTask(taskId, input), { rethrow: true })}
               />
             ),
             search: (
               <WebSearchPanel
                 language={language}
+                onOpenDocs={() => openDocs(settingsDocsSections.search)}
                 providers={data.webSearchProviders}
-                onCreate={(input) => data.runSideAction(() => api.createWebSearchProvider(input))}
+                onCreate={(input) => data.runSideActionResult(() => api.createWebSearchProvider(input), { rethrow: true })}
                 onDelete={(providerId) => data.runSideAction(() => api.deleteWebSearchProvider(providerId))}
-                onUpdate={(providerId, input) => data.runSideAction(() => api.patchWebSearchProvider(providerId, input))}
+                onUpdate={(providerId, input) => data.runSideActionResult(() => api.patchWebSearchProvider(providerId, input), { rethrow: true })}
               />
             ),
             preferences: (
               <PermissionsPanel
                 language={language}
+                onOpenDocs={() => openDocs(settingsDocsSections.preferences)}
                 permissions={data.permissions}
                 preferences={data.preferences}
                 preferencesOnly
@@ -463,9 +513,9 @@ export function App() {
     </main>
   );
 
-  function openDocs() {
+  function openDocs(section: DocsSection = "overview") {
     if (activeView !== "docs") setPreviousNonDocsRoute(route);
-    navigateRoute({ view: "docs" });
+    navigateRoute({ view: "docs", section });
     setTaskDrawerOpen(false);
   }
 
@@ -588,7 +638,9 @@ export function App() {
     setPermissionBusy(true);
     const previousPreset = permissionPreset;
     const mutation = (async () => {
-      const granted = new Set(data.permissions.map((permission) => permission.riskCategory));
+      await data.loadPermissions();
+      const grants = data.permissions.length > 0 ? data.permissions : await api.listGlobalPermissions();
+      const granted = new Set(grants.map((permission) => permission.riskCategory));
 
       if (previousPreset === "custom") {
         const snapshot = allRiskCategories.filter((risk) => granted.has(risk));
@@ -654,13 +706,15 @@ export function App() {
 
   function updateModelSelection(modelId: string) {
     void data.runSideAction(async () => {
-      if (activeProvider) {
-        const model = activeProvider.models.find((item) => item.id === modelId);
-        await api.patchModelProvider(activeProvider.id, { defaultModelId: modelId, makeActive: true });
+      const providers = data.modelProviders.length > 0 ? data.modelProviders : await api.listModelProviders();
+      const provider = providers.find((item) => item.id === data.preferences?.activeModelProviderId) ?? providers.find((item) => item.enabled);
+      if (provider) {
+        const model = provider.models.find((item) => item.id === modelId);
+        await api.patchModelProvider(provider.id, { defaultModelId: modelId, makeActive: true });
         await api.updatePreferences({
-          activeModelProviderId: activeProvider.id,
+          activeModelProviderId: provider.id,
           defaultModel: modelId,
-          providerBaseUrl: activeProvider.baseUrl,
+          providerBaseUrl: provider.baseUrl,
           ...(model ? { maxTokensPerRequest: model.contextWindow } : {})
         });
         return;
@@ -836,7 +890,13 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-function getPermissionPreset(permissions: Array<{ riskCategory: RiskCategory }>): ComposerPermissionMode {
+function getPermissionPreset(permissions: Array<{ riskCategory: RiskCategory }>, preferences?: UserPreferences | null): ComposerPermissionMode {
+  if (permissions.length === 0 && preferences) {
+    if (preferences.permissionMode === "full_access") return "all";
+    if (preferences.permissionMode === "read_only") return "read_only";
+    if (preferences.permissionMode === "custom") return "custom";
+    return "ask";
+  }
   const granted = new Set(permissions.map((permission) => permission.riskCategory));
   if (allRiskCategories.every((risk) => granted.has(risk))) return "all";
   if (readOnlyRiskCategories.every((risk) => granted.has(risk)) && allRiskCategories.every((risk) => readOnlyRiskCategories.includes(risk) || !granted.has(risk))) {

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { BrainCircuit, BookOpen, Database, Menu, Search, Sparkles, WandSparkles } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
+import "../styles/settings.css";
 import { PanelBoundary } from "./PanelBoundary.js";
 
 export type LibrarySection = "skills" | "curator" | "knowledge" | "memory" | "reflections";

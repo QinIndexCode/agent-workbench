@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { TaskDeleteRequest, TaskDetail } from "@scc/shared";
 import { Menu, Search, Trash2 } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
+import "../styles/settings.css";
 import { AccordionSelect } from "./AccordionSelect.js";
 
 export function HistoryPage({

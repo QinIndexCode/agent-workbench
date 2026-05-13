@@ -50,6 +50,9 @@ const MAX_TOOL_OUTPUT_TAIL = 2000;
 const MAX_READ_FILE_CONTENT = 24000;
 const MAX_READ_FILE_HEAD = 16000;
 const MAX_READ_FILE_TAIL = 6000;
+const MAX_READ_FILE_FULL_LINES = 360;
+const TRACKED_FILE_HEAD_LINES = 140;
+const TRACKED_FILE_TAIL_LINES = 80;
 const MAX_ATTACHMENT_PREVIEW = 1200;
 const PROTECTED_BUDGET_RATIO = 0.5;
 const MIN_PROTECTED_BUDGET = 96;
@@ -79,14 +82,15 @@ export interface AssembledContext {
 export type CanonicalModelMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: string; eventId?: string }
-  | { role: "assistant"; content?: string; toolCalls?: ToolCall[]; eventId?: string }
-  | { role: "tool"; toolCallId: string; toolName: string; content: string; eventId?: string };
+  | { role: "assistant"; content?: string; toolCalls?: ToolCall[]; reasoningContent?: string; eventId?: string }
+  | { role: "tool"; toolCallId: string; toolName: string; content: string; reasoningContent?: string; eventId?: string };
 
 export interface LoadedSkillSession {
   loadedSkills: Set<string>;
-  unavailableSkills: Set<string>;
+  unavailableSkills: Map<string, string>;
   loadedSkillBodies: SkillRecord[];
   pendingLoadedSkills: SkillRecord[];
+  pendingSkippedSkills: Array<{ requested: string; reason: string; skill?: SkillRecord | undefined }>;
   loadCount: number;
 }
 
@@ -258,14 +262,24 @@ export class ContextAssembler {
 
   async loadSkill(taskId: string, skillId: string): Promise<SkillRecord | undefined> {
     const session = this.sessionFor(taskId);
-    if (session.loadedSkills.has(skillId) || session.loadCount >= 3) return undefined;
+    if (session.loadedSkills.has(skillId)) {
+      this.recordSkippedSkill(session, skillId, "This skill was already loaded earlier in the current task.");
+      return undefined;
+    }
+    if (session.loadCount >= 3) {
+      this.recordSkippedSkill(session, skillId, "Skill load limit reached for this task. Use direct tools or current evidence instead.");
+      return undefined;
+    }
     const skill = await this.resolveSkillReference(skillId);
     if (!skill || skill.status !== "active") {
-      if (skillId) session.unavailableSkills.add(skillId);
+      const reason = !skill
+        ? "No active skill matched the requested ID or title."
+        : `The matched skill is ${skill.status} and cannot be loaded into a task automatically.`;
+      this.recordSkippedSkill(session, skillId, reason, skill);
       session.loadCount += 1;
       return undefined;
     }
-    session.loadedSkills.add(skillId);
+    session.loadedSkills.add(skill.id);
     session.loadedSkillBodies.push(skill);
     session.pendingLoadedSkills.push(skill);
     session.loadCount += 1;
@@ -282,6 +296,14 @@ export class ContextAssembler {
     if (!session) return [];
     const pending = [...session.pendingLoadedSkills];
     session.pendingLoadedSkills = [];
+    return pending;
+  }
+
+  drainSkippedSkillEvents(taskId: string): Array<{ requested: string; reason: string; skill?: SkillRecord | undefined }> {
+    const session = this.skillSessions.get(taskId);
+    if (!session) return [];
+    const pending = [...session.pendingSkippedSkills];
+    session.pendingSkippedSkills = [];
     return pending;
   }
 
@@ -302,7 +324,11 @@ export class ContextAssembler {
     ].join("\n\n") : "";
     const unavailable =
       session.unavailableSkills.size > 0
-        ? `## Unavailable Skills\nDo not call use_skill for these IDs again in this task; choose direct tools or answer from evidence instead.\n${[...session.unavailableSkills].join(", ")}`
+        ? [
+            "## Unavailable Skills",
+            "Do not call use_skill for these IDs again in this task; choose direct tools or answer from evidence instead.",
+            ...[...session.unavailableSkills.entries()].map(([skillId, reason]) => `- ${skillId}: ${reason}`)
+          ].join("\n")
         : "";
     return [loaded, unavailable].filter(Boolean).join("\n\n");
   }
@@ -350,6 +376,7 @@ export class ContextAssembler {
       "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
       "If you need a file but are unsure it exists, list or search first instead of guessing paths such as README.md.",
       "Tool distinction: search_files searches the live workspace and returns path/line snippets only; read_file returns live file content; knowledge_search searches the saved Knowledge library and is not proof of current files.",
+      "Do not use run_command for workspace file-body reads or code search when list_files, search_files, or read_file can answer the question more directly and with less context cost.",
       "When reporting a debug fix, base the root cause and final summary only on observed tool output and source code; do not speculate about code you did not see.",
       "After debugging or editing code, the final answer should include the observed failure, exact root cause expression or file location when known, changed files, and verification result.",
       "Keep normal answers concise, calm, and product-like.",
@@ -367,11 +394,20 @@ export class ContextAssembler {
   private buildTargetModeLayer(task: TaskDetail): string {
     if (task.runMode !== "target") return "";
     const limits = task.targetLimits;
+    const verificationCommands = extractExplicitVerificationCommands(task);
+    const verificationStatus = describeTargetVerificationStatus(task, verificationCommands);
     return [
       "## Target Mode",
       "The user explicitly started /target. Work toward complete verified goal satisfaction, not a merely plausible answer.",
       "First establish acceptance criteria if they are not already clear. Continue with evidence-driven exploration, implementation, and verification until the criteria are met or the system pauses on limits or user interruption.",
       "If verification fails, use the failure as evidence for the next step. If blocked by permissions or ambiguity, ask the user with ask_user.",
+      verificationCommands.length > 0
+        ? `Explicit user-named verification commands: ${verificationCommands.map((command) => `\`${command}\``).join(", ")}.`
+        : "",
+      verificationCommands.length > 0
+        ? "If you edit or roll back files, rerun every listed verification command successfully after the latest recorded file change before completing. Do not substitute a narrower check unless the user explicitly allows it."
+        : "",
+      verificationStatus,
       limits ? `Run limits: ${limits.maxModelTurns} model turns, ${limits.maxToolCalls} tool results, ${Math.round(limits.maxWallTimeMs / 60000)} minutes.` : ""
     ].filter(Boolean).join("\n");
   }
@@ -566,13 +602,24 @@ export class ContextAssembler {
     if (existing) return existing;
     const created: LoadedSkillSession = {
       loadedSkills: new Set<string>(),
-      unavailableSkills: new Set<string>(),
+      unavailableSkills: new Map<string, string>(),
       loadedSkillBodies: [],
       pendingLoadedSkills: [],
+      pendingSkippedSkills: [],
       loadCount: 0
     };
     this.skillSessions.set(taskId, created);
     return created;
+  }
+
+  private recordSkippedSkill(
+    session: LoadedSkillSession,
+    requested: string,
+    reason: string,
+    skill?: SkillRecord | undefined
+  ): void {
+    if (requested) session.unavailableSkills.set(requested, reason);
+    session.pendingSkippedSkills.push({ requested, reason, ...(skill ? { skill } : {}) });
   }
 }
 
@@ -604,10 +651,17 @@ export class FileStateTracker {
       const path = String(parsed["path"] ?? "");
       const content = String(parsed["content"] ?? "");
       if (path && content) {
+        const totalLines = typeof parsed["totalLines"] === "number" ? parsed["totalLines"] : undefined;
+        const mode = typeof parsed["mode"] === "string" ? parsed["mode"] : undefined;
+        const normalized = normalizeTrackedReadFileContent(content, {
+          partial: Boolean(parsed["partial"]),
+          ...(totalLines !== undefined ? { totalLines } : {}),
+          ...(mode ? { mode } : {})
+        });
         const metadata: Partial<Pick<FileState, "totalChars" | "totalLines" | "mode">> = { totalChars: content.length };
-        if (typeof parsed["totalLines"] === "number") metadata.totalLines = parsed["totalLines"];
-        if (typeof parsed["mode"] === "string") metadata.mode = parsed["mode"];
-        this.set(path, content, event.createdAt, Boolean(parsed["partial"]), {
+        if (totalLines !== undefined) metadata.totalLines = totalLines;
+        if (mode) metadata.mode = mode;
+        this.set(path, normalized.content, event.createdAt, normalized.isPartial, {
           ...metadata
         });
       }
@@ -737,14 +791,20 @@ function buildCanonicalHistoryMessages(
   const startIndex = options.afterEventId ? events.findIndex((event) => event.id === options.afterEventId) + 1 : 0;
   const visibleEvents = startIndex > 0 ? events.slice(startIndex) : events;
   const messages: CanonicalModelMessage[] = [];
-  let pendingToolCalls: ToolCall[] = [];
+  let pendingToolCalls: Array<{ call: ToolCall; reasoningContent?: string; eventId?: string }> = [];
   const emittedToolCallIds = new Set<string>();
 
   const flushToolCalls = (): void => {
     if (pendingToolCalls.length === 0) return;
-    const eventId = pendingToolCalls[0]?.id;
-    messages.push({ role: "assistant", toolCalls: pendingToolCalls, ...(eventId ? { eventId } : {}) });
-    for (const call of pendingToolCalls) emittedToolCallIds.add(call.id);
+    const eventId = pendingToolCalls[0]?.eventId;
+    const reasoningContent = pendingToolCalls.find((pending) => pending.reasoningContent)?.reasoningContent;
+    messages.push({
+      role: "assistant",
+      toolCalls: pendingToolCalls.map((pending) => pending.call),
+      ...(reasoningContent ? { reasoningContent } : {}),
+      ...(eventId ? { eventId } : {})
+    });
+    for (const pending of pendingToolCalls) emittedToolCallIds.add(pending.call.id);
     pendingToolCalls = [];
   };
 
@@ -763,20 +823,35 @@ function buildCanonicalHistoryMessages(
         break;
       case "assistant_message":
         discardPendingToolCalls();
-        messages.push({ role: "assistant", content: event.summary, eventId: event.id });
+        {
+          const reasoningContent = reasoningContentFromEvent(event);
+        messages.push({
+          role: "assistant",
+          content: event.summary,
+          ...(reasoningContent ? { reasoningContent } : {}),
+          eventId: event.id
+        });
+        }
         break;
       case "tool_requested": {
         const call = toolCallFromRequestedEvent(event);
-        if (call) pendingToolCalls.push(call);
+        const reasoningContent = reasoningContentFromEvent(event);
+        if (call) pendingToolCalls.push({ call, ...(reasoningContent ? { reasoningContent } : {}), eventId: event.id });
         break;
       }
       case "tool_result": {
         const call = toolCallFromResultEvent(event);
+        const reasoningContent = reasoningContentFromEvent(event);
         if (!emittedToolCallIds.has(call.id)) {
-          const hasPendingCall = pendingToolCalls.some((pending) => pending.id === call.id);
+          const hasPendingCall = pendingToolCalls.some((pending) => pending.call.id === call.id);
           if (hasPendingCall) flushToolCalls();
           else {
-            messages.push({ role: "assistant", toolCalls: [call], eventId: event.id });
+            messages.push({
+              role: "assistant",
+              toolCalls: [call],
+              ...(reasoningContent ? { reasoningContent } : {}),
+              eventId: event.id
+            });
             emittedToolCallIds.add(call.id);
           }
         }
@@ -785,6 +860,7 @@ function buildCanonicalHistoryMessages(
           toolCallId: call.id,
           toolName: call.toolName,
           content: toolResultContentForRole(event, options.tracker),
+          ...(reasoningContent ? { reasoningContent } : {}),
           eventId: event.id
         });
         break;
@@ -816,6 +892,11 @@ function toolCallFromResultEvent(event: TaskEvent): ToolCall {
   const toolCallId = String(event.payload["toolCallId"] ?? event.payload["id"] ?? createId("tool_call")).trim();
   const toolName = String(event.payload["toolName"] ?? "tool").trim() || "tool";
   return { id: toolCallId || createId("tool_call"), toolName, args: recordFromUnknown(event.payload["args"]) };
+}
+
+function reasoningContentFromEvent(event: TaskEvent): string | undefined {
+  const value = event.payload["reasoningContent"];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function toolResultContentForRole(event: TaskEvent, tracker?: FileStateTracker): string {
@@ -871,7 +952,12 @@ function repairOrphanToolMessages(messages: CanonicalModelMessage[]): CanonicalM
     }
     if (message.role === "tool" && !knownToolCalls.has(message.toolCallId)) {
       const call = { id: message.toolCallId, toolName: message.toolName, args: {} };
-      repaired.push({ role: "assistant", toolCalls: [call], ...(message.eventId ? { eventId: message.eventId } : {}) });
+      repaired.push({
+        role: "assistant",
+        toolCalls: [call],
+        ...(message.reasoningContent ? { reasoningContent: message.reasoningContent } : {}),
+        ...(message.eventId ? { eventId: message.eventId } : {})
+      });
       knownToolCalls.add(message.toolCallId);
     }
     repaired.push(message);
@@ -1010,6 +1096,105 @@ function latestUserEvent(task: TaskDetail): TaskEvent | undefined {
   return [...task.events].reverse().find((event) =>
     (event.type === "user_message" || event.type === "guidance_pending" || event.type === "guidance_consumed") && !event.reverted
   );
+}
+
+function extractExplicitVerificationCommands(task: TaskDetail): string[] {
+  const commands = new Set<string>();
+  for (const event of task.events) {
+    if (event.reverted) continue;
+    if (event.type !== "user_message" && event.type !== "guidance_pending" && event.type !== "guidance_consumed") continue;
+    for (const command of extractCommandsFromText(event.summary)) {
+      commands.add(command);
+      if (commands.size >= 4) return [...commands];
+    }
+  }
+  return [...commands];
+}
+
+function extractCommandsFromText(text: string): string[] {
+  const commands = new Set<string>();
+  const patterns = [
+    /\b(?:npm(?:\.cmd)?(?:\s+run)?\s+[a-z0-9:_-]+)\b/giu,
+    /\b(?:pnpm(?:\s+run)?\s+[a-z0-9:_-]+)\b/giu,
+    /\b(?:yarn(?:\s+run)?\s+[a-z0-9:_-]+)\b/giu,
+    /\b(?:npx\s+[a-z0-9:_-]+(?:\s+[a-z0-9:_./-]+){0,3})\b/giu,
+    /\b(?:node|deno|bun|python(?:3)?)\s+[^\s`"'，。；：,;:]+(?:\s+[^\s`"'，。；：,;:]+){0,3}/giu,
+    /\b(?:vitest|jest|pytest|playwright(?:\s+test)?|tsc|cargo\s+test|go\s+test)\b/giu
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const value = normalizeExtractedCommand(match[0] ?? "");
+      if (!value) continue;
+      commands.add(value);
+    }
+  }
+  return [...commands];
+}
+
+function normalizeExtractedCommand(value: string): string {
+  return value
+    .replace(/^[`"'([{]+/u, "")
+    .replace(/[`"')\]}.,;:，。；：]+$/u, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function describeTargetVerificationStatus(task: TaskDetail, commands: string[]): string {
+  if (commands.length === 0) return "";
+  const lastRecordedChangeIndex = findLastRecordedFileChangeIndex(task.events);
+  if (lastRecordedChangeIndex < 0) {
+    return "Recorded verification status: no file edits or rollbacks have been recorded yet. Keep the listed command(s) in scope if changes become necessary.";
+  }
+  const recentEvents = task.events.slice(lastRecordedChangeIndex + 1);
+  const satisfied = commands.filter((command) => hasSuccessfulVerificationCommand(recentEvents, command));
+  if (satisfied.length === commands.length) {
+    return `Recorded verification after the latest file change: ${satisfied.map((command) => `\`${command}\``).join(", ")}.`;
+  }
+  return satisfied.length > 0
+    ? `Recorded verification after the latest file change: ${satisfied.map((command) => `\`${command}\``).join(", ")}. Remaining required command(s): ${commands.filter((command) => !satisfied.includes(command)).map((command) => `\`${command}\``).join(", ")}.`
+    : `Recorded verification after the latest file change: none yet. Remaining required command(s): ${commands.map((command) => `\`${command}\``).join(", ")}.`;
+}
+
+function findLastRecordedFileChangeIndex(events: TaskEvent[]): number {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (!event || event.reverted) continue;
+    if (event.type === "task_rollback_completed") return index;
+    if (event.type !== "tool_result" || event.payload["ok"] === false) continue;
+    const toolName = String(event.payload["toolName"] ?? "");
+    if (toolName === "edit_file" || toolName === "write_file") return index;
+  }
+  return -1;
+}
+
+function hasSuccessfulVerificationCommand(events: TaskEvent[], expectedCommand: string): boolean {
+  return events.some((event) => {
+    if (event.reverted || event.type !== "tool_result" || event.payload["ok"] === false) return false;
+    if (String(event.payload["toolName"] ?? "") !== "run_command") return false;
+    const args = event.payload["args"];
+    const command = args && typeof args === "object" ? String((args as Record<string, unknown>)["command"] ?? "") : "";
+    return commandsEquivalent(command, expectedCommand);
+  });
+}
+
+function commandsEquivalent(actualCommand: string, expectedCommand: string): boolean {
+  return canonicalizeCommandForComparison(actualCommand) === canonicalizeCommandForComparison(expectedCommand);
+}
+
+function canonicalizeCommandForComparison(command: string): string {
+  const normalized = command
+    .toLowerCase()
+    .replace(/\.cmd\b/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (!normalized) return "";
+  const npmRun = normalized.match(/^npm\s+run\s+([a-z0-9:_-]+)$/u);
+  if (npmRun) return `npm ${npmRun[1]}`;
+  const pnpmRun = normalized.match(/^pnpm\s+run\s+([a-z0-9:_-]+)$/u);
+  if (pnpmRun) return `pnpm ${pnpmRun[1]}`;
+  const yarnRun = normalized.match(/^yarn\s+run\s+([a-z0-9:_-]+)$/u);
+  if (yarnRun) return `yarn ${yarnRun[1]}`;
+  return normalized;
 }
 
 function formatToolArgsForContext(args: unknown): string {
@@ -1242,6 +1427,37 @@ function hash(content: string): string {
     value |= 0;
   }
   return value.toString(16);
+}
+
+function normalizeTrackedReadFileContent(
+  content: string,
+  options: { totalLines?: number; mode?: string; partial: boolean }
+): { content: string; isPartial: boolean } {
+  const totalLines = options.totalLines ?? countLines(content);
+  if (
+    options.partial ||
+    options.mode === "range" ||
+    (content.length <= MAX_READ_FILE_CONTENT && totalLines <= MAX_READ_FILE_FULL_LINES)
+  ) {
+    return { content, isPartial: options.partial };
+  }
+
+  const lines = content.split(/\r?\n/);
+  const head = lines.slice(0, TRACKED_FILE_HEAD_LINES);
+  const tail = lines.slice(-TRACKED_FILE_TAIL_LINES);
+  const omittedLines = Math.max(0, totalLines - head.length - tail.length);
+  const preview = [
+    `[Known file excerpt: ${content.length} chars, ${totalLines} lines. Large full-file reads are compacted before they enter model context.]`,
+    ...head,
+    omittedLines > 0 ? `... (${omittedLines} lines omitted; use search_files for line hits or read_file with offset/limit for exact sections) ...` : "",
+    ...tail
+  ].filter(Boolean).join("\n");
+  return { content: preview, isPartial: true };
+}
+
+function countLines(content: string): number {
+  if (!content) return 0;
+  return content.split(/\r?\n/).length;
 }
 
 async function readMemoryFile(path: string, maxChars: number, fallback = ""): Promise<string> {

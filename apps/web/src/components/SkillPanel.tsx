@@ -4,6 +4,8 @@ import { Copy, Download, Edit3, Merge, Plus, RefreshCcw, Save, Search, Trash2, X
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { MarkdownText } from "./MarkdownText.js";
+import { SettingsPrimer } from "./SettingsAssist.js";
+import { summarizeReflectionSession } from "./skillUx.js";
 
 const statuses: SkillRecord["status"][] = ["candidate", "active", "suspended", "retired"];
 const pageSize = 8;
@@ -39,6 +41,7 @@ export function SkillPanel({
   language,
   query = "",
   reflections,
+  onOpenDocs,
   onCreate,
   onUpdate,
   onDelete,
@@ -53,6 +56,7 @@ export function SkillPanel({
   language?: string | null;
   query?: string;
   reflections?: ReflectionSession[];
+  onOpenDocs?: (() => void) | undefined;
   onCreate: (input: SkillCreateRequest) => Promise<void> | void;
   onUpdate: (skillId: string, input: SkillUpdateRequest) => Promise<void> | void;
   onDelete: (skillId: string) => Promise<void> | void;
@@ -111,7 +115,7 @@ export function SkillPanel({
     <section className="skillWorkbench" aria-label="Skills">
       <header className="libraryPanelHero">
         <div>
-          <h3>{text.title}</h3>
+          <h2>{text.title}</h2>
           <p>{text.subtitle}</p>
         </div>
         <div className="inlineActions">
@@ -132,11 +136,19 @@ export function SkillPanel({
           </button>
         </div>
       </header>
+      <SettingsPrimer
+        language={language}
+        summary={text.primer.summary}
+        focus={text.primer.focus}
+        impact={text.primer.impact}
+        nextStep={text.primer.nextStep}
+        onOpenDocs={onOpenDocs}
+      />
 
       {reflections?.[0] ? (
         <section className="reflectionStrip">
           <strong>{text.latestReflection}</strong>
-          <span>{reflections[0].progress.phase} · {reflections[0].status} · {new Date(reflections[0].createdAt).toLocaleString()}</span>
+          <span>{summarizeReflectionSession(reflections[0], language)} · {new Date(reflections[0].createdAt).toLocaleString()}</span>
         </section>
       ) : null}
 
@@ -516,6 +528,12 @@ function getSkillCopy(language?: string | null) {
     noBody: zh ? "还没有 Skill 正文。" : "No skill body yet.",
     noApplicability: zh ? "未填写适用场景" : "No applicability notes",
     none: zh ? "无" : "None",
-    pageLabel: (page: number, total: number) => zh ? `第 ${page} / ${total} 页` : `Page ${page} / ${total}`
+    pageLabel: (page: number, total: number) => zh ? `第 ${page} / ${total} 页` : `Page ${page} / ${total}`,
+    primer: {
+      summary: zh ? "Skill 是可复用的执行方法，不是每次任务的原始结果备份。" : "Skills are reusable execution methods, not raw copies of one-off task output.",
+      focus: zh ? "优先维护标题、适用场景、需要的工具和排除条件，让命中结果更稳。" : "Keep the title, applicability, required tools, and exclusions precise so runtime matching stays stable.",
+      impact: zh ? "会影响任务运行时是否加载该 Skill，以及它以只读建议还是强约束的方式参与上下文。" : "Changes affect whether a task loads the skill and whether it behaves as a light suggestion or a stronger runtime constraint.",
+      nextStep: zh ? "如果你不确定一个候选是否值得启用，先去 Curator 看证据和重复判断，再决定是否激活。" : "If you are not sure a candidate should be enabled, inspect its curator evidence and duplicate grouping before activating it."
+    }
   };
 }

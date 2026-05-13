@@ -1,32 +1,50 @@
-# Settings
+# Settings Center
 
-The Settings page is used to manage workbench configuration.
+The Settings center is the operational control surface for SCC. It decides:
 
-## Providers
+- which model runs tasks
+- how tool approvals behave
+- whether external tools or chat entrypoints are active
+- whether repeat tasks can run
+- whether search may go online
+- how the UI and local storage behave for you
 
-Manage model providers:
-- Add, edit, and delete provider configurations
-- Set the default model
-- Specify context window size
+## Recommended first-time order
 
-## Permissions
+1. Add one real model in **Model Providers**
+2. Choose a safe approval mode in **Permissions**
+3. Connect external tools in **MCP** only if you need them
+4. Add **Integrations** only if inbound chat messages should create tasks
+5. Add **Scheduled tasks** only if repeat automation is needed
+6. Configure **Web search** only if tasks need online evidence
+7. Finish with **Preferences** for personal workflow tuning
 
-Manage tool execution permissions:
-- Set global risk-category grants
-- Configure auto approval for non-destructive built-in tools
-- Keep destructive tools behind explicit approval unless globally granted
+## What each settings page is for
 
-## MCP
+### Model Providers
 
-Manage external tool services:
-- Add/edit/delete MCP configurations
-- View service status and discovered tool lists
-- Run stdio and streamable HTTP MCP tools through the same approval flow
+Add model endpoints, save local keys, choose the active provider, and manage fallback routing.
 
-## Preferences
+### Permissions
 
-Adjust UI, model, and safety defaults:
-- Switch interface language
-- Choose agent tone and response detail
-- Redact common secrets from tool evidence when sensitive-data cleanup is enabled
-- Encrypt SQLite record payloads when local storage encryption is enabled
+Define the tool-risk boundary for the workspace.
+
+### MCP
+
+Connect external tool servers into SCC without bypassing approval or timeline evidence.
+
+### Integrations
+
+Route Discord, Feishu, Slack, Telegram, or WeCom messages into normal SCC tasks with a default folder and permission preset.
+
+### Scheduled Tasks
+
+Create repeat automation that runs while SCC stays open.
+
+### Web Search
+
+Configure the providers behind the built-in `web_search` tool.
+
+### Preferences
+
+Tune language, theme, response style, startup behavior, and local storage hygiene without changing tool approval policy.

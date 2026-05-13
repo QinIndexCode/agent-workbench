@@ -309,6 +309,7 @@ export function TaskList({
                           ref={(el) => {
                             if (el) toggleButtonRefs.current.set(folder.id, el);
                           }}
+                          aria-label={isExpanded ? text.collapseFolder(folder.name) : text.expandFolder(folder.name)}
                           className="folderTreeToggle"
                           type="button"
                           onClick={() => {

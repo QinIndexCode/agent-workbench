@@ -360,7 +360,7 @@ function isMcpError(response: unknown): boolean {
 
 function sanitizeError(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
-  return text.replace(/\b(sk|ak)-[a-zA-Z0-9_\-]{10,}\b/g, "[redacted-key]");
+  return text.replace(/\b(sk|ak)-[a-zA-Z0-9_-]{10,}\b/g, "[redacted-key]");
 }
 
 function previewArgs(args: Record<string, unknown>): string {

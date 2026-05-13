@@ -22,9 +22,9 @@ export interface ModelTraceEvent {
 }
 
 export type ModelTurn =
-  | { kind: "final"; message: string; streamId?: string; usage?: ModelUsage }
-  | { kind: "tool_calls"; calls: ToolCall[]; streamId?: string; usage?: ModelUsage }
-  | { kind: "empty_response"; reason: string; streamId?: string; usage?: ModelUsage; rawPayload?: Record<string, unknown> };
+  | { kind: "final"; message: string; streamId?: string; usage?: ModelUsage; reasoningContent?: string }
+  | { kind: "tool_calls"; calls: ToolCall[]; streamId?: string; usage?: ModelUsage; reasoningContent?: string }
+  | { kind: "empty_response"; reason: string; streamId?: string; usage?: ModelUsage; rawPayload?: Record<string, unknown>; reasoningContent?: string };
 
 export interface ModelStreamHandlers {
   streamId: string;

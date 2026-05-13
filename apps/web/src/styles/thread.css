@@ -1298,13 +1298,15 @@
 }
 
 .toolProgressMeta,
-.toolLargeChangeNote {
+.toolLargeChangeNote,
+.toolSemanticNote {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
 }
 
-.toolLargeChangeNote {
+.toolLargeChangeNote,
+.toolSemanticNote {
   margin: 0;
 }
 
@@ -2487,7 +2489,7 @@
   }
 
   .timeline {
-    padding: 14px 12px calc(190px + env(safe-area-inset-bottom));
+    padding: 14px 12px calc(19px + env(safe-area-inset-bottom));
   }
 
   .empty,
@@ -2571,6 +2573,7 @@
     min-width: 40px;
     padding: 0 10px;
     font-size: 0;
+    gap: unset;
   }
 
   .newTaskHero {

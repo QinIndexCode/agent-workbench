@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { LibrarySection } from "./components/LibraryView.js";
 import type { SettingsSection } from "./components/SettingsView.js";
+import type { DocsSection } from "./docs/index.js";
 
 export type ActiveView = "tasks" | "history" | "library" | "docs" | "settings";
 
@@ -9,10 +10,30 @@ export type AppRoute =
   | { view: "history" }
   | { view: "library"; section: LibrarySection }
   | { view: "settings"; section: SettingsSection }
-  | { view: "docs" };
+  | { view: "docs"; section: DocsSection };
 
 const librarySections = new Set<LibrarySection>(["skills", "curator", "knowledge", "memory", "reflections"]);
 const settingsSections = new Set<SettingsSection>(["providers", "permissions", "mcp", "integrations", "scheduled", "search", "preferences"]);
+const docsSections = new Set<DocsSection>([
+  "overview",
+  "input",
+  "task-management",
+  "settings",
+  "library",
+  "skills",
+  "curator",
+  "knowledge",
+  "memory",
+  "reflections",
+  "providers",
+  "permissions",
+  "mcp",
+  "integrations",
+  "scheduled",
+  "search",
+  "preferences",
+  "troubleshooting"
+]);
 
 export function useAppRoute(): [AppRoute, (route: AppRoute, options?: { replace?: boolean }) => void] {
   const [route, setRoute] = useState<AppRoute>(() => parseAppRoute(window.location.pathname));
@@ -42,7 +63,7 @@ export function routeToPath(route: AppRoute): string {
   }
   if (route.view === "library") return `/library/${route.section}`;
   if (route.view === "settings") return `/settings/${route.section}`;
-  if (route.view === "docs") return "/docs";
+  if (route.view === "docs") return `/docs/${route.section}`;
   return "/history";
 }
 
@@ -56,6 +77,6 @@ function parseAppRoute(pathname: string): AppRoute {
   if (root === "history") return { view: "history" };
   if (root === "library") return { view: "library", section: librarySections.has(value as LibrarySection) ? value as LibrarySection : "skills" };
   if (root === "settings") return { view: "settings", section: settingsSections.has(value as SettingsSection) ? value as SettingsSection : "providers" };
-  if (root === "docs") return { view: "docs" };
+  if (root === "docs") return { view: "docs", section: docsSections.has(value as DocsSection) ? value as DocsSection : "overview" };
   return { view: "tasks" };
 }

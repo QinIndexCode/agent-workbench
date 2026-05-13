@@ -1,30 +1,34 @@
 # Permissions
 
-The permission system controls tool execution policy, managed by risk level.
+The Permissions page defines the **real tool boundary** for SCC. It is not about answer style; it is about which actions may run, which actions must stop, and which actions should remain tightly gated.
 
-## Permission Levels
+## The five approval modes
 
 ### Ask
-Request user confirmation before each tool execution. Suitable for:
-- Handling sensitive data
-- Operations that may affect the system
-- Scenes where you need to know every step
+
+The safest default. SCC asks before a risky tool action runs.
 
 ### Read only
-Read-only operations pass automatically; write operations still require confirmation. Suitable for:
-- File reading and directory browsing
-- Information query operations
 
-### All
-All risk categories are allowed globally. Suitable for:
-- Repetitive, predictable tasks
-- Established trusted workflows
+Automatically allows host observation and workspace reads, while writes, shell, network, and destructive actions still stop for approval.
 
-Can be downgraded from All to a stricter level at any time.
+### Full access
 
-## Risk Classification
+Globally allows every risk class, including destructive actions. Use it only when the task boundary is clear and the workspace is recoverable.
 
-The system classifies tool calls as follows:
-- **Low risk**: Read, query, compute
-- **Medium risk**: File modification, configuration change
-- **High risk**: Delete, network request, system command
+### Custom
+
+Lets you tune risk classes individually between read-only and full access.
+
+### Auto approval
+
+Automatically approves only the selected **non-destructive** classes. Destructive actions still remain outside this rule-based coverage.
+
+## Risk classes
+
+- **host_observation**: process lists, resource usage, and system-state reads
+- **workspace_read**: file reads, directory listings, and code search
+- **workspace_write**: creating or editing local files
+- **shell**: shell commands
+- **network**: outbound HTTP or API access
+- **destructive**: delete, overwrite, process termination, and similar high-impact actions

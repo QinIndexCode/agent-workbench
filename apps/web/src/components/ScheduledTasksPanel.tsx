@@ -1,14 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ScheduledTask, ScheduledTaskCreateRequest, ScheduledTaskPatchRequest, TaskFolderRecord } from "@scc/shared";
 import { CalendarClock, Clock3, Folder, PauseCircle, Pencil, PlayCircle, Plus, Sparkles, Trash2 } from "lucide-react";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { SettingsEmptyStateCard, SettingsPrimer, describeActionError } from "./SettingsAssist.js";
 
 const pageSize = 8;
 
 export function ScheduledTasksPanel({
   folders,
   language,
+  onOpenDocs,
   scheduledTasks,
   onCreate,
   onDelete,
@@ -16,19 +18,30 @@ export function ScheduledTasksPanel({
 }: {
   folders: TaskFolderRecord[];
   language?: string | null | undefined;
+  onOpenDocs?: (() => void) | undefined;
   scheduledTasks: ScheduledTask[];
-  onCreate: (input: ScheduledTaskCreateRequest) => Promise<void> | void;
+  onCreate: (input: ScheduledTaskCreateRequest) => Promise<ScheduledTask | void> | ScheduledTask | void;
   onDelete: (taskId: string) => Promise<void> | void;
-  onUpdate: (taskId: string, input: ScheduledTaskPatchRequest) => Promise<void> | void;
+  onUpdate: (taskId: string, input: ScheduledTaskPatchRequest) => Promise<ScheduledTask | void> | ScheduledTask | void;
 }) {
   const zh = language === "zh-CN";
   const [editing, setEditing] = useState<ScheduledTask | null>(null);
   const [creating, setCreating] = useState(false);
   const [page, setPage] = useState(0);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [focusTaskId, setFocusTaskId] = useState<string | null>(null);
   const pageCount = Math.max(1, Math.ceil(scheduledTasks.length / pageSize));
   const safePage = Math.min(page, pageCount - 1);
   const visibleTasks = scheduledTasks.slice(safePage * pageSize, safePage * pageSize + pageSize);
+  const hasReflectionTask = scheduledTasks.some((task) => isDefaultReflectionTask(task));
+
+  useEffect(() => {
+    if (!focusTaskId) return;
+    const index = scheduledTasks.findIndex((task) => task.id === focusTaskId);
+    if (index < 0) return;
+    setPage(Math.floor(index / pageSize));
+    setFocusTaskId(null);
+  }, [focusTaskId, scheduledTasks]);
 
   return (
     <>
@@ -42,8 +55,26 @@ export function ScheduledTasksPanel({
           <Plus size={15} /> {zh ? "新建" : "New"}
         </button>
       </div>
+      <SettingsPrimer
+        language={language}
+        summary={zh ? "定时任务会在 SCC 运行期间按计划触发，用同样的模型、权限和文件夹上下文执行。" : "Scheduled tasks run while SCC is open and execute with the same models, permissions, and folder context as manual work."}
+        focus={zh ? "安排重复性检查、日报、索引维护或固定时间的分析任务。" : "Schedule recurring checks, summaries, indexing runs, or time-based analysis work."}
+        impact={zh ? "会影响任务何时自动创建、默认落入哪个文件夹，以及失败是否被你及时看到。" : "Changes affect when tasks auto-start, which folder they use, and whether failures surface early enough to act on."}
+        nextStep={zh ? "先创建一个低风险测试任务，确认时间预览、暂停/恢复和结果回写都符合预期。" : "Create one low-risk test schedule first, then confirm preview, pause or resume, and result reporting behave as expected."}
+        onOpenDocs={onOpenDocs}
+      />
       <div className="compactList">
-        {scheduledTasks.length === 0 ? <p className="emptyState">{zh ? "还没有定时任务。" : "No scheduled tasks yet."}</p> : null}
+        {scheduledTasks.length === 0 ? (
+          <SettingsEmptyStateCard
+            language={language}
+            title={zh ? "还没有定时任务" : "No scheduled tasks yet"}
+            body={zh ? "从一个固定时间或短间隔任务开始，先确认它只在应用打开时运行，并且结果会回写到任务流里。" : "Start with one fixed-time or interval task and confirm it only runs while the app is open and reports back into the task stream."}
+            hint={zh ? "如果你在等系统后台常驻，这页不会伪装成隐藏服务。" : "This page does not pretend to be a hidden OS background service."}
+            actionLabel={zh ? "创建第一个定时任务" : "Create your first scheduled task"}
+            actionAriaLabel={zh ? "创建第一个定时任务" : "Create your first scheduled task"}
+            onAction={() => setCreating(true)}
+          />
+        ) : null}
         {visibleTasks.map((task) => (
           <article className={isDefaultReflectionTask(task) ? "providerRow scheduledTaskRow systemTaskRow" : "providerRow scheduledTaskRow"} key={task.id}>
             <span className={task.type === "reflection" ? "providerIcon reflectionIcon" : "providerIcon"}>
@@ -96,6 +127,11 @@ export function ScheduledTasksPanel({
           </article>
         ))}
       </div>
+      {hasReflectionTask ? (
+        <p className="inlineNotice">
+          <span>{zh ? "内置 reflection 任务用于整理近期任务记忆与模式。它可以暂停或编辑，但不会像普通任务那样提供删除按钮。" : "The built-in reflection task keeps recent task memory and reusable patterns in shape. You can pause or edit it, but it is intentionally protected from delete controls."}</span>
+        </p>
+      ) : null}
       {scheduledTasks.length > pageSize ? (
         <div className="scheduledPagination">
           <button type="button" disabled={safePage === 0} onClick={() => setPage(Math.max(0, safePage - 1))}>{zh ? "上一页" : "Previous"}</button>
@@ -113,8 +149,9 @@ export function ScheduledTasksPanel({
             setEditing(null);
           }}
           onSave={async (input) => {
-            if (editing) await onUpdate(editing.id, input);
-            else await onCreate(input as ScheduledTaskCreateRequest);
+            const saved = editing ? await onUpdate(editing.id, input) : await onCreate(input as ScheduledTaskCreateRequest);
+            const savedId = saved && typeof saved === "object" && "id" in saved ? String(saved.id) : editing?.id ?? null;
+            if (savedId) setFocusTaskId(savedId);
             setCreating(false);
             setEditing(null);
           }}
@@ -168,7 +205,7 @@ function ScheduledTaskDialog({
   language?: string | null | undefined;
   task: ScheduledTask | null;
   onClose: () => void;
-  onSave: (input: ScheduledTaskCreateRequest | ScheduledTaskPatchRequest) => Promise<void>;
+  onSave: (input: ScheduledTaskCreateRequest | ScheduledTaskPatchRequest) => Promise<unknown>;
 }) {
   const zh = language === "zh-CN";
   const [title, setTitle] = useState(task?.title ?? "");
@@ -179,25 +216,15 @@ function ScheduledTaskDialog({
   const [timeOfDay, setTimeOfDay] = useState(task?.schedule.timeOfDay ?? "09:00");
   const [intervalHours, setIntervalHours] = useState(String(Math.floor((task?.schedule.intervalMinutes ?? 60) / 60)));
   const [intervalMinutes, setIntervalMinutes] = useState(String((task?.schedule.intervalMinutes ?? 60) % 60));
+  const [formError, setFormError] = useState<string | null>(null);
 
   const preview = buildSchedulePreview(scheduleKind, frequency, timeOfDay, intervalHours, intervalMinutes, zh);
 
   return (
     <div className="modalBackdrop stdBackdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <form className="stdModal" onSubmit={(event) => {
+      <form aria-label={task ? (zh ? "编辑定时任务" : "Edit scheduled task") : (zh ? "新建定时任务" : "New scheduled task")} className="stdModal" onSubmit={(event) => {
         event.preventDefault();
-        void onSave({
-          title,
-          prompt,
-          folderId: folderId || undefined,
-          scheduleKind,
-          ...(scheduleKind === "calendar"
-            ? { frequency, timeOfDay }
-            : {
-                intervalHours: Math.max(0, Math.min(12, Number(intervalHours) || 0)),
-                intervalMinutes: Math.max(0, Math.min(59, Number(intervalMinutes) || 0))
-              })
-        });
+        void submit();
       }}>
         <div className="stdHeader">
           <h3>{task ? (zh ? "编辑定时任务" : "Edit scheduled task") : (zh ? "新建定时任务" : "New scheduled task")}</h3>
@@ -207,7 +234,7 @@ function ScheduledTaskDialog({
         <div className="stdBody">
           <div className="stdField">
             <span className="stdFieldLabel">{zh ? "任务名称" : "Task name"}</span>
-            <input className="stdInput" placeholder={zh ? "输入任务名称" : "Enter task name"} value={title} onChange={(e) => setTitle(e.target.value)} required />
+            <input aria-label={zh ? "任务名称" : "Task name"} className="stdInput" placeholder={zh ? "输入任务名称" : "Enter task name"} value={title} onChange={(e) => setTitle(e.target.value)} required />
           </div>
 
           <div className="stdField">
@@ -237,12 +264,25 @@ function ScheduledTaskDialog({
                       onChange={(value) => setFrequency(value as "daily" | "weekly" | "monthly")}
                     />
                   </label>
-                  <input className="stdInput stdTimeInput" value={timeOfDay} onChange={(e) => setTimeOfDay(e.target.value)} placeholder="09:00" pattern="^([01]\\d|2[0-3]):[0-5]\\d$" required />
+                  <input
+                    aria-label={zh ? "运行时间" : "Run time"}
+                    className="stdInput stdTimeInput"
+                    inputMode="numeric"
+                    max="23:59"
+                    min="00:00"
+                    onChange={(e) => setTimeOfDay(e.target.value)}
+                    placeholder="09:00"
+                    required
+                    step={60}
+                    type="time"
+                    value={timeOfDay}
+                  />
                 </>
               ) : (
                 <>
                   <div className="stdIntervalInputs">
                     <input
+                      aria-label={zh ? "间隔小时" : "Interval hours"}
                       className="stdIntervalNum"
                       type="number"
                       min={0}
@@ -252,6 +292,7 @@ function ScheduledTaskDialog({
                     />
                     <span className="stdIntervalSep">{zh ? "时" : "h"}</span>
                     <input
+                      aria-label={zh ? "间隔分钟" : "Interval minutes"}
                       className="stdIntervalNum"
                       type="number"
                       min={0}
@@ -273,6 +314,7 @@ function ScheduledTaskDialog({
             </div>
             <div className="stdTextareaWrap">
               <textarea
+                aria-label={zh ? "任务内容" : "Task prompt"}
                 className="stdTextarea"
                 placeholder={zh ? "描述你希望自动执行的任务..." : "Describe what you want automated..."}
                 value={prompt}
@@ -282,6 +324,7 @@ function ScheduledTaskDialog({
               />
             </div>
           </div>
+          {formError ? <p className="formError" role="alert">{formError}</p> : null}
         </div>
 
         <div className="stdBottomBar">
@@ -313,6 +356,26 @@ function ScheduledTaskDialog({
       </form>
     </div>
   );
+
+  async function submit() {
+    setFormError(null);
+    try {
+      await onSave({
+        title,
+        prompt,
+        folderId: folderId || undefined,
+        scheduleKind,
+        ...(scheduleKind === "calendar"
+          ? { frequency, timeOfDay }
+          : {
+              intervalHours: Math.max(0, Math.min(12, Number(intervalHours) || 0)),
+              intervalMinutes: Math.max(0, Math.min(59, Number(intervalMinutes) || 0))
+            })
+      });
+    } catch (error) {
+      setFormError(describeActionError(error));
+    }
+  }
 }
 
 function folderName(folders: TaskFolderRecord[], folderId: string | undefined, language?: string | null | undefined): string {
