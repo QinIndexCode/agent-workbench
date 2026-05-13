@@ -37,6 +37,7 @@ for (const item of quality?.results ?? []) {
 if (budgets?.pass === false) blockers.push("Web bundle budgets exceeded.");
 
 const liveFailed = liveSmoke?.cases?.filter((item) => item.status !== "passed") ?? [];
+const providerConfigurationFailed = liveFailed.some((item) => item.failureClass === "provider_configuration");
 for (const item of liveFailed) blockers.push(`Live smoke failed: ${item.name}${item.failureClass ? ` (${item.failureClass})` : ""}.`);
 if (liveSmoke && liveSmoke.required !== true) blockers.push("Live smoke report was generated without SCC_LIVE_MODEL_REQUIRED=1.");
 if (Number(liveSmoke?.stressLevel ?? 0) < 5) blockers.push(`Live smoke stress level is ${liveSmoke?.stressLevel ?? "unknown"}; flagship validation requires level 5.`);
@@ -46,13 +47,13 @@ for (const item of liveSmoke?.cases ?? []) {
   if (traceBytes > 450_000) blockers.push(`Live smoke trace budget exceeded in ${item.name}: traceBytes=${traceBytes}.`);
   if (traceMaxEntryBytes > 20_000) blockers.push(`Live smoke trace entry budget exceeded in ${item.name}: traceMaxEntryBytes=${traceMaxEntryBytes}.`);
 }
-if (liveSmoke && !(liveSmoke.cases ?? []).some((item) => Number(item.evidence?.approvalCount ?? 0) > 0)) {
+if (liveSmoke && !providerConfigurationFailed && !(liveSmoke.cases ?? []).some((item) => Number(item.evidence?.approvalCount ?? 0) > 0)) {
   blockers.push("Live smoke report is missing approval evidence.");
 }
-if (liveSmoke && !(liveSmoke.cases ?? []).some((item) => item.evidence?.rollbackUsed === true)) {
+if (liveSmoke && !providerConfigurationFailed && !(liveSmoke.cases ?? []).some((item) => item.evidence?.rollbackUsed === true)) {
   blockers.push("Live smoke report is missing rollback evidence.");
 }
-if (liveSmoke && !(liveSmoke.cases ?? []).some((item) => item.evidence?.contextCompactionObserved === true)) {
+if (liveSmoke && !providerConfigurationFailed && !(liveSmoke.cases ?? []).some((item) => item.evidence?.contextCompactionObserved === true)) {
   blockers.push("Live smoke report is missing context compaction evidence.");
 }
 

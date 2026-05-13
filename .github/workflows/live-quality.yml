@@ -15,6 +15,7 @@ jobs:
     env:
       SCC_LIVE_MODEL_SMOKE: "1"
       SCC_LIVE_MODEL_REQUIRED: "1"
+      SCC_FLAGSHIP_REPORT_REQUIRED: "1"
       SCC_STRESS_LEVEL: "5"
       OPENAI_API_KEY: ${{ secrets.SCC_OPENAI_API_KEY }}
       OPENAI_BASE_URL: ${{ secrets.SCC_OPENAI_BASE_URL }}
@@ -40,17 +41,8 @@ jobs:
       - name: Install dependencies
         run: npm.cmd ci
 
-      - name: Run flagship non-live quality suite
+      - name: Run flagship quality suite with live model evidence
         run: npm.cmd run quality:full
-
-      - name: Run live model smoke
-        run: npm.cmd run smoke:live-model
-
-      - name: Refresh flagship report
-        if: always()
-        env:
-          SCC_FLAGSHIP_REPORT_REQUIRED: "1"
-        run: node scripts/write-flagship-report.mjs
 
       - name: Upload live quality artifacts
         if: always()

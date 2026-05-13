@@ -33,9 +33,6 @@ const {
 } = await import("../packages/core/dist/index.js");
 
 const config = loadOpenAiConfig();
-if (!config.apiKey || !config.baseURL) {
-  throw new Error("Live model smoke requires a configured local Mimo/OpenAI-compatible provider.");
-}
 const stressLevel = Math.max(1, Number(process.env.SCC_STRESS_LEVEL ?? "1") || 1);
 
 const report = {
@@ -44,12 +41,38 @@ const report = {
   required: liveSmokeRequired,
   stressLevel,
   provider: {
-    baseURL: redactUrl(config.baseURL),
+    baseURL: config.baseURL ? redactUrl(config.baseURL) : "missing",
     model: config.model ?? "mimo-v2.5",
-    hasApiKey: Boolean(config.apiKey)
+    hasApiKey: Boolean(config.apiKey),
+    missing: [
+      !config.apiKey ? "OPENAI_API_KEY or SCC_API_KEY_FILE" : null,
+      !config.baseURL ? "OPENAI_BASE_URL or SCC_OPENAI_BASE_URL" : null
+    ].filter(Boolean)
   },
   cases: []
 };
+
+if (!config.apiKey || !config.baseURL) {
+  report.cases.push({
+    name: "provider configuration",
+    status: "failed",
+    durationMs: 0,
+    failureClass: "provider_configuration",
+    error: "Live model smoke requires a configured local Mimo/OpenAI-compatible provider.",
+    evidence: {
+      missingConfig: report.provider.missing,
+      sourceFingerprint: report.sourceFingerprint.hash
+    }
+  });
+  report.summary = {
+    totalCases: report.cases.length,
+    passedCases: 0,
+    failedCases: report.cases.length
+  };
+  const { markdownPath } = await writeLiveSmokeReport(report);
+  console.error(`Live Mimo smoke failed before model execution: provider configuration is incomplete. Report: ${markdownPath}`);
+  process.exit(1);
+}
 
 class EvidenceError extends Error {
   constructor(message, evidencePayload) {
@@ -549,17 +572,24 @@ report.summary = {
   passedCases: report.cases.filter((item) => item.status === "passed").length,
   failedCases: failed.length
 };
-const outDir = resolve("data", "test-reports", "live-model-smoke");
-await mkdir(outDir, { recursive: true });
-await writeFile(resolve(outDir, "report.json"), JSON.stringify(report, null, 2), "utf8");
-await writeFile(resolve(outDir, "report.md"), markdownReport(report), "utf8");
+const { markdownPath } = await writeLiveSmokeReport(report);
 
 if (failed.length > 0) {
-  console.error(`Live Mimo smoke failed ${failed.length}/${report.cases.length} cases. Report: ${resolve(outDir, "report.md")}`);
+  console.error(`Live Mimo smoke failed ${failed.length}/${report.cases.length} cases. Report: ${markdownPath}`);
   process.exit(1);
 }
 
-console.log(`Live Mimo smoke passed ${report.cases.length}/${report.cases.length}. Report: ${resolve(outDir, "report.md")}`);
+console.log(`Live Mimo smoke passed ${report.cases.length}/${report.cases.length}. Report: ${markdownPath}`);
+
+async function writeLiveSmokeReport(data) {
+  const outDir = resolve("data", "test-reports", "live-model-smoke");
+  const jsonPath = resolve(outDir, "report.json");
+  const markdownPath = resolve(outDir, "report.md");
+  await mkdir(outDir, { recursive: true });
+  await writeFile(jsonPath, JSON.stringify(data, null, 2), "utf8");
+  await writeFile(markdownPath, markdownReport(data), "utf8");
+  return { jsonPath, markdownPath };
+}
 
 async function createLiveWorkbench(rootPath, options = {}) {
   const store = new InMemoryWorkbenchStore();
