@@ -5,7 +5,7 @@ import type {
   IntegrationProviderCreateRequest,
   IntegrationProviderPatchRequest,
   TaskFolderRecord
-} from "@scc/shared";
+} from "@agent-workbench/shared";
 import { Cable, Pencil, Plus, Power, Trash2 } from "lucide-react";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -550,10 +550,10 @@ function copy(language?: string | null) {
   const zh = language === "zh-CN";
   return {
     title: zh ? "第三方集成" : "Integrations",
-    subtitle: zh ? "把 Discord、飞书、Slack、Telegram 和 WeCom 消息接入 SCC，并继续走相同的权限、文件夹与任务链。" : "Bring Discord, Feishu, Slack, Telegram, and WeCom into SCC while keeping the same task, permission, and folder flow.",
+    subtitle: zh ? "把 Discord、飞书、Slack、Telegram 和 WeCom 消息接入 Agent Workbench，并继续走相同的权限、文件夹与任务链。" : "Bring Discord, Feishu, Slack, Telegram, and WeCom into Agent Workbench while keeping the same task, permission, and folder flow.",
     add: zh ? "添加集成" : "Add integration",
     emptyTitle: zh ? "还没有外部入口" : "No external channels yet",
-    empty: zh ? "添加聊天平台后，外部消息会变成普通 SCC 任务，而不是绕过审批和工作区边界的隐蔽入口。" : "Once configured, inbound chat messages become normal SCC tasks instead of bypassing approvals or workspace boundaries.",
+    empty: zh ? "添加聊天平台后，外部消息会变成普通 Agent Workbench 任务，而不是绕过审批和工作区边界的隐蔽入口。" : "Once configured, inbound chat messages become normal Agent Workbench tasks instead of bypassing approvals or workspace boundaries.",
     emptyHint: zh ? "建议先用测试频道验证 challenge、签名和默认文件夹，再决定是否长期启用。" : "Validate the challenge, signature, and default folder in a test channel before turning a provider on long term.",
     emptyAction: zh ? "添加第一个平台" : "Add your first provider",
     connect: zh ? "连接" : "Connect",
@@ -598,7 +598,7 @@ function copy(language?: string | null) {
       error: zh ? "异常" : "Error"
     } as Record<string, string>,
     primer: {
-      summary: zh ? "这里负责把外部聊天平台接入 SCC，让消息以普通任务的形式进入同一条审批和执行链。" : "This page connects chat platforms into SCC so external messages enter the same approval and execution loop as normal tasks.",
+      summary: zh ? "这里负责把外部聊天平台接入 Agent Workbench，让消息以普通任务的形式进入同一条审批和执行链。" : "This page connects chat platforms into Agent Workbench so external messages enter the same approval and execution loop as normal tasks.",
       focus: zh ? "配置平台密钥、回调地址、默认文件夹和默认权限，不让外部入口绕过当前边界。" : "Configure provider secrets, callback URLs, default folder routing, and permission presets without creating a side door around current safeguards.",
       impact: zh ? "会影响外部消息是否能成功创建任务、任务落在哪个文件夹，以及连接失败时错误如何暴露给你。" : "Changes affect whether inbound messages can create tasks, which folder they land in, and how failures are surfaced back to you.",
       nextStep: zh ? "先在测试频道、测试群或测试 bot 上跑通 challenge 和一条真实消息，再决定是否长期开启。" : "Validate the challenge and a real inbound message in a test channel, group, or bot before leaving the integration enabled."

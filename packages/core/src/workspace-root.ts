@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export function findWorkspaceRoot(): string {
-  const configured = process.env["SCC_WORKSPACE_ROOT"];
+  const configured = process.env["AGENT_WORKBENCH_WORKSPACE_ROOT"] ?? process.env["SCC_WORKSPACE_ROOT"];
   if (configured?.trim()) return resolve(configured);
 
   let current = process.cwd();
@@ -23,7 +23,7 @@ export function findWorkspaceRoot(): string {
 }
 
 export function defaultTaskWorkRoot(): string {
-  const configured = process.env["SCC_DEFAULT_TASK_ROOT"];
+  const configured = process.env["AGENT_WORKBENCH_DEFAULT_TASK_ROOT"] ?? process.env["SCC_DEFAULT_TASK_ROOT"];
   const root = configured?.trim() ? resolve(configured) : resolve(findWorkspaceRoot(), "workspace", "default");
   mkdirSync(root, { recursive: true });
   return root;

@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { TaskDetail } from "@scc/shared";
+import type { TaskDetail } from "@agent-workbench/shared";
 import {
   AgentWorkbench,
   ContextAssembler,
@@ -14,7 +14,7 @@ import {
   type ModelClient,
   type ModelStreamHandlers,
   type ModelTurn
-} from "@scc/core";
+} from "@agent-workbench/core";
 
 interface StressCase {
   evidence: Record<string, unknown>;
@@ -27,9 +27,9 @@ let memoryRoot = "";
 let previousMemoryRoot: string | undefined;
 
 beforeAll(() => {
-  previousMemoryRoot = process.env["SCC_MEMORY_DIR"];
-  memoryRoot = mkdtempSync(join(tmpdir(), "scc-stress-memory-root-"));
-  process.env["SCC_MEMORY_DIR"] = memoryRoot;
+  previousMemoryRoot = process.env["AGENT_WORKBENCH_MEMORY_DIR"];
+  memoryRoot = mkdtempSync(join(tmpdir(), "agent-workbench-stress-memory-root-"));
+  process.env["AGENT_WORKBENCH_MEMORY_DIR"] = memoryRoot;
 });
 
 afterAll(async () => {
@@ -39,11 +39,11 @@ afterAll(async () => {
   await writeFile(join(outDir, "latest.json"), JSON.stringify({ generatedAt, cases: stressCases }, null, 2), "utf8");
   await writeFile(
     join(outDir, "latest.md"),
-    ["# SCC Stress Report", "", `Generated: ${generatedAt}`, "", ...stressCases.map((item) => `- ${item.status === "passed" ? "PASS" : "FAIL"} ${item.name}`)].join("\n"),
+    ["# Agent Workbench Stress Report", "", `Generated: ${generatedAt}`, "", ...stressCases.map((item) => `- ${item.status === "passed" ? "PASS" : "FAIL"} ${item.name}`)].join("\n"),
     "utf8"
   );
-  if (previousMemoryRoot === undefined) delete process.env["SCC_MEMORY_DIR"];
-  else process.env["SCC_MEMORY_DIR"] = previousMemoryRoot;
+  if (previousMemoryRoot === undefined) delete process.env["AGENT_WORKBENCH_MEMORY_DIR"];
+  else process.env["AGENT_WORKBENCH_MEMORY_DIR"] = previousMemoryRoot;
   if (memoryRoot) rmSync(memoryRoot, { force: true, recursive: true });
 });
 

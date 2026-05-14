@@ -1,12 +1,12 @@
 # Model Providers
 
-The Model Providers page is where SCC gets real runtime model access. Without at least one working provider, task execution, title generation, and thread continuation may all be limited.
+The Model Providers page is where Agent Workbench gets real runtime model access. Without at least one working provider, task execution, title generation, and thread continuation may all be limited.
 
 ## What this page affects
 
 - which provider is active for new work
 - the available context window for tasks
-- whether SCC may fall back to another provider on failure
+- whether Agent Workbench may fall back to another provider on failure
 - which API keys stay stored locally
 
 ## Recommended first setup

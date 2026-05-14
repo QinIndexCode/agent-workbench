@@ -1,10 +1,10 @@
 # Integrations
 
-The Integrations page turns external chat messages into normal SCC tasks. It does **not** create a hidden execution path that bypasses folders, models, or approvals.
+The Integrations page turns external chat messages into normal Agent Workbench tasks. It does **not** create a hidden execution path that bypasses folders, models, or approvals.
 
 ## What this page affects
 
-- whether external messages can create SCC tasks
+- whether external messages can create Agent Workbench tasks
 - which folder those tasks land in
 - which default permission preset they start with
 - how verification or connection failures surface in the UI
@@ -22,12 +22,12 @@ Use this when inbound work should start from slash commands or Discord interacti
 
 Verification:
 
-- SCC verifies `X-Signature-Ed25519` and the timestamp.
+- Agent Workbench verifies `X-Signature-Ed25519` and the timestamp.
 - A wrong public key or mismatched endpoint will fail immediately.
 
 ### Feishu / Lark
 
-Use this when Feishu or Lark text messages should become SCC tasks.
+Use this when Feishu or Lark text messages should become Agent Workbench tasks.
 
 - **Verification token**
 - **App secret**
@@ -36,24 +36,24 @@ Use this when Feishu or Lark text messages should become SCC tasks.
 
 Verification:
 
-- SCC validates the verification token first.
+- Agent Workbench validates the verification token first.
 - If your app uses encrypted callbacks, add the encrypt key and app secret too.
 
 ### Slack
 
-Use this when Slack Events API messages should create SCC tasks.
+Use this when Slack Events API messages should create Agent Workbench tasks.
 
 - **Signing secret**
 - **Callback URL**
 
 Verification:
 
-- SCC validates `X-Slack-Signature` and the timestamp.
+- Agent Workbench validates `X-Slack-Signature` and the timestamp.
 - The first request is usually a `url_verification` challenge.
 
 ### Telegram
 
-Use this when Telegram bot messages should create SCC tasks.
+Use this when Telegram bot messages should create Agent Workbench tasks.
 
 - **Bot token**
 - **Secret token**
@@ -61,12 +61,12 @@ Use this when Telegram bot messages should create SCC tasks.
 
 Verification:
 
-- SCC checks `X-Telegram-Bot-Api-Secret-Token`.
+- Agent Workbench checks `X-Telegram-Bot-Api-Secret-Token`.
 - Keep the bot token server-side only.
 
 ### WeCom
 
-Use this when WeCom callbacks should create SCC tasks.
+Use this when WeCom callbacks should create Agent Workbench tasks.
 
 - **Callback token**
 - **EncodingAESKey**
@@ -74,7 +74,7 @@ Use this when WeCom callbacks should create SCC tasks.
 
 Verification:
 
-- SCC validates `msg_signature`.
+- Agent Workbench validates `msg_signature`.
 - The callback must pass the GET echo handshake before event delivery works.
 
 ## Recommended setup order
@@ -90,5 +90,5 @@ Verification:
 
 - **Setup needed**: required fields are still missing.
 - **Connected**: the current configuration is sufficient for verified inbound traffic.
-- **Paused**: the configuration is stored, but SCC will not create new tasks from this provider.
+- **Paused**: the configuration is stored, but Agent Workbench will not create new tasks from this provider.
 - **Error**: the latest verification or inbound processing failed.

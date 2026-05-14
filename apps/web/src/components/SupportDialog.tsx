@@ -69,7 +69,7 @@ function getSupportCopy(language?: string | null) {
     askTitle: zh ? "如何提问" : "How to ask",
     askBody: zh ? "直接描述目标、约束和你希望看到的结果。运行中也可以追加引导。" : "Describe the goal, constraints, and desired result. You can add guidance while a task is running.",
     permissionTitle: zh ? "权限如何工作" : "How permissions work",
-    permissionBody: zh ? "SCC 只在真实风险出现时请求授权；全局授权可在权限页撤销。" : "SCC asks only when real risk appears. Global grants can be revoked in Permissions.",
+    permissionBody: zh ? "Agent Workbench 只在真实风险出现时请求授权；全局授权可在权限页撤销。" : "Agent Workbench asks only when real risk appears. Global grants can be revoked in Permissions.",
     shortcutTitle: zh ? "输入快捷键" : "Input shortcuts",
     shortcutBody: zh ? "Enter 发送，Shift + Enter 换行。附件和语音会进入当前输入上下文。" : "Enter sends, Shift + Enter inserts a newline. Attachments and voice go into the current input context.",
     openDocs: zh ? "打开文档" : "Open Docs",

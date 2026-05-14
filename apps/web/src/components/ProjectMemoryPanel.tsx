@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { MemoryDocument, MemoryDocumentCompactResult, ProjectMemory, ProjectMemoryCreateRequest, ProjectMemoryPatchRequest, TaskFolderRecord } from "@scc/shared";
+import type { MemoryDocument, MemoryDocumentCompactResult, ProjectMemory, ProjectMemoryCreateRequest, ProjectMemoryPatchRequest, TaskFolderRecord } from "@agent-workbench/shared";
 import { BookMarked, Database, Edit3, Plus, Save, Scissors, Search, Trash2, UserRound, X } from "lucide-react";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";

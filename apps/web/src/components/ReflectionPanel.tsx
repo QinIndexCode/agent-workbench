@@ -1,4 +1,4 @@
-import type { ReflectionSession, SkillConflict, SkillDuplicateGroup } from "@scc/shared";
+import type { ReflectionSession, SkillConflict, SkillDuplicateGroup } from "@agent-workbench/shared";
 import { AlertCircle, GitMerge, RefreshCcw, Sparkles, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { useState } from "react";
@@ -153,7 +153,7 @@ function getReflectionCopy(language?: string | null) {
     duplicates: zh ? "组重复" : "duplicate groups",
     conflicts: zh ? "个冲突" : "conflicts",
     emptyTitle: zh ? "还没有反思记录" : "No reflections yet",
-    emptyBody: zh ? "完成更多任务后，SCC 会把稳定模式整理为候选建议。" : "After more completed tasks, SCC will summarize stable patterns as suggestions.",
+    emptyBody: zh ? "完成更多任务后，Agent Workbench 会把稳定模式整理为候选建议。" : "After more completed tasks, Agent Workbench will summarize stable patterns as suggestions.",
     noNextStep: zh ? "暂无下一步。" : "No next step.",
     primer: {
       summary: zh ? "反思记录解释系统如何从已完成任务中提取模式、发现重复，以及为什么某些经验还不能晋升。" : "Reflection records explain how the system extracts patterns from completed tasks, finds duplicates, and decides why some experiences still cannot be promoted.",

@@ -1,15 +1,25 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
-import type { AgentWorkbench } from "@scc/core";
+import type { AgentWorkbench } from "@agent-workbench/core";
 
-export function createSccMcpServer(workbench: AgentWorkbench): McpServer {
-  const server = new McpServer({ name: "scc-agent-workbench", version: "0.1.0" });
+type ToolPrefix = "agent_workbench" | "scc";
+
+export function createAgentWorkbenchMcpServer(workbench: AgentWorkbench): McpServer {
+  const server = new McpServer({ name: "agent-workbench", version: "0.1.0" });
+  registerWorkbenchTools(server, workbench, "agent_workbench");
+  registerWorkbenchTools(server, workbench, "scc");
+  return server;
+}
+
+function registerWorkbenchTools(server: McpServer, workbench: AgentWorkbench, prefix: ToolPrefix): void {
+  const legacy = prefix === "scc";
+  const product = legacy ? "legacy Agent Workbench" : "Agent Workbench";
 
   server.registerTool(
-    "scc.list_tasks",
+    `${prefix}.list_tasks`,
     {
-      title: "List SCC tasks",
-      description: "List current SCC workbench tasks.",
+      title: legacy ? "List legacy Agent Workbench tasks" : "List Agent Workbench tasks",
+      description: `List current ${product} tasks.`,
       annotations: { readOnlyHint: true },
       inputSchema: {}
     },
@@ -17,10 +27,10 @@ export function createSccMcpServer(workbench: AgentWorkbench): McpServer {
   );
 
   server.registerTool(
-    "scc.get_task",
+    `${prefix}.get_task`,
     {
-      title: "Get SCC task",
-      description: "Get one SCC task with timeline and approvals.",
+      title: legacy ? "Get legacy Agent Workbench task" : "Get Agent Workbench task",
+      description: `Get one ${product} task with timeline and approvals.`,
       annotations: { readOnlyHint: true },
       inputSchema: { taskId: z.string() }
     },
@@ -28,10 +38,10 @@ export function createSccMcpServer(workbench: AgentWorkbench): McpServer {
   );
 
   server.registerTool(
-    "scc.create_task",
+    `${prefix}.create_task`,
     {
-      title: "Create SCC task",
-      description: "Create and start a new SCC agent task.",
+      title: legacy ? "Create legacy Agent Workbench task" : "Create Agent Workbench task",
+      description: `Create and start a new ${product} agent task.`,
       annotations: { destructiveHint: false, openWorldHint: false },
       inputSchema: { goal: z.string(), title: z.string().optional(), folderId: z.string().optional() }
     },
@@ -39,10 +49,10 @@ export function createSccMcpServer(workbench: AgentWorkbench): McpServer {
   );
 
   server.registerTool(
-    "scc.send_message",
+    `${prefix}.send_message`,
     {
-      title: "Send SCC message",
-      description: "Append a user message or pending guidance to an existing SCC task.",
+      title: legacy ? "Send legacy Agent Workbench message" : "Send Agent Workbench message",
+      description: `Append a user message or pending guidance to an existing ${product} task.`,
       annotations: { destructiveHint: false, openWorldHint: false },
       inputSchema: { taskId: z.string(), content: z.string() }
     },
@@ -50,10 +60,10 @@ export function createSccMcpServer(workbench: AgentWorkbench): McpServer {
   );
 
   server.registerTool(
-    "scc.list_skills",
+    `${prefix}.list_skills`,
     {
-      title: "List SCC skills",
-      description: "List SCC skill metadata.",
+      title: legacy ? "List legacy Agent Workbench skills" : "List Agent Workbench skills",
+      description: `List ${product} skill metadata.`,
       annotations: { readOnlyHint: true },
       inputSchema: {}
     },
@@ -70,10 +80,10 @@ export function createSccMcpServer(workbench: AgentWorkbench): McpServer {
   );
 
   server.registerTool(
-    "scc.use_skill_summary",
+    `${prefix}.use_skill_summary`,
     {
-      title: "Use SCC skill summary",
-      description: "Read a concise SCC skill summary by id.",
+      title: legacy ? "Use legacy Agent Workbench skill summary" : "Use Agent Workbench skill summary",
+      description: `Read a concise ${product} skill summary by id.`,
       annotations: { readOnlyHint: true },
       inputSchema: { skillId: z.string() }
     },
@@ -92,8 +102,6 @@ export function createSccMcpServer(workbench: AgentWorkbench): McpServer {
       );
     }
   );
-
-  return server;
 }
 
 async function summarizeTasks(workbench: AgentWorkbench) {

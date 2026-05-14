@@ -9,7 +9,7 @@ const root = join(__dirname, "..");
 const isWindows = process.platform === "win32";
 const npmCommand = isWindows ? "npm.cmd" : "npm";
 
-console.log("Starting SCC Agent Workbench development environment...\n");
+console.log("Starting Agent Workbench development environment...\n");
 
 const colors = {
   reset: "\x1b[0m",

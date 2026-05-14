@@ -1,4 +1,4 @@
-import type { ToolCall, ToolResult, WebSearchProviderConfig, WebSearchResult } from "@scc/shared";
+import type { ToolCall, ToolResult, WebSearchProviderConfig, WebSearchResult } from "@agent-workbench/shared";
 import { createId, nowIso } from "./ids.js";
 import type { EncryptedSecretValue, WorkbenchStore } from "./store.js";
 import { LocalSecretBox } from "./secrets.js";
@@ -32,7 +32,7 @@ export class WebSearchToolExecutor implements ToolExecutorDelegate {
               query,
               providerId: "builtin_duckduckgo",
               provider: "Built-in DuckDuckGo",
-              note: "No configured search provider was found; SCC used its built-in no-key fallback.",
+              note: "No configured search provider was found; Agent Workbench used its built-in no-key fallback.",
               results
             },
             null,

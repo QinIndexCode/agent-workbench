@@ -1,12 +1,15 @@
-import type { ApprovalDecision, TaskAttachment, TaskDetail, TaskTranscriptItem, UserPreferences } from "@scc/shared";
+import type { ApprovalDecision, TaskAttachment, TaskDetail, TaskTranscriptItem, UserPreferences } from "@agent-workbench/shared";
 import { AlertCircle, Menu, PanelRightClose, PanelRightOpen, X } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import { getUiCopy } from "../i18n.js";
 import { Composer, type ComposerMode, type ComposerPermissionMode, type PermissionPreset } from "./Composer.js";
 import type { EngineStatus } from "./TaskList.js";
 import { Timeline } from "./Timeline.js";
-import type { ConversationSummary, PromptCacheStats, TaskRollbackPreview, TaskRollbackRequest, TaskRollbackResult } from "@scc/shared";
+import type { ConversationSummary, PromptCacheStats, TaskRollbackPreview, TaskRollbackRequest, TaskRollbackResult } from "@agent-workbench/shared";
 import { describeSkillSource, describeSkillStatus, summarizeTaskSkills } from "./skillUx.js";
+
+const PLAN_PANEL_COLLAPSED_KEY = "agent-workbench.planPanel.collapsed";
+const LEGACY_PLAN_PANEL_COLLAPSED_KEY = "scc.planPanel.collapsed";
 
 export function TaskThread({
   task,
@@ -261,9 +264,10 @@ function TaskPlanPanel({
   onLoadPromptCacheStats?: (() => Promise<PromptCacheStats[]>) | undefined;
 }) {
   const zh = language === "zh-CN";
+  const taskEvents = Array.isArray(task.events) ? task.events : [];
   const steps = derivePlanSteps(task);
-  const checkpointCount = task.events.filter((event) => event.type === "task_checkpoint_created").length;
-  const hasAudit = task.events.some((event) => event.type === "conversation_summary_created" || event.type === "context_overflow_recovered" || event.type === "token_usage_recorded" || event.type === "prompt_cache_stats" || event.type === "provider_fallback");
+  const checkpointCount = taskEvents.filter((event) => event.type === "task_checkpoint_created").length;
+  const hasAudit = taskEvents.some((event) => event.type === "conversation_summary_created" || event.type === "context_overflow_recovered" || event.type === "token_usage_recorded" || event.type === "prompt_cache_stats" || event.type === "provider_fallback");
   const skillAudit = summarizeTaskSkills(task);
   const [rollbackPreview, setRollbackPreview] = useState<TaskRollbackPreview | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
@@ -276,7 +280,7 @@ function TaskPlanPanel({
   const [collapsed, setCollapsed] = useState(() => {
     try {
       const storage = safeBrowserLocalStorage();
-      const stored = storage?.getItem("scc.planPanel.collapsed");
+      const stored = storage?.getItem(PLAN_PANEL_COLLAPSED_KEY) ?? storage?.getItem(LEGACY_PLAN_PANEL_COLLAPSED_KEY);
       if (stored === "1") return true;
       if (stored === "0") return false;
       return window.matchMedia?.("(max-width: 760px)").matches ?? false;
@@ -286,7 +290,7 @@ function TaskPlanPanel({
   });
   useEffect(() => {
     try {
-      safeBrowserLocalStorage()?.setItem("scc.planPanel.collapsed", collapsed ? "1" : "0");
+      safeBrowserLocalStorage()?.setItem(PLAN_PANEL_COLLAPSED_KEY, collapsed ? "1" : "0");
     } catch {
       // Ignore storage failures; the panel remains usable for the current session.
     }

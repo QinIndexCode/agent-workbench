@@ -1,4 +1,4 @@
-import type { ReflectionSession, SkillCuratorItem, TaskDetail, TaskEvent } from "@scc/shared";
+import type { ReflectionSession, SkillCuratorItem, TaskDetail, TaskEvent } from "@agent-workbench/shared";
 
 export type LoadedSkillEvent = {
   eventId: string;

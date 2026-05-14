@@ -1,6 +1,6 @@
 # Curator
 
-Curator 用来解释 SCC 为什么推荐、拦截或判重某个 Skill 候选。
+Curator 用来解释 Agent Workbench 为什么推荐、拦截或判重某个 Skill 候选。
 
 ## 优先看什么
 

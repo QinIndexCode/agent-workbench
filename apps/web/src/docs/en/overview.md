@@ -1,6 +1,6 @@
-# SCC Workbench
+# Agent Workbench
 
-SCC is an Agent-oriented workbench for organizing task context, managing tool permissions, tracking event streams, and maintaining reusable capability modules.
+Agent Workbench is an Agent-oriented workbench for organizing task context, managing tool permissions, tracking event streams, and maintaining reusable capability modules.
 
 ## Architecture
 

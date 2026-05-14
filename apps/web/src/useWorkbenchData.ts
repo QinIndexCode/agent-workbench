@@ -30,7 +30,7 @@ import type {
   UserPreferences,
   PromptCacheStats,
   WebSearchProviderConfig
-} from "@scc/shared";
+} from "@agent-workbench/shared";
 import { api } from "./api.js";
 
 export interface WorkbenchData {
@@ -320,8 +320,23 @@ export function useWorkbenchData(loadProfile: WorkbenchLoadProfile = defaultLoad
     applySelectedTranscript(id, nextTranscript);
   }
 
+  const liveCallbacksRef = useRef({
+    refresh,
+    refreshCore,
+    refreshTaskShell,
+    ensureVisibleSurfaceLoaded,
+    scheduleRealtimeFlush
+  });
+  liveCallbacksRef.current = {
+    refresh,
+    refreshCore,
+    refreshTaskShell,
+    ensureVisibleSurfaceLoaded,
+    scheduleRealtimeFlush
+  };
+
   useEffect(() => {
-    void refresh().catch(recordBackgroundSyncFailure);
+    void liveCallbacksRef.current.refresh().catch(recordBackgroundSyncFailure);
     if (refreshTimerRef.current !== null) {
       window.clearInterval(refreshTimerRef.current);
     }
@@ -331,10 +346,10 @@ export function useWorkbenchData(loadProfile: WorkbenchLoadProfile = defaultLoad
       backgroundPollRef.current = (backgroundPollRef.current + 1) % cycleLength;
       const shouldFullRefresh = backgroundPollRef.current === 0;
       if (shouldFullRefresh) {
-        void refreshCore(undefined).catch(recordBackgroundSyncFailure);
+        void liveCallbacksRef.current.refreshCore(undefined).catch(recordBackgroundSyncFailure);
         return;
       }
-      void refreshTaskShell(undefined, !realtimeConnected).catch(recordBackgroundSyncFailure);
+      void liveCallbacksRef.current.refreshTaskShell(undefined, !realtimeConnected).catch(recordBackgroundSyncFailure);
     }, realtimeConnected ? 8000 : 2500);
     return () => {
       if (refreshTimerRef.current !== null) {
@@ -349,11 +364,11 @@ export function useWorkbenchData(loadProfile: WorkbenchLoadProfile = defaultLoad
     lastActiveViewRef.current = loadProfile.activeView;
     if (loadProfile.activeView === "tasks") {
       if (previousView !== "tasks") {
-        void refreshCore(selectedIdRef.current).catch(recordBackgroundSyncFailure);
+        void liveCallbacksRef.current.refreshCore(selectedIdRef.current).catch(recordBackgroundSyncFailure);
       }
       return;
     }
-    void ensureVisibleSurfaceLoaded().catch(recordBackgroundSyncFailure);
+    void liveCallbacksRef.current.ensureVisibleSurfaceLoaded().catch(recordBackgroundSyncFailure);
   }, [loadProfile.activeView, loadProfile.librarySection, loadProfile.settingsSection]);
 
   useEffect(() => {
@@ -473,7 +488,7 @@ export function useWorkbenchData(loadProfile: WorkbenchLoadProfile = defaultLoad
                 return;
               }
               wsEventQueueRef.current.push(parsed.event);
-              scheduleRealtimeFlush(currentTaskId);
+              liveCallbacksRef.current.scheduleRealtimeFlush(currentTaskId);
             } catch (e) {
               console.warn("Failed to handle WebSocket message:", e);
             }
@@ -737,7 +752,7 @@ export function useWorkbenchData(loadProfile: WorkbenchLoadProfile = defaultLoad
   function applySelectedTranscript(taskId: string, transcript: TaskTranscriptItem[]) {
     transcriptHydrationRef.current[taskId] = true;
     if (selectedIdRef.current !== taskId) return;
-    setSelectedTranscript(transcript);
+    setSelectedTranscript(appendTranscriptEvents([], transcript));
   }
 
   return {
@@ -809,10 +824,8 @@ function isRealtimeDrivenTaskStatus(status: TaskDetail["status"]): boolean {
   return status === "running" || status === "waiting_for_user" || status === "waiting_approval";
 }
 
-function compactTaskEventsForTranscript(events: TaskEvent[]): TaskTranscriptItem[] {
-  return events
-    .filter((event) => isClientTranscriptEvent(event) && !isInlineToolMarkupEvent(event))
-    .map(compactLiveTranscriptEvent);
+export function compactTaskEventsForTranscript(events: TaskEvent[]): TaskTranscriptItem[] {
+  return appendTranscriptEvents([], events);
 }
 
 function approvalFromEvent(event: TaskEvent, approvals: ToolApproval[]): ToolApproval[] {
@@ -892,20 +905,61 @@ export function coalesceRealtimeEvents(
   return { events: next, acceptedEvents, changedCount };
 }
 
-function appendTranscriptEvents(current: TaskTranscriptItem[], events: TaskEvent[]): TaskTranscriptItem[] {
+function appendTranscriptEvents(current: TaskTranscriptItem[], events: Array<TaskEvent | TaskTranscriptItem>): TaskTranscriptItem[] {
   const next = [...current];
   const seen = new Set(next.map((event) => event.id));
   for (const event of events) {
     if (seen.has(event.id) || !isClientTranscriptEvent(event)) continue;
+    if (event.payload["uiHidden"] === true) continue;
     if (isInlineToolMarkupEvent(event)) continue;
     seen.add(event.id);
-    const compact = compactLiveTranscriptEvent(event);
+    let compact = compactLiveTranscriptEvent(event);
+    if (compact.type === "assistant_message") {
+      const payloadBody = assistantPayloadBody(compact);
+      if (!compact.summary && payloadBody) {
+        compact = { ...compact, summary: payloadBody };
+      }
+      const streamId = String(compact.payload["streamId"] ?? "");
+      if (streamId) {
+        const fallback = stripToolEvidenceBoilerplate(compact.summary) ? "" : assistantFallbackForStream(next, streamId);
+        next.splice(0, next.length, ...next.filter((item) => !isStreamDeltaForStream(item, streamId)));
+        if (fallback) {
+          compact = {
+            ...compact,
+            summary: fallback,
+            payload: {
+              ...compact.payload,
+              streamFinalFallback: true
+            }
+          };
+        }
+      }
+      if (!stripToolEvidenceBoilerplate(compact.summary)) continue;
+    }
+    if (isStreamDeltaEvent(compact) && hasAssistantFinalForStream(next, String(compact.payload["streamId"] ?? ""))) continue;
     if (mergeAdjacentStreamDelta(next, compact)) {
       continue;
     }
     next.push(compact);
   }
   return next;
+}
+
+function assistantFallbackForStream(events: TaskTranscriptItem[], streamId: string): string {
+  return events
+    .filter((event) => event.type === "assistant_delta" && String(event.payload["streamId"] ?? "") === streamId)
+    .map((event) => streamDeltaText(event))
+    .filter((value) => stripToolEvidenceBoilerplate(value).length > 0)
+    .reduce((current, delta) => appendStreamDeltaText(current, delta, "assistant_delta"), "")
+    .trim();
+}
+
+function isStreamDeltaForStream(event: TaskTranscriptItem, streamId: string): boolean {
+  return isStreamDeltaEvent(event) && String(event.payload["streamId"] ?? "") === streamId;
+}
+
+function hasAssistantFinalForStream(events: TaskTranscriptItem[], streamId: string): boolean {
+  return Boolean(streamId) && events.some((event) => event.type === "assistant_message" && String(event.payload["streamId"] ?? "") === streamId);
 }
 
 function mergeAdjacentStreamDelta<T extends TaskEvent | TaskTranscriptItem>(events: T[], incoming: T): boolean {
@@ -965,11 +1019,12 @@ function streamDeltaSeparator(current: string, delta: string): string {
   return "";
 }
 
-function compactLiveTranscriptEvent(event: TaskEvent): TaskTranscriptItem {
+function compactLiveTranscriptEvent(event: TaskEvent | TaskTranscriptItem): TaskTranscriptItem {
   if (event.type === "assistant_message" || event.type === "assistant_delta") {
+    const summary = stripToolEvidenceBoilerplate(event.summary);
     return {
       ...event,
-      summary: stripToolEvidenceBoilerplate(event.summary),
+      summary: summary || assistantPayloadBody(event),
       payload: stripAssistantPayloadBoilerplate(event.payload)
     };
   }
@@ -993,7 +1048,7 @@ function stripAssistantPayloadBoilerplate(payload: Record<string, unknown>): Rec
 }
 
 function stripToolEvidenceBoilerplate(value: string): string {
-  return value
+  return stripInlineToolMarkup(value)
     .split(/\r?\n/)
     .filter((line) => !/^(tool evidence returned\.?|tool evidence returned[:：].*|工具证据已返回。?|工具证据已返回[:：].*)$/i.test(line.trim()))
     .join("\n")
@@ -1001,9 +1056,26 @@ function stripToolEvidenceBoilerplate(value: string): string {
     .trim();
 }
 
+function assistantPayloadBody(event: TaskEvent | TaskTranscriptItem): string {
+  if (event.type !== "assistant_message" && event.type !== "assistant_delta") return "";
+  for (const key of ["message", "text", "delta"]) {
+    const value = event.payload[key];
+    if (typeof value !== "string") continue;
+    const visible = stripToolEvidenceBoilerplate(value);
+    if (visible) return visible;
+  }
+  return "";
+}
+
+function stripInlineToolMarkup(value: string): string {
+  return value
+    .replace(/<function_calls\b[\s\S]*?<\/function_calls>/gi, "\n")
+    .replace(/<invoke\b[\s\S]*?<\/invoke>/gi, "\n");
+}
+
 function normalizeTranscriptTruncationMarker(value: string): string {
   return value.replace(
-    /\[UI preview truncated: (\d+) characters omitted\. Full evidence is retained by SCC\.\]/g,
+    /\[UI preview truncated: (\d+) characters omitted\. Full evidence is retained by (?:Agent Workbench|SCC Agent Workbench)\.\]/g,
     "[Output truncated: $1 characters omitted. Full evidence is available in the audit log.]"
   );
 }
@@ -1023,6 +1095,7 @@ function isClientTranscriptEvent(event: TaskEvent | null | undefined): boolean {
     event.type === "tool_started" ||
     event.type === "tool_progress" ||
     event.type === "tool_result" ||
+    event.type === "model_no_progress" ||
     event.type === "task_checkpoint_created" ||
     event.type === "task_rollback_completed" ||
     event.type === "task_rollback_failed" ||
@@ -1042,5 +1115,5 @@ function isInlineToolMarkupEvent(event: TaskEvent | null | undefined): boolean {
   ]
     .filter(Boolean)
     .join("\n");
-  return /<function_calls\b|<invoke\s+name=/i.test(text);
+  return /<function_calls\b|<invoke\s+name=/i.test(text) && !stripToolEvidenceBoilerplate(text);
 }

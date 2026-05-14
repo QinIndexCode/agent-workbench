@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import type { APIRequestContext, Page } from "@playwright/test";
 
 export const apiBase = "http://127.0.0.1:5181";
-export const SESSION_HEADER = "x-scc-session";
+export const SESSION_HEADER = "x-agent-workbench-session";
 export const riskCategories = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"] as const;
 
 export async function bootstrapSession(request: APIRequestContext): Promise<Record<string, string>> {

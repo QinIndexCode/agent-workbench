@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import type { RiskCategory, TaskDetail, ToolCall, ToolResult } from "@scc/shared";
+import type { RiskCategory, TaskDetail, ToolCall, ToolResult } from "@agent-workbench/shared";
 import {
   AgentWorkbench,
   createId,
@@ -14,7 +14,7 @@ import {
   type ModelStreamHandlers,
   type ModelTurn,
   type ToolExecutor
-} from "@scc/core";
+} from "@agent-workbench/core";
 
 interface MatrixCase {
   name: string;
@@ -32,7 +32,7 @@ afterAll(async () => {
   await writeFile(
     join(outDir, "report.md"),
     [
-      "# SCC Real Task Matrix",
+      "# Agent Workbench Real Task Matrix",
       "",
       `Generated: ${nowIso()}`,
       "",

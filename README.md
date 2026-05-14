@@ -1,6 +1,6 @@
-# SCC Agent Workbench
+# Agent Workbench
 
-SCC Agent Workbench is rebuilt as an agent-first local workbench. The runtime owns context assembly, tool permissions, event projection, user guidance, and visible evidence. The agent owns planning and next-step selection.
+Agent Workbench is rebuilt as an agent-first local workbench. The runtime owns context assembly, tool permissions, event projection, user guidance, and visible evidence. The agent owns planning and next-step selection.
 
 ## Architecture
 
@@ -19,7 +19,7 @@ SCC Agent Workbench is rebuilt as an agent-first local workbench. The runtime ow
 
 ## Model Provider
 
-The server uses `OPENAI_API_KEY` when present. If you explicitly set `SCC_API_KEY_FILE`, it can also load a provider definition from that file for one-time bootstrap or migration. Plaintext key files are not loaded implicitly. Without a configured provider, the workbench falls back to a small local planner so the permission and tool loop still runs offline.
+The server uses `OPENAI_API_KEY` when present. If you explicitly set `AGENT_WORKBENCH_API_KEY_FILE`, it can also load a provider definition from that file for one-time bootstrap or migration; the legacy `SCC_API_KEY_FILE` key is still accepted as a fallback. Plaintext key files are not loaded implicitly. Without a configured provider, the workbench falls back to a small local planner so the permission and tool loop still runs offline.
 
 ## Commands
 

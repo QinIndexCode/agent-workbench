@@ -1,4 +1,4 @@
-# SCC-Batch Engine: 上下文组装系统设计文档
+# Agent Workbench Engine: 上下文组装系统设计文档
 
 > 版本: v1.5
 > 日期: 2026-05-05

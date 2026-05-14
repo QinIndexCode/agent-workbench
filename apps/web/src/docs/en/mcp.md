@@ -1,6 +1,6 @@
 # MCP
 
-The MCP page connects external tool servers into SCC and keeps those tools inside the same approval, evidence, and timeline system as built-in tools.
+The MCP page connects external tool servers into Agent Workbench and keeps those tools inside the same approval, evidence, and timeline system as built-in tools.
 
 ## Supported transport types
 

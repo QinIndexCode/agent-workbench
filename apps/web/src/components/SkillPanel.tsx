@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ReflectionSession, SkillConflict, SkillCreateRequest, SkillDuplicateGroup, SkillRecord, SkillUpdateRequest } from "@scc/shared";
+import type { ReflectionSession, SkillConflict, SkillCreateRequest, SkillDuplicateGroup, SkillRecord, SkillUpdateRequest } from "@agent-workbench/shared";
 import { Copy, Download, Edit3, Merge, Plus, RefreshCcw, Save, Search, Trash2, X } from "lucide-react";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -66,9 +66,9 @@ export function SkillPanel({
   onRunReflection?: () => Promise<void> | void;
 }) {
   const text = getSkillCopy(language);
-  const safeSkills = Array.isArray(skills) ? skills : [];
-  const safeDuplicates = Array.isArray(duplicates) ? duplicates : [];
-  const safeConflicts = Array.isArray(conflicts) ? conflicts : [];
+  const safeSkills = useMemo(() => (Array.isArray(skills) ? skills : []), [skills]);
+  const safeDuplicates = useMemo(() => (Array.isArray(duplicates) ? duplicates : []), [duplicates]);
+  const safeConflicts = useMemo(() => (Array.isArray(conflicts) ? conflicts : []), [conflicts]);
   const [localQuery, setLocalQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<SkillRecord["status"] | "all">("all");
   const [selectedId, setSelectedId] = useState<string | null>(safeSkills[0]?.id ?? null);

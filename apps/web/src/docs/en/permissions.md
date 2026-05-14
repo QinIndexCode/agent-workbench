@@ -1,12 +1,12 @@
 # Permissions
 
-The Permissions page defines the **real tool boundary** for SCC. It is not about answer style; it is about which actions may run, which actions must stop, and which actions should remain tightly gated.
+The Permissions page defines the **real tool boundary** for Agent Workbench. It is not about answer style; it is about which actions may run, which actions must stop, and which actions should remain tightly gated.
 
 ## The five approval modes
 
 ### Ask
 
-The safest default. SCC asks before a risky tool action runs.
+The safest default. Agent Workbench asks before a risky tool action runs.
 
 ### Read only
 

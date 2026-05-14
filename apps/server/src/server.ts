@@ -16,7 +16,7 @@ import {
   parseWecomCallbackXml,
   type OpenAIProviderConfigWithName,
   type ResolvedModelProviderConfig
-} from "@scc/core";
+} from "@agent-workbench/core";
 import {
   ApprovalRequestSchema,
   ControlRequestSchema,
@@ -68,10 +68,10 @@ import {
   WecomCallbackRequestSchema,
   WebSearchProviderCreateRequestSchema,
   WebSearchProviderPatchRequestSchema
-} from "@scc/shared";
+} from "@agent-workbench/shared";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { ZodError, z } from "zod";
-import { createSccMcpServer } from "./scc-mcp-server.js";
+import { createAgentWorkbenchMcpServer } from "./agent-workbench-mcp-server.js";
 import { SqliteWorkbenchStore } from "./sqlite-store.js";
 
 function generateRequestId(): string {
@@ -84,7 +84,8 @@ const LIST_EVENT_WINDOW = 0;
 const MAX_UI_OUTPUT_CHARS = 12000;
 const MAX_UI_SUMMARY_CHARS = 8000;
 const TASK_WS_HEARTBEAT_MS = 10_000;
-const SESSION_HEADER = "x-scc-session";
+const SESSION_HEADER = "x-agent-workbench-session";
+const LEGACY_SESSION_HEADER = "x-scc-session";
 const LOCALHOST_ALLOWED_ORIGINS = [
   "http://127.0.0.1:5173",
   "http://localhost:5173",
@@ -147,19 +148,51 @@ function taskTranscriptForTransport(task: TaskDetail): TaskTranscriptItem[] {
 function buildTaskTranscript(task: TaskDetail): TaskTranscriptItem[] {
   const finalStreamIds = new Set(
     task.events
-      .filter((event) => event.type === "assistant_message")
+      .filter((event) => event.type === "assistant_message" && !isInlineToolMarkupEvent(event))
       .map((event) => String(event.payload["streamId"] ?? ""))
       .filter(Boolean)
   );
-  return task.events.filter((event) => {
+  const finalFallbacks = buildAssistantFinalFallbacks(task.events);
+  const normalized = task.events.filter((event) => {
     if (!isTranscriptVisibleEvent(event)) return false;
     if (event.payload["uiHidden"] === true) return false;
     if (isInlineToolMarkupEvent(event)) return false;
-    if (event.type === "assistant_delta" && finalStreamIds.has(String(event.payload["streamId"] ?? ""))) return false;
+    if ((event.type === "assistant_delta" || event.type === "thinking_delta") && finalStreamIds.has(String(event.payload["streamId"] ?? ""))) return false;
     if (event.type !== "approval_pending") return true;
     const approvalId = String(event.payload["approvalId"] ?? "");
     return task.approvals.some((approval) => approval.id === approvalId && approval.status === "pending");
-  });
+  }).map((event) => applyAssistantFinalFallback(event, finalFallbacks));
+  return normalized.filter((event) => event.type !== "assistant_message" || Boolean(visibleAssistantText(event)));
+}
+
+function buildAssistantFinalFallbacks(events: TaskEvent[]): Map<string, string> {
+  const fallbacks = new Map<string, string>();
+  for (const event of events) {
+    if (event.type !== "assistant_delta") continue;
+    const streamId = String(event.payload["streamId"] ?? "");
+    if (!streamId) continue;
+    const delta = String(event.payload["delta"] ?? event.summary ?? "");
+    if (!stripToolEvidenceBoilerplate(delta)) continue;
+    fallbacks.set(streamId, appendAssistantStreamText(fallbacks.get(streamId) ?? "", delta));
+  }
+  return fallbacks;
+}
+
+function applyAssistantFinalFallback(event: TaskEvent, fallbacks: Map<string, string>): TaskEvent {
+  if (event.type !== "assistant_message") return event;
+  const visible = visibleAssistantText(event);
+  if (visible) return visible === event.summary ? event : { ...event, summary: visible };
+  const streamId = String(event.payload["streamId"] ?? "");
+  const fallback = streamId ? fallbacks.get(streamId)?.trim() : "";
+  if (!fallback) return event;
+  return {
+    ...event,
+    summary: fallback,
+    payload: {
+      ...event.payload,
+      streamFinalFallback: true
+    }
+  };
 }
 
 function isTranscriptVisibleEvent(event: TaskEvent): boolean {
@@ -176,6 +209,7 @@ function isTranscriptVisibleEvent(event: TaskEvent): boolean {
     event.type === "tool_started" ||
     event.type === "tool_progress" ||
     event.type === "tool_result" ||
+    event.type === "model_no_progress" ||
     event.type === "task_checkpoint_created" ||
     event.type === "task_rollback_completed" ||
     event.type === "task_rollback_failed" ||
@@ -188,7 +222,7 @@ function compactTranscriptItemForTransport(event: TaskTranscriptItem): TaskTrans
   if (event.type === "assistant_message" || event.type === "assistant_delta") {
     return {
       ...event,
-      summary: stripToolEvidenceBoilerplate(event.summary),
+      summary: visibleAssistantText(event),
       payload: stripAssistantPayloadBoilerplate(event.payload)
     };
   }
@@ -219,13 +253,13 @@ function isInlineToolMarkupEvent(event: TaskEvent): boolean {
   ]
     .filter(Boolean)
     .join("\n");
-  return /<function_calls\b|<invoke\s+name=/i.test(text);
+  return /<function_calls\b|<invoke\s+name=/i.test(text) && !stripToolEvidenceBoilerplate(text);
 }
 
 function compactUiText(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
   const omitted = value.length - maxChars;
-  return `${value.slice(0, maxChars)}\n\n[UI preview truncated: ${omitted} characters omitted. Full evidence is retained by SCC.]`;
+  return `${value.slice(0, maxChars)}\n\n[UI preview truncated: ${omitted} characters omitted. Full evidence is retained by Agent Workbench.]`;
 }
 
 function compactTranscriptText(value: string, maxChars: number): string {
@@ -242,13 +276,46 @@ function stripAssistantPayloadBoilerplate(payload: Record<string, unknown>): Rec
   return next;
 }
 
+function visibleAssistantText(event: TaskEvent | TaskTranscriptItem): string {
+  const summary = stripToolEvidenceBoilerplate(event.summary);
+  if (summary || (event.type !== "assistant_message" && event.type !== "assistant_delta")) return summary;
+  for (const key of ["message", "text", "delta"]) {
+    const value = event.payload[key];
+    if (typeof value !== "string") continue;
+    const visible = stripToolEvidenceBoilerplate(value);
+    if (visible) return visible;
+  }
+  return "";
+}
+
 function stripToolEvidenceBoilerplate(value: string): string {
-  return value
+  return stripInlineToolMarkup(value)
     .split(/\r?\n/)
     .filter((line) => !/^(tool evidence returned\.?|tool evidence returned[:：].*|工具证据已返回。?|工具证据已返回[:：].*)$/i.test(line.trim()))
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function stripInlineToolMarkup(value: string): string {
+  return value
+    .replace(/<function_calls\b[\s\S]*?<\/function_calls>/gi, "\n")
+    .replace(/<invoke\b[\s\S]*?<\/invoke>/gi, "\n");
+}
+
+function appendAssistantStreamText(current: string, delta: string): string {
+  if (!current) return delta;
+  return `${current}${assistantStreamSeparator(current, delta)}${delta}`;
+}
+
+function assistantStreamSeparator(current: string, delta: string): string {
+  if (!delta || /^\s/.test(delta) || /\s$/.test(current)) return "";
+  const previous = current.at(-1) ?? "";
+  const next = delta[0] ?? "";
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(previous + next)) return "";
+  if (/[A-Za-z0-9)]/.test(previous) && /[A-Za-z0-9(]/.test(next)) return " ";
+  if (/[.,;:!?]/.test(previous) && /[A-Za-z0-9]/.test(next)) return " ";
+  return "";
 }
 
 export interface AppOptions {
@@ -274,7 +341,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
               }
             },
             redact: {
-              paths: [`req.headers.${SESSION_HEADER}`],
+              paths: [`req.headers.${SESSION_HEADER}`, `req.headers.${LEGACY_SESSION_HEADER}`],
               censor: "[redacted-session]"
             }
           }
@@ -312,7 +379,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
       callback(null, !origin || isAllowedOrigin(origin, allowedOrigins));
     },
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["content-type", SESSION_HEADER]
+    allowedHeaders: ["content-type", SESSION_HEADER, LEGACY_SESSION_HEADER]
   });
   await app.register(websocket);
   app.addHook("onRequest", async (request, reply) => {
@@ -330,7 +397,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
       }
       return;
     }
-    const session = readSessionHeader(request.headers[SESSION_HEADER]);
+    const session = readSessionHeader(request.headers[SESSION_HEADER] ?? request.headers[LEGACY_SESSION_HEADER]);
     if (session !== sessionToken) {
       return reply.code(401).send({ error: "Missing or invalid session token." });
     }
@@ -356,7 +423,13 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     if (scheduler) clearInterval(scheduler);
   });
 
-  app.get("/health", async () => ({ ok: true }));
+  const startedAt = Date.now();
+  app.get("/health", async () => ({
+    ok: true,
+    uptimeMs: Date.now() - startedAt,
+    version: "0.1.0",
+    timestamp: new Date().toISOString()
+  }));
   app.get("/api/session/bootstrap", async () => ({ sessionToken }));
 
   app.get("/api/tasks", async () => (await workbench.listTasks()).map((task) => taskForTransport(task, LIST_EVENT_WINDOW)));
@@ -724,7 +797,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     method: ["GET", "POST", "DELETE"],
     url: "/api/mcp/server",
     handler: async (request, reply) => {
-      const server = createSccMcpServer(workbench);
+      const server = createAgentWorkbenchMcpServer(workbench);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined } as never);
       await server.connect(transport as never);
       reply.raw.on("close", () => {
@@ -1023,7 +1096,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
       }
       return {
         type: 4,
-        data: { content: `Created SCC task: ${task.title}` },
+        data: { content: `Created Agent Workbench task: ${task.title}` },
         taskId: task.id
       };
     } catch (error) {
@@ -1175,7 +1248,7 @@ function contextWindowForModel(model: string): number {
 }
 
 function createDefaultRuntime(onEvent: (event: TaskEvent) => void): { workbench: AgentWorkbench; mcpRegistry: McpRegistry; close: () => void } {
-  const store = new SqliteWorkbenchStore(process.env["SCC_DB_PATH"] ?? "data/workbench.sqlite");
+  const store = new SqliteWorkbenchStore(process.env["AGENT_WORKBENCH_DB_PATH"] ?? process.env["SCC_DB_PATH"] ?? "data/workbench.sqlite");
   const contextAssembler = new ContextAssembler(store);
   const mcpRegistry = new McpRegistry(store);
   const secretBox = new LocalSecretBox();
@@ -1245,7 +1318,7 @@ function createSessionToken(): string {
 }
 
 function resolveAllowedOrigins(): Set<string> {
-  const configured = (process.env["SCC_ALLOWED_ORIGINS"] ?? "")
+  const configured = (process.env["AGENT_WORKBENCH_ALLOWED_ORIGINS"] ?? process.env["SCC_ALLOWED_ORIGINS"] ?? "")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);

@@ -1,4 +1,4 @@
-import type { PatternRecord, ReflectionSession, SkillConflict, TaskMemory } from "@scc/shared";
+import type { PatternRecord, ReflectionSession, SkillConflict, TaskMemory } from "@agent-workbench/shared";
 import { describeReflectionPhase, describeReflectionStatus } from "./skillUx.js";
 
 export function LearningPanel({

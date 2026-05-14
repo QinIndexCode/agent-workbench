@@ -74,13 +74,13 @@ import type {
   WebSearchProviderConfig,
   WebSearchProviderCreateRequest,
   WebSearchProviderPatchRequest
-} from "@scc/shared";
+} from "@agent-workbench/shared";
 
 const apiBase = import.meta.env["VITE_API_BASE"] ?? "";
 const REQUEST_TIMEOUT_MS = 30000;
 const TASK_EVENT_WINDOW = 600;
 const SESSION_BOOTSTRAP_PATH = "/api/session/bootstrap";
-const SESSION_HEADER = "x-scc-session";
+const SESSION_HEADER = "x-agent-workbench-session";
 
 export interface RequestMeta {
   startTime: number;

@@ -6,7 +6,7 @@ import type {
   SlackEventRequest,
   TelegramUpdateRequest,
   WecomCallbackRequest
-} from "@scc/shared";
+} from "@agent-workbench/shared";
 import { createDecipheriv, createHash, createHmac, createPublicKey, timingSafeEqual, verify } from "node:crypto";
 
 export type IntegrationSetupSnapshot = {

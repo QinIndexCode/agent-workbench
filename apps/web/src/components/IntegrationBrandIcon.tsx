@@ -1,4 +1,4 @@
-import type { IntegrationKind } from "@scc/shared";
+import type { IntegrationKind } from "@agent-workbench/shared";
 
 export function IntegrationBrandIcon({
   kind,

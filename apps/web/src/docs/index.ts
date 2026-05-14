@@ -31,7 +31,7 @@ export interface DocMeta {
 export const docMetas: DocMeta[] = [
   {
     id: "overview",
-    title: { en: "SCC Workbench", zh: "SCC Workbench" },
+    title: { en: "Agent Workbench", zh: "Agent Workbench" },
     summary: {
       en: "A quick orientation to tasks, context, approvals, and the main workbench loop.",
       zh: "快速了解任务、上下文、权限审批和整个工作台的主流程。"
@@ -150,8 +150,8 @@ export const docMetas: DocMeta[] = [
     id: "integrations",
     title: { en: "Integrations", zh: "集成" },
     summary: {
-      en: "Turn Discord, Feishu, Slack, Telegram, and WeCom messages into SCC tasks with provider-specific verification.",
-      zh: "把 Discord、飞书、Slack、Telegram 和 WeCom 消息转换成 SCC 任务，并了解各平台的验签配置。"
+      en: "Turn Discord, Feishu, Slack, Telegram, and WeCom messages into Agent Workbench tasks with provider-specific verification.",
+      zh: "把 Discord、飞书、Slack、Telegram 和 WeCom 消息转换成 Agent Workbench 任务，并了解各平台的验签配置。"
     },
     icon: MessageSquare
   },

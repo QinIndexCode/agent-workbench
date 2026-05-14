@@ -6,12 +6,13 @@ import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore, McpRegistry, type ModelClient, type ModelTurn } from "@scc/core";
-import type { TaskDetail, TaskEvent, ToolCall, ToolResult } from "@scc/shared";
+import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore, McpRegistry, type ModelClient, type ModelTurn } from "@agent-workbench/core";
+import type { TaskDetail, TaskEvent, ToolCall, ToolResult } from "@agent-workbench/shared";
 import { createApp } from "../src/server.js";
 import { SqliteWorkbenchStore } from "../src/sqlite-store.js";
 
-const SESSION_HEADER = "x-scc-session";
+const SESSION_HEADER = "x-agent-workbench-session";
+const LEGACY_SESSION_HEADER = "x-scc-session";
 
 type TestApp = Awaited<ReturnType<typeof createApp>> & {
   injectRaw: Awaited<ReturnType<typeof createApp>>["inject"];
@@ -117,7 +118,22 @@ describe("server API", () => {
       ).statusCode
     ).toBe(403);
     expect((await app.inject({ method: "GET", url: "/api/tasks", headers: { [SESSION_HEADER]: sessionToken } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/tasks", headers: { [LEGACY_SESSION_HEADER]: sessionToken } })).statusCode).toBe(200);
     expect((await app.inject({ method: "GET", url: "/api/session/bootstrap", headers: { origin: "http://localhost:9999" } })).statusCode).toBe(403);
+
+    await app.close();
+  });
+
+  it("exposes a lightweight public health endpoint", async () => {
+    const app = await createApp({ logger: false, workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore() }) });
+    const response = await app.inject({ method: "GET", url: "/health" });
+    const body = response.json<{ ok: boolean; uptimeMs: number; version: string; timestamp: string }>();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.uptimeMs).toBeGreaterThanOrEqual(0);
+    expect(body.version).toBe("0.1.0");
+    expect(Number.isNaN(Date.parse(body.timestamp))).toBe(false);
 
     await app.close();
   });
@@ -198,6 +214,39 @@ describe("server API", () => {
         payload: { message: "Tool evidence returned.\n\nTop entries:\n- node.exe" }
       },
       {
+        id: "event_delta_before_markup_final",
+        taskId: "task_windowed",
+        type: "assistant_delta",
+        createdAt: now,
+        summary: "I will inspect the code and then improve the styles.",
+        payload: { streamId: "stream_markup_final", delta: "I will inspect the code and then improve the styles." }
+      },
+      {
+        id: "event_agent_markup_final",
+        taskId: "task_windowed",
+        type: "assistant_message",
+        createdAt: now,
+        summary:
+          'I will inspect the code and then improve the styles.\n\n<function_calls><invoke name="read_file"><parameter name="path">index.html</parameter></invoke></function_calls>',
+        payload: { streamId: "stream_markup_final" }
+      },
+      {
+        id: "event_agent_payload_only",
+        taskId: "task_windowed",
+        type: "assistant_message",
+        createdAt: now,
+        summary: "Tool evidence returned.",
+        payload: { message: "Tool evidence returned.\n\nPayload-only assistant body." }
+      },
+      {
+        id: "event_agent_empty_boilerplate",
+        taskId: "task_windowed",
+        type: "assistant_message",
+        createdAt: now,
+        summary: "Tool evidence returned.",
+        payload: {}
+      },
+      {
         id: "event_attachment",
         taskId: "task_windowed",
         type: "attachment_added",
@@ -215,7 +264,7 @@ describe("server API", () => {
           summary: [
             "Earlier conversation was compacted to keep the task within the model context window.",
             "- **Tool Call**: edit_file({ very large payload })",
-            "[UI preview truncated: 999 characters omitted. Full evidence is retained by SCC.]"
+            "[UI preview truncated: 999 characters omitted. Full evidence is retained by Agent Workbench.]"
           ].join("\n"),
           retainedFacts: ["Original goal: Build the actual requested artifact"]
         }
@@ -255,6 +304,10 @@ describe("server API", () => {
     expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_user_goal");
     expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_early_agent");
     expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_agent_tool_boilerplate");
+    expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_agent_markup_final");
+    expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_agent_payload_only");
+    expect(transcript.map((event: TaskEvent) => event.id)).not.toContain("event_agent_empty_boilerplate");
+    expect(transcript.map((event: TaskEvent) => event.id)).not.toContain("event_delta_before_markup_final");
     expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_attachment");
     expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_agent_0");
     expect(transcript.at(-1)?.id).toBe("event_agent_999");
@@ -262,6 +315,9 @@ describe("server API", () => {
     expect(JSON.stringify(transcript)).not.toContain("UI preview truncated");
     expect(JSON.stringify(transcript)).not.toContain("Original goal");
     expect(JSON.stringify(transcript)).not.toContain("Tool evidence returned");
+    expect(JSON.stringify(transcript)).not.toContain("function_calls");
+    expect(JSON.stringify(transcript)).toContain("I will inspect the code and then improve the styles.");
+    expect(JSON.stringify(transcript)).toContain("Payload-only assistant body.");
     expect(JSON.stringify(transcript)).toContain("Top entries");
     await app.close();
   });
@@ -1228,7 +1284,7 @@ describe("server API", () => {
     }
   });
 
-  it("serves SCC tools through a real MCP streamable HTTP client", async () => {
+  it("serves Agent Workbench tools through a real MCP streamable HTTP client", async () => {
     const app = await createTestApp({
       workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ConfiguredToolModelClient("Get-Process") })
     });
@@ -1242,6 +1298,7 @@ describe("server API", () => {
     try {
       await client.connect(transport as never);
       const tools = await client.listTools();
+      expect(tools.tools.map((tool) => tool.name)).toContain("agent_workbench.list_tasks");
       expect(tools.tools.map((tool) => tool.name)).toContain("scc.list_tasks");
 
       const listResult = await client.callTool({ name: "scc.list_tasks", arguments: {} });

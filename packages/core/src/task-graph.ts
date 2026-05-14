@@ -1,4 +1,4 @@
-import type { RiskCategory, TaskDetail, TaskEvent } from "@scc/shared";
+import type { RiskCategory, TaskDetail, TaskEvent } from "@agent-workbench/shared";
 
 export type TaskGraphRole = "research" | "implement" | "verify" | "review" | "final";
 export type TaskGraphStatus = "active" | "completed" | "blocked";

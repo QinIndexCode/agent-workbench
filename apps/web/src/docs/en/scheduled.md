@@ -1,6 +1,6 @@
 # Scheduled Tasks
 
-The Scheduled Tasks page creates tasks on a plan **while SCC is open**. It is useful for repeated work, but it is not an operating-system background service.
+The Scheduled Tasks page creates tasks on a plan **while Agent Workbench is open**. It is useful for repeated work, but it is not an operating-system background service.
 
 ## What this page affects
 
@@ -20,7 +20,7 @@ Use this for repeated work while the app remains open.
 
 ## The built-in reflection task
 
-SCC keeps one default reflection task to maintain recent task memory, reusable patterns, and candidate skills.
+Agent Workbench keeps one default reflection task to maintain recent task memory, reusable patterns, and candidate skills.
 
 That default task:
 

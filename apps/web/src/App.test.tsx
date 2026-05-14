@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GlobalPermissionGrant, IntegrationProviderConfig, KnowledgeItem, MemoryDocument, MemoryDocumentCompactResult, ModelProviderRecord, ProjectMemory, RiskCategory, ScheduledTask, SkillRecord, TaskDetail, TaskEvent, TaskFolderRecord, ToolApproval, UserPreferences, WebSearchProviderConfig } from "@scc/shared";
+import type { GlobalPermissionGrant, IntegrationProviderConfig, KnowledgeItem, MemoryDocument, MemoryDocumentCompactResult, ModelProviderRecord, ProjectMemory, RiskCategory, ScheduledTask, SkillRecord, TaskDetail, TaskEvent, TaskFolderRecord, ToolApproval, UserPreferences, WebSearchProviderConfig } from "@agent-workbench/shared";
 import { App } from "./App.js";
 import { ApprovalCard } from "./components/ApprovalCard.js";
 import { Composer } from "./components/Composer.js";
@@ -19,10 +19,11 @@ import { TaskList } from "./components/TaskList.js";
 import { TaskThread } from "./components/TaskThread.js";
 import { Timeline } from "./components/Timeline.js";
 import { WebSearchPanel } from "./components/WebSearchPanel.js";
-import { coalesceRealtimeEvents, mergeSelectedTaskShell, parseRealtimeMessage } from "./useWorkbenchData.js";
+import { coalesceRealtimeEvents, compactTaskEventsForTranscript, mergeSelectedTaskShell, parseRealtimeMessage } from "./useWorkbenchData.js";
 
 afterEach(() => {
   cleanup();
+  if (typeof window.localStorage?.clear === "function") window.localStorage.clear();
   window.history.replaceState(null, "", "/");
   vi.unstubAllGlobals();
 });
@@ -334,7 +335,7 @@ describe("Workbench components", () => {
     fireEvent.click(screen.getByLabelText("Delete folder Operations"));
     expect(onFolderSelect).not.toHaveBeenCalled();
     expect(screen.getByText("Delete this task folder?")).toBeInTheDocument();
-    expect(screen.getByText(/will be removed from SCC/)).toBeInTheDocument();
+    expect(screen.getByText(/will be removed from Agent Workbench/)).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Remove memories and experiences from this task"));
     fireEvent.click(screen.getByRole("button", { name: "Delete folder" }));
     await waitFor(() => expect(onDeleteFolder).toHaveBeenCalledWith("folder_ops", { deleteLearningData: true, deleteDerivedSkills: false }));
@@ -507,7 +508,7 @@ describe("Workbench components", () => {
                 summary: [
                   "Earlier conversation was compacted to keep the task within the model context window.",
                   "- **Tool Call**: edit_file({ very large payload })",
-                  "[UI preview truncated: 999 characters omitted. Full evidence is retained by SCC.]"
+                  "[UI preview truncated: 999 characters omitted. Full evidence is retained by Agent Workbench.]"
                 ].join("\n"),
                 retainedFacts: ["Original goal: 编写一个完整博客页面"]
               }
@@ -649,7 +650,7 @@ describe("Workbench components", () => {
     expect(screen.queryByText(hugeReadMarker)).not.toBeInTheDocument();
   });
 
-  it("hides legacy streaming preambles for turns that continued into tools", () => {
+  it("preserves readable assistant preambles for turns that continued into tools", () => {
     const { container } = render(
       <Timeline
         task={{
@@ -690,8 +691,9 @@ describe("Workbench components", () => {
       />
     );
 
-    expect(screen.queryByText("Now let me read the file.")).not.toBeInTheDocument();
+    expect(screen.getByText("Now let me read the file.")).toBeInTheDocument();
     expect(screen.queryByText("Need to inspect the file first.")).not.toBeInTheDocument();
+    expect(container.querySelector(".event.assistant_delta")).not.toBeNull();
     expect(container.querySelectorAll(".event.tool_result")).toHaveLength(1);
   });
 
@@ -875,6 +877,194 @@ describe("Workbench components", () => {
     expect(container.querySelector(".timelineItemShell.fromLeft .event.assistant_delta")).not.toBeNull();
   });
 
+  it("keeps assistant body visible when final stream text is stripped", () => {
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "completed",
+          events: [
+            {
+              id: "event_delta_body",
+              taskId: "task_1",
+              type: "assistant_delta",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              summary: "I will read the project and then optimize the styles.",
+              payload: { streamId: "stream_final_empty", delta: "I will read the project and then optimize the styles." }
+            },
+            {
+              id: "event_final_empty",
+              taskId: "task_1",
+              type: "assistant_message",
+              createdAt: "2026-01-01T00:00:00.010Z",
+              summary: "Tool evidence returned.",
+              payload: { streamId: "stream_final_empty" }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("I will read the project and then optimize the styles.")).toBeInTheDocument();
+    expect(screen.queryByText("Tool evidence returned.")).not.toBeInTheDocument();
+  });
+
+  it("keeps assistant body visible when final text only exists in payload", () => {
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "completed",
+          events: [
+            {
+              id: "event_final_payload_body",
+              taskId: "task_1",
+              type: "assistant_message",
+              createdAt: "2026-01-01T00:00:00.010Z",
+              summary: "Tool evidence returned.",
+              payload: {
+                streamId: "stream_payload_body",
+                message: "Tool evidence returned.\n\n我已经读完当前结构，接下来会优化样式。"
+              }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("我已经读完当前结构，接下来会优化样式。")).toBeInTheDocument();
+    expect(screen.queryByText("Tool evidence returned.")).not.toBeInTheDocument();
+  });
+
+  it("keeps readable final text when provider leaks inline tool markup", () => {
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "completed",
+          events: [
+            {
+              id: "event_delta_before_tool_markup",
+              taskId: "task_1",
+              type: "assistant_delta",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              summary: "我会先阅读项目代码，再调整界面层级。",
+              payload: { streamId: "stream_tool_markup_final", delta: "我会先阅读项目代码，再调整界面层级。" }
+            },
+            {
+              id: "event_final_tool_markup",
+              taskId: "task_1",
+              type: "assistant_message",
+              createdAt: "2026-01-01T00:00:00.010Z",
+              summary:
+                '我会先阅读项目代码，再调整界面层级。\n\n<function_calls><invoke name="read_file"><parameter name="path">index.html</parameter></invoke></function_calls>',
+              payload: { streamId: "stream_tool_markup_final" }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("我会先阅读项目代码，再调整界面层级。")).toBeInTheDocument();
+    expect(screen.queryByText(/function_calls|read_file/)).not.toBeInTheDocument();
+  });
+
+  it("does not strip literal tool-like markup from user messages", () => {
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "completed",
+          events: [
+            {
+              id: "event_user_xml_example",
+              taskId: "task_1",
+              type: "user_message",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              summary: '请解释这个示例：<invoke name="demo"><parameter name="x">1</parameter></invoke>',
+              payload: {}
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/<invoke name="demo">/)).toBeInTheDocument();
+  });
+
+  it("drops empty realtime assistant finals after boilerplate cleanup", () => {
+    const transcript = compactTaskEventsForTranscript([
+      {
+        id: "event_empty_final",
+        taskId: "task_1",
+        type: "assistant_message",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        summary: "Tool evidence returned.",
+        payload: { streamId: "stream_empty_final" }
+      }
+    ]);
+
+    expect(transcript).toHaveLength(0);
+  });
+
+  it("does not render empty assistant final cards after boilerplate cleanup", () => {
+    const { container } = render(
+      <Timeline
+        task={{
+          ...task,
+          status: "completed",
+          events: [
+            {
+              id: "event_empty_assistant_final",
+              taskId: "task_1",
+              type: "assistant_message",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              summary: "Tool evidence returned.",
+              payload: {}
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(container.querySelector(".event.assistant_message")).toBeNull();
+  });
+
+  it("renders read-only no-progress guard events in the timeline", () => {
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "paused",
+          events: [
+            {
+              id: "event_no_progress",
+              taskId: "task_1",
+              type: "model_no_progress",
+              createdAt: "2026-01-01T00:00:00.010Z",
+              summary: "Task paused after repeated read-only exploration.",
+              payload: {
+                reason: "repeated_target",
+                readOnlyToolCount: 16,
+                repeatedTargetCount: 9,
+                lastToolNames: ["read_file", "search_files", "read_file"]
+              }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/Task paused: repeated read-only exploration stopped making progress/)).toBeInTheDocument();
+    expect(screen.getByText(/16 read-only calls/)).toBeInTheDocument();
+  });
+
   it("keeps latin streaming assistant chunks readable when provider omits spaces", () => {
     render(
       <Timeline
@@ -936,7 +1126,7 @@ describe("Workbench components", () => {
       />
     );
 
-    expect(screen.getByLabelText("think...")).toBeInTheDocument();
+    expect(screen.getByLabelText("Thinking...")).toBeInTheDocument();
     expect(container.querySelector(".event.running_status .thinkingDots")).not.toBeNull();
   });
 
@@ -2035,7 +2225,7 @@ describe("Workbench components", () => {
     fireEvent.click(screen.getByLabelText("发送"));
 
     expect(await screen.findByRole("heading", { name: "Long output" })).toBeInTheDocument();
-    expect(screen.getByLabelText("think...")).toBeInTheDocument();
+    expect(screen.getByLabelText("思考中...")).toBeInTheDocument();
     expect(screen.queryByText(/后端响应超时/)).not.toBeInTheDocument();
   });
 
@@ -2204,7 +2394,7 @@ describe("Workbench components", () => {
         createdAt: now,
         summary: "Earlier context compacted",
         payload: {
-          summary: "Original goal: should not appear in transcript\n[UI preview truncated: 123 characters omitted. Full evidence is retained by SCC.]"
+          summary: "Original goal: should not appear in transcript\n[UI preview truncated: 123 characters omitted. Full evidence is retained by Agent Workbench.]"
         }
       },
       {
@@ -2427,7 +2617,7 @@ function stubAuthedFetch(handler: (url: string, init?: RequestInit) => Promise<R
       if (url === "/api/session/bootstrap") return jsonResponse({ sessionToken: TEST_SESSION_TOKEN });
       if (url.startsWith("/api/") && url !== "/health") {
         const headers = new Headers(init?.headers);
-        expect(headers.get("x-scc-session")).toBe(TEST_SESSION_TOKEN);
+        expect(headers.get("x-agent-workbench-session") ?? headers.get("x-scc-session")).toBe(TEST_SESSION_TOKEN);
       }
       return handler(url, init);
     })

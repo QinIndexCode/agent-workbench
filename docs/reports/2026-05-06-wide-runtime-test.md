@@ -1,4 +1,4 @@
-# SCC wide runtime and product-surface test report
+# Agent Workbench wide runtime and product-surface test report
 
 Date: 2026-05-06
 

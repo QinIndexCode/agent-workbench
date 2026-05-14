@@ -1,6 +1,6 @@
 # Memory
 
-Memory is the durable background SCC carries across tasks.
+Memory is the durable background Agent Workbench carries across tasks.
 
 ## The two documents
 

@@ -6,11 +6,11 @@ import { sourceFingerprint } from "./source-fingerprint.mjs";
 
 const root = resolve(process.cwd());
 
-const liveSmokeRequested = process.env.SCC_LIVE_MODEL_SMOKE === "1";
-const liveSmokeRequired = process.env.SCC_LIVE_MODEL_REQUIRED === "1";
+const liveSmokeRequested = (process.env.AGENT_WORKBENCH_LIVE_MODEL_SMOKE ?? process.env.SCC_LIVE_MODEL_SMOKE) === "1";
+const liveSmokeRequired = (process.env.AGENT_WORKBENCH_LIVE_MODEL_REQUIRED ?? process.env.SCC_LIVE_MODEL_REQUIRED) === "1";
 
 if (!liveSmokeRequested) {
-  const message = "Skipping live model smoke. Set SCC_LIVE_MODEL_SMOKE=1 to run it.";
+  const message = "Skipping live model smoke. Set AGENT_WORKBENCH_LIVE_MODEL_SMOKE=1 to run it.";
   if (liveSmokeRequired) {
     console.error(`${message} This run marked live smoke as required.`);
     process.exit(1);
@@ -33,7 +33,7 @@ const {
 } = await import("../packages/core/dist/index.js");
 
 const config = loadOpenAiConfig();
-const stressLevel = Math.max(1, Number(process.env.SCC_STRESS_LEVEL ?? "1") || 1);
+const stressLevel = Math.max(1, Number(process.env.AGENT_WORKBENCH_STRESS_LEVEL ?? process.env.SCC_STRESS_LEVEL ?? "1") || 1);
 
 const report = {
   generatedAt: nowIso(),
@@ -45,8 +45,8 @@ const report = {
     model: config.model ?? "mimo-v2.5",
     hasApiKey: Boolean(config.apiKey),
     missing: [
-      !config.apiKey ? "OPENAI_API_KEY or SCC_API_KEY_FILE" : null,
-      !config.baseURL ? "OPENAI_BASE_URL or SCC_OPENAI_BASE_URL" : null
+      !config.apiKey ? "OPENAI_API_KEY or AGENT_WORKBENCH_API_KEY_FILE" : null,
+      !config.baseURL ? "OPENAI_BASE_URL or AGENT_WORKBENCH_OPENAI_BASE_URL" : null
     ].filter(Boolean)
   },
   cases: []
@@ -501,7 +501,7 @@ await runCase("memory without direct skill promotion", async () => {
   const { workbench } = await createLiveWorkbench();
   await workbench.updatePreferences({ reflectionEnabled: false });
   for (let index = 0; index < 2; index++) {
-    await workbench.createTask(`请用一句话总结 SCC Agent Workbench 的一个维护建议 ${index + 1}。不要使用工具。`, `Live memory ${index + 1}`);
+    await workbench.createTask(`请用一句话总结 Agent Workbench 的一个维护建议 ${index + 1}。不要使用工具。`, `Live memory ${index + 1}`);
   }
   const memories = await workbench.listTaskMemories();
   const skills = await workbench.listSkills();
@@ -514,17 +514,17 @@ await runCase("knowledge rag citation", async () => {
   const { workbench } = await createLiveWorkbench(undefined, { knowledge: true });
   await workbench.createKnowledgeItem({
     kind: "memory",
-    title: "SCC Golden RAG Note",
-    sourceUri: "scc://live-smoke/golden-rag-note.md",
+    title: "Agent Workbench Golden RAG Note",
+    sourceUri: "agent-workbench://live-smoke/golden-rag-note.md",
     tags: ["live-smoke", "rag"],
     content: [
-      "# SCC Golden RAG Note",
+      "# Agent Workbench Golden RAG Note",
       "",
-      "The live RAG marker is SCC-GOLDEN-RAG.",
+      "The live RAG marker is AGENT-WORKBENCH-GOLDEN-RAG.",
       "When asked about the golden marker, answer with the exact marker and cite this knowledge source."
     ].join("\n")
   });
-  const directMatches = await workbench.searchKnowledge({ query: "SCC-GOLDEN-RAG golden marker", projectId: "default", limit: 3 });
+  const directMatches = await workbench.searchKnowledge({ query: "AGENT-WORKBENCH-GOLDEN-RAG golden marker", projectId: "default", limit: 3 });
   const directEvidence = directMatches.map((match) => ({
     title: match.item.title,
     score: Number(match.score.toFixed(4)),
@@ -532,14 +532,14 @@ await runCase("knowledge rag citation", async () => {
     citation: match.citation
   }));
   assertWithEvidence(
-    directMatches.some((match) => match.chunk.content.includes("SCC-GOLDEN-RAG")),
+    directMatches.some((match) => match.chunk.content.includes("AGENT-WORKBENCH-GOLDEN-RAG")),
     "direct knowledge search did not retrieve the golden marker",
     { directMatches: directEvidence }
   );
   let task = await workbench.createTask(
     [
       "必须调用 knowledge_search 工具查询资料库中的 golden marker；不要在未调用工具时回答。",
-      "回答必须包含精确文本 SCC-GOLDEN-RAG，并说明引用了哪个知识来源。",
+      "回答必须包含精确文本 AGENT-WORKBENCH-GOLDEN-RAG，并说明引用了哪个知识来源。",
       "不要使用文件工具或命令。"
     ].join("\n"),
     "Live RAG citation"
@@ -555,8 +555,8 @@ await runCase("knowledge rag citation", async () => {
     knowledgeEvidence: excerpt(outputs, 900)
   }).evidence;
   assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, ragEvidence);
-  assertWithEvidence(outputs.includes("SCC-GOLDEN-RAG"), "knowledge_search did not return the golden marker", ragEvidence);
-  assertWithEvidence(assistant.includes("SCC-GOLDEN-RAG"), "assistant did not use the retrieved marker", ragEvidence);
+  assertWithEvidence(outputs.includes("AGENT-WORKBENCH-GOLDEN-RAG"), "knowledge_search did not return the golden marker", ragEvidence);
+  assertWithEvidence(assistant.includes("AGENT-WORKBENCH-GOLDEN-RAG"), "assistant did not use the retrieved marker", ragEvidence);
   assertWithEvidence(citations > 0, "knowledge_search output did not include citation metadata", ragEvidence);
   return evidence(task, {
     citations,
@@ -858,7 +858,7 @@ function redactUrl(value) {
 
 function markdownReport(data) {
   const lines = [
-    "# SCC Live Mimo Smoke",
+    "# Agent Workbench Live Mimo Smoke",
     "",
     `Generated: ${data.generatedAt}`,
     `Required gate: ${data.required ? "yes" : "no"}`,

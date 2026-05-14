@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { McpServerConfig, McpServerCreateRequest, McpServerPatchRequest, McpServerStatus, McpToolSummary, McpTransportKind, RiskCategory } from "@scc/shared";
+import type { McpServerConfig, McpServerCreateRequest, McpServerPatchRequest, McpServerStatus, McpToolSummary, McpTransportKind, RiskCategory } from "@agent-workbench/shared";
 import { Edit3, Plug, Plus, Search, Server, Trash2, Unplug, Wrench } from "lucide-react";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -361,7 +361,7 @@ function getMcpCopy(language?: string | null) {
   const zh = language === "zh-CN";
   return {
     title: "MCP",
-    subtitle: zh ? "连接外部工具服务器。工具调用仍会经过 SCC 的同一套权限审批。" : "Connect external tool servers. Tool calls still go through SCC permissions.",
+    subtitle: zh ? "连接外部工具服务器。工具调用仍会经过 Agent Workbench 的同一套权限审批。" : "Connect external tool servers. Tool calls still go through Agent Workbench permissions.",
     add: zh ? "添加服务器" : "Add server",
     edit: zh ? "编辑服务器" : "Edit server",
     dialogHelp: zh ? "添加 stdio 或 streamable HTTP MCP 服务器；风险覆盖只影响指定工具。" : "Add a stdio or streamable HTTP MCP server. Risk overrides apply only to named tools.",
@@ -371,7 +371,7 @@ function getMcpCopy(language?: string | null) {
     discoveredTools: zh ? "已发现工具" : "Discovered tools",
     toolHint: zh ? "工具被 Agent 使用时会作为普通工具证据进入时间线。" : "When the agent uses these tools, results appear as normal tool evidence.",
     emptyServersTitle: zh ? "还没有 MCP 服务器" : "No MCP servers yet",
-    emptyServers: zh ? "先添加一个本地 stdio 或 streamable HTTP 服务，连接后才会发现工具列表。" : "Add a local stdio server or a streamable HTTP endpoint before SCC can discover tools.",
+    emptyServers: zh ? "先添加一个本地 stdio 或 streamable HTTP 服务，连接后才会发现工具列表。" : "Add a local stdio server or a streamable HTTP endpoint before Agent Workbench can discover tools.",
     emptyServersHint: zh ? "第一次接入建议先用一个最小测试服务，确认连接、断开和工具发现都正常。" : "For the first setup, use a minimal test server so you can verify connect, disconnect, and tool discovery quickly.",
     emptyServersAction: zh ? "添加第一个服务器" : "Add your first server",
     emptyTools: zh ? "连接服务器后会显示工具。" : "Connect a server to discover tools.",
@@ -400,7 +400,7 @@ function getMcpCopy(language?: string | null) {
     deleteAction: zh ? "删除" : "Delete",
     deleteWarning: zh ? "删除后该服务器的连接状态和自定义风险覆盖将一并清除。" : "Deleting removes the server connection state and any custom risk overrides.",
     primer: {
-      summary: zh ? "MCP 把外部工具接到 SCC 里，但它们仍然要经过同一套风险审批和时间线记录。" : "MCP connects external tools into SCC, but they still pass through the same approval flow and timeline evidence.",
+      summary: zh ? "MCP 把外部工具接到 Agent Workbench 里，但它们仍然要经过同一套风险审批和时间线记录。" : "MCP connects external tools into Agent Workbench, but they still pass through the same approval flow and timeline evidence.",
       focus: zh ? "配置服务入口、连接状态和工具发现；必要时只为个别工具重标风险。" : "Configure server entrypoints, connection state, and tool discovery; override risk only for specific tools when needed.",
       impact: zh ? "会影响 Agent 是否能发现外部工具、这些工具的风险分类，以及断线后的可用性反馈。" : "Changes affect whether the agent can discover external tools, how their risk is classified, and how outages show up in the UI.",
       nextStep: zh ? "先接入一个简单服务验证连通性，再逐步增加真正要给 Agent 使用的工具。" : "Connect one simple server first, confirm discovery works, then add the real tools you want the agent to use."

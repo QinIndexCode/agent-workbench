@@ -7,8 +7,8 @@ const root = resolve(process.cwd());
 const outDir = resolve(root, "data", "test-reports", "flagship-quality");
 const resultsPath = resolve(outDir, "quality-results.json");
 const summaryPath = resolve(outDir, "summary.md");
-const requireFlagshipReport = process.env["SCC_FLAGSHIP_REPORT_REQUIRED"] === "1";
-const requireLiveSmoke = process.env["SCC_LIVE_MODEL_REQUIRED"] === "1" || requireFlagshipReport;
+const requireFlagshipReport = (process.env["AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED"] ?? process.env["SCC_FLAGSHIP_REPORT_REQUIRED"]) === "1";
+const requireLiveSmoke = (process.env["AGENT_WORKBENCH_LIVE_MODEL_REQUIRED"] ?? process.env["SCC_LIVE_MODEL_REQUIRED"]) === "1" || requireFlagshipReport;
 
 const steps = [
   { name: "lint", command: ["npm.cmd", "run", "lint"] },
@@ -59,9 +59,9 @@ if (!previousFailed && requireLiveSmoke) {
   const logPath = resolve(outDir, `${step.name}.log`);
   const started = Date.now();
   const outcome = await runCommand(step.command, logPath, {
-    SCC_LIVE_MODEL_SMOKE: "1",
-    SCC_LIVE_MODEL_REQUIRED: "1",
-    SCC_STRESS_LEVEL: process.env["SCC_STRESS_LEVEL"] ?? "5"
+    AGENT_WORKBENCH_LIVE_MODEL_SMOKE: "1",
+    AGENT_WORKBENCH_LIVE_MODEL_REQUIRED: "1",
+    AGENT_WORKBENCH_STRESS_LEVEL: process.env["AGENT_WORKBENCH_STRESS_LEVEL"] ?? process.env["SCC_STRESS_LEVEL"] ?? "5"
   });
   results.push({
     name: step.name,
@@ -88,7 +88,7 @@ const liveSmokeFresh = hasFreshArtifact(resolve(root, "data", "test-reports", "l
 let reportStatus = "skipped";
 if (liveSmokeFresh || requireFlagshipReport) {
   const outcome = await runCommand(["node", "scripts/write-flagship-report.mjs"], resolve(outDir, "report-write.log"), {
-    SCC_FLAGSHIP_REPORT_REQUIRED: requireFlagshipReport ? "1" : process.env["SCC_FLAGSHIP_REPORT_REQUIRED"]
+    AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED: requireFlagshipReport ? "1" : process.env["AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED"] ?? process.env["SCC_FLAGSHIP_REPORT_REQUIRED"]
   });
   reportStatus = outcome.exitCode === 0 ? "written" : "failed";
   if (outcome.exitCode !== 0) {

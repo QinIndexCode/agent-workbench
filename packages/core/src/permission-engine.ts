@@ -1,4 +1,4 @@
-import type { GlobalPermissionGrant, RiskCategory, ToolApproval } from "@scc/shared";
+import type { GlobalPermissionGrant, RiskCategory, ToolApproval } from "@agent-workbench/shared";
 import { createId, nowIso } from "./ids.js";
 
 export interface RiskAssessment {
@@ -49,7 +49,7 @@ export class PermissionEngine {
       toolName === "skill_edit" ||
       toolName === "skill_delete"
     ) {
-      return { category: "workspace_write", reason: `${toolName} changes persistent local SCC memory or skills.` };
+      return { category: "workspace_write", reason: `${toolName} changes persistent local Agent Workbench memory or skills.` };
     }
     if (toolName === "plan_update") {
       return { category: "workspace_read", reason: "plan_update changes visible task planning state without touching external resources." };

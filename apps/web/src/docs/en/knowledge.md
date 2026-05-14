@@ -1,6 +1,6 @@
 # Knowledge
 
-Knowledge stores reusable notes and imported references that SCC may search later.
+Knowledge stores reusable notes and imported references that Agent Workbench may search later.
 
 ## Use Knowledge for
 

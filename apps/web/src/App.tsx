@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup, TaskAttachment, UserPreferences } from "@scc/shared";
+import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup, TaskAttachment, UserPreferences } from "@agent-workbench/shared";
 import { type AppRoute, useAppRoute } from "./app-router.js";
 import { api } from "./api.js";
 import { ProviderBrandIcon } from "./components/ProviderBrandIcon.js";
@@ -49,13 +49,18 @@ const libraryDocsSections: Record<LibrarySection, DocsSection> = {
   memory: "memory",
   reflections: "reflections"
 };
+const LAST_TASK_FOLDER_KEY = "agent-workbench.lastTaskFolderId";
+const LEGACY_LAST_TASK_FOLDER_KEY = "scc.lastTaskFolderId";
+const LAST_TASK_KEY = "agent-workbench.lastTaskId";
+const LEGACY_LAST_TASK_KEY = "scc.lastTaskId";
 
 export function App() {
   const [route, navigateRoute] = useAppRoute();
   const activeView = route.view;
   const settingsSection: SettingsSection = route.view === "settings" ? route.section : "providers";
   const librarySection: LibrarySection = route.view === "library" ? route.section : "skills";
-  const data = useWorkbenchData({ activeView, librarySection, settingsSection });
+  const loadProfile = useMemo(() => ({ activeView, librarySection, settingsSection }), [activeView, librarySection, settingsSection]);
+  const data = useWorkbenchData(loadProfile);
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
   const [previousNonDocsRoute, setPreviousNonDocsRoute] = useState<AppRoute>({ view: "tasks" });
   const [supportOpen, setSupportOpen] = useState(false);
@@ -143,10 +148,23 @@ export function App() {
     if (html.lang !== lang) html.lang = lang;
   }, [language]);
 
+  const routeSyncRef = useRef({
+    clearSelection: data.clearSelection,
+    selectTask: data.selectTask,
+    selectedId: data.selectedId
+  });
+  routeSyncRef.current = {
+    clearSelection: data.clearSelection,
+    selectTask: data.selectTask,
+    selectedId: data.selectedId
+  };
+
   useEffect(() => {
-    if (route.view !== "docs") setPreviousNonDocsRoute(route);
-    if (route.view === "tasks" && route.newTask) data.clearSelection();
-    if (route.view === "tasks" && route.taskId && route.taskId !== data.selectedId) void data.selectTask(route.taskId);
+    if (route.view !== "docs") {
+      setPreviousNonDocsRoute((current) => (sameRoute(current, route) ? current : route));
+    }
+    if (route.view === "tasks" && route.newTask) routeSyncRef.current.clearSelection();
+    if (route.view === "tasks" && route.taskId && route.taskId !== routeSyncRef.current.selectedId) void routeSyncRef.current.selectTask(route.taskId);
   }, [route]);
 
   useEffect(() => {
@@ -159,12 +177,12 @@ export function App() {
   useEffect(() => {
     if (activeTask?.folderId && activeTask.folderId !== activeTaskFolderId) {
       setActiveTaskFolderId(activeTask.folderId);
-      safeLocalStorageSet("scc.lastTaskFolderId", activeTask.folderId);
+      safeLocalStorageSet(LAST_TASK_FOLDER_KEY, activeTask.folderId);
     }
-  }, [activeTask?.id, activeTask?.folderId]);
+  }, [activeTask?.id, activeTask?.folderId, activeTaskFolderId]);
 
   useEffect(() => {
-    if (activeTaskFolderId) safeLocalStorageSet("scc.lastTaskFolderId", activeTaskFolderId);
+    if (activeTaskFolderId) safeLocalStorageSet(LAST_TASK_FOLDER_KEY, activeTaskFolderId);
   }, [activeTaskFolderId]);
 
   useEffect(() => {
@@ -175,14 +193,14 @@ export function App() {
       return;
     }
     if (startupView === "last_folder") {
-      const folderId = safeLocalStorageGet("scc.lastTaskFolderId");
+      const folderId = safeLocalStorageGet(LAST_TASK_FOLDER_KEY, LEGACY_LAST_TASK_FOLDER_KEY);
       if (folderId && data.taskFolders.some((folder) => folder.id === folderId)) setActiveTaskFolderId(folderId);
       return;
     }
-    const lastTaskId = safeLocalStorageGet("scc.lastTaskId");
+    const lastTaskId = safeLocalStorageGet(LAST_TASK_KEY, LEGACY_LAST_TASK_KEY);
     const task = data.tasks.find((item) => item.id === lastTaskId) ?? data.tasks[0];
     if (task) navigateRoute({ view: "tasks", taskId: task.id }, { replace: true });
-  }, [route, data.tasks, data.taskFolders, data.preferences?.startupView]);
+  }, [route, data.tasks, data.taskFolders, data.preferences?.startupView, navigateRoute]);
 
   return (
     <main className={activeView === "docs" ? "shell docsShell" : "shell"}>
@@ -230,7 +248,7 @@ export function App() {
           onUpdateTask={(taskId, input) => data.patchTask(taskId, input)}
           onUpdateFolder={(folderId, name, rootPath) => data.runSideAction(() => api.patchTaskFolder(folderId, { name, rootPath }))}
           onSelect={(taskId) => {
-            safeLocalStorageSet("scc.lastTaskId", taskId);
+            safeLocalStorageSet(LAST_TASK_KEY, taskId);
             navigateRoute({ view: "tasks", taskId });
             setTaskDrawerOpen(false);
             void data.selectTask(taskId);
@@ -295,7 +313,7 @@ export function App() {
           onOpenTasks={() => setTaskDrawerOpen(true)}
           onDelete={(taskId, options) => data.deleteTask(taskId, options)}
           onOpenTask={(taskId) => {
-            safeLocalStorageSet("scc.lastTaskId", taskId);
+            safeLocalStorageSet(LAST_TASK_KEY, taskId);
             navigateRoute({ view: "tasks", taskId });
             void data.selectTask(taskId);
           }}
@@ -583,7 +601,7 @@ export function App() {
     }
     setTitleIssue(null);
     const task = await api.createTask(goal, title, activeTaskFolderId, attachmentIds, runMode === "target" ? { runMode: "target" } : {});
-    safeLocalStorageSet("scc.lastTaskId", task.id);
+    safeLocalStorageSet(LAST_TASK_KEY, task.id);
     navigateRoute({ view: "tasks", taskId: task.id });
     return task;
   }
@@ -855,6 +873,15 @@ function getDefaultFolderLabel(language: string | null | undefined): string {
   return language === "zh-CN" ? "默认文件夹" : "Default";
 }
 
+function sameRoute(left: AppRoute, right: AppRoute): boolean {
+  if (left.view !== right.view) return false;
+  if (left.view === "tasks" && right.view === "tasks") return left.taskId === right.taskId && left.newTask === right.newTask;
+  if (left.view === "settings" && right.view === "settings") return left.section === right.section;
+  if (left.view === "library" && right.view === "library") return left.section === right.section;
+  if (left.view === "docs" && right.view === "docs") return left.section === right.section;
+  return true;
+}
+
 function parseTargetCommand(text: string): { goal: string; runMode: "normal" | "target" } {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/target")) return { goal: text, runMode: "normal" };
@@ -864,9 +891,11 @@ function parseTargetCommand(text: string): { goal: string; runMode: "normal" | "
   return { goal: goal || trimmed, runMode: "target" };
 }
 
-function safeLocalStorageGet(key: string): string | null {
+function safeLocalStorageGet(key: string, legacyKey?: string): string | null {
   try {
-    return window.localStorage.getItem(key);
+    const value = window.localStorage.getItem(key);
+    if (value !== null || !legacyKey) return value;
+    return window.localStorage.getItem(legacyKey);
   } catch {
     return null;
   }

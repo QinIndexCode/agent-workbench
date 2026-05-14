@@ -1,4 +1,4 @@
-import type { TaskDetail, TaskEvent } from "@scc/shared";
+import type { TaskDetail, TaskEvent } from "@agent-workbench/shared";
 
 export function latestUserEvent(task: Pick<TaskDetail, "events">): TaskEvent | undefined {
   return [...task.events].reverse().find((event) => isCurrentUserEvent(event));

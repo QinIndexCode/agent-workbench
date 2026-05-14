@@ -10,6 +10,11 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@agent-workbench/core": ["packages/core/src/index.ts"],
+      "@agent-workbench/shared": ["packages/shared/src/index.ts"]
+    }
   }
 }

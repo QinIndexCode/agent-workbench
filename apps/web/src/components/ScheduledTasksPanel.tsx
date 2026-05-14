@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ScheduledTask, ScheduledTaskCreateRequest, ScheduledTaskPatchRequest, TaskFolderRecord } from "@scc/shared";
+import type { ScheduledTask, ScheduledTaskCreateRequest, ScheduledTaskPatchRequest, TaskFolderRecord } from "@agent-workbench/shared";
 import { CalendarClock, Clock3, Folder, PauseCircle, Pencil, PlayCircle, Plus, Sparkles, Trash2 } from "lucide-react";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -49,7 +49,7 @@ export function ScheduledTasksPanel({
       <div className="panelHero">
         <div>
           <h2>{zh ? "定时任务" : "Scheduled tasks"}</h2>
-          <p>{zh ? "应用运行时触发，不伪装系统后台服务。" : "Runs while SCC is open; no hidden OS background service."}</p>
+          <p>{zh ? "应用运行时触发，不伪装系统后台服务。" : "Runs while Agent Workbench is open; no hidden OS background service."}</p>
         </div>
         <button className="primaryInlineButton" type="button" onClick={() => setCreating(true)}>
           <Plus size={15} /> {zh ? "新建" : "New"}
@@ -57,7 +57,7 @@ export function ScheduledTasksPanel({
       </div>
       <SettingsPrimer
         language={language}
-        summary={zh ? "定时任务会在 SCC 运行期间按计划触发，用同样的模型、权限和文件夹上下文执行。" : "Scheduled tasks run while SCC is open and execute with the same models, permissions, and folder context as manual work."}
+        summary={zh ? "定时任务会在 Agent Workbench 运行期间按计划触发，用同样的模型、权限和文件夹上下文执行。" : "Scheduled tasks run while Agent Workbench is open and execute with the same models, permissions, and folder context as manual work."}
         focus={zh ? "安排重复性检查、日报、索引维护或固定时间的分析任务。" : "Schedule recurring checks, summaries, indexing runs, or time-based analysis work."}
         impact={zh ? "会影响任务何时自动创建、默认落入哪个文件夹，以及失败是否被你及时看到。" : "Changes affect when tasks auto-start, which folder they use, and whether failures surface early enough to act on."}
         nextStep={zh ? "先创建一个低风险测试任务，确认时间预览、暂停/恢复和结果回写都符合预期。" : "Create one low-risk test schedule first, then confirm preview, pause or resume, and result reporting behave as expected."}

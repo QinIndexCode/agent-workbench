@@ -114,6 +114,7 @@ export const TaskEventSchema = z.object({
     "approval_auto_granted",
     "tool_result",
     "model_empty_response",
+    "model_no_progress",
     "status_changed",
     "user_input_requested",
     "user_input_answered",

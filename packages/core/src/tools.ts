@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { mkdir, open, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import type { ToolCall, ToolResult } from "@scc/shared";
+import type { ToolCall, ToolResult } from "@agent-workbench/shared";
 import { createId, nowIso } from "./ids.js";
 import { resolveWorkspacePathStrict } from "./path-guards.js";
 import { defaultTaskWorkRoot } from "./workspace-root.js";
@@ -12,6 +12,9 @@ const DEFAULT_READ_RANGE_LINES = 200;
 const READ_FILE_FULL_INLINE_BYTES = 96 * 1024;
 const READ_FILE_FULL_INLINE_LINES = 360;
 const READ_FILE_FULL_INLINE_CHARS = 24 * 1024;
+const READ_FILE_COMPACT_FULL_BYTES = 64 * 1024;
+const READ_FILE_COMPACT_FULL_LINES = 900;
+const READ_FILE_COMPACT_FULL_CHARS = 64 * 1024;
 const READ_FILE_RESULT_INLINE_CHARS = 320 * 1024;
 const LARGE_FILE_HEAD_LINES = 220;
 const LARGE_FILE_TAIL_LINES = 120;
@@ -181,6 +184,9 @@ export class ShellToolExecutor implements ToolExecutor {
   private async readFile(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     try {
       const path = await this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
+      if (isInternalTracePath(path)) {
+        return this.result(call, false, "Agent Workbench internal trace files are excluded from workspace read tools.");
+      }
       const hasExplicitRange = Object.hasOwn(call.args, "offset") || Object.hasOwn(call.args, "limit");
       const info = await stat(path);
       await emitToolProgress(options, {
@@ -222,6 +228,11 @@ export class ShellToolExecutor implements ToolExecutor {
         info.size <= READ_FILE_FULL_INLINE_BYTES &&
         profile.totalLines <= READ_FILE_FULL_INLINE_LINES &&
         profile.content.length <= READ_FILE_FULL_INLINE_CHARS;
+      const isCompactFull =
+        !isFull &&
+        info.size <= READ_FILE_COMPACT_FULL_BYTES &&
+        profile.totalLines <= READ_FILE_COMPACT_FULL_LINES &&
+        profile.content.length <= READ_FILE_COMPACT_FULL_CHARS;
       return this.result(
         call,
         true,
@@ -237,6 +248,20 @@ export class ShellToolExecutor implements ToolExecutor {
                 hash: profile.hash,
                 partial: false
               }
+            : isCompactFull
+              ? {
+                  path,
+                  mode: "full_compact",
+                  displayMode: "summary_only",
+                  sizeBytes: info.size,
+                  totalLines: profile.totalLines,
+                  content: profile.content,
+                  preview: profile.preview,
+                  hash: profile.hash,
+                  partial: false,
+                  strategy:
+                    "Full text is available to the model context, but the UI timeline shows a summary to keep the thread readable."
+                }
             : {
                 path,
                 mode: "large_preview",
@@ -407,6 +432,9 @@ export class ShellToolExecutor implements ToolExecutor {
       if (!query.trim()) return this.result(call, false, "Missing query.");
       const terms = parseSearchTerms(query);
       const root = await this.resolveWorkspacePath(String(call.args["path"] ?? "."), this.rootFor(options));
+      if (isInternalTracePath(root)) {
+        return this.result(call, false, "Agent Workbench internal trace files are excluded from workspace search tools.");
+      }
       await emitToolProgress(options, { status: "running", targetPath: root, operation: "search", message: "Scanning workspace files.", progress: { processed: 0, unit: "files" } });
       const files = await walk(root, 300);
       const matches: Array<{ path: string; line?: number; text?: string; matchedTerm?: string }> = [];
@@ -445,6 +473,9 @@ export class ShellToolExecutor implements ToolExecutor {
   private async listFiles(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     try {
       const root = await this.resolveWorkspacePath(String(call.args["path"] ?? "."), this.rootFor(options));
+      if (isInternalTracePath(root)) {
+        return this.result(call, false, "Agent Workbench internal trace files are excluded from workspace list tools.");
+      }
       const recursive = Boolean(call.args["recursive"] ?? false);
       await emitToolProgress(options, { status: "running", targetPath: root, operation: "list", message: "Listing workspace files.", progress: { processed: 0, unit: "files" } });
       const files = recursive ? await walk(root, 500) : await list(root);
@@ -599,7 +630,8 @@ async function list(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
   return entries
     .filter((entry) => !entry.name.startsWith(".") && entry.name !== "node_modules" && !entry.isSymbolicLink())
-    .map((entry) => resolve(root, entry.name));
+    .map((entry) => resolve(root, entry.name))
+    .filter((path) => !isInternalTracePath(path));
 }
 
 async function walk(root: string, maxFiles: number): Promise<string[]> {
@@ -614,6 +646,7 @@ async function walk(root: string, maxFiles: number): Promise<string[]> {
       }
       if (entry.isSymbolicLink()) continue;
       const full = resolve(dir, entry.name);
+      if (isInternalTracePath(full)) continue;
       if (entry.isDirectory()) await visit(full);
       else output.push(full);
     }
@@ -622,6 +655,16 @@ async function walk(root: string, maxFiles: number): Promise<string[]> {
   if (info.isDirectory()) await visit(root);
   else output.push(root);
   return output;
+}
+
+function isInternalTracePath(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/").toLowerCase();
+  return (
+    normalized.endsWith("/data/logs/model-traces") ||
+    normalized.includes("/data/logs/model-traces/") ||
+    normalized.endsWith("/.agent-workbench/traces") ||
+    normalized.includes("/.agent-workbench/traces/")
+  );
 }
 
 function isTextFile(path: string): boolean {

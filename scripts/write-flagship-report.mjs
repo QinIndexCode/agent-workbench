@@ -6,7 +6,7 @@ const root = resolve(process.cwd());
 const reportsDir = resolve(root, "docs", "reports");
 const datePrefix = new Date().toISOString().slice(0, 10);
 const reportPath = resolve(reportsDir, `${datePrefix}-flagship-revalidation.md`);
-const requireVerdict = process.env.SCC_FLAGSHIP_REPORT_REQUIRED === "1";
+const requireVerdict = (process.env.AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED ?? process.env.SCC_FLAGSHIP_REPORT_REQUIRED) === "1";
 const currentSourceFingerprint = sourceFingerprint(root);
 
 const quality = readJson(resolve(root, "data", "test-reports", "flagship-quality", "quality-results.json"));
@@ -39,7 +39,7 @@ if (budgets?.pass === false) blockers.push("Web bundle budgets exceeded.");
 const liveFailed = liveSmoke?.cases?.filter((item) => item.status !== "passed") ?? [];
 const providerConfigurationFailed = liveFailed.some((item) => item.failureClass === "provider_configuration");
 for (const item of liveFailed) blockers.push(`Live smoke failed: ${item.name}${item.failureClass ? ` (${item.failureClass})` : ""}.`);
-if (liveSmoke && liveSmoke.required !== true) blockers.push("Live smoke report was generated without SCC_LIVE_MODEL_REQUIRED=1.");
+if (liveSmoke && liveSmoke.required !== true) blockers.push("Live smoke report was generated without AGENT_WORKBENCH_LIVE_MODEL_REQUIRED=1.");
 if (Number(liveSmoke?.stressLevel ?? 0) < 5) blockers.push(`Live smoke stress level is ${liveSmoke?.stressLevel ?? "unknown"}; flagship validation requires level 5.`);
 for (const item of liveSmoke?.cases ?? []) {
   const traceBytes = Number(item.evidence?.traceBytes ?? 0);

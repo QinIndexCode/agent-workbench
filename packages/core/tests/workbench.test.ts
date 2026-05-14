@@ -8,7 +8,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as z from "zod/v4";
 import { describe, expect, it } from "vitest";
-import type { RiskCategory, TaskDetail, ToolCall, ToolResult } from "@scc/shared";
+import type { RiskCategory, TaskDetail, ToolCall, ToolResult } from "@agent-workbench/shared";
 import { ShellToolExecutor, type ToolExecutionOptions } from "../src/tools.js";
 import {
   AgentWorkbench,
@@ -344,7 +344,7 @@ describe("ContextAssembler", () => {
     const item = await workbench.createKnowledgeItem({
       kind: "memory",
       title: "Routing notes",
-      content: `SCC routing notes describe stable background pointers for navigation. ${"brief filler ".repeat(30)}FULL_BODY_MARKER_SHOULD_NOT_APPEAR`,
+      content: `Agent Workbench routing notes describe stable background pointers for navigation. ${"brief filler ".repeat(30)}FULL_BODY_MARKER_SHOULD_NOT_APPEAR`,
       tags: ["routing", "ui"]
     });
     const assembler = new ContextAssembler(store);
@@ -681,8 +681,8 @@ describe("ContextAssembler", () => {
 
   it("compacts long full-file reads before they enter Known Files", () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
-    const content = Array.from({ length: 720 }, (_, index) =>
-      index === 620 ? `line ${index + 1}: SHOULD_NOT_BE_FULLY_TRACKED` : `line ${index + 1}: filler content`
+    const content = Array.from({ length: 980 }, (_, index) =>
+      index === 880 ? `line ${index + 1}: SHOULD_NOT_BE_FULLY_TRACKED` : `line ${index + 1}: filler content`
     ).join("\n");
     const task: TaskDetail = {
       id: "task_large_file_context",
@@ -702,7 +702,7 @@ describe("ContextAssembler", () => {
           payload: {
             toolName: "read_file",
             ok: true,
-            output: JSON.stringify({ path: "src/index.html", content, hash: "hash_large", partial: false, totalLines: 720, mode: "full" })
+            output: JSON.stringify({ path: "src/index.html", content, hash: "hash_large", partial: false, totalLines: 980, mode: "full" })
           }
         }
       ]
@@ -713,7 +713,7 @@ describe("ContextAssembler", () => {
     const knownFiles = tracker.buildFileStateTable();
 
     expect(knownFiles).toContain("context excerpt");
-    expect(knownFiles).toContain("720 lines");
+    expect(knownFiles).toContain("980 lines");
     expect(knownFiles).toContain("Large full-file reads are compacted");
     expect(knownFiles).not.toContain("SHOULD_NOT_BE_FULLY_TRACKED");
   });
@@ -983,15 +983,15 @@ describe("ContextAssembler", () => {
   });
 
   it("injects full global and project memory files before task history", async () => {
-    const previousMemoryDir = process.env["SCC_MEMORY_DIR"];
-    const memoryDir = mkdtempSync(join(tmpdir(), "scc-context-memory-"));
-    const workRoot = mkdtempSync(join(tmpdir(), "scc-context-work-root-"));
-    process.env["SCC_MEMORY_DIR"] = memoryDir;
+    const previousMemoryDir = process.env["AGENT_WORKBENCH_MEMORY_DIR"];
+    const memoryDir = mkdtempSync(join(tmpdir(), "agent-workbench-context-memory-"));
+    const workRoot = mkdtempSync(join(tmpdir(), "agent-workbench-context-work-root-"));
+    process.env["AGENT_WORKBENCH_MEMORY_DIR"] = memoryDir;
     try {
       const projectHash = createHash("sha256").update(resolve(workRoot)).digest("hex").slice(0, 20);
       mkdirSync(join(memoryDir, "projects", projectHash), { recursive: true });
       writeFileSync(join(memoryDir, "USER.md"), "# USER.md\n\n- Prefer concise Chinese engineering updates.\n");
-      writeFileSync(join(memoryDir, "MEMORY.md"), "# MEMORY.md\n\n- Global memory marker for all SCC tasks.\n");
+      writeFileSync(join(memoryDir, "MEMORY.md"), "# MEMORY.md\n\n- Global memory marker for all Agent Workbench tasks.\n");
       writeFileSync(join(memoryDir, "projects", projectHash, "MEMORY.md"), "# MEMORY.md\n\n- Project scoped memory marker.\n");
 
       const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
@@ -1012,13 +1012,13 @@ describe("ContextAssembler", () => {
       expect(context.systemPrompt).toContain("### Global USER.md");
       expect(context.systemPrompt).toContain("Prefer concise Chinese engineering updates.");
       expect(context.systemPrompt).toContain("### Global MEMORY.md");
-      expect(context.systemPrompt).toContain("Global memory marker for all SCC tasks.");
+      expect(context.systemPrompt).toContain("Global memory marker for all Agent Workbench tasks.");
       expect(context.systemPrompt).toContain("### Project MEMORY.md");
       expect(context.systemPrompt).toContain("Project scoped memory marker.");
       expect(context.input).not.toContain("### Global USER.md");
     } finally {
-      if (previousMemoryDir === undefined) delete process.env["SCC_MEMORY_DIR"];
-      else process.env["SCC_MEMORY_DIR"] = previousMemoryDir;
+      if (previousMemoryDir === undefined) delete process.env["AGENT_WORKBENCH_MEMORY_DIR"];
+      else process.env["AGENT_WORKBENCH_MEMORY_DIR"] = previousMemoryDir;
       rmSync(memoryDir, { recursive: true, force: true });
       rmSync(workRoot, { recursive: true, force: true });
     }
@@ -1447,6 +1447,19 @@ class RepeatingPlanOnlyModel implements ModelClient {
         id: createId("tool_call"),
         toolName: "plan_update",
         args: { context: "Still planning", status: "running", steps: [{ title: "Looping", status: "running" }] }
+      }]
+    };
+  }
+}
+
+class RepeatingReadOnlyModel implements ModelClient {
+  async next(): Promise<ModelTurn> {
+    return {
+      kind: "tool_calls",
+      calls: [{
+        id: createId("tool_call"),
+        toolName: "read_file",
+        args: { path: "index.html" }
       }]
     };
   }
@@ -1975,7 +1988,7 @@ describe("AgentWorkbench", () => {
       { toolName: "run_command", args: { command: "Get-Process | Select-Object -First 5" }, riskCategory: "host_observation" },
       { toolName: "edit_file", args: { path: "note.txt", expectedHash: "abc", edits: [] }, riskCategory: "workspace_write" },
       { toolName: "write_file", args: { path: "note.txt", expectedHash: "__new__", content: "hello" }, riskCategory: "workspace_write" },
-      { toolName: "web_search", args: { query: "SCC workbench" }, riskCategory: "network" },
+      { toolName: "web_search", args: { query: "Agent Workbench" }, riskCategory: "network" },
       { toolName: "run_command", args: { command: "Stop-Process -Id 99999" }, riskCategory: "destructive" }
     ];
 
@@ -2130,21 +2143,40 @@ describe("AgentWorkbench", () => {
     expect(completed.events.filter((event) => event.type === "tool_result")).toHaveLength(3);
   });
 
+  it("pauses repeated read-only exploration that stops producing progress", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new StubToolExecutor(),
+      model: new RepeatingReadOnlyModel()
+    });
+    await workbench.grantGlobalPermission("workspace_read", "loop guard");
+
+    const paused = await workbench.createTask("inspect the same file until the loop guard fires");
+    const noProgress = paused.events.find((event) => event.type === "model_no_progress");
+
+    expect(paused.status).toBe("paused");
+    expect(noProgress?.payload["reason"]).toBe("repeated_read_only_tools");
+    expect(Number(noProgress?.payload["readOnlyToolCount"])).toBeGreaterThanOrEqual(16);
+  });
+
   it("writes per-task model trace logs across model requests and tool results", async () => {
     const workRoot = mkdtempSync(join(tmpdir(), "scc-model-trace-"));
+    const traceRoot = mkdtempSync(join(tmpdir(), "agent-workbench-trace-"));
     const store = new InMemoryWorkbenchStore();
     const workbench = new AgentWorkbench({
       store,
       tools: new StubToolExecutor(),
-      model: new TraceEmittingToolRoundTripModel()
+      model: new TraceEmittingToolRoundTripModel(),
+      traceRoot
     });
     const folder = await workbench.createTaskFolder({ name: "trace-folder", rootPath: workRoot });
     await workbench.grantGlobalPermission("workspace_read", "trace logging");
 
     const completed = await workbench.createTask("trace the full request-response loop", undefined, folder.id);
-    const tracePath = join(workRoot, "data", "logs", "model-traces", completed.id, "trace.jsonl");
+    const tracePath = join(traceRoot, completed.id, "trace.jsonl");
 
     expect(existsSync(tracePath)).toBe(true);
+    expect(existsSync(join(workRoot, "data", "logs", "model-traces"))).toBe(false);
     const entries = readFileSync(tracePath, "utf8")
       .trim()
       .split("\n")
@@ -2176,22 +2208,25 @@ describe("AgentWorkbench", () => {
     });
 
     rmSync(workRoot, { recursive: true, force: true });
+    rmSync(traceRoot, { recursive: true, force: true });
   });
 
   it("coalesces noisy progress streams before persisting task events and trace", async () => {
     const workRoot = mkdtempSync(join(tmpdir(), "scc-progress-trace-"));
+    const traceRoot = mkdtempSync(join(tmpdir(), "agent-workbench-progress-trace-"));
     try {
       const workbench = new AgentWorkbench({
         store: new InMemoryWorkbenchStore(),
         tools: new ChatteryProgressToolExecutor(),
-        model: new SingleToolModel("list_files", { path: "." })
+        model: new SingleToolModel("list_files", { path: "." }),
+        traceRoot
       });
       const folder = await workbench.createTaskFolder({ name: "progress-trace", rootPath: workRoot });
       await workbench.grantGlobalPermission("workspace_read", "trace progress coalescing");
 
       const completed = await workbench.createTask("list files with very noisy progress", undefined, folder.id);
       const progressEvents = completed.events.filter((event) => event.type === "tool_progress");
-      const traceEntries = readFileSync(join(workRoot, "data", "logs", "model-traces", completed.id, "trace.jsonl"), "utf8")
+      const traceEntries = readFileSync(join(traceRoot, completed.id, "trace.jsonl"), "utf8")
         .trim()
         .split("\n")
         .filter(Boolean)
@@ -2203,12 +2238,14 @@ describe("AgentWorkbench", () => {
       expect(progressTraceEntries.length).toBeLessThanOrEqual(3);
     } finally {
       rmSync(workRoot, { recursive: true, force: true });
+      rmSync(traceRoot, { recursive: true, force: true });
     }
   });
 
   it("persists an attention trace fixture for manual audit", async () => {
     const outDir = resolve("data", "test-reports", "attention-first-trace");
     const workRoot = join(outDir, "workroot");
+    const traceRoot = join(outDir, "traces");
     rmSync(outDir, { recursive: true, force: true });
     mkdirSync(workRoot, { recursive: true });
     writeFileSync(join(workRoot, "README.md"), "# Trace Fixture\n", "utf8");
@@ -2262,13 +2299,14 @@ describe("AgentWorkbench", () => {
         store,
         contextAssembler: assembler,
         model,
-        tools: new ShellToolExecutor()
+        tools: new ShellToolExecutor(),
+        traceRoot
       });
       const folder = await workbench.createTaskFolder({ name: "attention-trace", rootPath: workRoot });
       await workbench.grantGlobalPermission("workspace_read", "manual trace fixture");
 
       const completed = await workbench.createTask("Trace the full request-response loop by listing files.", undefined, folder.id);
-      const tracePath = join(workRoot, "data", "logs", "model-traces", completed.id, "trace.jsonl");
+      const tracePath = join(traceRoot, completed.id, "trace.jsonl");
       const traceEntries = readFileSync(tracePath, "utf8")
         .trim()
         .split("\n")
@@ -2284,7 +2322,7 @@ describe("AgentWorkbench", () => {
       expect(String(requestMessages[0]?.at(-1)?.["content"] ?? "")).toContain("Trace the full request-response loop");
       expect(String(requestMessages[0]?.at(-1)?.["content"] ?? "")).not.toContain("Active Node");
       expect(requestMessages[1]?.some((message) => message["role"] === "tool")).toBe(true);
-      expect(String(requestMessages[1]?.find((message) => Array.isArray(message["tool_calls"]))?.["reasoning_content"] ?? "")).toBe("I should inspect the workspace before answering.");
+      expect(requestMessages.some((messages) => messages.some((message) => "reasoning_content" in message))).toBe(false);
       expect(requestMessages[1]?.find((message) => Array.isArray(message["tool_calls"]))?.["content"]).toBe("");
       expect(String(requestMessages[1]?.find((message) => message["role"] === "tool")?.["content"] ?? "")).toContain("README.md");
       expect(String(requestMessages[1]?.[0]?.["content"] ?? "")).not.toContain("## Known Files");
@@ -2415,7 +2453,7 @@ describe("AgentWorkbench", () => {
     expect(final?.payload["streamId"]).toBe(deltas[0]?.payload["streamId"]);
   });
 
-  it("hides streaming assistant preambles when the turn continues into tool calls", async () => {
+  it("preserves readable streaming assistant preambles when the turn continues into tool calls", async () => {
     const tools = new StubToolExecutor();
     const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingToolCallModel(), tools });
     await workbench.grantGlobalPermission("workspace_read", "tool turn preamble");
@@ -2426,7 +2464,7 @@ describe("AgentWorkbench", () => {
     expect(completed.status).toBe("completed");
     expect(tools.calls.map((call) => call.toolName)).toEqual(["list_files"]);
     expect(preambleDeltas.map((event) => event.summary).join("")).toBe("Now reading files.");
-    expect(preambleDeltas.every((event) => event.payload["uiHidden"] === true)).toBe(true);
+    expect(preambleDeltas.every((event) => event.payload["uiHidden"] !== true)).toBe(true);
   });
 
   it("continues execution when a provider returns inline XML tool markup as text", async () => {
@@ -2702,7 +2740,7 @@ describe("AgentWorkbench", () => {
       response.end(
         JSON.stringify({
           results: [
-            { title: "SCC docs", url: `http://example.test${request.url ?? ""}`, snippet: "Workbench documentation" },
+            { title: "Agent Workbench docs", url: `http://example.test${request.url ?? ""}`, snippet: "Workbench documentation" },
             { title: "Agent tools", url: "http://example.test/tools", snippet: "Tool evidence model" }
           ]
         })
@@ -2715,7 +2753,7 @@ describe("AgentWorkbench", () => {
       const workbench = new AgentWorkbench({
         store,
         tools: new CompositeToolExecutor(new StubToolExecutor(), [new WebSearchToolExecutor(store)]),
-        model: new SingleToolModel("web_search", { query: "scc workbench", limit: 2 })
+        model: new SingleToolModel("web_search", { query: "agent workbench", limit: 2 })
       });
       await workbench.createWebSearchProvider({
         label: "Local search",
@@ -2730,7 +2768,7 @@ describe("AgentWorkbench", () => {
 
       expect(completed.status).toBe("completed");
       expect(searchEvent?.summary).toBe("Search evidence returned");
-      expect(JSON.stringify(searchEvent?.payload)).toContain("SCC docs");
+      expect(JSON.stringify(searchEvent?.payload)).toContain("Agent Workbench docs");
       expect(completed.events.some((event) => event.type === "approval_auto_granted" && event.payload["riskCategory"] === "network")).toBe(true);
     } finally {
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
@@ -2742,7 +2780,7 @@ describe("AgentWorkbench", () => {
     globalThis.fetch = async () =>
       new Response(
         JSON.stringify({
-          RelatedTopics: [{ Text: "SCC - Built-in fallback result", FirstURL: "https://example.test/scc" }]
+          RelatedTopics: [{ Text: "Agent Workbench - Built-in fallback result", FirstURL: "https://example.test/agent-workbench" }]
         }),
         { status: 200, headers: { "content-type": "application/json" } }
       );
@@ -2751,7 +2789,7 @@ describe("AgentWorkbench", () => {
       const result = await executor.execute({
         id: createId("tool_call"),
         toolName: "web_search",
-        args: { query: "scc", limit: 1 }
+        args: { query: "agent workbench", limit: 1 }
       });
 
       expect(result.ok).toBe(true);
@@ -2772,7 +2810,7 @@ describe("AgentWorkbench", () => {
     const item = await workbench.createKnowledgeItem({
       kind: "memory",
       title: "Approval notes",
-      content: "SCC should ask before risky tools and reuse task grants after approval.",
+      content: "Agent Workbench should ask before risky tools and reuse task grants after approval.",
       tags: ["permissions"]
     });
     const search = await workbench.searchKnowledge({ query: "risky approval grants", projectId: "default", limit: 2 });
@@ -3328,7 +3366,7 @@ describe("AgentWorkbench", () => {
     }
   });
 
-  it("uses an isolated SCC workspace as the default task folder instead of the project root", async () => {
+  it("uses an isolated Agent Workbench workspace as the default task folder instead of the project root", async () => {
     const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
 
     const task = await workbench.createTask("默认工作目录检查");
@@ -3908,7 +3946,7 @@ describe("OpenAIModelClient", () => {
         { id: "call_list", type: "function", function: { name: "list_files", arguments: "{\"path\":\".\"}" } }
       ]);
       expect(messages[4]?.["content"]).toBe("");
-      expect(messages[4]?.["reasoning_content"]).toBe("I should inspect the workspace before writing the page.");
+      expect(messages[4]?.["reasoning_content"]).toBeUndefined();
       expect(messages[5]?.["tool_call_id"]).toBe("call_list");
       const lastUser = messages.filter((message) => message["role"] === "user").at(-1);
       expect(lastUser?.["content"]).toBe("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
@@ -3920,7 +3958,7 @@ describe("OpenAIModelClient", () => {
     }
   });
 
-  it("replays reasoning_content for hidden plan_update history on the next MiMo request", async () => {
+  it("does not replay reasoning_content for hidden plan_update history on the next MiMo request", async () => {
     const capturedRequests: Array<Record<string, unknown>> = [];
     let requestCount = 0;
     const server = createServer((request, response) => {
@@ -3986,7 +4024,8 @@ describe("OpenAIModelClient", () => {
       expect(requestCount).toBe(2);
       expect(planResult?.payload["reasoningContent"]).toBe("I should update the visible plan before editing files.");
       expect(planMessage?.["content"]).toBe("");
-      expect(planMessage?.["reasoning_content"]).toBe("I should update the visible plan before editing files.");
+      expect(planMessage?.["reasoning_content"]).toBeUndefined();
+      expect(messages.some((message) => "reasoning_content" in message)).toBe(false);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -4537,7 +4576,7 @@ describe("ShellToolExecutor", () => {
     }
   });
 
-  it("returns a preview for line-heavy files even when the byte size is moderate", async () => {
+  it("returns compact full content for moderate line-heavy files without inlining the UI body", async () => {
     const temp = mkdtempSync(join(tmpdir(), "tmp-scc-read-line-heavy-"));
     try {
       const lines = Array.from({ length: 720 }, (_, index) => `line-${index + 1}`);
@@ -4552,12 +4591,52 @@ describe("ShellToolExecutor", () => {
 
       expect(result.ok).toBe(true);
       const parsed = JSON.parse(result.output) as Record<string, unknown>;
-      expect(parsed["mode"]).toBe("large_preview");
+      expect(parsed["mode"]).toBe("full_compact");
       expect(parsed["displayMode"]).toBe("summary_only");
-      expect(parsed["partial"]).toBe(true);
+      expect(parsed["partial"]).toBe(false);
       expect(String(parsed["content"])).toContain("line-1");
       expect(String(parsed["content"])).toContain("line-720");
-      expect(String(parsed["content"])).not.toContain("line-360");
+      expect(String(parsed["content"])).toContain("line-360");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes internal model trace folders from workspace read, search, and list tools", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "tmp-agent-workbench-trace-exclude-"));
+    try {
+      mkdirSync(join(temp, "src"), { recursive: true });
+      mkdirSync(join(temp, "data", "logs", "model-traces", "task_1"), { recursive: true });
+      writeFileSync(join(temp, "src", "app.ts"), "export const visible = 'project code';\n", "utf8");
+      writeFileSync(join(temp, "data", "logs", "model-traces", "task_1", "trace.jsonl"), "secret trace payload\n", "utf8");
+      const executor = new ShellToolExecutor(temp);
+
+      const read = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "read_file",
+        args: { path: "data/logs/model-traces/task_1/trace.jsonl" }
+      });
+      const search = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "search_files",
+        args: { path: ".", query: "secret trace payload" }
+      });
+      const list = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "list_files",
+        args: { path: ".", recursive: true }
+      });
+
+      expect(read.ok).toBe(false);
+      expect(read.output).toContain("internal trace files are excluded");
+      expect(search.ok).toBe(true);
+      const searchJson = JSON.parse(search.output) as { matches?: unknown[] };
+      expect(search.output).not.toContain("model-traces");
+      expect(searchJson.matches).toEqual([]);
+      expect(list.ok).toBe(true);
+      expect(list.output).toContain("app.ts");
+      expect(list.output).not.toContain("model-traces");
+      expect(list.output).not.toContain("trace.jsonl");
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }

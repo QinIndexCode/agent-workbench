@@ -1,6 +1,6 @@
 # Settings Center
 
-The Settings center is the operational control surface for SCC. It decides:
+The Settings center is the operational control surface for Agent Workbench. It decides:
 
 - which model runs tasks
 - how tool approvals behave
@@ -31,15 +31,15 @@ Define the tool-risk boundary for the workspace.
 
 ### MCP
 
-Connect external tool servers into SCC without bypassing approval or timeline evidence.
+Connect external tool servers into Agent Workbench without bypassing approval or timeline evidence.
 
 ### Integrations
 
-Route Discord, Feishu, Slack, Telegram, or WeCom messages into normal SCC tasks with a default folder and permission preset.
+Route Discord, Feishu, Slack, Telegram, or WeCom messages into normal Agent Workbench tasks with a default folder and permission preset.
 
 ### Scheduled Tasks
 
-Create repeat automation that runs while SCC stays open.
+Create repeat automation that runs while Agent Workbench stays open.
 
 ### Web Search
 

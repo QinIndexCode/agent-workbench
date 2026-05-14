@@ -1,4 +1,4 @@
-import type { ReflectionSession, SkillCuratorItem } from "@scc/shared";
+import type { ReflectionSession, SkillCuratorItem } from "@agent-workbench/shared";
 import { CheckCircle2, GitMerge, PauseCircle, RefreshCcw, Sparkles, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -175,7 +175,7 @@ function getCuratorCopy(language?: string | null) {
     blockedReasons: zh ? "为什么被拦截" : "Why it was blocked",
     dedupBasis: zh ? "为什么判定为重复" : "Why it was grouped as duplicate",
     emptyTitle: zh ? "暂无需要处理的建议" : "No curator actions",
-    emptyBody: zh ? "SCC 会在多个成功任务形成稳定模式后再建议晋升。" : "SCC suggests promotions only after stable repeated successful patterns.",
+    emptyBody: zh ? "Agent Workbench 会在多个成功任务形成稳定模式后再建议晋升。" : "Agent Workbench suggests promotions only after stable repeated successful patterns.",
     kind: {
       candidate: zh ? "候选" : "Candidate",
       active: zh ? "已启用" : "Active",

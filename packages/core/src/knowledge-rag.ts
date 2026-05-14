@@ -9,7 +9,7 @@ import type {
   ToolCall,
   ToolResult,
   UserPreferences
-} from "@scc/shared";
+} from "@agent-workbench/shared";
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createId, nowIso } from "./ids.js";

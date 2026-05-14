@@ -38,7 +38,7 @@ describe("api client", () => {
         headers: expect.any(Headers)
       })
     );
-    expect(((fetchMock.mock.lastCall?.[1] as RequestInit).headers as Headers).get("x-scc-session")).toBe(sessionToken);
+    expect(((fetchMock.mock.lastCall?.[1] as RequestInit).headers as Headers).get("x-agent-workbench-session")).toBe(sessionToken);
 
     await api.createTask("hello");
     expect(fetchMock).toHaveBeenLastCalledWith(
@@ -129,7 +129,7 @@ describe("api client", () => {
     expect(fetchMock).toHaveBeenLastCalledWith("/api/permissions/global/host_observation", expect.objectContaining({ method: "DELETE" }));
     expect(revokeInit.headers).toBeInstanceOf(Headers);
     expect((revokeInit.headers as Headers).has("content-type")).toBe(false);
-    expect((revokeInit.headers as Headers).get("x-scc-session")).toBe(sessionToken);
+    expect((revokeInit.headers as Headers).get("x-agent-workbench-session")).toBe(sessionToken);
   });
 
   it("raises failed responses", async () => {

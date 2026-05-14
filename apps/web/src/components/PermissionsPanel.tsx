@@ -1,5 +1,5 @@
-import type { GlobalPermissionGrant, PreferencesPatch, RiskCategory, UserPreferences } from "@scc/shared";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { GlobalPermissionGrant, PreferencesPatch, RiskCategory, UserPreferences } from "@agent-workbench/shared";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -52,8 +52,8 @@ export function PermissionsPanel({
   onPreference: (patch: PreferencesPatch) => void;
 }) {
   const text = getUiCopy(language).permissions;
-  const safePermissions = Array.isArray(permissions) ? permissions : [];
-  const grants = new Set(safePermissions.map((permission) => permission.riskCategory));
+  const safePermissions = useMemo(() => (Array.isArray(permissions) ? permissions : []), [permissions]);
+  const grants = useMemo(() => new Set(safePermissions.map((permission) => permission.riskCategory)), [safePermissions]);
   const savedRuleCategories = ruleCategoriesFromPreferences(preferences);
   const savedMode = derivePermissionMode(preferences, grants);
   const [pendingMode, setPendingMode] = useState<PermissionMode | null>(null);
@@ -61,6 +61,10 @@ export function PermissionsPanel({
   const displayedMode = optimisticMode ?? pendingMode ?? savedMode;
   const selectedRisks = optimisticMode && optimisticRisks ? optimisticRisks : risksForMode(displayedMode, grants, savedRuleCategories);
   const selectedSet = new Set<RiskCategory>(selectedRisks);
+  const applyMode = useCallback((mode: PermissionMode, risks: RiskCategory[]) => {
+    setPendingMode(mode);
+    onPermissionModeChange?.(mode, risks);
+  }, [onPermissionModeChange]);
 
   useEffect(() => {
     if (pendingMode && pendingMode === savedMode) setPendingMode(null);
@@ -71,7 +75,7 @@ export function PermissionsPanel({
     const customRisks = riskCategories.filter((risk) => grants.has(risk));
     applyMode("custom", customRisks);
     onStartCustomConsumed?.();
-  }, [startCustom]);
+  }, [applyMode, grants, onStartCustomConsumed, startCustom]);
 
   return (
     <section className="permissionsPanel">
@@ -324,11 +328,6 @@ export function PermissionsPanel({
       ) : null}
     </section>
   );
-
-  function applyMode(mode: PermissionMode, risks: RiskCategory[]) {
-    setPendingMode(mode);
-    onPermissionModeChange?.(mode, risks);
-  }
 
   function emitPreference(patch: PreferencesPatch) {
     onPreference(patch);

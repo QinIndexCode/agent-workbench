@@ -1,6 +1,6 @@
 import { FileText, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { TaskFolderRecord } from "@scc/shared";
+import type { TaskFolderRecord } from "@agent-workbench/shared";
 
 export function TaskEditDialog({
   cancelLabel,

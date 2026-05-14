@@ -1,4 +1,4 @@
-# SCC Agent Workbench Architecture
+# Agent Workbench Architecture
 
 > 完整文档导航见 [README.md](README.md)。
 >
@@ -6,7 +6,7 @@
 
 ## Current Product Boundary
 
-SCC 当前实现的是本地 Agent Workbench，而不是脚本门禁系统，也不是完整的多平台 Agent 云。系统职责收敛为：
+Agent Workbench 当前实现的是本地 Agent Workbench，而不是脚本门禁系统，也不是完整的多平台 Agent 云。系统职责收敛为：
 
 - 组装上下文，让模型看到必要目标、历史、工具证据、文件状态和相关 skill metadata。
 - 暴露工具，并按风险类别做审批。

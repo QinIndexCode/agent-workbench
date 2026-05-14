@@ -1,4 +1,4 @@
-import { SkillRecordSchema, type ExperienceRecord, type PatternRecord, type ReflectionSession, type SkillConflict, type SkillDuplicateGroup, type SkillRecord, type TaskDetail, type TaskMemory } from "@scc/shared";
+import { SkillRecordSchema, type ExperienceRecord, type PatternRecord, type ReflectionSession, type SkillConflict, type SkillDuplicateGroup, type SkillRecord, type TaskDetail, type TaskMemory } from "@agent-workbench/shared";
 import { createId, nowIso } from "./ids.js";
 
 export function createTaskMemory(task: TaskDetail): TaskMemory {
@@ -236,7 +236,7 @@ export function normalizeSkillRecord(input: unknown): SkillRecord {
   const raw = asRecord(input);
   const now = nowIso();
   const title = stringValue(raw["title"], "Recorded workflow").replace(/\s+/g, " ").trim().slice(0, 120) || "Recorded workflow";
-  const body = stringValue(raw["body"], [`# ${title}`, "", "Legacy skill record normalized for the SCC workbench."].join("\n"));
+  const body = stringValue(raw["body"], [`# ${title}`, "", "Legacy skill record normalized for Agent Workbench."].join("\n"));
   const applicability = asRecord(raw["applicability"]);
   const stats = asRecord(raw["stats"]);
   const keywords = normalizeKeywordList(stringArray(applicability["keywords"], stringArray(raw["keywords"], tokenize(title))), title);

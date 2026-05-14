@@ -1,6 +1,6 @@
-# SCC Workbench
+# Agent Workbench
 
-SCC 是一个面向 Agent 的工作台，用于组织任务上下文、管理工具权限、跟踪事件流和维护可复用的能力模块。
+Agent Workbench 是一个面向 Agent 的工作台，用于组织任务上下文、管理工具权限、跟踪事件流和维护可复用的能力模块。
 
 ## 架构概述
 

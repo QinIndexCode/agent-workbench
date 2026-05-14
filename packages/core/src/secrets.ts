@@ -7,7 +7,7 @@ import type { EncryptedSecretValue } from "./store.js";
 export class LocalSecretBox {
   private readonly key: Buffer;
 
-  constructor(keyFilePath = process.env["SCC_LOCAL_SECRET_FILE"] ?? "data/local-secret.key") {
+  constructor(keyFilePath = process.env["AGENT_WORKBENCH_LOCAL_SECRET_FILE"] ?? process.env["SCC_LOCAL_SECRET_FILE"] ?? "data/local-secret.key") {
     this.key = loadOrCreateKey(keyFilePath);
   }
 

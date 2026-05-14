@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import OpenAI from "openai";
-import type { TaskDetail, ToolCall, UserPreferences } from "@scc/shared";
+import type { TaskDetail, ToolCall, UserPreferences } from "@agent-workbench/shared";
 import type { CanonicalModelMessage, ContextAssembler } from "./context-assembler.js";
 import { createId, nowIso } from "./ids.js";
 import type { ModelClient, ModelStreamHandlers, ModelTraceEvent, ModelTurn, ModelUsage } from "./fallback-model.js";
@@ -54,8 +54,8 @@ export class OpenAIModelClient implements ModelClient {
   constructor(options: OpenAIModelClientOptions) {
     this.apiKey = options.apiKey ?? "";
     this.defaultBaseURL = options.baseURL;
-    this.defaultModel = options.model ?? process.env["SCC_MODEL"] ?? "gpt-5.4-mini";
-    this.modelTimeoutMs = Number(process.env["SCC_MODEL_TIMEOUT_MS"] ?? 300_000);
+    this.defaultModel = options.model ?? envValue("AGENT_WORKBENCH_MODEL", "SCC_MODEL") ?? "gpt-5.4-mini";
+    this.modelTimeoutMs = Number(envValue("AGENT_WORKBENCH_MODEL_TIMEOUT_MS", "SCC_MODEL_TIMEOUT_MS") ?? 300_000);
     this.contextAssembler = options.contextAssembler;
     this.toolProvider = options.toolProvider;
     this.preferenceProvider = options.preferenceProvider;
@@ -170,9 +170,7 @@ export class OpenAIModelClient implements ModelClient {
     }
     const client = this.clientFor(baseURL, apiKey);
     const callSignal = this.createCallSignal(stream?.signal);
-    const messages = toOpenAIChatMessages(contextMessages(context, task), {
-      replayReasoningContent: requiresOpenAIReasoningReplay(model, baseURL)
-    });
+    const messages = toOpenAIChatMessages(contextMessages(context, task));
     const request: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
       model,
       messages,
@@ -544,8 +542,9 @@ export function createModelClientFromEnvironment(
     providerResolver?: (() => Promise<ResolvedModelProviderConfig | null>) | undefined;
   } = {}
 ): ModelClient {
-  if (process.env["SCC_TEST_TOOL_COMMAND"]) {
-    return new ConfiguredToolModelClient(process.env["SCC_TEST_TOOL_COMMAND"]);
+  const testToolCommand = envValue("AGENT_WORKBENCH_TEST_TOOL_COMMAND", "SCC_TEST_TOOL_COMMAND");
+  if (testToolCommand) {
+    return new ConfiguredToolModelClient(testToolCommand);
   }
   const config = loadOpenAiConfig();
   return config.apiKey || options.providerResolver
@@ -586,10 +585,7 @@ function systemTextFromMessages(messages: CanonicalModelMessage[]): string {
     .join("\n\n") || fallbackInstructions();
 }
 
-function toOpenAIChatMessages(
-  messages: CanonicalModelMessage[],
-  options: { replayReasoningContent?: boolean } = {}
-): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+function toOpenAIChatMessages(messages: CanonicalModelMessage[]): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
   return messages.flatMap((message): OpenAI.Chat.Completions.ChatCompletionMessageParam[] => {
     if (message.role === "system") return [{ role: "system", content: message.content }];
     if (message.role === "user") return [{ role: "user", content: message.content }];
@@ -614,9 +610,6 @@ function toOpenAIChatMessages(
         }
       }))
     };
-    if (options.replayReasoningContent && message.reasoningContent) {
-      assistantMessage["reasoning_content"] = message.reasoningContent;
-    }
     return [assistantMessage as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam];
   });
 }
@@ -723,7 +716,7 @@ function parseJsonRecord(value: string): Record<string, unknown> | null {
 
 function fallbackInstructions(): string {
   return [
-    "You are the SCC workbench agent.",
+    "You are the Agent Workbench agent.",
     "Choose the next action yourself based on the user's goal, available tools, durable memory, skills, and evidence.",
     "Use tools when the environment must be observed. Do not invent host, file, network, or command results.",
     "When a tool needs user approval, the application will ask the user; do not assume the current authorization state.",
@@ -814,11 +807,11 @@ interface OpenAIProviderSection {
   config: OpenAIProviderConfig;
 }
 
-export function loadOpenAiConfig(filePath = normalizeApiKeyFilePath(process.env["SCC_API_KEY_FILE"])): OpenAIProviderConfig {
+export function loadOpenAiConfig(filePath = normalizeApiKeyFilePath(envValue("AGENT_WORKBENCH_API_KEY_FILE", "SCC_API_KEY_FILE"))): OpenAIProviderConfig {
   const fileConfig = loadOpenAiProviderConfig(filePath);
   const apiKey = process.env["OPENAI_API_KEY"] ?? fileConfig.apiKey;
-  const baseURL = process.env["OPENAI_BASE_URL"] ?? process.env["OPENAI_BASEURL"] ?? process.env["SCC_OPENAI_BASE_URL"] ?? fileConfig.baseURL;
-  const model = process.env["SCC_MODEL"] ?? process.env["OPENAI_MODEL"] ?? fileConfig.model;
+  const baseURL = process.env["OPENAI_BASE_URL"] ?? process.env["OPENAI_BASEURL"] ?? envValue("AGENT_WORKBENCH_OPENAI_BASE_URL", "SCC_OPENAI_BASE_URL") ?? fileConfig.baseURL;
+  const model = envValue("AGENT_WORKBENCH_MODEL", "SCC_MODEL") ?? process.env["OPENAI_MODEL"] ?? fileConfig.model;
   return {
     ...(apiKey ? { apiKey } : {}),
     ...(baseURL ? { baseURL } : {}),
@@ -827,7 +820,7 @@ export function loadOpenAiConfig(filePath = normalizeApiKeyFilePath(process.env[
 }
 
 export function loadOpenAiProviderConfig(
-  filePath = normalizeApiKeyFilePath(process.env["SCC_API_KEY_FILE"])
+  filePath = normalizeApiKeyFilePath(envValue("AGENT_WORKBENCH_API_KEY_FILE", "SCC_API_KEY_FILE"))
 ): OpenAIProviderConfigWithName {
   const section = loadOpenAiConfigFileSection(filePath);
   return section ? { ...section.config, providerName: section.name } : {};
@@ -839,7 +832,7 @@ function loadOpenAiConfigFileSection(filePath?: string): OpenAIProviderSection |
   if (!existsSync(resolvedPath)) return undefined;
 
   const sections = parseProviderSections(readFileSync(resolvedPath, "utf8"));
-  const preferredProvider = process.env["SCC_API_PROVIDER"] ?? process.env["OPENAI_PROVIDER"];
+  const preferredProvider = envValue("AGENT_WORKBENCH_API_PROVIDER", "SCC_API_PROVIDER") ?? process.env["OPENAI_PROVIDER"];
   const preferred = preferredProvider
     ? sections.find((section) => normalizeProviderName(section.name).includes(normalizeProviderName(preferredProvider)))
     : undefined;
@@ -910,7 +903,11 @@ function isBaseUrlName(name: string): boolean {
 }
 
 function isModelName(name: string): boolean {
-  return /^(SCC_MODEL|OPENAI_MODEL|model|canonicalLiveModel)$/i.test(name);
+  return /^(AGENT_WORKBENCH_MODEL|SCC_MODEL|OPENAI_MODEL|model|canonicalLiveModel)$/i.test(name);
+}
+
+function envValue(primary: string, legacy: string): string | undefined {
+  return process.env[primary] ?? process.env[legacy];
 }
 
 function looksLikeProviderHeading(line: string): boolean {
@@ -932,19 +929,6 @@ function normalizeBaseURL(value?: string): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   return trimmed.replace(/\/chat\/completions\/?$/i, "");
-}
-
-function requiresOpenAIReasoningReplay(
-  model: string,
-  baseURL: string | undefined
-): boolean {
-  if (model.trim().toLowerCase().startsWith("mimo-")) return true;
-  if (!baseURL) return false;
-  try {
-    return new URL(baseURL).hostname.toLowerCase().endsWith("xiaomimimo.com");
-  } catch {
-    return baseURL.toLowerCase().includes("xiaomimimo.com");
-  }
 }
 
 function classifyModelError(error: unknown): string {

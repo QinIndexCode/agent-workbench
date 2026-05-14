@@ -1,5 +1,5 @@
 import { AlertTriangle, ShieldAlert } from "lucide-react";
-import type { ApprovalDecision, ToolApproval } from "@scc/shared";
+import type { ApprovalDecision, ToolApproval } from "@agent-workbench/shared";
 
 export function ApprovalCard({
   approval,

@@ -1,12 +1,12 @@
 # Curator
 
-Curator explains why SCC recommends, blocks, or groups a skill candidate.
+Curator explains why Agent Workbench recommends, blocks, or groups a skill candidate.
 
 ## What to look at first
 
 - **Reason**: why the item is here
 - **Evidence**: source tasks, tools, or patterns behind the suggestion
-- **Blocked reasons**: why SCC refused to promote it
+- **Blocked reasons**: why Agent Workbench refused to promote it
 - **Duplicate basis**: why multiple skills were grouped together
 
 ## Recommended actions

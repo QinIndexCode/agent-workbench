@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { KnowledgeCreateRequest, KnowledgeItem, KnowledgeModelAssetKind, KnowledgeModelDownloadRequest, KnowledgeModelDownloadResult, KnowledgeModelStatus, KnowledgePatchRequest, KnowledgeSearchRequest, KnowledgeSearchResult, KnowledgeUploadRequest, PreferencesPatch, UserPreferences } from "@scc/shared";
+import type { KnowledgeCreateRequest, KnowledgeItem, KnowledgeModelAssetKind, KnowledgeModelDownloadRequest, KnowledgeModelDownloadResult, KnowledgeModelStatus, KnowledgePatchRequest, KnowledgeSearchRequest, KnowledgeSearchResult, KnowledgeUploadRequest, PreferencesPatch, UserPreferences } from "@agent-workbench/shared";
 import { BrainCircuit, Download, Edit3, FileText, FileUp, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { MarkdownText } from "./MarkdownText.js";

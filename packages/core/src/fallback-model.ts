@@ -1,4 +1,4 @@
-import type { TaskDetail, ToolCall } from "@scc/shared";
+import type { TaskDetail, ToolCall } from "@agent-workbench/shared";
 import { createId, nowIso } from "./ids.js";
 
 export interface ModelUsage {

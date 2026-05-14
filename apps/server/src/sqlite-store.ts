@@ -30,8 +30,8 @@ import type {
   UserPreferences,
   PromptCacheStats,
   WebSearchProviderConfig
-} from "@scc/shared";
-import { LocalSecretBox, defaultPreferences, normalizeKnowledgeItem, normalizeSkillRecord, normalizeTaskDetail, normalizeTaskFolderRecord, type EncryptedSecretValue, type WorkbenchStore } from "@scc/core";
+} from "@agent-workbench/shared";
+import { LocalSecretBox, defaultPreferences, normalizeKnowledgeItem, normalizeSkillRecord, normalizeTaskDetail, normalizeTaskFolderRecord, type EncryptedSecretValue, type WorkbenchStore } from "@agent-workbench/core";
 
 type Namespace =
   | "tasks"

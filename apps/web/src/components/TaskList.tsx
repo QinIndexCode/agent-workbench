@@ -1,4 +1,4 @@
-import type { TaskDeleteRequest, TaskDetail, TaskFolderDeleteRequest, TaskFolderRecord, TaskPatchRequest } from "@scc/shared";
+import type { TaskDeleteRequest, TaskDetail, TaskFolderDeleteRequest, TaskFolderRecord, TaskPatchRequest } from "@agent-workbench/shared";
 import { BookOpen, ChevronRight, Clock3, Edit3, FileText, Folder, FolderPlus, HelpCircle, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import logoBlackTheme from "../assets/logo/logo-blackTheme.png";
@@ -140,9 +140,11 @@ export function TaskList({
 
   useEffect(() => {
     if (collapsed) {
-      preCollapseWidthRef.current = sidebarWidth;
       setContentVisible(false);
-      setSidebarWidth(52);
+      setSidebarWidth((current) => {
+        preCollapseWidthRef.current = current;
+        return 52;
+      });
       return;
     } else {
       setSidebarWidth(preCollapseWidthRef.current);
@@ -225,7 +227,7 @@ export function TaskList({
               <img alt="" className="brandLogo" src={resolvedTheme === "light" ? logoWhiteTheme : logoBlackTheme} />
             </span>
             <span className="brandCopy">
-              <strong>SCC</strong>
+              <strong>Agent Workbench</strong>
               <small>{text.engineStatus[engineStatus]}</small>
             </span>
             <button className="closeDrawerButton" onClick={onClose} type="button">

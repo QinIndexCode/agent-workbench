@@ -41,7 +41,7 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      "react-hooks/exhaustive-deps": "off",
+      "react-hooks/exhaustive-deps": "error",
       "@typescript-eslint/no-unused-vars": ["error", {
         argsIgnorePattern: "^_",
         caughtErrorsIgnorePattern: "^_",

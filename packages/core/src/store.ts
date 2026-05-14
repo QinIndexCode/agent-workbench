@@ -28,7 +28,7 @@ import type {
   UserPreferences,
   PromptCacheStats,
   WebSearchProviderConfig
-} from "@scc/shared";
+} from "@agent-workbench/shared";
 import { normalizeSkillRecord } from "./experience.js";
 import { defaultTaskWorkRoot } from "./workspace-root.js";
 

@@ -1,4 +1,4 @@
-# SCC-Batch Engine: Experience & Skill 系统设计文档
+# Agent Workbench Engine: Experience & Skill 系统设计文档
 
 > 版本: v3.0 (Final)
 > 日期: 2026-05-05
@@ -1666,7 +1666,7 @@ function buildProjectContext(projectId: string, store: WorkbenchStore): string {
 ```typescript
 function buildSystemLayer(task: TaskDetail, prefs: UserPreferences): string {
   const lines = [
-    "You are the SCC workbench agent.",
+    "You are the Agent Workbench agent.",
     "Choose the next action yourself based on the user's goal, the available tools, and the evidence already shown.",
     "Use tools when the environment must be observed. Do not invent host, file, network, or command results.",
     "When evidence is enough, answer directly. Do not emit fixed wrappers or diagnostic files."
@@ -1692,7 +1692,7 @@ function buildSystemLayer(task: TaskDetail, prefs: UserPreferences): string {
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  SCC-Batch Engine                                       │
+│  Agent Workbench Engine                                       │
 │  ┌─────────────────────────────────────────────────┐   │
 │  │  MCP Client Manager                              │   │
 │  │  ┌─────────────┐ ┌─────────────┐ ┌───────────┐ │   │

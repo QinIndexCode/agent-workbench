@@ -1,4 +1,4 @@
-import type { ConversationSummary, KnowledgeItem, ModelProviderRecord, SkillRecord, TaskAttachment, TaskDetail, TaskEvent, ToolCall, UserPreferences } from "@scc/shared";
+import type { ConversationSummary, KnowledgeItem, ModelProviderRecord, SkillRecord, TaskAttachment, TaskDetail, TaskEvent, ToolCall, UserPreferences } from "@agent-workbench/shared";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -47,10 +47,10 @@ const MAX_JSON_VALUE = 220;
 const MAX_TOOL_OUTPUT = 4000;
 const MAX_TOOL_OUTPUT_HEAD = 2000;
 const MAX_TOOL_OUTPUT_TAIL = 2000;
-const MAX_READ_FILE_CONTENT = 24000;
+const MAX_READ_FILE_CONTENT = 64000;
 const MAX_READ_FILE_HEAD = 16000;
 const MAX_READ_FILE_TAIL = 6000;
-const MAX_READ_FILE_FULL_LINES = 360;
+const MAX_READ_FILE_FULL_LINES = 900;
 const TRACKED_FILE_HEAD_LINES = 140;
 const TRACKED_FILE_TAIL_LINES = 80;
 const MAX_ATTACHMENT_PREVIEW = 1200;
@@ -356,7 +356,7 @@ export class ContextAssembler {
 
   private buildSystemLayer(preferences: UserPreferences): string {
     const lines = [
-      "You are the SCC workbench agent.",
+      "You are the Agent Workbench agent.",
       `User preferred agent role: ${preferences.agentRole || "Pragmatic engineering assistant"}.`,
       `User preferred tone: ${preferences.agentTone || "balanced"}.`,
       `User preferred response detail: ${preferences.responseDetail || "normal"}.`,
@@ -365,11 +365,11 @@ export class ContextAssembler {
       "When a tool needs user approval, the application will ask the user; do not assume the current authorization state.",
       "Scripts, builds, tests, and command output are tool evidence for you to interpret; they are never task-completion judges.",
       "Do not emit fixed machine-readable wrappers, diagnostic files, or scripted review reports unless the user explicitly asks.",
-      "USER.md and MEMORY.md content below is already injected from SCC's internal memory store. Do not try to read USER.md or MEMORY.md from the workRoot; use the memory tools only when the user wants durable memory changed.",
+      "USER.md and MEMORY.md content below is already injected from Agent Workbench's internal memory store. Do not try to read USER.md or MEMORY.md from the workRoot; use the memory tools only when the user wants durable memory changed.",
       "Use USER.md and MEMORY.md tools only for durable memories the user wants kept; do not store transient task outputs, secrets, or speculative guesses.",
       "Use skill_create or skill_delete only when the user explicitly asks or when a reviewed reusable pattern is ready; normal task completion should create memory, not a skill.",
       "When using side-effect-free state tools such as plan_update or use_skill, do not narrate the tool mechanics, tool JSON, or success status to the user; continue with the actual task.",
-      "Role-ordered assistant/tool history is SCC's own execution record. Treat prior tool results as the agent's evidence, not as user-provided examples.",
+      "Role-ordered assistant/tool history is Agent Workbench's own execution record. Treat prior tool results as the agent's evidence, not as user-provided examples.",
       "For greetings, thanks, simple chat, and capability questions, answer directly without calling tools or loading more context.",
       "When asked to test or list tools, treat it as a safe capability check; do not create files, edit memory, edit skills, or run persistent side-effect tools unless the user explicitly authorizes that scope.",
       "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
@@ -426,7 +426,7 @@ export class ContextAssembler {
     );
     return [
       "## Stable Memory Files",
-      "These are durable, user-managed memory notes from SCC's internal memory store. Treat them as preferences and project context, not proof of current file contents. Do not read USER.md or MEMORY.md from the workRoot; the content below is the authoritative injected memory snapshot.",
+      "These are durable, user-managed memory notes from Agent Workbench's internal memory store. Treat them as preferences and project context, not proof of current file contents. Do not read USER.md or MEMORY.md from the workRoot; the content below is the authoritative injected memory snapshot.",
       `### Global USER.md\n${user}`,
       `### Global MEMORY.md\n${globalMemory}`,
       `### Project MEMORY.md\n${project}`
@@ -1469,7 +1469,7 @@ function defaultUserMemoryContent(): string {
   return [
     "# USER.md",
     "",
-    "Stable user preferences for SCC. Keep entries short, durable, and broadly useful.",
+    "Stable user preferences for Agent Workbench. Keep entries short, durable, and broadly useful.",
     "",
     "## Preferences",
     "- Language: zh-CN unless the user asks otherwise.",
@@ -1487,7 +1487,7 @@ function defaultGlobalMemoryContent(): string {
     "Global durable memory shared across projects.",
     "",
     "## Key Facts",
-    "- Keep only stable facts that should apply across future SCC tasks.",
+    "- Keep only stable facts that should apply across future Agent Workbench tasks.",
     "",
     "## Open Risks",
     "- Add only cross-project risks that remain important."
@@ -1568,5 +1568,9 @@ function memoryPathHash(path: string): string {
 }
 
 function memoryBaseDir(): string {
-  return resolve(process.env["SCC_MEMORY_DIR"]?.trim() || resolve(findWorkspaceRoot(), "data", "memory"));
+  return resolve(
+    process.env["AGENT_WORKBENCH_MEMORY_DIR"]?.trim() ||
+      process.env["SCC_MEMORY_DIR"]?.trim() ||
+      resolve(findWorkspaceRoot(), "data", "memory")
+  );
 }

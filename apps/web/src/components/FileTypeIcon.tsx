@@ -1,5 +1,5 @@
 import { FileIcon, defaultStyles, type FileIconProps } from "react-file-icon";
-import type { TaskAttachment } from "@scc/shared";
+import type { TaskAttachment } from "@agent-workbench/shared";
 
 const kindFallbackExtension: Record<TaskAttachment["kind"], string> = {
   binary: "bin",

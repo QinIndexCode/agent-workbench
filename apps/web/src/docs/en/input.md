@@ -1,6 +1,6 @@
 # Input Methods
 
-SCC supports multiple input methods for providing information to a task session.
+Agent Workbench supports multiple input methods for providing information to a task session.
 
 ## Text Input
 

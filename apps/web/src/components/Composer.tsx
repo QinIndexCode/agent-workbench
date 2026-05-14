@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { ArrowUp, ChevronDown, Eye, Folder, LoaderCircle, MessageCircle, Mic, MicOff, Paperclip, ShieldAlert, SlidersHorizontal, Square } from "lucide-react";
-import type { TaskAttachment } from "@scc/shared";
+import type { TaskAttachment } from "@agent-workbench/shared";
 import { getUiCopy } from "../i18n.js";
 import { FileTypeIcon } from "./FileTypeIcon.js";
 

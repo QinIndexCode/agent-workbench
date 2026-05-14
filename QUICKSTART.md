@@ -1,4 +1,4 @@
-# SCC Agent Workbench 快速启动指南
+# Agent Workbench 快速启动指南
 
 ## 一键启动
 

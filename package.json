@@ -1,5 +1,5 @@
 {
-  "name": "scc-agent-workbench",
+  "name": "agent-workbench",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,11 +8,11 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @scc/shared && npm run build -w @scc/core && npm run build -w @scc/server && npm run build -w @scc/web",
-    "dev": "npm run dev -w @scc/server",
+    "build": "npm run build -w @agent-workbench/shared && npm run build -w @agent-workbench/core && npm run build -w @agent-workbench/server && npm run build -w @agent-workbench/web",
+    "dev": "npm run dev -w @agent-workbench/server",
     "dev:all": "node scripts/start-dev.js",
-    "dev:server": "npm run dev -w @scc/server",
-    "dev:web": "npm run dev -w @scc/web",
+    "dev:server": "npm run dev -w @agent-workbench/server",
+    "dev:web": "npm run dev -w @agent-workbench/web",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
     "test:docs": "node scripts/check-docs.mjs",

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { WebSearchProviderConfig, WebSearchProviderCreateRequest, WebSearchProviderPatchRequest } from "@scc/shared";
+import type { WebSearchProviderConfig, WebSearchProviderCreateRequest, WebSearchProviderPatchRequest } from "@agent-workbench/shared";
 import { Compass, Globe2, KeyRound, Pencil, Plus, Search, ShieldQuestion, Trash2 } from "lucide-react";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -30,7 +30,7 @@ export function WebSearchPanel({
       <div className="panelHero">
         <div>
           <h2>{zh ? "网络搜索" : "Web search"}</h2>
-          <p>{zh ? "配置搜索来源；Agent 会通过内置 web_search 工具按需联网，仍统一走 network 权限。" : "Configure search sources. The agent uses SCC's built-in web_search tool when needed, with network permission still enforced."}</p>
+          <p>{zh ? "配置搜索来源；Agent 会通过内置 web_search 工具按需联网，仍统一走 network 权限。" : "Configure search sources. The agent uses Agent Workbench's built-in web_search tool when needed, with network permission still enforced."}</p>
         </div>
         <button className="primaryInlineButton" type="button" onClick={() => setCreating(true)}>
           <Plus size={15} /> {zh ? "添加" : "Add"}
@@ -38,7 +38,7 @@ export function WebSearchPanel({
       </div>
       <SettingsPrimer
         language={language}
-        summary={zh ? "SCC 只有在任务真的需要联网证据时才会调用 web_search；这一页只负责配置它可用的搜索来源。" : "SCC calls web_search only when a task truly needs online evidence. This page only configures which search sources are available."}
+        summary={zh ? "Agent Workbench 只有在任务真的需要联网证据时才会调用 web_search；这一页只负责配置它可用的搜索来源。" : "Agent Workbench calls web_search only when a task truly needs online evidence. This page only configures which search sources are available."}
         focus={zh ? "选择适合的搜索 Provider，决定是否需要 API Key，以及来源是否对任务开放。" : "Choose the right search provider, decide whether it needs an API key, and control whether it is available to tasks."}
         impact={zh ? "会影响 Agent 能否联网搜索、搜索结果质量，以及拒绝 network 权限后的回退行为。" : "Changes affect whether the agent can search online, the quality of retrieved evidence, and what happens when network permission is denied."}
         nextStep={zh ? "第一次使用建议先接入一个无需密钥或低成本的 Provider，确认权限和结果表现后再扩展。" : "For a first setup, start with a no-key or low-cost provider, confirm permission behavior, then expand if needed."}
@@ -52,8 +52,8 @@ export function WebSearchPanel({
           <strong>{zh ? "内置工具：web_search" : "Built-in tool: web_search"}</strong>
           <p>
             {zh
-              ? "SCC 已内置统一的网络搜索工具。这里添加的是搜索 Provider；Agent 可以选择搜索、不搜索，或在你拒绝 network 权限后改用本地证据。"
-              : "SCC includes a unified web_search tool. Providers added here are search sources; the agent may search, skip search, or fall back to local evidence if network permission is denied."}
+              ? "Agent Workbench 已内置统一的网络搜索工具。这里添加的是搜索 Provider；Agent 可以选择搜索、不搜索，或在你拒绝 network 权限后改用本地证据。"
+              : "Agent Workbench includes a unified web_search tool. Providers added here are search sources; the agent may search, skip search, or fall back to local evidence if network permission is denied."}
           </p>
           <small>{zh ? "搜索结果会作为工具证据进入线程，不会变成任务质量判定脚本。" : "Search results enter the thread as tool evidence, not as a task-quality judge."}</small>
         </div>

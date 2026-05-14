@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 const riskCategories = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
 const apiBase = "http://127.0.0.1:5181";
-const SESSION_HEADER = "x-scc-session";
+const SESSION_HEADER = "x-agent-workbench-session";
 
 let sessionHeaders: Record<string, string> = {};
 

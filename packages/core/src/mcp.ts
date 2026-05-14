@@ -13,7 +13,7 @@ import type {
   RiskCategory,
   ToolCall,
   ToolResult
-} from "@scc/shared";
+} from "@agent-workbench/shared";
 import type { ModelToolDefinition, ModelToolProvider } from "./openai-model.js";
 import { createId, nowIso } from "./ids.js";
 import type { RiskAssessment } from "./permission-engine.js";
@@ -101,7 +101,7 @@ export class McpRegistry implements ModelToolProvider, ToolExecutorDelegate {
     this.setStatus(serverId, { serverId, connected: false, state: "connecting", toolCount: 0 });
 
     try {
-      const client = new Client({ name: "scc-agent-workbench", version: "0.1.0" }, { capabilities: {} });
+      const client = new Client({ name: "agent-workbench", version: "0.1.0" }, { capabilities: {} });
       const transport = this.createTransport(config);
       transport.onerror = (error) => {
         this.setStatus(serverId, {

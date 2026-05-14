@@ -1,6 +1,6 @@
 # Library
 
-The Library is where SCC keeps reusable background material. It is not a second task timeline.
+The Library is where Agent Workbench keeps reusable background material. It is not a second task timeline.
 
 ## Start here
 

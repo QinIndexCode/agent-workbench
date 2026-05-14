@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Logo PNG 压缩脚本
-针对 SCC Agent Workbench logo 图片的特点进行针对性压缩：
+针对 Agent Workbench logo 图片的特点进行针对性压缩：
 - 高分辨率 (1254x1254) 但内容简单（纯色 + 圆角矩形 + 几何图形）
 - 透明背景 (RGBA)
 - 仅使用两种颜色（黑/白主题互换）
@@ -209,7 +209,7 @@ def compress_file(filename: str) -> None:
 
 def main():
     print("=" * 60)
-    print("SCC Logo PNG 压缩工具")
+    print("Agent Workbench Logo PNG 压缩工具")
     print("=" * 60)
     print(f"输入目录: {INPUT_DIR}")
     print(f"文件: {', '.join(FILES)}")

@@ -1,5 +1,5 @@
 {
-  "name": "@scc/web",
+  "name": "@agent-workbench/web",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@lobehub/icons-static-svg": "^1.88.0",
-    "@scc/shared": "0.1.0",
+    "@agent-workbench/shared": "0.1.0",
     "lucide-react": "^0.508.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

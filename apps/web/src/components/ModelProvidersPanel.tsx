@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ModelPreset, ModelProviderCreateRequest, ModelProviderPatchRequest, ModelProviderRecord, PreferencesPatch, ProviderProtocol, UserPreferences } from "@scc/shared";
+import type { ModelPreset, ModelProviderCreateRequest, ModelProviderPatchRequest, ModelProviderRecord, PreferencesPatch, ProviderProtocol, UserPreferences } from "@agent-workbench/shared";
 import { CheckCircle2, Edit3, Plus, Trash2, X } from "lucide-react";
 import { CONTEXT_QUICK_PRESETS, MODEL_PROVIDER_PRESETS, formatTokenAmount, parseTokenAmount, type ModelProviderPreset } from "../llm-presets.js";
 import { AccordionSelect } from "./AccordionSelect.js";
@@ -538,7 +538,7 @@ function getProviderCopy(language?: string | null) {
         ? `将删除 ${label}（${modelId}）的配置和本地保存的密钥。已创建的任务记录不会被删除。`
         : `This removes ${label} (${modelId}) and its locally stored key. Existing task history is kept.`,
     emptyTitle: zh ? "还没有模型配置" : "No model providers yet",
-    empty: zh ? "先添加一个可用模型，SCC 才能真正运行任务、生成标题和继续会话。" : "Add at least one working model provider so SCC can run tasks, generate titles, and continue threads.",
+    empty: zh ? "先添加一个可用模型，Agent Workbench 才能真正运行任务、生成标题和继续会话。" : "Add at least one working model provider so Agent Workbench can run tasks, generate titles, and continue threads.",
     emptyHint: zh ? "如果你只是想先验证界面，仍建议先添加一个测试模型并保存密钥。" : "Even for a quick smoke test, it is better to save one real provider first.",
     addFirstAction: zh ? "添加第一个模型" : "Add your first model",
     currentModel: zh ? "当前使用模型" : "Current model",

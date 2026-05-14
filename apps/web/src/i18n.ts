@@ -43,7 +43,7 @@ const copy = {
       clearFolderTitle: "清空此文件夹的任务？",
       clearFolderBody: (name: string) => `“${name}” 中的任务会被删除，文件夹会保留。`,
       deleteFolderTitle: "删除此任务文件夹？",
-      deleteFolderBody: (name: string, count: number) => `“${name}” 会从 SCC 中删除，里面的 ${count} 个任务也会被永久删除。`,
+      deleteFolderBody: (name: string, count: number) => `“${name}” 会从 Agent Workbench 中删除，里面的 ${count} 个任务也会被永久删除。`,
       deleteFolderDiskSafe: "不会删除真实磁盘目录，但任务线程、审批记录和所选学习数据无法恢复。",
       noTasks: "还没有任务。",
       noMatchingTasks: "没有匹配的任务。",
@@ -96,21 +96,21 @@ const copy = {
         "从想法到行动",
         "今天打算完成什么？"
       ],
-      heroSubtitle: "描述你想解决的问题。SCC 会组装上下文、请求必要权限，并把执行证据清晰展示给你。",
+      heroSubtitle: "描述你想解决的问题。Agent Workbench 会组装上下文、请求必要权限，并把执行证据清晰展示给你。",
       heroSubtitleVariants: [
-        "描述你想解决的问题。SCC 会组装上下文、请求必要权限，并把执行证据清晰展示给你。",
-        "写下你的目标，让 SCC 为你分析、规划、执行。",
-        "从一句话开始，SCC 会帮你拆解任务并逐步完成。",
-        "告诉 SCC 你想做什么，它会把复杂的事情变简单。",
-        "输入你的需求，SCC 将自动规划最佳执行路径。",
-        "描述你遇到的问题，SCC 会找到最优解法。",
-        "一句话描述你的目标，其余的交给 SCC。",
-        "SCC 会理解你的意图，自动拆解并执行复杂任务。",
+        "描述你想解决的问题。Agent Workbench 会组装上下文、请求必要权限，并把执行证据清晰展示给你。",
+        "写下你的目标，让 Agent Workbench 为你分析、规划、执行。",
+        "从一句话开始，Agent Workbench 会帮你拆解任务并逐步完成。",
+        "告诉 Agent Workbench 你想做什么，它会把复杂的事情变简单。",
+        "输入你的需求，Agent Workbench 将自动规划最佳执行路径。",
+        "描述你遇到的问题，Agent Workbench 会找到最优解法。",
+        "一句话描述你的目标，其余的交给 Agent Workbench。",
+        "Agent Workbench 会理解你的意图，自动拆解并执行复杂任务。",
         "用自然语言告诉它你要做什么，剩下的不用操心。",
-        "SCC 将读取上下文、分析依赖，为你生成完整方案。",
+        "Agent Workbench 将读取上下文、分析依赖，为你生成完整方案。",
         "从模糊的想法到精确的执行，只需一句话。",
-        "无论多复杂的任务，SCC 都能帮你分步完成。",
-        "说出你想实现的效果，SCC 来搞定技术细节。"
+        "无论多复杂的任务，Agent Workbench 都能帮你分步完成。",
+        "说出你想实现的效果，Agent Workbench 来搞定技术细节。"
       ],
       suggestions: [
         {
@@ -228,7 +228,7 @@ const copy = {
       personalizeTitle: "个性化设置",
       personalizeSubtitle: "配置界面语言、回复风格和技能注入行为。",
       primer: {
-        summary: "这一页定义 SCC 在真正调用工具时，何时自动执行、何时询问、哪些风险永远需要你最后确认。",
+        summary: "这一页定义 Agent Workbench 在真正调用工具时，何时自动执行、何时询问、哪些风险永远需要你最后确认。",
         focus: "先选审批模式，再按风险类别校准边界，最后决定 MCP 和实验性自动审批策略。",
         impact: "会直接影响未来任务中的文件读写、Shell、联网和破坏性操作的放行方式。",
         nextStep: "首次配置建议先从只读开始；只有确认工作区可信后，再考虑自定义或完全访问。"
@@ -366,7 +366,7 @@ const copy = {
       clearFolderTitle: "Clear this folder's tasks?",
       clearFolderBody: (name: string) => `Tasks in "${name}" will be deleted. The folder will be kept.`,
       deleteFolderTitle: "Delete this task folder?",
-      deleteFolderBody: (name: string, count: number) => `"${name}" will be removed from SCC and its ${count} task${count === 1 ? "" : "s"} will be permanently deleted.`,
+      deleteFolderBody: (name: string, count: number) => `"${name}" will be removed from Agent Workbench and its ${count} task${count === 1 ? "" : "s"} will be permanently deleted.`,
       deleteFolderDiskSafe: "The real disk directory will not be deleted, but task threads, approvals, and selected learning data cannot be restored.",
       noTasks: "No tasks yet.",
       noMatchingTasks: "No matching tasks.",
@@ -419,20 +419,20 @@ const copy = {
         "From idea to reality",
         "What shall we build today?"
       ],
-      heroSubtitle: "Describe the problem you want solved. SCC assembles context, asks for the right permissions, and keeps evidence visible.",
+      heroSubtitle: "Describe the problem you want solved. Agent Workbench assembles context, asks for the right permissions, and keeps evidence visible.",
       heroSubtitleVariants: [
-        "Describe the problem you want solved. SCC assembles context, asks for the right permissions, and keeps evidence visible.",
-        "Write your goal and let SCC analyze, plan, and execute for you.",
-        "Start with one sentence — SCC will break it down and handle the rest.",
-        "Tell SCC what you need. It makes complex tasks simple.",
-        "Type your request and SCC will find the best path to get it done.",
-        "Describe what's bothering you. SCC will find the best solution.",
-        "One sentence about your goal — SCC takes care of the rest.",
-        "SCC will read your context, analyze dependencies, and generate a complete plan.",
-        "Just say it in plain language. SCC handles the technical details.",
+        "Describe the problem you want solved. Agent Workbench assembles context, asks for the right permissions, and keeps evidence visible.",
+        "Write your goal and let Agent Workbench analyze, plan, and execute for you.",
+        "Start with one sentence — Agent Workbench will break it down and handle the rest.",
+        "Tell Agent Workbench what you need. It makes complex tasks simple.",
+        "Type your request and Agent Workbench will find the best path to get it done.",
+        "Describe what's bothering you. Agent Workbench will find the best solution.",
+        "One sentence about your goal — Agent Workbench takes care of the rest.",
+        "Agent Workbench will read your context, analyze dependencies, and generate a complete plan.",
+        "Just say it in plain language. Agent Workbench handles the technical details.",
         "From a vague idea to precise execution, it all starts with one sentence.",
-        "No matter how complex, SCC breaks it down and tackles it step by step.",
-        "Tell it what you want to achieve — SCC will figure out how."
+        "No matter how complex, Agent Workbench breaks it down and tackles it step by step.",
+        "Tell it what you want to achieve — Agent Workbench will figure out how."
       ],
       suggestions: [
         {
@@ -550,7 +550,7 @@ const copy = {
       personalizeTitle: "Personalization",
       personalizeSubtitle: "Configure UI language, reply style, and skill injection behavior.",
       primer: {
-        summary: "This page defines when SCC may run tools automatically, when it must ask, and which risks always stay under your final control.",
+        summary: "This page defines when Agent Workbench may run tools automatically, when it must ask, and which risks always stay under your final control.",
         focus: "Choose an approval mode first, then tune individual risk classes and MCP or experimental auto-approval behavior.",
         impact: "Changes directly affect future file edits, shell commands, network access, and destructive actions inside tasks.",
         nextStep: "Start with Read only for a new workspace, then expand only after you trust the task boundary and local files."

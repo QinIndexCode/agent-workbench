@@ -4,8 +4,8 @@ import { resolve } from "node:path";
 export default defineConfig({
   resolve: {
     alias: {
-      "@scc/core": resolve(__dirname, "packages/core/src/index.ts"),
-      "@scc/shared": resolve(__dirname, "packages/shared/src/index.ts")
+      "@agent-workbench/core": resolve(__dirname, "packages/core/src/index.ts"),
+      "@agent-workbench/shared": resolve(__dirname, "packages/shared/src/index.ts")
     }
   },
   test: {

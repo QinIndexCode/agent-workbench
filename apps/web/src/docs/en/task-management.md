@@ -1,6 +1,6 @@
 # Task Management
 
-A task is the core organizational unit in SCC; each task corresponds to an independent session context.
+A task is the core organizational unit in Agent Workbench; each task corresponds to an independent session context.
 
 ## Creating Tasks
 

@@ -1,6 +1,6 @@
 # Input Methods
 
-SCC 支持多种输入方式，用于向任务会话提供信息。
+Agent Workbench 支持多种输入方式，用于向任务会话提供信息。
 
 ## 文本输入
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
-import type { ApprovalDecision, TaskDetail, TaskEvent, ToolApproval } from "@scc/shared";
+import type { ApprovalDecision, TaskDetail, TaskEvent, ToolApproval } from "@agent-workbench/shared";
 import { ArrowDown, BookOpen, ChevronDown, Copy, Eye, FileText, Globe2, List as ListIcon, PencilLine, Plug, Search, Sparkles, Terminal, Wrench } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
 import { ApprovalCard } from "./ApprovalCard.js";
@@ -21,6 +21,7 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
   "tool_result",
   "skill_loaded",
   "model_empty_response",
+  "model_no_progress",
   "task_checkpoint_created",
   "task_rollback_completed",
   "task_rollback_failed",
@@ -56,23 +57,24 @@ export function Timeline({
   const [atBottom, setAtBottom] = useState(true);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [visibleLimit, setVisibleLimit] = useState(MAX_RENDERED_TIMELINE_ITEMS);
+  const taskId = task?.id ?? null;
+  const safeEvents = useMemo(() => (Array.isArray(task?.events) ? task.events : []), [task]);
+  const safeApprovals = useMemo(() => (Array.isArray(task?.approvals) ? task.approvals : []), [task]);
   const items = useMemo(
     () =>
       buildTimelineItems(
-        (Array.isArray(task?.events) ? task.events : []).filter((event) => {
+        safeEvents.filter((event) => {
           if (!event || !visibleEventTypes.has(event.type)) return false;
           if (!showThinking && event.type === "thinking_delta") return false;
           if (event?.payload?.["uiHidden"] === true) return false;
           if (isInlineToolMarkupEvent(event)) return false;
           if (event.type !== "approval_pending") return true;
           const approvalId = String(event?.payload?.["approvalId"] ?? "");
-          const safeApprovals = Array.isArray(task?.approvals) ? task.approvals : [];
           return safeApprovals.some((approval) => approval?.id === approvalId && approval?.status === "pending");
         })
       ),
-    [task, showThinking]
+    [safeApprovals, safeEvents, showThinking]
   );
-  const safeEvents = Array.isArray(task?.events) ? task.events : [];
   const lastEventId = safeEvents[safeEvents.length - 1]?.id ?? "empty";
   const timelineVersion = useMemo(() => getTimelineVersion(items), [items]);
   const displayItems = useMemo(() => limitTimelineItems(items, language, visibleLimit), [items, language, visibleLimit]);
@@ -82,15 +84,15 @@ export function Timeline({
   }, [displayItems]);
   const showRunningIndicator = Boolean(task?.status === "running");
   const runningIndicatorItem = useMemo<TimelineItem | null>(
-    () => showRunningIndicator && task ? { key: `running-status:${task.id}`, kind: "status" } : null,
-    [showRunningIndicator, task?.id]
+    () => showRunningIndicator && taskId ? { key: `running-status:${taskId}`, kind: "status" } : null,
+    [showRunningIndicator, taskId]
   );
 
   useEffect(() => {
     followBottomRef.current = true;
     setAtBottom(true);
     setVisibleLimit(MAX_RENDERED_TIMELINE_ITEMS);
-  }, [task?.id]);
+  }, [taskId]);
 
   const updateBottomState = useCallback((node: HTMLDivElement) => {
     const isAtBottom = getDistanceFromBottom(node) <= FOLLOW_BOTTOM_DISTANCE;
@@ -608,6 +610,29 @@ function TimelineEvent({
     );
   }
 
+  if (event.type === "model_no_progress") {
+    const readOnlyToolCount = Number(event.payload["readOnlyToolCount"] ?? 0);
+    const repeatedTargetCount = Number(event.payload["repeatedTargetCount"] ?? 0);
+    const lastToolNames = Array.isArray(event.payload["lastToolNames"])
+      ? event.payload["lastToolNames"].map(String).filter(Boolean).slice(-4)
+      : [];
+    const reason = String(event.payload["reason"] ?? "").trim();
+    const details = [
+      readOnlyToolCount > 0 ? (zh ? `只读工具 ${readOnlyToolCount} 次` : `${readOnlyToolCount} read-only calls`) : "",
+      repeatedTargetCount > 0 ? (zh ? `重复目标 ${repeatedTargetCount} 次` : `${repeatedTargetCount} repeated targets`) : "",
+      lastToolNames.length > 0 ? lastToolNames.join(" / ") : ""
+    ].filter(Boolean).join(" · ");
+    return (
+      <article className="event note model_no_progress">
+        <span>
+          {zh
+            ? `任务已暂停：连续只读探索没有获得新信息${reason ? `（${reason}）` : ""}${details ? `。${details}` : ""}`
+            : `Task paused: repeated read-only exploration stopped making progress${reason ? ` (${reason})` : ""}${details ? `. ${details}` : ""}`}
+        </span>
+      </article>
+    );
+  }
+
   if (event.type === "tool_result") {
     const output = String(event.payload["output"] ?? "");
     const parsed = parseToolOutput(output);
@@ -683,14 +708,13 @@ function TimelineEvent({
 }
 
 function RunningStatus({ language }: { language?: string | null | undefined }) {
-  const label = language === "zh-CN" ? "think" : "think";
+  const label = language === "zh-CN" ? "思考中..." : "Thinking...";
   return (
-    <article className="event running_status" aria-live="polite" aria-label="think...">
-      <span>{label}</span>
+    <article className="event running_status" aria-live="polite" aria-label={label}>
       <span className="thinkingDots" aria-hidden="true">
-        <span>.</span>
-        <span>.</span>
-        <span>.</span>
+        <span />
+        <span />
+        <span />
       </span>
     </article>
   );
@@ -728,7 +752,10 @@ async function copyText(text: string): Promise<void> {
 
 function formatVisibleEventSummary(event: TaskEvent, language?: string | null | undefined): string {
   const zh = language === "zh-CN";
-  const summary = stripPlaceholderToolEvidence(event.summary).trim();
+  const summary =
+    event.type === "assistant_message" || event.type === "assistant_delta"
+      ? visibleAssistantText(event)
+      : stripPlaceholderToolEvidence(event.summary).trim();
   if (event.type === "assistant_message" && /^Model provider failed:\s*Connection error\.?$/i.test(summary)) {
     return zh
       ? "模型服务连接失败。请检查模型配置、Base URL、API Key 或网络状态，然后重试。"
@@ -742,19 +769,35 @@ function formatVisibleEventSummary(event: TaskEvent, language?: string | null | 
   return summary;
 }
 
+function visibleAssistantText(event: TaskEvent): string {
+  const summary = stripAssistantToolEvidence(event.summary).trim();
+  if (summary || (event.type !== "assistant_message" && event.type !== "assistant_delta")) return summary;
+  for (const key of ["message", "text", "delta"]) {
+    const value = event.payload[key];
+    if (typeof value !== "string") continue;
+    const visible = stripAssistantToolEvidence(value).trim();
+    if (visible) return visible;
+  }
+  return "";
+}
+
 function stripPlaceholderToolEvidence(value: string): string {
-  return value
-    .split(/\r?\n/)
+  return value.split(/\r?\n/)
     .filter((line) => !isPlaceholderToolSummary(line))
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
+function stripAssistantToolEvidence(value: string): string {
+  return stripPlaceholderToolEvidence(stripInlineToolMarkup(value));
+}
+
 function isInlineToolMarkupEvent(event: TaskEvent | null | undefined): boolean {
   if (!event) return false;
   if (event.type !== "assistant_message" && event.type !== "assistant_delta") return false;
-  return containsInlineToolMarkup(formatRawEventText(event));
+  const raw = formatRawEventText(event);
+  return containsInlineToolMarkup(raw) && !stripAssistantToolEvidence(raw);
 }
 
 function formatRawEventText(event: TaskEvent | null | undefined): string {
@@ -771,6 +814,12 @@ function formatRawEventText(event: TaskEvent | null | undefined): string {
 
 function containsInlineToolMarkup(value: string): boolean {
   return /<function_calls\b|<invoke\s+name=/i.test(value);
+}
+
+function stripInlineToolMarkup(value: string): string {
+  return value
+    .replace(/<function_calls\b[\s\S]*?<\/function_calls>/gi, "\n")
+    .replace(/<invoke\b[\s\S]*?<\/invoke>/gi, "\n");
 }
 
 function compactInline(value: string): string {
@@ -820,6 +869,7 @@ function buildTimelineItems(events: TaskEvent[]): TimelineItem[] {
       .map((event) => String(event.payload["streamId"] ?? ""))
       .filter(Boolean)
   );
+  const finalFallbacks = buildAssistantFinalFallbacks(events);
   const hiddenToolTurnStreams = collectToolTurnStreams(events, finalStreamIds);
   const items: TimelineItem[] = [];
   const streamItems = new Map<string, Extract<TimelineItem, { kind: "stream" }>>();
@@ -827,8 +877,8 @@ function buildTimelineItems(events: TaskEvent[]): TimelineItem[] {
   for (const event of events) {
     if (event.type === "assistant_delta" || event.type === "thinking_delta") {
       const streamId = String(event.payload["streamId"] ?? event.id);
-      if (event.type === "assistant_delta" && finalStreamIds.has(streamId)) continue;
-       if (hiddenToolTurnStreams.has(streamId)) continue;
+      if (finalStreamIds.has(streamId)) continue;
+      if (event.type === "thinking_delta" && hiddenToolTurnStreams.has(streamId)) continue;
       const key = `${event.type}:${streamId}`;
       let stream = streamItems.get(key);
       if (!stream) {
@@ -850,13 +900,45 @@ function buildTimelineItems(events: TaskEvent[]): TimelineItem[] {
       tool.events.push(event);
       continue;
     }
-    items.push({ key: event.id, kind: "event", event });
+    const normalized = applyAssistantFinalFallback(event, finalFallbacks);
+    if (normalized.type === "assistant_message" && !visibleAssistantText(normalized)) continue;
+    items.push({ key: normalized.id, kind: "event", event: normalized });
   }
   return items.filter((item) => {
     if (item.kind !== "stream") return true;
     const summary = item.summary.trim();
     return summary.length > 0 && !containsInlineToolMarkup(summary);
   });
+}
+
+function buildAssistantFinalFallbacks(events: TaskEvent[]): Map<string, string> {
+  const fallbacks = new Map<string, string>();
+  for (const event of events) {
+    if (event.type !== "assistant_delta") continue;
+    const streamId = String(event.payload["streamId"] ?? "");
+    if (!streamId) continue;
+    const delta = String(event.payload["delta"] ?? event.summary ?? "");
+    if (!stripAssistantToolEvidence(delta)) continue;
+    fallbacks.set(streamId, appendStreamDelta(fallbacks.get(streamId) ?? "", delta, "assistant_delta"));
+  }
+  return fallbacks;
+}
+
+function applyAssistantFinalFallback(event: TaskEvent, fallbacks: Map<string, string>): TaskEvent {
+  if (event.type !== "assistant_message") return event;
+  const visible = visibleAssistantText(event);
+  if (visible) return visible === event.summary ? event : { ...event, summary: visible };
+  const streamId = String(event.payload["streamId"] ?? "");
+  const fallback = streamId ? fallbacks.get(streamId)?.trim() : "";
+  if (!fallback) return event;
+  return {
+    ...event,
+    summary: fallback,
+    payload: {
+      ...event.payload,
+      streamFinalFallback: true
+    }
+  };
 }
 
 function collectToolTurnStreams(events: TaskEvent[], finalStreamIds: Set<string>): Set<string> {

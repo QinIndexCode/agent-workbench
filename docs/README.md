@@ -1,4 +1,4 @@
-# SCC-Batch Engine 实现标准
+# Agent Workbench Engine 实现标准
 
 > 版本: 1.0
 > 日期: 2026-05-05
@@ -8,7 +8,7 @@
 
 ## 文档导航
 
-本文档集是 SCC-Batch Engine（Semantic Contract-based Batch DAG Engine）的完整实现标准，涵盖从架构哲学到组件级实现细节的全部内容。
+本文档集是 Agent Workbench Engine（Semantic Contract-based Batch DAG Engine）的完整实现标准，涵盖从架构哲学到组件级实现细节的全部内容。
 
 ### 阅读路径
 
@@ -62,7 +62,7 @@
 
 | 术语 | 全称 | 含义 |
 |------|------|------|
-| **SCC** | Semantic Contract-based | 语义契约驱动 |
+| **Agent Workbench** | Semantic Contract-based | 语义契约驱动 |
 | **Batch DAG** | Batch Directed Acyclic Graph | 批处理有向无环图 |
 | **Agent Unit** | — | DAG中的一个执行节点，所有行为完全由契约约束 |
 | **ACI** | Agent-Computer Interface | 智能体-计算机接口（Anthropic 提出） |

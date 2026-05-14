@@ -80,9 +80,9 @@ import type {
   WebSearchProviderConfig,
   WebSearchProviderCreateRequest,
   WebSearchProviderPatchRequest
-} from "@scc/shared";
+} from "@agent-workbench/shared";
 import { createHash } from "node:crypto";
-import { appendFile, copyFile, mkdir, readdir, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, relative, resolve } from "node:path";
 import { ContextAssembler } from "./context-assembler.js";
 import {
@@ -122,6 +122,7 @@ import {
 } from "./integrations.js";
 import { indexKnowledgeItem, searchKnowledge } from "./knowledge-rag.js";
 import { downloadKnowledgeModelAsset, getKnowledgeModelStatus } from "./knowledge-models.js";
+import { assessReadOnlyNoProgress } from "./no-progress-guard.js";
 import type { ResolvedModelProviderConfig } from "./openai-model.js";
 import { PermissionEngine, type PermissionState, type RiskAssessment } from "./permission-engine.js";
 import { canonicalizeExistingDirectory, resolveWorkspacePathStrict } from "./path-guards.js";
@@ -130,6 +131,7 @@ import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
 import { completionBlocker, verificationResultFromToolEvent } from "./task-graph.js";
 import { hasUserTurn, latestUserText } from "./task-events.js";
 import { ShellToolExecutor, type ToolExecutor, type ToolProgressUpdate } from "./tools.js";
+import { compactToolProgressUpdate, summarizeEventForTrace, summarizeToolProgressForTrace, TaskTraceRecorder } from "./trace-recorder.js";
 import { createWebSearchApiKeyRef } from "./web-search.js";
 import { defaultTaskWorkRoot, findWorkspaceRoot } from "./workspace-root.js";
 
@@ -145,6 +147,7 @@ export interface AgentWorkbenchOptions {
   contextAssembler?: ContextAssembler;
   toolRiskProvider?: ToolRiskProvider;
   onEvent?: (event: TaskEvent) => void;
+  traceRoot?: string;
 }
 
 interface PreparedToolCall {
@@ -157,20 +160,10 @@ const MAX_TOOL_CALLS_PER_TURN = 8;
 const MAX_STATE_ONLY_TOOL_TURNS = 2;
 const MAX_PARALLEL_READ_ONLY_TOOLS = 4;
 const AUTO_RENAME_ASSISTANT_CHARS = 240;
-const TRACE_MAX_STRING_CHARS = 4000;
-const TRACE_MAX_ARRAY_ITEMS = 24;
-const TRACE_MAX_OBJECT_KEYS = 24;
-const TRACE_MAX_DEPTH = 5;
 const TRACE_PROGRESS_MIN_INTERVAL_MS = 1_500;
 const TRACE_PROGRESS_BYTES_STEP = 16 * 1024;
 const TRACE_PROGRESS_LINE_STEP = 40;
 const TRACE_PROGRESS_ITEM_STEP = 1;
-const TRACE_PROGRESS_TAIL_CHARS = 320;
-const TRACE_PROGRESS_MESSAGE_CHARS = 240;
-const TRACE_MODEL_EXCERPT_CHARS = 360;
-const TRACE_MODEL_TOOL_ARG_CHARS = 220;
-const TRACE_MODEL_TOOL_LIMIT = 8;
-const TRACE_ATTENTION_EVIDENCE_LIMIT = 6;
 const DEFAULT_TARGET_LIMITS = {
   maxModelTurns: 80,
   maxToolCalls: 240,
@@ -205,9 +198,9 @@ export class AgentWorkbench {
   private readonly permissionState = new Map<string, PermissionState>();
   private readonly taskQueues = new Map<string, Promise<void>>();
   private readonly deltaLocks = new Map<string, Promise<void>>();
-  private readonly traceLocks = new Map<string, Promise<void>>();
   private readonly runningModelControllers = new Map<string, AbortController>();
   private readonly runningToolControllers = new Map<string, Set<AbortController>>();
+  private readonly traceRecorder: TaskTraceRecorder;
 
   constructor(options: AgentWorkbenchOptions = {}) {
     this.store = options.store ?? new InMemoryWorkbenchStore();
@@ -216,6 +209,7 @@ export class AgentWorkbench {
     this.contextAssembler = options.contextAssembler ?? new ContextAssembler(this.store);
     this.toolRiskProvider = options.toolRiskProvider;
     this.onEvent = options.onEvent;
+    this.traceRecorder = new TaskTraceRecorder(options.traceRoot);
   }
 
   async createTask(goal: string, title?: string, folderId = "default", attachmentIds: string[] = [], options: TaskRunOptions = {}): Promise<TaskDetail> {
@@ -1120,7 +1114,7 @@ export class AgentWorkbench {
         title: "Skill conflict",
         status: "needs_review",
         reason: conflict.reason,
-        recommendation: "Resolve by editing, suspending, or merging the conflicting skills. SCC will not auto-merge conflicts.",
+        recommendation: "Resolve by editing, suspending, or merging the conflicting skills. Agent Workbench will not auto-merge conflicts.",
         skillIds: conflict.skillIds,
         memoryIds: [],
         evidence: [`Severity: ${conflict.severity}`],
@@ -2279,8 +2273,9 @@ export class AgentWorkbench {
 
   private hideAssistantStreamDeltas(task: TaskDetail, streamId: string): void {
     for (const event of task.events) {
-      if (event.type !== "assistant_delta") continue;
+      if (event.type !== "assistant_delta" && event.type !== "thinking_delta") continue;
       if (String(event.payload["streamId"] ?? "") !== streamId) continue;
+      if (event.type === "assistant_delta" && isReadableAssistantPreamble(event)) continue;
       event.payload = { ...event.payload, uiHidden: true };
     }
   }
@@ -2474,6 +2469,10 @@ export class AgentWorkbench {
         const item = prepared[index];
         if (!item) continue;
         await this.addToolResultEvent(latest, item.call, result);
+        if (await this.maybePauseForReadOnlyNoProgress(latest)) {
+          await this.store.saveTask(latest);
+          return latest;
+        }
         await this.store.saveTask(latest);
         if (latest.status !== "running") return latest;
       }
@@ -2486,6 +2485,10 @@ export class AgentWorkbench {
       const result = await this.executeTool(task.id, item.call);
       const latest = await this.requiredTask(task.id);
       await this.addToolResultEvent(latest, item.call, result);
+      if (await this.maybePauseForReadOnlyNoProgress(latest)) {
+        await this.store.saveTask(latest);
+        return latest;
+      }
       await this.store.saveTask(latest);
       if (latest.status !== "running") return latest;
       Object.assign(task, latest);
@@ -2498,6 +2501,30 @@ export class AgentWorkbench {
     this.addEvent(task, "assistant_message", message);
     this.setStatus(task, "paused");
     await this.store.saveTask(task);
+  }
+
+  private async maybePauseForReadOnlyNoProgress(task: TaskDetail): Promise<boolean> {
+    if (task.status !== "running") return false;
+    const assessment = assessReadOnlyNoProgress(task);
+    if (!assessment) return false;
+    const message = `Paused because the agent repeated read-only exploration without producing new progress. Latest repeated target: ${assessment.repeatedTarget}. Review the current evidence or narrow the next instruction before continuing.`;
+    this.addEvent(task, "model_no_progress", message, {
+      reason: "repeated_read_only_tools",
+      readOnlyToolCount: assessment.readOnlyToolCount,
+      repeatedTargetCount: assessment.repeatedTargetCount,
+      lastToolNames: assessment.lastToolNames
+    });
+    await this.safeAppendTaskTrace(task, {
+      kind: "model_no_progress",
+      timestamp: nowIso(),
+      reason: "repeated_read_only_tools",
+      readOnlyToolCount: assessment.readOnlyToolCount,
+      repeatedTargetCount: assessment.repeatedTargetCount,
+      lastToolNames: assessment.lastToolNames,
+      repeatedTarget: assessment.repeatedTarget
+    });
+    this.setStatus(task, "paused");
+    return true;
   }
 
   private async recordExperience(task: TaskDetail): Promise<void> {
@@ -2724,6 +2751,10 @@ export class AgentWorkbench {
       const result = await this.executeTool(taskId, call);
       const latest = await this.requiredTask(taskId);
       await this.addToolResultEvent(latest, call, result);
+      if (await this.maybePauseForReadOnlyNoProgress(latest)) {
+        await this.store.saveTask(latest);
+        return latest;
+      }
       await this.store.saveTask(latest);
       if (latest.status !== "running") return latest;
       return this.step(latest.id);
@@ -3369,13 +3400,7 @@ export class AgentWorkbench {
   }
 
   private async safeAppendModelTrace(task: TaskDetail, event: ModelTraceEvent): Promise<void> {
-    await this.safeAppendTaskTrace(task, {
-      kind: `model_${event.kind}`,
-      timestamp: event.timestamp,
-      streamId: event.streamId,
-      ...(event.provider ? { provider: event.provider } : {}),
-      payload: summarizeModelTracePayload(event.kind, event.payload)
-    });
+    await this.traceRecorder.safeAppendModel(task, event);
   }
 
   private async maybeAutoRenameTask(
@@ -3416,35 +3441,7 @@ export class AgentWorkbench {
   }
 
   private async safeAppendTaskTrace(task: TaskDetail, entry: Record<string, unknown>): Promise<void> {
-    try {
-      await this.appendTaskTrace(task, entry);
-    } catch {
-      // debugging output must never break the task runtime
-    }
-  }
-
-  private async appendTaskTrace(task: TaskDetail, entry: Record<string, unknown>): Promise<void> {
-    const previous = this.traceLocks.get(task.id) ?? Promise.resolve();
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const queued = previous.catch(() => undefined).then(() => gate);
-    this.traceLocks.set(task.id, queued);
-    await previous.catch(() => undefined);
-    try {
-      const tracePath = resolve(task.workRoot || defaultTaskWorkRoot(), "data", "logs", "model-traces", task.id, "trace.jsonl");
-      const compactEntry = compactTraceEntry({
-        taskId: task.id,
-        taskStatus: task.status,
-        ...entry
-      });
-      await mkdir(dirname(tracePath), { recursive: true });
-      await appendFile(tracePath, `${JSON.stringify(compactEntry)}\n`, "utf8");
-    } finally {
-      release();
-      if (this.traceLocks.get(task.id) === queued) this.traceLocks.delete(task.id);
-    }
+    await this.traceRecorder.safeAppendTask(task, entry);
   }
 
   private async addApprovalPendingEvent(task: TaskDetail, approval: ToolApproval): Promise<void> {
@@ -4005,6 +4002,22 @@ function countToolResultEvents(task: TaskDetail): number {
   return task.events.filter((event) => event.type === "tool_result" && !event.reverted).length;
 }
 
+function isReadableAssistantPreamble(event: TaskEvent): boolean {
+  const text = [
+    event.summary,
+    typeof event.payload["delta"] === "string" ? event.payload["delta"] : "",
+    typeof event.payload["message"] === "string" ? event.payload["message"] : "",
+    typeof event.payload["text"] === "string" ? event.payload["text"] : ""
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  if (!text) return false;
+  if (/<function_calls\b|<invoke\s+name=/i.test(text)) return false;
+  if (/^(tool evidence returned\.?|tool evidence returned[:：].*|工具证据已返回。?|工具证据已返回[:：].*)$/i.test(text)) return false;
+  return /[A-Za-z\u4e00-\u9fff]/u.test(text);
+}
+
 function buildIntegrationStatusSnapshot(input: {
   kind: IntegrationKind;
   callbackUrl: string | undefined;
@@ -4017,279 +4030,6 @@ function buildIntegrationStatusSnapshot(input: {
   botTokenConfigured?: boolean | undefined;
 }) {
   return input;
-}
-
-function compactToolProgressUpdate(progress: ToolProgressUpdate): ToolProgressUpdate {
-  const message = excerptTraceText(progress.message, TRACE_PROGRESS_MESSAGE_CHARS);
-  const tail = tailTraceText(progress.tail, TRACE_PROGRESS_TAIL_CHARS);
-  return {
-    ...(progress.status ? { status: progress.status } : {}),
-    ...(progress.targetPath ? { targetPath: progress.targetPath } : {}),
-    ...(progress.operation ? { operation: progress.operation } : {}),
-    ...(progress.changes ? { changes: progress.changes } : {}),
-    ...(progress.progress ? { progress: progress.progress } : {}),
-    ...(message ? { message } : {}),
-    ...(tail ? { tail } : {}),
-    ...(progress.displayMode ? { displayMode: progress.displayMode } : {})
-  };
-}
-
-function summarizeToolProgressForTrace(progress: ToolProgressUpdate): Record<string, unknown> {
-  return {
-    ...(progress.status ? { status: progress.status } : {}),
-    ...(progress.operation ? { operation: progress.operation } : {}),
-    ...(progress.targetPath ? { targetPath: progress.targetPath } : {}),
-    ...(progress.progress ? { progress: progress.progress } : {}),
-    ...(progress.displayMode ? { displayMode: progress.displayMode } : {}),
-    ...(progress.message ? { message: progress.message } : {}),
-    ...(progress.tail ? { tail: progress.tail } : {}),
-    ...(progress.changes ? {
-      changes: {
-        path: progress.changes.path,
-        addedLines: progress.changes.addedLines,
-        removedLines: progress.changes.removedLines,
-        ...(progress.changes.operation ? { operation: progress.changes.operation } : {})
-      }
-    } : {})
-  };
-}
-
-function summarizeModelTracePayload(kind: ModelTraceEvent["kind"], payload: Record<string, unknown>): Record<string, unknown> {
-  if (kind === "request") return summarizeModelRequestTracePayload(payload);
-  if (kind === "response") return summarizeModelResponseTracePayload(payload);
-  if (kind === "error") {
-    return {
-      ...(typeof payload["message"] === "string" ? { message: excerptTraceText(payload["message"], TRACE_MODEL_EXCERPT_CHARS) } : {}),
-      ...(typeof payload["stack"] === "string" ? { stackPreview: tailTraceText(payload["stack"], TRACE_MODEL_EXCERPT_CHARS) } : {})
-    };
-  }
-  return {
-    ...("fromProviderId" in payload ? { fromProviderId: payload["fromProviderId"] } : {}),
-    ...("toProviderId" in payload ? { toProviderId: payload["toProviderId"] } : {}),
-    ...("fromModel" in payload ? { fromModel: payload["fromModel"] } : {}),
-    ...("toModel" in payload ? { toModel: payload["toModel"] } : {}),
-    ...("category" in payload ? { category: payload["category"] } : {}),
-    ...(typeof payload["reason"] === "string" ? { reason: excerptTraceText(payload["reason"], TRACE_MODEL_EXCERPT_CHARS) } : {})
-  };
-}
-
-function summarizeModelRequestTracePayload(payload: Record<string, unknown>): Record<string, unknown> {
-  const request = recordFromUnknown(payload["request"]);
-  return {
-    ...("taskStatus" in payload ? { taskStatus: payload["taskStatus"] } : {}),
-    ...("eventCount" in payload ? { eventCount: payload["eventCount"] } : {}),
-    ...(Object.keys(recordFromUnknown(payload["attention"])).length > 0 ? { attention: summarizeTraceAttention(recordFromUnknown(payload["attention"])) } : {}),
-    ...(Object.keys(request).length > 0 ? { request: summarizeModelRequestBody(request) } : {})
-  };
-}
-
-function summarizeModelResponseTracePayload(payload: Record<string, unknown>): Record<string, unknown> {
-  const response = recordFromUnknown(payload["response"]);
-  if (Object.keys(response).length === 0) return {};
-  const usage = summarizeModelUsageForTrace(recordFromUnknown(response["usage"]));
-  const kind = String(response["kind"] ?? "").trim();
-  if (kind === "tool_calls") {
-    const calls = Array.isArray(response["calls"]) ? response["calls"] : [];
-    return {
-      response: {
-        kind,
-        toolCallCount: calls.length,
-        toolCalls: calls.slice(0, TRACE_MODEL_TOOL_LIMIT).map((call) => summarizeToolCallForTrace(recordFromUnknown(call))),
-        omittedToolCalls: Math.max(0, calls.length - TRACE_MODEL_TOOL_LIMIT),
-        ...(usage ? { usage } : {})
-      }
-    };
-  }
-  if (kind === "final") {
-    return {
-      response: {
-        kind,
-        messageExcerpt: excerptTraceText(response["message"], TRACE_MODEL_EXCERPT_CHARS),
-        ...(usage ? { usage } : {})
-      }
-    };
-  }
-  return {
-    response: {
-      kind: kind || "unknown",
-      ...(typeof response["reason"] === "string" ? { reason: excerptTraceText(response["reason"], TRACE_MODEL_EXCERPT_CHARS) } : {}),
-      ...(usage ? { usage } : {})
-    }
-  };
-}
-
-function summarizeTraceAttention(attention: Record<string, unknown>): Record<string, unknown> {
-  const evidenceRefs = Array.isArray(attention["evidenceRefs"]) ? attention["evidenceRefs"].map((item) => String(item ?? "")) : [];
-  const tokenBudget = recordFromUnknown(attention["tokenBudget"]);
-  return {
-    ...(attention["activeNode"] ? { activeNode: compactTraceValue(attention["activeNode"], 0) } : {}),
-    ...(evidenceRefs.length > 0 ? {
-      evidenceRefCount: evidenceRefs.length,
-      evidenceRefs: evidenceRefs.slice(-TRACE_ATTENTION_EVIDENCE_LIMIT),
-      omittedEvidenceRefs: Math.max(0, evidenceRefs.length - TRACE_ATTENTION_EVIDENCE_LIMIT)
-    } : {}),
-    ...(Object.keys(tokenBudget).length > 0 ? { tokenBudget } : {})
-  };
-}
-
-function summarizeModelRequestBody(request: Record<string, unknown>): Record<string, unknown> {
-  const toolNames = extractTraceToolNames(request);
-  return {
-    ...(typeof request["model"] === "string" ? { model: request["model"] } : {}),
-    ...("stream" in request ? { stream: Boolean(request["stream"]) } : {}),
-    ...(Number.isFinite(Number(request["max_tokens"])) ? { maxTokens: Number(request["max_tokens"]) } : {}),
-    ...(Number.isFinite(Number(request["max_completion_tokens"])) ? { maxCompletionTokens: Number(request["max_completion_tokens"]) } : {}),
-    ...(Number.isFinite(Number(request["temperature"])) ? { temperature: Number(request["temperature"]) } : {}),
-    ...(request["tool_choice"] !== undefined ? { toolChoice: compactTraceValue(request["tool_choice"], 0) } : {}),
-    ...(toolNames.length > 0 ? {
-      toolSummary: {
-        count: toolNames.length,
-        names: toolNames.slice(0, TRACE_MODEL_TOOL_LIMIT),
-        omittedNames: Math.max(0, toolNames.length - TRACE_MODEL_TOOL_LIMIT)
-      }
-    } : {}),
-    messageSummary: summarizeTraceMessages(request)
-  };
-}
-
-function summarizeTraceMessages(request: Record<string, unknown>): Record<string, unknown> {
-  const summaries = extractTraceMessageSummaries(request);
-  const roleCounts: Record<string, number> = {};
-  for (const item of summaries) {
-    roleCounts[item.role] = (roleCounts[item.role] ?? 0) + 1;
-  }
-  return {
-    count: summaries.length,
-    roleCounts,
-    ...(findTraceMessageExcerpt(summaries, "system", false) ? { systemExcerpt: findTraceMessageExcerpt(summaries, "system", false) } : {}),
-    ...(findTraceMessageExcerpt(summaries, "user", true) ? { latestUserExcerpt: findTraceMessageExcerpt(summaries, "user", true) } : {}),
-    ...(findTraceMessageExcerpt(summaries, "assistant", true) ? { latestAssistantExcerpt: findTraceMessageExcerpt(summaries, "assistant", true) } : {}),
-    ...(findTraceMessageExcerpt(summaries, "tool", true) ? { latestToolExcerpt: findTraceMessageExcerpt(summaries, "tool", true) } : {})
-  };
-}
-
-function extractTraceMessageSummaries(request: Record<string, unknown>): Array<{ role: string; excerpt: string }> {
-  const output: Array<{ role: string; excerpt: string }> = [];
-  const push = (role: string, value: unknown): void => {
-    const excerpt = excerptTraceText(value, TRACE_MODEL_EXCERPT_CHARS);
-    if (excerpt) output.push({ role, excerpt });
-  };
-
-  const systemInstruction = recordFromUnknown(request["systemInstruction"]);
-  const systemParts = Array.isArray(systemInstruction["parts"]) ? systemInstruction["parts"] : [];
-  for (const part of systemParts) {
-    const text = recordFromUnknown(part)["text"];
-    if (typeof text === "string") push("system", text);
-  }
-
-  if (Array.isArray(request["messages"])) {
-    for (const rawMessage of request["messages"]) {
-      const message = recordFromUnknown(rawMessage);
-      const role = String(message["role"] ?? "unknown");
-      const content = summarizeTraceMessageContent(message["content"]);
-      if (content) push(role, content);
-      const toolCalls = Array.isArray(message["tool_calls"]) ? message["tool_calls"] : [];
-      for (const rawCall of toolCalls.slice(0, TRACE_MODEL_TOOL_LIMIT)) {
-        const call = recordFromUnknown(rawCall);
-        const fn = recordFromUnknown(call["function"]);
-        const argsPreview = excerptTraceText(fn["arguments"], TRACE_MODEL_TOOL_ARG_CHARS);
-        const name = String(fn["name"] ?? "tool");
-        push("assistant", `${name}${argsPreview ? ` ${argsPreview}` : ""}`);
-      }
-    }
-  }
-
-  if (Array.isArray(request["contents"])) {
-    for (const rawContent of request["contents"]) {
-      const content = recordFromUnknown(rawContent);
-      const role = content["role"] === "model" ? "assistant" : String(content["role"] ?? "user");
-      const parts = Array.isArray(content["parts"]) ? content["parts"] : [];
-      const partTexts = parts
-        .map((part) => summarizeTraceMessageContent(part))
-        .filter((item): item is string => Boolean(item));
-      if (partTexts.length > 0) push(role, partTexts.join(" | "));
-    }
-  }
-
-  return output;
-}
-
-function summarizeTraceMessageContent(value: unknown): string {
-  if (typeof value === "string") return excerptTraceText(value, TRACE_MODEL_EXCERPT_CHARS);
-  if (!value) return "";
-  if (Array.isArray(value)) {
-    const parts = value
-      .map((item) => summarizeTraceMessageContent(item))
-      .filter((item): item is string => Boolean(item));
-    return excerptTraceText(parts.join(" | "), TRACE_MODEL_EXCERPT_CHARS);
-  }
-  const record = recordFromUnknown(value);
-  if (typeof record["text"] === "string") return excerptTraceText(record["text"], TRACE_MODEL_EXCERPT_CHARS);
-  if (typeof record["content"] === "string") return excerptTraceText(record["content"], TRACE_MODEL_EXCERPT_CHARS);
-  if (record["tool_result"]) return excerptTraceText(JSON.stringify(record["tool_result"]), TRACE_MODEL_EXCERPT_CHARS);
-  if (record["tool_use_id"]) {
-    return excerptTraceText(`${String(record["type"] ?? "tool_result")} ${String(record["tool_use_id"] ?? "")} ${String(record["content"] ?? "")}`, TRACE_MODEL_EXCERPT_CHARS);
-  }
-  if (record["functionCall"]) {
-    const fn = recordFromUnknown(record["functionCall"]);
-    return excerptTraceText(`${String(fn["name"] ?? "functionCall")} ${JSON.stringify(fn["args"] ?? {})}`, TRACE_MODEL_EXCERPT_CHARS);
-  }
-  if (record["functionResponse"]) {
-    const fn = recordFromUnknown(record["functionResponse"]);
-    return excerptTraceText(`${String(fn["name"] ?? "functionResponse")} ${JSON.stringify(fn["response"] ?? {})}`, TRACE_MODEL_EXCERPT_CHARS);
-  }
-  return excerptTraceText(JSON.stringify(compactTraceValue(record, 0)), TRACE_MODEL_EXCERPT_CHARS);
-}
-
-function extractTraceToolNames(request: Record<string, unknown>): string[] {
-  const names: string[] = [];
-  const tools = Array.isArray(request["tools"]) ? request["tools"] : [];
-  for (const rawTool of tools) {
-    const tool = recordFromUnknown(rawTool);
-    const fn = recordFromUnknown(tool["function"]);
-    if (typeof fn["name"] === "string" && fn["name"].trim()) {
-      names.push(fn["name"].trim());
-      continue;
-    }
-    if (typeof tool["name"] === "string" && tool["name"].trim()) {
-      names.push(tool["name"].trim());
-      continue;
-    }
-    const declarations = Array.isArray(tool["functionDeclarations"]) ? tool["functionDeclarations"] : [];
-    for (const rawDeclaration of declarations) {
-      const declaration = recordFromUnknown(rawDeclaration);
-      if (typeof declaration["name"] === "string" && declaration["name"].trim()) names.push(declaration["name"].trim());
-    }
-  }
-  return names;
-}
-
-function summarizeToolCallForTrace(call: Record<string, unknown>): Record<string, unknown> {
-  return {
-    ...(call["id"] ? { id: call["id"] } : {}),
-    ...(call["toolName"] ? { toolName: call["toolName"] } : {}),
-    ...(call["args"] !== undefined ? { argsPreview: excerptTraceText(JSON.stringify(call["args"]), TRACE_MODEL_TOOL_ARG_CHARS) } : {})
-  };
-}
-
-function summarizeModelUsageForTrace(usage: Record<string, unknown>): Record<string, unknown> | undefined {
-  if (Object.keys(usage).length === 0) return undefined;
-  const summary: Record<string, unknown> = {};
-  if (Number.isFinite(Number(usage["inputTokens"]))) summary["inputTokens"] = Number(usage["inputTokens"]);
-  if (Number.isFinite(Number(usage["outputTokens"]))) summary["outputTokens"] = Number(usage["outputTokens"]);
-  if (Number.isFinite(Number(usage["cachedTokens"]))) summary["cachedTokens"] = Number(usage["cachedTokens"]);
-  if (summary["inputTokens"] === undefined && Number.isFinite(Number(usage["prompt_tokens"]))) summary["inputTokens"] = Number(usage["prompt_tokens"]);
-  if (summary["outputTokens"] === undefined && Number.isFinite(Number(usage["completion_tokens"]))) summary["outputTokens"] = Number(usage["completion_tokens"]);
-  return Object.keys(summary).length > 0 ? summary : undefined;
-}
-
-function findTraceMessageExcerpt(
-  messages: Array<{ role: string; excerpt: string }>,
-  role: string,
-  fromEnd: boolean
-): string {
-  const ordered = fromEnd ? [...messages].reverse() : messages;
-  return ordered.find((item) => item.role === role)?.excerpt ?? "";
 }
 
 function progressAdvancedEnough(
@@ -4316,50 +4056,6 @@ function progressAdvancedEnough(
 function toFiniteNumber(value: unknown): number {
   const number = Number(value);
   return Number.isFinite(number) ? number : Number.NaN;
-}
-
-function excerptTraceText(value: unknown, maxChars: number): string {
-  const text = String(value ?? "").replace(/\s+/g, " ").trim();
-  if (!text) return "";
-  if (text.length <= maxChars) return text;
-  const omitted = text.length - maxChars;
-  return `${text.slice(0, maxChars)} ...[trace excerpt truncated ${omitted} chars]`;
-}
-
-function tailTraceText(value: unknown, maxChars: number): string {
-  const text = String(value ?? "").trim();
-  if (!text) return "";
-  if (text.length <= maxChars) return text;
-  const omitted = text.length - maxChars;
-  return `[tail truncated ${omitted} chars]\n${text.slice(-maxChars)}`;
-}
-
-function compactTraceEntry(entry: Record<string, unknown>): Record<string, unknown> {
-  return compactTraceValue(sanitizeSensitiveValue(entry), 0) as Record<string, unknown>;
-}
-
-function compactTraceValue(value: unknown, depth: number): unknown {
-  if (typeof value === "string") {
-    if (value.length <= TRACE_MAX_STRING_CHARS) return value;
-    const omitted = value.length - TRACE_MAX_STRING_CHARS;
-    return `${value.slice(0, TRACE_MAX_STRING_CHARS)}\n...[trace truncated ${omitted} chars]`;
-  }
-  if (value === null || typeof value !== "object") return value;
-  if (depth >= TRACE_MAX_DEPTH) return "[trace truncated depth]";
-  if (Array.isArray(value)) {
-    const kept = value.slice(0, TRACE_MAX_ARRAY_ITEMS).map((item) => compactTraceValue(item, depth + 1));
-    if (value.length <= TRACE_MAX_ARRAY_ITEMS) return kept;
-    return [...kept, `[trace truncated ${value.length - TRACE_MAX_ARRAY_ITEMS} items]`];
-  }
-  const entries = Object.entries(recordFromUnknown(value));
-  const compacted: Record<string, unknown> = {};
-  for (const [key, entry] of entries.slice(0, TRACE_MAX_OBJECT_KEYS)) {
-    compacted[key] = compactTraceValue(entry, depth + 1);
-  }
-  if (entries.length > TRACE_MAX_OBJECT_KEYS) {
-    compacted["_traceTruncatedKeys"] = entries.length - TRACE_MAX_OBJECT_KEYS;
-  }
-  return compacted;
 }
 
 function nonWhitespaceLength(text: string): number {
@@ -4602,8 +4298,8 @@ function previewArgs(args: Record<string, unknown>): string {
 
 function taskAttachmentLimits(): { maxFileBytes: number; maxTaskBytes: number } {
   return {
-    maxFileBytes: Number(process.env["SCC_ATTACHMENT_MAX_FILE_BYTES"] ?? 20 * 1024 * 1024),
-    maxTaskBytes: Number(process.env["SCC_ATTACHMENT_MAX_TASK_BYTES"] ?? 100 * 1024 * 1024)
+    maxFileBytes: Number(process.env["AGENT_WORKBENCH_ATTACHMENT_MAX_FILE_BYTES"] ?? process.env["SCC_ATTACHMENT_MAX_FILE_BYTES"] ?? 20 * 1024 * 1024),
+    maxTaskBytes: Number(process.env["AGENT_WORKBENCH_ATTACHMENT_MAX_TASK_BYTES"] ?? process.env["SCC_ATTACHMENT_MAX_TASK_BYTES"] ?? 100 * 1024 * 1024)
   };
 }
 
@@ -4819,7 +4515,11 @@ function memoryDescriptor(scope: "user" | "project", folder?: TaskFolderRecord):
 }
 
 function memoryBaseDir(): string {
-  return resolve(process.env["SCC_MEMORY_DIR"]?.trim() || resolve(findWorkspaceRoot(), "data", "memory"));
+  return resolve(
+    process.env["AGENT_WORKBENCH_MEMORY_DIR"]?.trim() ||
+      process.env["SCC_MEMORY_DIR"]?.trim() ||
+      resolve(findWorkspaceRoot(), "data", "memory")
+  );
 }
 
 function memoryPathHash(path: string): string {
@@ -4831,7 +4531,7 @@ function defaultMemoryContent(scope: "user" | "project", folder?: TaskFolderReco
     return [
       "# USER.md",
       "",
-      "Stable user preferences for SCC. Keep entries short, durable, and broadly useful.",
+      "Stable user preferences for Agent Workbench. Keep entries short, durable, and broadly useful.",
       "",
       "## Preferences",
       "- Language: zh-CN unless the user asks otherwise.",
@@ -4912,16 +4612,6 @@ function isManagedStateTool(toolName: string): boolean {
 
 function isApprovalBypassedStateTool(toolName: string): boolean {
   return toolName === "plan_update";
-}
-
-function summarizeEventForTrace(event: TaskEvent | undefined): Record<string, unknown> | undefined {
-  if (!event) return undefined;
-  return {
-    id: event.id,
-    type: event.type,
-    summary: event.summary,
-    createdAt: event.createdAt
-  };
 }
 
 function isParallelSafeToolCall(call: ToolCall, category: RiskCategory): boolean {

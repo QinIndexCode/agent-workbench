@@ -3,7 +3,7 @@ import { dirname, extname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
-import { UserPreferencesSchema } from "@scc/shared";
+import { UserPreferencesSchema } from "@agent-workbench/shared";
 import type {
   KnowledgeModelAssetKind,
   KnowledgeModelAssetStatus,
@@ -13,7 +13,7 @@ import type {
   KnowledgeModelStatus,
   PreferencesPatch,
   UserPreferences
-} from "@scc/shared";
+} from "@agent-workbench/shared";
 import { nowIso } from "./ids.js";
 import type { WorkbenchStore } from "./store.js";
 import { findWorkspaceRoot } from "./workspace-root.js";
