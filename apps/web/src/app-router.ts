@@ -12,7 +12,7 @@ export type AppRoute =
   | { view: "settings"; section: SettingsSection }
   | { view: "docs"; section: DocsSection };
 
-const librarySections = new Set<LibrarySection>(["skills", "curator", "knowledge", "memory", "reflections"]);
+const librarySections = new Set<LibrarySection>(["skills", "curator", "knowledge", "memory"]);
 const settingsSections = new Set<SettingsSection>(["providers", "permissions", "mcp", "integrations", "scheduled", "search", "preferences"]);
 const docsSections = new Set<DocsSection>([
   "overview",
@@ -24,7 +24,6 @@ const docsSections = new Set<DocsSection>([
   "curator",
   "knowledge",
   "memory",
-  "reflections",
   "providers",
   "permissions",
   "mcp",
@@ -75,8 +74,14 @@ function parseAppRoute(pathname: string): AppRoute {
     return value ? { view: "tasks", taskId: value } : { view: "tasks" };
   }
   if (root === "history") return { view: "history" };
-  if (root === "library") return { view: "library", section: librarySections.has(value as LibrarySection) ? value as LibrarySection : "skills" };
+  if (root === "library") {
+    if (value === "reflections") return { view: "library", section: "curator" };
+    return { view: "library", section: librarySections.has(value as LibrarySection) ? value as LibrarySection : "skills" };
+  }
   if (root === "settings") return { view: "settings", section: settingsSections.has(value as SettingsSection) ? value as SettingsSection : "providers" };
-  if (root === "docs") return { view: "docs", section: docsSections.has(value as DocsSection) ? value as DocsSection : "overview" };
+  if (root === "docs") {
+    if (value === "reflections") return { view: "docs", section: "curator" };
+    return { view: "docs", section: docsSections.has(value as DocsSection) ? value as DocsSection : "overview" };
+  }
   return { view: "tasks" };
 }

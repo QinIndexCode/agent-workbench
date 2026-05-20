@@ -61,6 +61,24 @@
   min-width: 0;
 }
 
+.threadBreadcrumb {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 6px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.threadBreadcrumb strong {
+  color: var(--text);
+  font-weight: 650;
+}
+
 .threadTitleBlock span,
 .settingsHeader p {
   display: block;

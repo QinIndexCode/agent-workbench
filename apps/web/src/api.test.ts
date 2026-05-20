@@ -130,6 +130,12 @@ describe("api client", () => {
     expect(revokeInit.headers).toBeInstanceOf(Headers);
     expect((revokeInit.headers as Headers).has("content-type")).toBe(false);
     expect((revokeInit.headers as Headers).get("x-agent-workbench-session")).toBe(sessionToken);
+
+    await api.runCuratorExtraction();
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/curator/runs", expect.objectContaining({ method: "POST" }));
+
+    await api.deleteCuratorRun("curator_run_1");
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/curator/runs/curator_run_1", expect.objectContaining({ method: "DELETE" }));
   });
 
   it("raises failed responses", async () => {
@@ -152,6 +158,42 @@ describe("api client", () => {
     const url = await api.taskEventsWebSocketUrl("task_42");
     expect(url).toContain("/api/tasks/task_42/events/ws");
     expect(url).toContain("session=session-token-test");
-    expect(url).toContain("eventLimit=600");
+    expect(url).toContain("eventLimit=240");
+  });
+
+  it("loads the full text for a lazily transported transcript stream", async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/session/bootstrap")) return jsonResponse({ sessionToken });
+      return jsonResponse({
+        streamId: "stream_lazy",
+        type: "thinking_delta",
+        text: "Full thinking body"
+      });
+    });
+
+    await expect(api.getTaskStreamText("task_1", "stream_lazy", "thinking_delta")).resolves.toEqual({
+      streamId: "stream_lazy",
+      type: "thinking_delta",
+      text: "Full thinking body"
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/tasks/task_1/stream-text?streamId=stream_lazy&type=thinking_delta",
+      expect.objectContaining({ headers: expect.any(Headers) })
+    );
+  });
+
+  it("loads delegated child summaries for a task", async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/session/bootstrap")) return jsonResponse({ sessionToken });
+      return jsonResponse([{ id: "task_child", title: "Child", status: "running" }]);
+    });
+
+    await expect(api.listTaskChildren("task_parent")).resolves.toEqual([{ id: "task_child", title: "Child", status: "running" }]);
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/tasks/task_parent/children",
+      expect.objectContaining({ headers: expect.any(Headers) })
+    );
   });
 });

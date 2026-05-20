@@ -65,7 +65,6 @@ function getSupportCopy(language?: string | null) {
   const zh = language === "zh-CN";
   return {
     title: zh ? "需要一点帮助？" : "Need a hand?",
-    subtitle: zh ? "这里是本地帮助入口，不会跳到设置页。" : "This is local help, not a settings shortcut.",
     askTitle: zh ? "如何提问" : "How to ask",
     askBody: zh ? "直接描述目标、约束和你希望看到的结果。运行中也可以追加引导。" : "Describe the goal, constraints, and desired result. You can add guidance while a task is running.",
     permissionTitle: zh ? "权限如何工作" : "How permissions work",
@@ -73,7 +72,6 @@ function getSupportCopy(language?: string | null) {
     shortcutTitle: zh ? "输入快捷键" : "Input shortcuts",
     shortcutBody: zh ? "Enter 发送，Shift + Enter 换行。附件和语音会进入当前输入上下文。" : "Enter sends, Shift + Enter inserts a newline. Attachments and voice go into the current input context.",
     openDocs: zh ? "打开文档" : "Open Docs",
-    feedbackPlaceholder: zh ? "反馈入口预留中" : "Feedback link is reserved",
     close: zh ? "关闭" : "Close"
   };
 }

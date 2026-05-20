@@ -1,4 +1,4 @@
-import type { ReflectionSession, SkillCuratorItem, TaskDetail, TaskEvent } from "@agent-workbench/shared";
+import type { CuratorRun, SkillCuratorItem, TaskDetail, TaskEvent } from "@agent-workbench/shared";
 
 export type LoadedSkillEvent = {
   eventId: string;
@@ -97,7 +97,7 @@ export function describeSkillSource(source: string, language?: string | null): s
   }
 }
 
-export function describeReflectionPhase(phase: string, language?: string | null): string {
+export function describeCuratorRunPhase(phase: string, language?: string | null): string {
   const zh = language === "zh-CN";
   const normalized = phase.trim().toLowerCase();
   if (normalized.includes("meta")) return zh ? "整理输入与运行边界" : "Collecting input and runtime boundaries";
@@ -110,7 +110,7 @@ export function describeReflectionPhase(phase: string, language?: string | null)
   return phase;
 }
 
-export function describeReflectionStatus(status: string, language?: string | null): string {
+export function describeCuratorRunStatus(status: string, language?: string | null): string {
   const zh = language === "zh-CN";
   switch (status.trim().toLowerCase()) {
     case "running":
@@ -126,7 +126,7 @@ export function describeReflectionStatus(status: string, language?: string | nul
   }
 }
 
-export function describeReflectionNextStep(nextStep: string, language?: string | null): string {
+export function describeCuratorRunNextStep(nextStep: string, language?: string | null): string {
   const zh = language === "zh-CN";
   const normalized = nextStep.trim().toLowerCase();
   if (!normalized) return nextStep;
@@ -163,13 +163,18 @@ export function summarizeCuratorEvidence(item: SkillCuratorItem, language?: stri
   return lines;
 }
 
-export function summarizeReflectionSession(reflection: ReflectionSession, language?: string | null): string {
-  const phase = describeReflectionPhase(reflection.progress.phase, language);
-  const nextStep = reflection.progress.nextStep?.trim();
+export function summarizeCuratorRun(run: CuratorRun, language?: string | null): string {
+  const phase = describeCuratorRunPhase(run.progress.phase, language);
+  const nextStep = run.progress.nextStep?.trim();
   if (!nextStep) return phase;
-  const describedNextStep = describeReflectionNextStep(nextStep, language);
+  const describedNextStep = describeCuratorRunNextStep(nextStep, language);
   return describedNextStep === phase ? phase : `${phase} · ${describedNextStep}`;
 }
+
+export const describeReflectionPhase = describeCuratorRunPhase;
+export const describeReflectionStatus = describeCuratorRunStatus;
+export const describeReflectionNextStep = describeCuratorRunNextStep;
+export const summarizeReflectionSession = summarizeCuratorRun;
 
 function toStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => (typeof item === "string" ? item.trim() : "")).filter(Boolean) : [];

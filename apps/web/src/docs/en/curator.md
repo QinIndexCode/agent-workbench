@@ -1,6 +1,6 @@
 # Curator
 
-Curator explains why Agent Workbench recommends, blocks, or groups a skill candidate.
+Curator explains why Agent Workbench recommends, blocks, or groups a skill candidate. It also keeps run history, so promotion evidence and audit trail stay in one place.
 
 ## What to look at first
 
@@ -14,6 +14,7 @@ Curator explains why Agent Workbench recommends, blocks, or groups a skill candi
 - **Activate** only when the candidate is clearly reusable
 - **Suspend** if an active skill starts drifting or causing false matches
 - **Merge duplicates** when the grouped skills truly describe the same workflow
+- **Review run history** when you need to understand why no skill appeared yet, or why a candidate remains blocked
 
 ## A strong candidate usually has
 

@@ -49,6 +49,11 @@ import type {
   TaskTurnEditRequest,
   TaskPatchRequest,
   TaskCheckpoint,
+  TaskChildSummary,
+  TaskDelegationExpectedOutput,
+  TaskDelegationMeta,
+  TaskKind,
+  TaskMemory,
   TaskRollbackFileChange,
   TaskRollbackPreview,
   TaskRollbackRequest,
@@ -128,7 +133,7 @@ import { PermissionEngine, type PermissionState, type RiskAssessment } from "./p
 import { canonicalizeExistingDirectory, resolveWorkspacePathStrict } from "./path-guards.js";
 import { LocalSecretBox, maskSecret, sanitizeSensitiveText, sanitizeSensitiveValue } from "./secrets.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
-import { completionBlocker, verificationResultFromToolEvent } from "./task-graph.js";
+import { completionBlocker, taskGraphFromEvents, verificationResultFromToolEvent } from "./task-graph.js";
 import { hasUserTurn, latestUserText } from "./task-events.js";
 import { ShellToolExecutor, type ToolExecutor, type ToolProgressUpdate } from "./tools.js";
 import { compactToolProgressUpdate, summarizeEventForTrace, summarizeToolProgressForTrace, TaskTraceRecorder } from "./trace-recorder.js";
@@ -164,10 +169,18 @@ const TRACE_PROGRESS_MIN_INTERVAL_MS = 1_500;
 const TRACE_PROGRESS_BYTES_STEP = 16 * 1024;
 const TRACE_PROGRESS_LINE_STEP = 40;
 const TRACE_PROGRESS_ITEM_STEP = 1;
+const SUBAGENT_MAX_CHILDREN_PER_PARENT = 6;
+const SUBAGENT_MAX_CONCURRENT_CHILDREN = 2;
+const SUBAGENT_ALLOWED_RISKS: RiskCategory[] = ["host_observation", "workspace_read", "network"];
+const SUBAGENT_TARGET_LIMITS = {
+  maxModelTurns: 16,
+  maxToolCalls: 40,
+  maxWallTimeMs: 900_000
+};
 const DEFAULT_TARGET_LIMITS = {
-  maxModelTurns: 80,
-  maxToolCalls: 240,
-  maxWallTimeMs: 7_200_000
+  maxModelTurns: 160,
+  maxToolCalls: 500,
+  maxWallTimeMs: 14_400_000
 };
 
 type TaskTitleSource = "explicit" | "model" | "local_fallback";
@@ -184,6 +197,9 @@ interface TaskRunOptions {
     maxToolCalls?: number | undefined;
     maxWallTimeMs?: number | undefined;
   };
+  kind?: TaskKind;
+  parentTaskId?: string;
+  delegation?: TaskDelegationMeta;
 }
 
 export class AgentWorkbench {
@@ -245,6 +261,9 @@ export class AgentWorkbench {
   private async initializeTask(goal: string, titleResolution: TaskTitleResolution, folderId: string, attachmentIds: string[] = [], options: TaskRunOptions = {}): Promise<TaskDetail> {
     const folder = await this.resolveTaskFolder(folderId);
     const task = this.emptyTask(titleResolution.title);
+    task.kind = options.kind ?? "primary";
+    if (options.parentTaskId) task.parentTaskId = options.parentTaskId;
+    if (options.delegation) task.delegation = options.delegation;
     task.folderId = folder.id;
     task.workRoot = folder.rootPath;
     task.runMode = options.runMode === "target" ? "target" : "normal";
@@ -254,18 +273,32 @@ export class AgentWorkbench {
     this.addEvent(task, "task_created", "Task created", {
       titleSource: titleResolution.source,
       initialTitle: titleResolution.title,
+      kind: task.kind,
+      ...(task.parentTaskId ? { parentTaskId: task.parentTaskId } : {}),
       runMode: task.runMode,
       ...(task.targetLimits ? { targetLimits: task.targetLimits } : {})
     });
     await this.beginTaskTurn(task, goal, "user_message");
+    if (task.kind === "subagent") this.attachSubagentTaskGraph(task, goal);
     await this.attachUploadedFiles(task, attachmentIds);
     this.setStatus(task, "running");
     await this.store.saveTask(task);
     return task;
   }
 
-  async listTasks(): Promise<TaskDetail[]> {
-    return this.store.listTasks();
+  async listTasks(options: { includeChildren?: boolean } = {}): Promise<TaskDetail[]> {
+    const tasks = await this.store.listTasks();
+    if (options.includeChildren === false) return tasks.filter((task) => task.kind !== "subagent");
+    return tasks;
+  }
+
+  async listChildTasks(parentTaskId: string): Promise<TaskDetail[]> {
+    return this.store.listChildTasks(parentTaskId);
+  }
+
+  async listTaskChildren(parentTaskId: string): Promise<TaskChildSummary[]> {
+    const tasks = await this.store.listChildTasks(parentTaskId);
+    return tasks.map((task) => this.buildTaskChildSummary(task));
   }
 
   async generateTaskTitle(input: TaskTitleRequest): Promise<TaskTitleResponse> {
@@ -542,6 +575,7 @@ export class AgentWorkbench {
           workRoot: checkpoint.workRoot,
           files: result.files
         });
+        this.markRollbackFilesStale(task.id, result);
         await this.store.saveTask(task);
         return result;
       } catch (error) {
@@ -683,6 +717,7 @@ export class AgentWorkbench {
         if (answered) {
           this.setStatus(task, "running");
           await this.store.saveTask(task);
+          if (task.kind === "subagent") await this.projectSubagentStatusToParent(task);
           if (continuation === "background") {
             this.scheduleTaskStep(task.id);
             return task;
@@ -698,6 +733,7 @@ export class AgentWorkbench {
       await this.beginTaskTurn(task, content, "user_message");
       this.setStatus(task, "running");
       await this.store.saveTask(task);
+      if (task.kind === "subagent") await this.projectSubagentStatusToParent(task);
       if (continuation === "background") {
         this.scheduleTaskStep(task.id);
         return task;
@@ -882,7 +918,19 @@ export class AgentWorkbench {
       workRoot: checkpoint.workRoot,
       files: result.files
     });
+    this.markRollbackFilesStale(task.id, result);
     return result;
+  }
+
+  private markRollbackFilesStale(taskId: string, result: TaskRollbackResult): void {
+    const affectedPaths = result.files
+      .filter((file) => file.canRollback && (file.status === "modified" || file.status === "created" || file.status === "deleted"))
+      .map((file) => file.path);
+    this.contextAssembler.getFileStateTracker(taskId).markFilesStale(
+      affectedPaths,
+      "File was rolled back; call read_file for current content before relying on earlier file evidence.",
+      result.createdAt
+    );
   }
 
   private async restoreProjectMemoryVersions(task: TaskDetail, events: TaskEvent[]): Promise<{ restored: number; folderIds: string[] } | undefined> {
@@ -919,6 +967,7 @@ export class AgentWorkbench {
         const task = await this.requiredTask(taskId);
         this.setStatus(task, "running");
         await this.store.saveTask(task);
+        if (task.kind === "subagent") await this.projectSubagentStatusToParent(task);
         if (continuation === "background") {
           this.scheduleTaskStep(task.id);
           return task;
@@ -932,6 +981,7 @@ export class AgentWorkbench {
     if (action === "pause") this.setStatus(task, "paused");
     if (action === "cancel") this.setStatus(task, "cancelled");
     await this.store.saveTask(task);
+    if (task.kind === "subagent") await this.projectSubagentStatusToParent(task);
     return task;
   }
 
@@ -1014,6 +1064,10 @@ export class AgentWorkbench {
 
   async listTaskMemories() {
     return this.store.listTaskMemories();
+  }
+
+  async deleteTaskMemory(memoryId: string): Promise<void> {
+    await this.store.deleteTaskMemory(memoryId);
   }
 
   async listPatterns(): Promise<PatternRecord[]> {
@@ -1124,14 +1178,27 @@ export class AgentWorkbench {
       });
     }
 
-    for (const memory of memories.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 16)) {
+    const lowValueCandidates = memories.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).filter((memory) => {
       const reusable =
         memory.assessment.goalAchieved &&
         memory.assessment.confidence >= 0.75 &&
         memory.toolsUsed.length > 0 &&
         memory.meta.complexity !== "simple" &&
         memory.meta.outcome === "success";
-      if (reusable) continue;
+      return !reusable;
+    });
+    const lowValueCounts = new Map<string, number>();
+    for (const memory of lowValueCandidates) {
+      const key = lowValueMemoryKey(memory);
+      lowValueCounts.set(key, (lowValueCounts.get(key) ?? 0) + 1);
+    }
+    const seenLowValue = new Set<string>();
+    for (const memory of lowValueCandidates.slice(0, 32)) {
+      const key = lowValueMemoryKey(memory);
+      if (seenLowValue.has(key)) continue;
+      seenLowValue.add(key);
+      if (seenLowValue.size > 16) break;
+      const collapsedCount = Math.max(0, (lowValueCounts.get(key) ?? 1) - 1);
       const blockedReasons = [
         !memory.assessment.goalAchieved ? "Task did not finish successfully." : "",
         memory.meta.complexity === "simple" ? "Too simple to become a reusable skill." : "",
@@ -1154,8 +1221,9 @@ export class AgentWorkbench {
         evidence: [
           memory.toolsUsed.length > 0 ? `Tools used: ${memory.toolsUsed.map((tool) => tool.toolName).join(", ")}` : "No tool evidence was captured.",
           `Outcome: ${memory.meta.outcome}`,
-          `Complexity: ${memory.meta.complexity}`
-        ],
+          `Complexity: ${memory.meta.complexity}`,
+          collapsedCount > 0 ? `${collapsedCount} similar low-value task memor${collapsedCount === 1 ? "y was" : "ies were"} collapsed.` : ""
+        ].filter(Boolean),
         blockedReasons,
         dedupBasis: [],
         createdAt: memory.createdAt
@@ -1260,7 +1328,7 @@ export class AgentWorkbench {
   async promoteExperience(experienceId: string): Promise<SkillRecord> {
     const experience = (await this.store.listExperiences()).find((item) => item.id === experienceId);
     if (!experience) throw new Error(`Experience not found: ${experienceId}`);
-    throw new Error("Experience is not eligible for direct Skill promotion. Run reflection to promote stable reusable patterns.");
+    throw new Error("Experience is not eligible for direct Skill promotion. Run curator extraction to promote stable reusable patterns.");
   }
 
   async deleteSkill(skillId: string): Promise<void> {
@@ -1457,7 +1525,7 @@ export class AgentWorkbench {
     const reflection: ScheduledTask = {
       id: "schedule_agent_reflection",
       type: "reflection",
-      title: "Agent self-reflection",
+      title: "Skill Curator maintenance",
       prompt: "Review recent task memories and extract reusable patterns, candidate skills, and risks that need user review.",
       permissionPreset: "ask",
       schedule,
@@ -1524,7 +1592,7 @@ export class AgentWorkbench {
     const current = await this.store.getScheduledTask(taskId);
     if (!current) return;
     if (isDefaultReflectionSchedule(current)) {
-      throw new Error("Agent self-reflection is a default automation and can only be paused, not deleted.");
+      throw new Error("Skill Curator maintenance is a default automation and can only be paused, not deleted.");
     }
     await this.store.deleteScheduledTask(taskId);
   }
@@ -1977,10 +2045,31 @@ export class AgentWorkbench {
   }
 
   async runReflection(): Promise<ReflectionSession> {
-    const result = reflectMemories(await this.store.listTaskMemories(), await this.store.listPatterns());
-    await this.store.saveReflectionSession(result.session);
+    const memories = await this.store.listTaskMemories();
+    const pendingMemories = memories.filter((item) => item.reflectionStatus === "pending");
+    const result = reflectMemories(memories, await this.store.listPatterns());
     for (const pattern of result.patterns) await this.store.savePattern(pattern);
-    for (const skill of result.promotedSkills) await this.saveSkillWithConflicts(skill);
+    const knownSkills = await this.listSkills();
+    const newlyPromotedSkills: SkillRecord[] = [];
+    for (const skill of result.promotedSkills) {
+      if (findDuplicateSkill(skill, [...knownSkills, ...newlyPromotedSkills])) continue;
+      const saved = await this.saveSkillWithConflicts(skill);
+      newlyPromotedSkills.push(saved);
+    }
+    if (result.promotedSkills.length > 0 && newlyPromotedSkills.length === 0) {
+      result.session.progress.nextStep = "duplicate_review_needed";
+    }
+    const shouldPersistSession = pendingMemories.length >= 10 || result.patterns.length > 0 || result.promotedSkills.length > 0;
+    if (shouldPersistSession) await this.store.saveReflectionSession(result.session);
+    if (result.session.progress.phase === "skill") {
+      for (const memory of pendingMemories) {
+        await this.store.saveTaskMemory({
+          ...memory,
+          reflectionCount: memory.reflectionCount + 1,
+          reflectionStatus: "reflected"
+        });
+      }
+    }
     return result.session;
   }
 
@@ -2153,6 +2242,7 @@ export class AgentWorkbench {
     let modelTurns = 0;
     let stateOnlyTurns = 0;
     let emptyResponseRetries = 0;
+    let internalContinuationRetries = 0;
     const startedAt = Date.now();
 
     while (task.status === "running") {
@@ -2185,7 +2275,42 @@ export class AgentWorkbench {
         return task;
       }
       emptyResponseRetries = 0;
+      const turnReasoning = turn.reasoningContent ?? (turn.streamId ? collectThinkingForStream(task, turn.streamId) : undefined);
       if (turn.kind === "final") {
+        if (isInternalContinuationFinal(turn.message)) {
+          if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId, true);
+          const shouldRetry = internalContinuationRetries < 1;
+          internalContinuationRetries += 1;
+          this.addEvent(
+            task,
+            "model_no_progress",
+            shouldRetry
+              ? "Model returned an internal continuation note instead of a final answer; retrying once."
+              : "Model returned an internal continuation note twice; paused for retry or narrower guidance.",
+            {
+              status: shouldRetry ? "retrying" : "paused",
+              ...(turn.streamId ? { streamId: turn.streamId } : {}),
+              ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
+            }
+          );
+          await this.safeAppendTaskTrace(task, {
+            kind: "model_no_progress",
+            timestamp: nowIso(),
+            reason: "internal_continuation_final",
+            status: shouldRetry ? "retrying" : "paused",
+            message: turn.message,
+            ...(turn.streamId ? { streamId: turn.streamId } : {})
+          });
+          if (shouldRetry) {
+            await this.store.saveTask(task);
+            continue;
+          }
+          this.setStatus(task, "paused");
+          await this.store.saveTask(task);
+          if (task.kind === "subagent") await this.projectSubagentStatusToParent(task);
+          return task;
+        }
+        internalContinuationRetries = 0;
         await this.maybeAutoRenameTask(task, { reason: "assistant_output", text: turn.message });
         const blocker = completionBlocker(task);
         if (blocker) {
@@ -2193,19 +2318,21 @@ export class AgentWorkbench {
             ...(turn.streamId ? { streamId: turn.streamId } : {}),
             completionBlocked: true,
             blockedFinalMessage: turn.message,
-            ...(turn.reasoningContent ? { reasoningContent: turn.reasoningContent } : {})
+            ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
           });
           this.setStatus(task, "paused");
           await this.store.saveTask(task);
+          if (task.kind === "subagent") await this.projectSubagentStatusToParent(task);
           return task;
         }
         this.addEvent(task, "assistant_message", turn.message, {
           ...(turn.streamId ? { streamId: turn.streamId } : {}),
-          ...(turn.reasoningContent ? { reasoningContent: turn.reasoningContent } : {})
+          ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
         });
         this.setStatus(task, "completed");
         await this.recordExperience(task);
         await this.store.saveTask(task);
+        if (task.kind === "subagent") await this.projectSubagentCompletionToParent(task, "completed");
         return task;
       }
       if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId);
@@ -2223,7 +2350,7 @@ export class AgentWorkbench {
         return task;
       }
 
-      const latest = await this.processToolCalls(task, executable, turn.reasoningContent);
+      const latest = await this.processToolCalls(task, executable, turnReasoning);
       if (!latest) return task;
       Object.assign(task, latest);
     }
@@ -2240,6 +2367,7 @@ export class AgentWorkbench {
       kind: "tool_calls",
       calls,
       ...(turn.streamId ? { streamId: turn.streamId } : {}),
+      ...(turn.reasoningContent ? { reasoningContent: turn.reasoningContent } : {}),
       ...(turn.usage ? { usage: turn.usage } : {})
     };
   }
@@ -2267,15 +2395,18 @@ export class AgentWorkbench {
       ...(turn.usage ? { usage: turn.usage } : {}),
       ...(turn.rawPayload ? { rawPayload: turn.rawPayload } : {})
     });
-    if (!shouldRetry) this.setStatus(task, "paused");
+    if (!shouldRetry) {
+      this.setStatus(task, "paused");
+      if (task.kind === "subagent") await this.projectSubagentStatusToParent(task);
+    }
     await this.store.saveTask(task);
   }
 
-  private hideAssistantStreamDeltas(task: TaskDetail, streamId: string): void {
+  private hideAssistantStreamDeltas(task: TaskDetail, streamId: string, force = false): void {
     for (const event of task.events) {
-      if (event.type !== "assistant_delta" && event.type !== "thinking_delta") continue;
+      if (event.type !== "assistant_delta") continue;
       if (String(event.payload["streamId"] ?? "") !== streamId) continue;
-      if (event.type === "assistant_delta" && isReadableAssistantPreamble(event)) continue;
+      if (!force && isReadableAssistantPreamble(event)) continue;
       event.payload = { ...event.payload, uiHidden: true };
     }
   }
@@ -2290,7 +2421,20 @@ export class AgentWorkbench {
       const stoppedBeforeTool = await this.stoppedTask(task.id);
       if (stoppedBeforeTool) return stoppedBeforeTool;
 
+      if (task.kind === "subagent" && call.toolName === "spawn_subagent") {
+        return this.failSubagentTask(task, "Nested subagent delegation is not supported in V1.", {
+          toolCallId: call.id,
+          toolName: call.toolName
+        });
+      }
+
       if (call.toolName === "ask_user") {
+        if (task.kind === "subagent") {
+          return this.failSubagentTask(task, `Subagent delegation cannot pause for user input. Child task requested ask_user: ${call.id}.`, {
+            toolCallId: call.id,
+            toolName: call.toolName
+          });
+        }
         const eventArgs = this.sanitizeForPreferences(call.args, preferences);
         this.addEvent(task, "tool_requested", call.toolName, {
           toolCallId: call.id,
@@ -2371,7 +2515,33 @@ export class AgentWorkbench {
         metadata
       });
 
-      if (this.permissions.isGloballyAllowed(assessment.category, globalGrants)) {
+      if (this.subagentAutoApproval(task, call, assessment)) {
+        this.addEvent(task, "approval_auto_granted", `${assessment.category}: delegated subagent scope`, {
+          toolCallId: call.id,
+          toolName: call.toolName,
+          riskCategory: assessment.category,
+          approvalSource: "subagentDelegation",
+          ...eventMetadata
+        });
+        await this.safeAppendTaskTrace(task, {
+          kind: "approval_auto_granted",
+          timestamp: nowIso(),
+          toolCallId: call.id,
+          toolName: call.toolName,
+          source: "subagentDelegation",
+          riskCategory: assessment.category
+        });
+      } else if (task.kind === "subagent") {
+        return this.failSubagentTask(
+          task,
+          `Subagent delegation blocked ${call.toolName} because it requires unsupported risk ${assessment.category}. V1 subagents are limited to host observation, workspace reads, and network access.`,
+          {
+            toolCallId: call.id,
+            toolName: call.toolName,
+            riskCategory: assessment.category
+          }
+        );
+      } else if (this.permissions.isGloballyAllowed(assessment.category, globalGrants)) {
         this.addEvent(task, "approval_auto_granted", `${assessment.category}: global permission`, {
           toolCallId: call.id,
           toolName: call.toolName,
@@ -2501,6 +2671,7 @@ export class AgentWorkbench {
     this.addEvent(task, "assistant_message", message);
     this.setStatus(task, "paused");
     await this.store.saveTask(task);
+    if (task.kind === "subagent") await this.projectSubagentStatusToParent(task);
   }
 
   private async maybePauseForReadOnlyNoProgress(task: TaskDetail): Promise<boolean> {
@@ -2524,6 +2695,8 @@ export class AgentWorkbench {
       repeatedTarget: assessment.repeatedTarget
     });
     this.setStatus(task, "paused");
+    await this.store.saveTask(task);
+    if (task.kind === "subagent") await this.projectSubagentStatusToParent(task);
     return true;
   }
 
@@ -2685,6 +2858,7 @@ export class AgentWorkbench {
         this.setStatus(task, "failed");
         await this.updateLoadedSkillStats(task, false);
         await this.store.saveTask(task);
+        if (task.kind === "subagent") await this.projectSubagentCompletionToParent(task, "failed");
         return null;
       } finally {
         if (this.runningModelControllers.get(task.id) === controller) {
@@ -2772,6 +2946,7 @@ export class AgentWorkbench {
       this.setStatus(task, "failed");
       try { await this.updateLoadedSkillStats(task, false); } catch { /* best-effort */ }
       try { await this.store.saveTask(task); } catch { /* best-effort */ }
+      if (task.kind === "subagent") await this.projectSubagentCompletionToParent(task, "failed");
     } catch {
       // final safety net — never let an error here become unhandled
     }
@@ -2783,6 +2958,7 @@ export class AgentWorkbench {
     return {
       id,
       title,
+      kind: "primary",
       folderId: "default",
       workRoot: defaultTaskWorkRoot(),
       status: "idle",
@@ -2918,6 +3094,26 @@ export class AgentWorkbench {
     });
   }
 
+  private async addManagedToolProgressEvent(task: TaskDetail, call: ToolCall, progress: ToolProgressUpdate): Promise<void> {
+    const preferences = await this.store.getPreferences().catch(() => undefined);
+    const normalized = compactToolProgressUpdate(progress);
+    const payload = preferences ? this.sanitizeForPreferences(normalized, preferences) : normalized;
+    this.addEvent(task, "tool_progress", normalized.message ?? call.toolName, {
+      toolCallId: call.id,
+      toolName: call.toolName,
+      status: normalized.status ?? "running",
+      ...payload,
+      ...(call.toolName === "plan_update" ? { uiHidden: true } : {})
+    });
+    await this.safeAppendTaskTrace(task, {
+      kind: "tool_progress",
+      timestamp: nowIso(),
+      toolCallId: call.id,
+      toolName: call.toolName,
+      progress: summarizeToolProgressForTrace(normalized)
+    });
+  }
+
   private async executeManagedTool(task: TaskDetail, call: ToolCall): Promise<ToolResult | undefined> {
     if (!isManagedStateTool(call.toolName)) return undefined;
     try {
@@ -2944,6 +3140,8 @@ export class AgentWorkbench {
           return await this.executeSkillDeleteTool(call);
         case "plan_update":
           return this.executePlanUpdateTool(task, call);
+        case "spawn_subagent":
+          return await this.executeSpawnSubagentTool(task, call);
         default:
           return undefined;
       }
@@ -2955,9 +3153,29 @@ export class AgentWorkbench {
   private async executeUseSkillTool(task: TaskDetail, call: ToolCall): Promise<ToolResult> {
     const skillId = String(call.args["skillId"] ?? call.args["name"] ?? call.args["title"] ?? "").trim();
     if (!skillId) throw new Error("skillId or name is required.");
+    await this.addManagedToolProgressEvent(task, call, {
+      status: "running",
+      operation: "use_skill",
+      message: `Loading skill guidance for "${skillId}".`,
+      progress: { processed: 0, total: 1, unit: "items" }
+    });
     const skill = await this.contextAssembler.loadSkill(task.id, skillId);
     this.addLoadedSkillEvents(task);
-    if (!skill) return managedToolResult(call, false, `Skill not found or unavailable: ${skillId}`);
+    if (!skill) {
+      await this.addManagedToolProgressEvent(task, call, {
+        status: "failed",
+        operation: "use_skill",
+        message: `Skill not found or unavailable: ${skillId}.`,
+        progress: { processed: 0, total: 1, unit: "items" }
+      });
+      return managedToolResult(call, false, `Skill not found or unavailable: ${skillId}`);
+    }
+    await this.addManagedToolProgressEvent(task, call, {
+      status: "completed",
+      operation: "use_skill",
+      message: `Loaded skill guidance: ${skill.title}.`,
+      progress: { processed: 1, total: 1, unit: "items" }
+    });
     return managedToolResult(
       call,
       true,
@@ -3108,6 +3326,223 @@ export class AgentWorkbench {
       steps
     });
     return managedToolResult(call, true, JSON.stringify({ action: "plan_updated", status: status ?? "running", stepCount: steps.length }));
+  }
+
+  private async executeSpawnSubagentTool(task: TaskDetail, call: ToolCall): Promise<ToolResult> {
+    if (task.kind === "subagent") {
+      return managedToolResult(call, false, "Nested subagent delegation is not supported in V1.");
+    }
+    const goal = String(call.args["goal"] ?? "").trim();
+    if (!goal) throw new Error("goal is required.");
+    const children = await this.store.listChildTasks(task.id);
+    if (children.length >= SUBAGENT_MAX_CHILDREN_PER_PARENT) {
+      return managedToolResult(call, false, `This task already has ${SUBAGENT_MAX_CHILDREN_PER_PARENT} delegated child tasks. Wait for one to finish before spawning another.`);
+    }
+    const activeChildren = children.filter((child) => isSubagentActiveStatus(child.status));
+    if (activeChildren.length >= SUBAGENT_MAX_CONCURRENT_CHILDREN) {
+      return managedToolResult(call, false, `This task already has ${SUBAGENT_MAX_CONCURRENT_CHILDREN} running child agents. Wait for one to finish before spawning another.`);
+    }
+    const context = typeof call.args["context"] === "string" ? String(call.args["context"]).trim() : "";
+    const fileHints = stringsFromUnknown(call.args["fileHints"]).slice(0, 12);
+    const expectedOutput = parseSubagentExpectedOutput(call.args["expectedOutput"]);
+    const title = String(call.args["title"] ?? "").trim();
+    const contextSummary = this.buildSubagentContextSummary(task, context, fileHints, expectedOutput);
+    const delegation: TaskDelegationMeta = {
+      sourceTaskId: task.id,
+      sourceToolCallId: call.id,
+      goal,
+      contextSummary,
+      networkEnabled: true,
+      expectedOutput
+    };
+    const handoff = this.buildSubagentHandoffPrompt(task, delegation, fileHints);
+    const child = await this.initializeTask(
+      handoff,
+      this.resolveImmediateTaskTitle(goal, title || `${task.title} / delegated research`),
+      task.folderId || "default",
+      [],
+      {
+        kind: "subagent",
+        parentTaskId: task.id,
+        delegation,
+        runMode: "target",
+        targetLimits: SUBAGENT_TARGET_LIMITS
+      }
+    );
+    await this.projectSubagentSpawnToParent(task, child);
+    void this.runTaskExclusive(child.id, () => this.step(child.id)).catch((error) => {
+      this.safeBackgroundCatch(child.id, error);
+    });
+    return managedToolResult(
+      call,
+      true,
+      JSON.stringify({
+        action: "spawned",
+        childTaskId: child.id,
+        title: child.title,
+        status: child.status,
+        goal,
+        expectedOutput
+      })
+    );
+  }
+
+  private attachSubagentTaskGraph(task: TaskDetail, goal: string): void {
+    const nodeId = createId("node");
+    const graph = {
+      taskId: task.id,
+      nodes: [
+        {
+          id: nodeId,
+          role: "research",
+          objective: goal,
+          allowedToolClasses: [...SUBAGENT_ALLOWED_RISKS],
+          contextHints: ["delegated_research", "recent_tool_evidence", "file_hints"],
+          acceptanceCriteria: [
+            "Collect concrete evidence for the delegated question.",
+            "Return a concise final summary aligned with the requested output shape."
+          ],
+          verification: {
+            kind: "read_only",
+            method: "Use read-only evidence from files, host observation, or network lookups.",
+            required: false,
+            status: "not_applicable",
+            evidenceRefs: []
+          },
+          risk: "workspace_read",
+          status: "running",
+          evidenceRefs: []
+        }
+      ],
+      activeNodeId: nodeId,
+      status: "active",
+      createdAt: nowIso(),
+      updatedAt: nowIso()
+    };
+    this.addEvent(task, "task_graph_created", "Task graph created", { graph, uiHidden: true });
+    this.addEvent(task, "task_graph_node_started", `research: ${goal}`, {
+      nodeId,
+      role: "research",
+      objective: goal,
+      uiHidden: true
+    });
+  }
+
+  private buildSubagentContextSummary(
+    task: TaskDetail,
+    explicitContext: string,
+    fileHints: string[],
+    expectedOutput: TaskDelegationExpectedOutput
+  ): string {
+    const latestGoal = latestUserText(task);
+    const graph = taskGraphFromEvents(task);
+    const activeNode = graph?.nodes.find((node) => node.id === graph.activeNodeId);
+    const sections = [
+      latestGoal ? `Latest user goal: ${latestGoal}` : "",
+      explicitContext ? `Delegation context: ${explicitContext}` : "",
+      activeNode ? `Active task node: ${activeNode.role} - ${activeNode.objective}` : "",
+      fileHints.length > 0 ? `File hints: ${fileHints.join(", ")}` : "",
+      `Expected output: ${expectedOutput}.`,
+      this.summarizeRecentToolEvidence(task)
+    ].filter(Boolean);
+    return sections.join("\n").slice(0, 2400);
+  }
+
+  private buildSubagentHandoffPrompt(task: TaskDetail, delegation: TaskDelegationMeta, fileHints: string[]): string {
+    const latestGoal = latestUserText(task);
+    const graph = taskGraphFromEvents(task);
+    const activeNode = graph?.nodes.find((node) => node.id === graph.activeNodeId);
+    const expectedOutput = describeSubagentExpectedOutput(delegation.expectedOutput);
+    const lines = [
+      `Parent task: ${task.title}`,
+      latestGoal ? `Latest user goal: ${latestGoal}` : "",
+      `Delegated goal: ${delegation.goal}`,
+      delegation.contextSummary ? `Context summary:\n${delegation.contextSummary}` : "",
+      activeNode ? `Active task graph node: ${activeNode.role} - ${activeNode.objective}` : "",
+      fileHints.length > 0 ? `File hints:\n- ${fileHints.join("\n- ")}` : "",
+      this.summarizeRecentToolEvidence(task),
+      `Expected final output: ${expectedOutput}`,
+      "Constraints: you are a delegated child research agent. You may inspect local files, host state, and network resources. Do not edit files, do not run destructive or mutating commands, do not ask the user questions, and do not spawn another subagent."
+    ].filter(Boolean);
+    return lines.join("\n\n");
+  }
+
+  private summarizeRecentToolEvidence(task: TaskDetail): string {
+    const evidence = task.events
+      .filter((event) => !event.reverted && (event.type === "tool_result" || event.type === "web_search_result"))
+      .slice(-6)
+      .map((event) => {
+        const toolName = String(event.payload["toolName"] ?? event.type);
+        const label = compactSubagentEvidenceLabel(event);
+        return `- ${toolName}: ${label}`;
+      });
+    return evidence.length > 0 ? `Recent tool evidence:\n${evidence.join("\n")}` : "";
+  }
+
+  private buildTaskChildSummary(task: TaskDetail): TaskChildSummary {
+    const statusText = latestSubagentStatusText(task);
+    const lastAssistantSummary = latestVisibleAssistantSummary(task) || undefined;
+    const activeToolName = latestActiveToolName(task);
+    return {
+      id: task.id,
+      title: task.title,
+      status: task.status,
+      updatedAt: task.updatedAt,
+      parentTaskId: task.parentTaskId ?? "",
+      sourceToolCallId: task.delegation?.sourceToolCallId ?? "",
+      goal: task.delegation?.goal ?? "",
+      statusText,
+      ...(lastAssistantSummary ? { lastAssistantSummary } : {}),
+      ...(activeToolName ? { activeToolName } : {})
+    };
+  }
+
+  private async projectSubagentSpawnToParent(parentTask: TaskDetail, childTask: TaskDetail): Promise<void> {
+    this.addEvent(parentTask, "subagent_spawned", `Delegated work started: ${childTask.title}`, {
+      ...this.buildTaskChildSummary(childTask)
+    });
+    await this.store.saveTask(parentTask);
+  }
+
+  private async projectSubagentStatusToParent(task: TaskDetail): Promise<void> {
+    if (task.kind !== "subagent" || !task.parentTaskId) return;
+    await this.runTaskExclusive(task.parentTaskId, async () => {
+      const parent = await this.store.getTask(task.parentTaskId!);
+      if (!parent) return;
+      this.addEvent(parent, "subagent_status_changed", `Delegated work ${formatSubagentStatus(task.status)}: ${task.title}`, {
+        ...this.buildTaskChildSummary(task)
+      });
+      await this.store.saveTask(parent);
+    });
+  }
+
+  private async projectSubagentCompletionToParent(task: TaskDetail, outcome: "completed" | "failed"): Promise<void> {
+    if (task.kind !== "subagent" || !task.parentTaskId) return;
+    const eventType = outcome === "completed" ? "subagent_completed" : "subagent_failed";
+    const summary = outcome === "completed" ? `Delegated work completed: ${task.title}` : `Delegated work failed: ${task.title}`;
+    await this.runTaskExclusive(task.parentTaskId, async () => {
+      const parent = await this.store.getTask(task.parentTaskId!);
+      if (!parent) return;
+      this.addEvent(parent, eventType, summary, {
+        ...this.buildTaskChildSummary(task)
+      });
+      await this.store.saveTask(parent);
+    });
+  }
+
+  private subagentAutoApproval(task: TaskDetail, call: ToolCall, assessment: RiskAssessment): boolean {
+    if (task.kind !== "subagent") return false;
+    if (call.toolName === "spawn_subagent") return false;
+    return SUBAGENT_ALLOWED_RISKS.includes(assessment.category);
+  }
+
+  private async failSubagentTask(task: TaskDetail, message: string, payload: Record<string, unknown> = {}): Promise<TaskDetail> {
+    this.addEvent(task, "assistant_message", message, payload);
+    this.setStatus(task, "failed");
+    await this.updateLoadedSkillStats(task, false).catch(() => undefined);
+    await this.store.saveTask(task);
+    await this.projectSubagentCompletionToParent(task, "failed");
+    return task;
   }
 
   private async findSkillByTitle(title: string): Promise<SkillRecord | undefined> {
@@ -3535,6 +3970,7 @@ export class AgentWorkbench {
     const approvalTask: TaskDetail = {
       id: `${task.id}:llm_approval:${call.id}`,
       title: "LLM tool approval review",
+      kind: "primary",
       folderId: task.folderId,
       workRoot: task.workRoot,
       status: "running",
@@ -3839,6 +4275,16 @@ function normalizeTitleKey(value: string): string {
   return value.replace(/[\s"'“”‘’`.,，。!！?？:：;；\-_/\\()[\]{}]+/gu, "").trim().toLowerCase();
 }
 
+function lowValueMemoryKey(memory: TaskMemory): string {
+  const toolKey = [...new Set(memory.toolsUsed.map((tool) => tool.toolName.toLowerCase()))].sort().join(",");
+  return [
+    normalizeTitleKey(memory.title || memory.goal).slice(0, 80),
+    memory.meta.outcome,
+    memory.meta.complexity,
+    toolKey
+  ].join("|");
+}
+
 type RuleAutoApproveRisk = UserPreferences["autoApproveRiskCategories"][number];
 type PermissionMode = UserPreferences["permissionMode"];
 
@@ -3987,13 +4433,13 @@ function targetLimitReached(task: TaskDetail, modelTurnsInRun: number, toolResul
   if (task.runMode !== "target") return null;
   const limits = normalizeTargetLimits(task.targetLimits);
   if (modelTurnsInRun >= limits.maxModelTurns) {
-    return `Target mode paused after ${limits.maxModelTurns} model turns. Review evidence, adjust the goal, or resume explicitly.`;
+    return `Goal mode paused after ${limits.maxModelTurns} model turns. Review evidence, adjust the goal, or resume explicitly.`;
   }
   if (toolResultsInTask >= limits.maxToolCalls) {
-    return `Target mode paused after ${limits.maxToolCalls} tool results. Review evidence, adjust permissions or scope, then resume explicitly.`;
+    return `Goal mode paused after ${limits.maxToolCalls} tool results. Review evidence, adjust permissions or scope, then resume explicitly.`;
   }
   if (Date.now() - startedAt >= limits.maxWallTimeMs) {
-    return `Target mode paused after ${Math.round(limits.maxWallTimeMs / 60000)} minutes. Review evidence before continuing.`;
+    return `Goal mode paused after ${Math.round(limits.maxWallTimeMs / 60000)} minutes. Review evidence before continuing.`;
   }
   return null;
 }
@@ -4168,22 +4614,18 @@ async function generateTaskTitleWithProvider(provider: ResolvedModelProviderConf
 }
 
 export function createLocalTaskTitle(goal: string, language?: string): string {
-  const compact = goal.replace(/```[\s\S]*?```/g, " ").replace(/\s+/g, " ").trim();
+  const compact = prepareTitleSource(goal);
   const style = resolveTitleStyle(language, compact);
   if (style.kind === "zh") {
-    const cleaned = cleanCjkTitle(firstTitleClause(compact));
-    return truncateCjkTitle(cleaned, 22) || "新任务";
+    return createCjkLocalTitle(compact, 22, "新任务");
   }
   if (style.kind === "ja") {
-    const cleaned = cleanCjkTitle(firstTitleClause(compact));
-    return truncateCjkTitle(cleaned, 26) || "新しいタスク";
+    return createCjkLocalTitle(compact, 26, "新しいタスク");
   }
   if (style.kind === "ko") {
-    const cleaned = cleanCjkTitle(firstTitleClause(compact));
-    return truncateCjkTitle(cleaned, 28) || "새 작업";
+    return createCjkLocalTitle(compact, 28, "새 작업");
   }
-  const words = compact.replace(/[^\p{L}\p{N}\s-]/gu, " ").trim().split(/\s+/).filter(Boolean).slice(0, 7);
-  return words.length > 0 ? words.map((word) => word[0]?.toUpperCase() + word.slice(1)).join(" ") : "New Task";
+  return createLatinLocalTitle(compact) || "New Task";
 }
 
 function normalizeGeneratedTaskTitle(raw: string, goal: string, language?: string): string {
@@ -4196,18 +4638,18 @@ function normalizeGeneratedTaskTitle(raw: string, goal: string, language?: strin
   const stripped = candidate.replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, "").trim();
   if (!stripped) return createLocalTaskTitle(goal, language);
   if (style.kind === "zh") {
-    const cleaned = cleanCjkTitle(stripped);
+    const cleaned = cleanCjkTitle(stripCjkRequestPrefix(firstTitleClause(stripped)));
     return truncateCjkTitle(cleaned || createLocalTaskTitle(goal, language), 22);
   }
   if (style.kind === "ja") {
-    const cleaned = cleanCjkTitle(stripped);
+    const cleaned = cleanCjkTitle(stripCjkRequestPrefix(firstTitleClause(stripped)));
     return truncateCjkTitle(cleaned || createLocalTaskTitle(goal, language), 26);
   }
   if (style.kind === "ko") {
-    const cleaned = cleanCjkTitle(stripped);
+    const cleaned = cleanCjkTitle(stripCjkRequestPrefix(firstTitleClause(stripped)));
     return truncateCjkTitle(cleaned || createLocalTaskTitle(goal, language), 28);
   }
-  return stripped.split(/\s+/).slice(0, 7).join(" ") || createLocalTaskTitle(goal, language);
+  return createLatinLocalTitle(stripped) || createLocalTaskTitle(goal, language);
 }
 
 type TitleStyle = { kind: "zh" | "ja" | "ko" | "latin"; languageName: string };
@@ -4243,7 +4685,20 @@ function titleInstruction(style: TitleStyle): string {
 }
 
 function firstTitleClause(text: string): string {
-  return text.split(/[。！？；\n.!?;]/).map((part) => part.trim()).find(Boolean) ?? text;
+  return text.split(/[。！？；\n!?;]/).map((part) => part.trim()).find(Boolean) ?? text;
+}
+
+function prepareTitleSource(goal: string): string {
+  return goal
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function createCjkLocalTitle(text: string, maxChars: number, fallback: string): string {
+  const cleaned = cleanCjkTitle(stripCjkRequestPrefix(firstTitleClause(text)));
+  return truncateCjkTitle(cleaned, maxChars) || fallback;
 }
 
 function cleanCjkTitle(text: string): string {
@@ -4253,10 +4708,99 @@ function cleanCjkTitle(text: string): string {
     .trim();
 }
 
+function stripCjkRequestPrefix(text: string): string {
+  let current = text.trim();
+  for (let index = 0; index < 5; index += 1) {
+    const next = current
+      .replace(/^(?:请(?:你)?|请帮我|帮我|帮忙|麻烦(?:你)?|能否|能不能|可以(?:帮我|请你)?|麻烦帮我)\s*/u, "")
+      .replace(/^(?:我(?:想|需要|希望)(?:你)?|需要)\s*/u, "")
+      .replace(/^(?:在)?(?:当前|这个|此)(?:工作区|项目|仓库|目录|文件夹)(?:中|里|下)?\s*/u, "")
+      .trim();
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
 function truncateCjkTitle(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
+  if (text.length <= maxChars) return trimTrailingCjkConnector(text);
   const chars = [...text];
-  return chars.slice(0, maxChars).join("").trim();
+  return trimTrailingCjkConnector(chars.slice(0, maxChars).join("").trim());
+}
+
+function trimTrailingCjkConnector(text: string): string {
+  return text.replace(/(?:以及|并且|而且|或者|还是|然后|并|和|与|或|的|了|吗|呢|吧|请)\s*$/u, "").trim();
+}
+
+function createLatinLocalTitle(text: string): string {
+  const cleaned = stripLatinRequestNoise(firstTitleClause(text));
+  const tokens = tokenizeLatinTitle(cleaned);
+  if (tokens.length === 0) return "";
+  const selected = selectLatinTitleTokens(tokens);
+  return selected.map((token, index) => formatLatinTitleToken(token, index)).join(" ").replace(/\s+/g, " ").trim();
+}
+
+function stripLatinRequestNoise(text: string): string {
+  let current = text
+    .replace(/^["'“”‘’`]+|["'“”‘’`.,:;]+$/g, "")
+    .replace(/\b(?:please|thanks|thank you)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  for (let index = 0; index < 6; index += 1) {
+    const next = current
+      .replace(/^(?:can|could|would|will)\s+you\s+/i, "")
+      .replace(/^(?:help\s+me|help|assist\s+me)\s+(?:to\s+)?/i, "")
+      .replace(/^(?:i\s+(?:want|need|would\s+like)\s+(?:you\s+)?to\s+)/i, "")
+      .replace(/^(?:(?:in|within|under)\s+(?:the\s+)?(?:current\s+)?(?:work\s*root|workspace|repo(?:sitory)?|project|folder|directory)\s+)/i, "")
+      .trim();
+    if (next === current) break;
+    current = next;
+  }
+  return current.replace(/\s+/g, " ").trim();
+}
+
+function tokenizeLatinTitle(text: string): string[] {
+  return (text.match(/[\p{L}\p{N}][\p{L}\p{N}._/#:@-]*/gu) ?? [])
+    .map((token) => token.replace(/^[-_.:/#@]+|[-_.:/#@]+$/g, ""))
+    .filter(Boolean);
+}
+
+function selectLatinTitleTokens(tokens: string[]): string[] {
+  const withoutLeadingNoise = [...tokens];
+  while (withoutLeadingNoise.length > 1 && isLeadingLatinFiller(withoutLeadingNoise[0]!)) {
+    withoutLeadingNoise.shift();
+  }
+  const selected = withoutLeadingNoise.slice(0, 7);
+  while (selected.length > 1 && isTrailingLatinConnector(selected[selected.length - 1]!)) {
+    selected.pop();
+  }
+  let cursor = selected.length;
+  while (selected.length < Math.min(3, withoutLeadingNoise.length) && cursor < withoutLeadingNoise.length) {
+    selected.push(withoutLeadingNoise[cursor]!);
+    cursor += 1;
+  }
+  while (selected.length > 1 && isTrailingLatinConnector(selected[selected.length - 1]!)) {
+    selected.pop();
+  }
+  return selected;
+}
+
+function isLeadingLatinFiller(token: string): boolean {
+  return /^(?:the|a|an|this|that|current)$/i.test(token);
+}
+
+function isTrailingLatinConnector(token: string): boolean {
+  return /^(?:and|or|to|from|with|for|of|in|on|at|by|about|then|the|a|an)$/i.test(token);
+}
+
+function formatLatinTitleToken(token: string, index: number): string {
+  if (shouldPreserveLatinToken(token)) return token;
+  const lower = token.toLocaleLowerCase("en-US");
+  return index === 0 ? `${lower.charAt(0).toLocaleUpperCase("en-US")}${lower.slice(1)}` : lower;
+}
+
+function shouldPreserveLatinToken(token: string): boolean {
+  return /[._/#:@-]/.test(token) || /^[A-Z0-9]{2,}$/.test(token) || /[a-z][A-Z]|[A-Z][a-z]+[A-Z]/.test(token);
 }
 
 function defaultTaskFolder(): TaskFolderRecord {
@@ -4495,6 +5039,35 @@ function findReasoningContentForToolCall(task: Pick<TaskDetail, "events">, toolC
   return undefined;
 }
 
+function collectThinkingForStream(task: Pick<TaskDetail, "events">, streamId: string): string | undefined {
+  const normalized = streamId.trim();
+  if (!normalized) return undefined;
+  let combined = "";
+  for (const event of task.events) {
+    if (event.type !== "thinking_delta") continue;
+    if (String(event.payload["streamId"] ?? "").trim() !== normalized) continue;
+    const delta = typeof event.payload["delta"] === "string" ? event.payload["delta"] : event.summary;
+    if (!delta) continue;
+    combined = appendThinkingDeltaText(combined, delta);
+  }
+  const trimmed = combined.trim();
+  return trimmed || undefined;
+}
+
+function appendThinkingDeltaText(current: string, delta: string): string {
+  if (!current) return current + delta;
+  return `${current}${thinkingDeltaSeparator(current, delta)}${delta}`;
+}
+
+function thinkingDeltaSeparator(current: string, delta: string): string {
+  if (!current || !delta) return "";
+  if (/\s$/.test(current) || /^\s/.test(delta)) return "";
+  if (/^[,.;:!?，。！？；：、)\]}>"'”’]/.test(delta)) return "";
+  if (/[([{"'“‘]$/.test(current)) return "";
+  if (/[\u3400-\u9fff]$/.test(current) || /^[\u3400-\u9fff]/.test(delta)) return "";
+  return " ";
+}
+
 function memoryDescriptor(scope: "user" | "project", folder?: TaskFolderRecord): { path: string; fileName: string; charLimit: number; entryCharLimit: number } {
   const baseDir = memoryBaseDir();
   if (scope === "user") {
@@ -4593,6 +5166,95 @@ function compactMemoryMarkdown(content: string, charLimit: number, entryCharLimi
   return { content: limitMemoryContent(lines.join("\n"), charLimit, entryCharLimit), removedLines };
 }
 
+function parseSubagentExpectedOutput(value: unknown): TaskDelegationExpectedOutput {
+  return value === "checklist" || value === "comparison" ? value : "summary";
+}
+
+function describeSubagentExpectedOutput(value: TaskDelegationExpectedOutput): string {
+  if (value === "checklist") return "A concise checklist with concrete findings and open issues.";
+  if (value === "comparison") return "A concise comparison that contrasts the relevant options with evidence.";
+  return "A concise summary with the key findings and evidence.";
+}
+
+function isSubagentActiveStatus(status: TaskDetail["status"]): boolean {
+  return status === "running" || status === "waiting_approval" || status === "waiting_for_user";
+}
+
+function latestVisibleAssistantSummary(task: TaskDetail): string {
+  const event = [...task.events]
+    .reverse()
+    .find((item) => item.type === "assistant_message" && !item.reverted && String(item.summary ?? "").trim());
+  return String(event?.summary ?? "").trim();
+}
+
+function latestActiveToolName(task: TaskDetail): string {
+  const completed = new Set(
+    task.events
+      .filter((event) => event.type === "tool_result" && !event.reverted)
+      .map((event) => String(event.payload["toolCallId"] ?? ""))
+      .filter(Boolean)
+  );
+  const event = [...task.events].reverse().find((item) => {
+    if (item.reverted) return false;
+    if (item.type !== "tool_started" && item.type !== "tool_progress") return false;
+    const toolCallId = String(item.payload["toolCallId"] ?? "");
+    return !toolCallId || !completed.has(toolCallId);
+  });
+  return String(event?.payload["toolName"] ?? "").trim();
+}
+
+function latestSubagentStatusText(task: TaskDetail): string {
+  const assistant = latestVisibleAssistantSummary(task);
+  if (assistant) return assistant;
+  const activeTool = latestActiveToolName(task);
+  if (activeTool && task.status === "running") return `Running ${activeTool}`;
+  const event = [...task.events]
+    .reverse()
+    .find((item) =>
+      !item.reverted &&
+      (item.type === "status_changed" ||
+        item.type === "model_no_progress" ||
+        item.type === "tool_started" ||
+        item.type === "tool_progress" ||
+        item.type === "approval_pending")
+    );
+  return String(event?.summary ?? formatSubagentStatus(task.status)).trim();
+}
+
+function formatSubagentStatus(status: TaskDetail["status"]): string {
+  switch (status) {
+    case "running":
+      return "running";
+    case "paused":
+      return "paused";
+    case "waiting_for_user":
+      return "waiting for user";
+    case "waiting_approval":
+      return "waiting approval";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    default:
+      return status;
+  }
+}
+
+function compactSubagentEvidenceLabel(event: TaskEvent): string {
+  const output = String(event.payload["output"] ?? "").trim();
+  if (output) return output.replace(/\s+/g, " ").slice(0, 180);
+  const summary = String(event.payload["summary"] ?? event.summary ?? "").trim();
+  if (summary) return summary.replace(/\s+/g, " ").slice(0, 180);
+  const args = recordFromUnknown(event.payload["args"]);
+  for (const key of ["path", "targetPath", "query", "command", "url"]) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) return value.trim().slice(0, 180);
+  }
+  return event.summary.trim().slice(0, 180) || "Recorded evidence";
+}
+
 function isManagedStateTool(toolName: string): boolean {
   return (
     toolName === "ask_user" ||
@@ -4606,7 +5268,8 @@ function isManagedStateTool(toolName: string): boolean {
     toolName === "skill_create" ||
     toolName === "skill_edit" ||
     toolName === "skill_delete" ||
-    toolName === "plan_update"
+    toolName === "plan_update" ||
+    toolName === "spawn_subagent"
   );
 }
 
@@ -4782,6 +5445,16 @@ function parseSkillStatus(value: unknown): SkillRecord["status"] | undefined {
 function parsePlanStatus(value: unknown): "empty" | "planning" | "running" | "blocked" | "completed" | undefined {
   if (value === "empty" || value === "planning" || value === "running" || value === "blocked" || value === "completed") return value;
   return undefined;
+}
+
+function isInternalContinuationFinal(message: string): boolean {
+  const text = message.trim();
+  if (!text) return false;
+  return (
+    /^Internal continuity note\b/i.test(text) ||
+    /^Prior\s+(?:thinking|reasoning)\s+retained\s+for\s+continuity\b/i.test(text) ||
+    /Do not quote this note verbatim/i.test(text)
+  );
 }
 
 function planStepsFromUnknown(value: unknown): Array<{ id: string; title: string; status: "pending" | "running" | "completed" | "blocked"; detail?: string }> {

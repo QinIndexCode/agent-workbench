@@ -3,12 +3,12 @@ import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as z from "zod/v4";
 import { describe, expect, it } from "vitest";
-import type { RiskCategory, TaskDetail, ToolCall, ToolResult } from "@agent-workbench/shared";
+import type { RiskCategory, TaskDetail, TaskMemory, ToolCall, ToolResult } from "@agent-workbench/shared";
 import { ShellToolExecutor, type ToolExecutionOptions } from "../src/tools.js";
 import {
   AgentWorkbench,
@@ -34,6 +34,7 @@ import {
   loadOpenAiProviderConfig,
   nowIso,
   promoteExperience,
+  reflectMemories,
   selectModelToolsForTask,
   taskGraphFromEvents,
   shouldPromoteExperienceToSkill,
@@ -99,6 +100,41 @@ function attachExplicitTaskGraph(task: TaskDetail, overrides: Partial<TaskGraphN
   return graph;
 }
 
+function testTaskMemory(index: number, input: { domain: string; title: string; tools: string[] }): TaskMemory {
+  const now = nowIso();
+  return {
+    id: `memory_test_${index}`,
+    taskId: `task_test_${index}`,
+    title: input.title,
+    goal: input.title,
+    toolsUsed: input.tools.map((toolName) => ({
+      toolName,
+      args: {},
+      result: `${toolName} completed`,
+      riskCategory: toolName === "run_command" ? "host_observation" : "workspace_read"
+    })),
+    result: "Completed with reusable evidence.",
+    assessment: {
+      goalAchieved: true,
+      confidence: 0.92,
+      issues: [],
+      learnings: ["The workflow completed with current evidence."],
+      suggestedPatterns: [input.domain]
+    },
+    meta: {
+      outcome: "success",
+      complexity: "medium",
+      domains: [input.domain],
+      tools: input.tools,
+      hasSideEffects: false,
+      duration: 30
+    },
+    reflectionCount: 0,
+    reflectionStatus: "pending",
+    createdAt: now
+  };
+}
+
 function attachReadOnlyTaskGraph(task: TaskDetail): TaskGraph {
   return attachExplicitTaskGraph(task, {
     role: "research",
@@ -136,6 +172,7 @@ describe("ContextAssembler", () => {
   it("keeps capability questions direct and evidence-grounded", async () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_capabilities",
       title: "你可以帮我做些什么",
       status: "running",
@@ -166,6 +203,7 @@ describe("ContextAssembler", () => {
   it("does not keep a trivial greeting as the original goal after a later real request", async () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_greeting_followup",
       title: "Greeting follow-up",
       status: "running",
@@ -193,9 +231,89 @@ describe("ContextAssembler", () => {
     expect(latest && "content" in latest ? latest.content : "").toContain("测试所有你能调用的工具");
   });
 
+  it("carries rollback completion into the next model turn history", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_rollback_history",
+      title: "Rollback history",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_user", taskId: "task_rollback_history", type: "user_message", createdAt: nowIso(), summary: "修复测试", payload: {} },
+        {
+          id: "event_rollback",
+          taskId: "task_rollback_history",
+          type: "task_rollback_completed",
+          createdAt: nowIso(),
+          summary: "Rolled back 2 file changes.",
+          payload: { restoredFiles: 2, deletedFiles: 0, skippedFiles: 0, filePaths: ["src/math.mjs", "src/totals.mjs"] }
+        },
+        {
+          id: "event_followup",
+          taskId: "task_rollback_history",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "继续同一个任务，核对 rollback 后源码。",
+          payload: {}
+        }
+      ]
+    };
+
+    const context = await assembler.assemble(task);
+    const rollbackMessage = context.messages.find((message) => message.eventId === "event_rollback");
+
+    expect(rollbackMessage?.role).toBe("user");
+    expect(rollbackMessage && "content" in rollbackMessage ? rollbackMessage.content : "").toContain("Rolled back 2 file changes");
+    expect(rollbackMessage && "content" in rollbackMessage ? rollbackMessage.content : "").toContain("restoredFiles=2");
+  });
+
+  it("carries retained thinking into canonical history through private continuity messages", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_reasoning_history",
+      title: "Reasoning continuity",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_user_reasoning", taskId: "task_reasoning_history", type: "user_message", createdAt: nowIso(), summary: "继续处理当前工作", payload: {} },
+        {
+          id: "event_final_reasoning",
+          taskId: "task_reasoning_history",
+          type: "assistant_message",
+          createdAt: nowIso(),
+          summary: "我已经检查完当前结构。",
+          payload: {
+            streamId: "stream_reasoning_history",
+            reasoningContent: "先检查当前目录结构，再决定下一步读取哪个文件。"
+          }
+        }
+      ]
+    };
+
+    const context = await assembler.assemble(task);
+
+    expect(context.messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "assistant"]);
+    expect(context.messages[2]).toMatchObject({
+      role: "assistant",
+      content: expect.stringContaining("Internal continuity note")
+    });
+    expect(context.messages[2] && "content" in context.messages[2] ? context.messages[2].content : "").toContain("Do not quote this note");
+    expect(context.messages[2] && "content" in context.messages[2] ? context.messages[2].content : "").toContain("先检查当前目录结构");
+    expect(context.messages[3]).toMatchObject({ role: "assistant", content: "我已经检查完当前结构。" });
+  });
+
   it("keeps explicit task graph state in system context without impersonating the user", async () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_attention_graph",
       title: "你好",
       status: "running",
@@ -234,6 +352,7 @@ describe("ContextAssembler", () => {
   it("keeps task title update metadata out of model context", async () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_title_metadata",
       title: "Auto Rename Leaked Title",
       status: "running",
@@ -333,6 +452,8 @@ describe("ContextAssembler", () => {
     expect(context.systemPrompt).toContain("not selected from the latest user text");
     expect(context.systemPrompt).toContain(financeSkill.id);
     expect(context.systemPrompt).toContain(releaseSkill.id);
+    expect(context.systemPrompt).toContain("React Blog Candidate");
+    expect(context.systemPrompt).toContain("shown for awareness only");
     expect(context.systemPrompt).not.toContain(candidate.id);
     expect(context.messages.at(-1)?.role).toBe("user");
   });
@@ -379,6 +500,7 @@ describe("ContextAssembler", () => {
 
   it("keeps the latest user message when a long history is truncated", () => {
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_long_history",
       title: "Long history",
       status: "running",
@@ -417,6 +539,7 @@ describe("ContextAssembler", () => {
     const store = new InMemoryWorkbenchStore();
     const assembler = new ContextAssembler(store);
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_short_context",
       title: "Short task",
       status: "running",
@@ -444,9 +567,10 @@ describe("ContextAssembler", () => {
     expect(context.input).not.toContain("Conversation Summary");
   });
 
-  it("names explicit verification commands in target mode and marks them pending after edits", async () => {
+  it("names explicit verification commands in goal mode and marks them pending after edits", async () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_target_verification_pending",
       title: "Target verification pending",
       status: "running",
@@ -491,9 +615,37 @@ describe("ContextAssembler", () => {
     expect(context.systemPrompt).toContain("Recorded verification after the latest file change: none yet.");
   });
 
+  it("uses stronger default limits and goal-mode prompt guidance", async () => {
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_goal_defaults",
+      title: "Goal defaults",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      runMode: "target",
+      targetLimits: {
+        maxModelTurns: 160,
+        maxToolCalls: 500,
+        maxWallTimeMs: 14_400_000
+      },
+      events: [{ id: "event_user", taskId: "task_goal_defaults", type: "user_message", createdAt: nowIso(), summary: "修复并验证项目。", payload: {} }]
+    };
+    const context = await new ContextAssembler(new InMemoryWorkbenchStore()).assemble(task);
+
+    expect(context.systemPrompt).toContain("## Goal Mode");
+    expect(context.systemPrompt).toContain("explicitly started /goal");
+    expect(context.systemPrompt).toContain("visible acceptance criteria");
+    expect(context.systemPrompt).toContain("plan_update");
+    expect(context.systemPrompt).toContain("Run limits: 160 model turns, 500 tool results, 240 minutes.");
+  });
+
   it("treats equivalent npm verification commands as satisfied after the latest edit", async () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_target_verification_passed",
       title: "Target verification passed",
       status: "running",
@@ -553,6 +705,7 @@ describe("ContextAssembler", () => {
 
   it("keeps UI-hidden tool results in model history while hiding visible plan events", () => {
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_plan_context",
       title: "Plan context",
       status: "running",
@@ -606,6 +759,7 @@ describe("ContextAssembler", () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
     const content = "UNIQUE_READ_FILE_CONTENT";
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_file_dedupe",
       title: "File dedupe",
       status: "running",
@@ -647,6 +801,7 @@ describe("ContextAssembler", () => {
       index === 220 ? `line ${index + 1}: TARGET_PERMISSION_COPY` : `line ${index + 1}: filler content`
     ).join("\n");
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_medium_file_context",
       title: "Medium file context",
       status: "running",
@@ -685,6 +840,7 @@ describe("ContextAssembler", () => {
       index === 880 ? `line ${index + 1}: SHOULD_NOT_BE_FULLY_TRACKED` : `line ${index + 1}: filler content`
     ).join("\n");
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_large_file_context",
       title: "Large file context",
       status: "running",
@@ -721,6 +877,7 @@ describe("ContextAssembler", () => {
   it("rebuilds tool calls and results as role messages for the next model turn", async () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_tool_roles",
       title: "你好",
       status: "running",
@@ -788,10 +945,69 @@ describe("ContextAssembler", () => {
     expect(roleMessages[5]?.role === "tool" ? roleMessages[5].content : "").toContain("plan_updated");
   });
 
+  it("keeps web search evidence in the tool result without adding a summary-only assistant turn", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const marker = "AW-WEB-SEARCH-GOLDEN";
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_web_search_context",
+      title: "Web search context",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_user", taskId: "task_web_search_context", type: "user_message", createdAt: nowIso(), summary: "Search for the live marker.", payload: {} },
+        {
+          id: "event_request",
+          taskId: "task_web_search_context",
+          type: "tool_requested",
+          createdAt: nowIso(),
+          summary: "web_search",
+          payload: { toolCallId: "call_search", toolName: "web_search", args: { query: "Agent Workbench live search marker" } }
+        },
+        {
+          id: "event_result",
+          taskId: "task_web_search_context",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool completed",
+          payload: {
+            toolCallId: "call_search",
+            toolName: "web_search",
+            args: { query: "Agent Workbench live search marker" },
+            ok: true,
+            output: JSON.stringify({ results: [{ title: "Marker", snippet: `The marker is ${marker}.` }] })
+          }
+        },
+        {
+          id: "event_web_summary",
+          taskId: "task_web_search_context",
+          type: "web_search_result",
+          createdAt: nowIso(),
+          summary: "Search evidence returned",
+          payload: { toolCallId: "call_search", ok: true, output: marker }
+        }
+      ]
+    };
+
+    const context = await assembler.assemble(task);
+    const history = buildHistoryLayer(task, 2000);
+    const roleMessages = context.messages.filter((message) => message.role !== "system");
+
+    expect(roleMessages.map((message) => message.role)).toEqual(["user", "assistant", "tool"]);
+    expect(roleMessages[2]?.role === "tool" ? roleMessages[2].content : "").toContain(marker);
+    expect(JSON.stringify(context.messages)).not.toContain("Web search result: Search evidence returned");
+    expect(history).toContain(marker);
+    expect(history).not.toContain("Search evidence returned");
+  });
+
   it("keeps read_file role results compact when file content is already in Known Files", async () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
     const content = "ROLE_READ_FILE_CONTENT";
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_file_role_dedupe",
       title: "File role dedupe",
       status: "running",
@@ -839,6 +1055,7 @@ describe("ContextAssembler", () => {
     const store = new InMemoryWorkbenchStore();
     const assembler = new ContextAssembler(store);
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_many_small_events",
       title: "Many small turns",
       status: "running",
@@ -869,6 +1086,7 @@ describe("ContextAssembler", () => {
     const assembler = new ContextAssembler(store);
     const longConstraint = "persist the user goal, current file decisions, latest plan state, and tool evidence references. ".repeat(8);
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_summary",
       title: "Long task",
       status: "running",
@@ -903,6 +1121,7 @@ describe("ContextAssembler", () => {
     const assembler = new ContextAssembler(store);
     const hugePatch = "UI preview truncated should never be copied into model summary. ".repeat(420);
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_large_tool_summary",
       title: "Large tool summary",
       status: "running",
@@ -959,6 +1178,7 @@ describe("ContextAssembler", () => {
     await store.savePreferences({ ...preferences, maxTokensPerRequest: 10000, updatedAt: nowIso() });
     const assembler = new ContextAssembler(store);
     const task: TaskDetail = {
+      kind: "primary",
       id: "task_budget",
       title: "Budget task",
       status: "running",
@@ -996,6 +1216,7 @@ describe("ContextAssembler", () => {
 
       const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
       const task: TaskDetail = {
+        kind: "primary",
         id: "task_memory_injection",
         title: "Memory injection",
         status: "running",
@@ -1099,10 +1320,16 @@ describe("ContextAssembler", () => {
 
 describe("Task title generation", () => {
   it("formats local fallback titles according to language habits", () => {
-    expect(createLocalTaskTitle("请帮我检查 MCP 网络权限配置是否正确", "zh-CN")).toContain("MCP");
-    expect(createLocalTaskTitle("Please debug the failing payment webhook tests", "en-US")).toBe("Please Debug The Failing Payment Webhook Tests");
+    expect(createLocalTaskTitle("请帮我检查 MCP 网络权限配置是否正确", "zh-CN")).toBe("检查 MCP 网络权限配置是否正确");
+    expect(createLocalTaskTitle("Please debug the failing payment webhook tests", "en-US")).toBe("Debug the failing payment webhook tests");
     expect(createLocalTaskTitle("現在のプロジェクト構造を確認して改善案を出して", "ja-JP")).toContain("プロジェクト");
     expect(createLocalTaskTitle("현재 프로젝트 구조를 점검하고 개선안을 정리해줘", "ko-KR")).toContain("프로젝트");
+  });
+
+  it("keeps local fallback titles natural for paths, acronyms, and connector-heavy prompts", () => {
+    expect(createLocalTaskTitle("In the current work root create or update validation-probe-lines.txt with five lines", "en-US")).toBe("Create or update validation-probe-lines.txt with five lines");
+    expect(createLocalTaskTitle("Could you review the MCP/RAG API fallback behavior and report risks", "en-US")).toBe("Review the MCP/RAG API fallback behavior");
+    expect(createLocalTaskTitle("请帮我检查自动命名以及前端实时更新是否卡顿", "zh-CN")).toBe("检查自动命名以及前端实时更新是否卡顿");
   });
 
   it("uses the configured model provider when a new task omits the title", async () => {
@@ -1174,6 +1401,7 @@ describe("Task title generation", () => {
 describe("Tool surface selection", () => {
   it("exposes the stable tool surface without classifying user language", () => {
     const directTask: TaskDetail = {
+      kind: "primary",
       id: "task_direct_chat",
       title: "你好",
       status: "running",
@@ -1184,6 +1412,7 @@ describe("Tool surface selection", () => {
       events: [{ id: "event_direct", taskId: "task_direct_chat", type: "user_message", createdAt: nowIso(), summary: "你好", payload: {} }]
     };
     const inventoryTask: TaskDetail = {
+      kind: "primary",
       id: "task_tool_inventory",
       title: "测试工具",
       status: "running",
@@ -1194,6 +1423,7 @@ describe("Tool surface selection", () => {
       events: [{ id: "event_inventory", taskId: "task_tool_inventory", type: "user_message", createdAt: nowIso(), summary: "测试所有你能调用的工具", payload: {} }]
     };
     const buildTask: TaskDetail = {
+      kind: "primary",
       id: "task_build_blog",
       title: "构建博客页面",
       status: "running",
@@ -1223,6 +1453,7 @@ describe("Tool surface selection", () => {
 
   it("uses explicit task graph role policy to restrict tools without parsing user text", () => {
     const inventoryTask: TaskDetail = {
+      kind: "primary",
       id: "task_tool_inventory_graph",
       title: "测试工具",
       status: "running",
@@ -1233,6 +1464,7 @@ describe("Tool surface selection", () => {
       events: [{ id: "event_inventory", taskId: "task_tool_inventory_graph", type: "user_message", createdAt: nowIso(), summary: "测试所有你能调用的工具", payload: {} }]
     };
     const buildTask: TaskDetail = {
+      kind: "primary",
       id: "task_build_blog_graph",
       title: "构建博客页面",
       status: "running",
@@ -1261,6 +1493,120 @@ describe("Tool surface selection", () => {
     expect(buildNames).toContain("plan_update");
     expect(buildNames).not.toContain("user_memory_add");
     expect(buildNames).not.toContain("skill_create");
+  });
+
+  it("spawns read-only subagent tasks, keeps child flow isolated, and projects completion back to the parent", async () => {
+    class SubagentDelegationModel implements ModelClient {
+      async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+        if (task.kind === "subagent") {
+          if (task.events.some((event) => event.type === "tool_result")) {
+            return { kind: "final", message: "Delegated comparison finished with the renderer evidence." };
+          }
+          return {
+            kind: "tool_calls",
+            calls: [{ id: createId("tool_call"), toolName: "read_file", args: { path: "index.html" } }]
+          };
+        }
+        if (task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "spawn_subagent")) {
+          return { kind: "final", message: "Parent task continued after delegation." };
+        }
+        return {
+          kind: "tool_calls",
+          calls: [{
+            id: createId("tool_call"),
+            toolName: "spawn_subagent",
+            args: {
+              goal: "Read the project code and compare the current renderer path.",
+              context: "Focus on the main renderer and summarize the bottleneck.",
+              fileHints: ["index.html"],
+              expectedOutput: "comparison"
+            }
+          }]
+        };
+      }
+    }
+
+    const root = mkdtempSync(join(tmpdir(), "agent-workbench-subagent-"));
+    try {
+      writeFileSync(join(root, "index.html"), "<html><body>delegated evidence</body></html>", "utf8");
+      const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new SubagentDelegationModel() });
+      const folder = await workbench.createTaskFolder({ name: "subagent-root", rootPath: root });
+      await workbench.grantGlobalPermission("network", "allow subagent spawn");
+      const parent = await workbench.createTask("Review the current implementation and delegate a focused comparison.", undefined, folder.id);
+      const children = await workbench.listChildTasks(parent.id);
+
+      expect(children).toHaveLength(1);
+      const child = children[0]!;
+      expect(child.kind).toBe("subagent");
+      expect(child.parentTaskId).toBe(parent.id);
+      expect(child.delegation?.sourceToolCallId).toBeTruthy();
+      expect(child.delegation?.expectedOutput).toBe("comparison");
+      expect(parent.events.some((event) => event.type === "subagent_spawned")).toBe(true);
+      expect(parent.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "read_file")).toBe(false);
+
+      let completedChild = child;
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        completedChild = (await workbench.getTask(child.id)) ?? completedChild;
+        if (completedChild.status === "completed") break;
+      }
+
+      expect(completedChild.status).toBe("completed");
+      expect(completedChild.approvals).toHaveLength(0);
+
+      const refreshedParent = await workbench.getTask(parent.id);
+      const completion = refreshedParent?.events.find((event) => event.type === "subagent_completed");
+      expect(completion?.payload["lastAssistantSummary"]).toBe("Delegated comparison finished with the renderer evidence.");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails a child task that tries to write files instead of requesting nested approval", async () => {
+    class SubagentWriteFailureModel implements ModelClient {
+      async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+        if (task.kind === "subagent") {
+          return {
+            kind: "tool_calls",
+            calls: [{ id: createId("tool_call"), toolName: "edit_file", args: { path: "index.html", expectedHash: "abc", edits: [] } }]
+          };
+        }
+        if (task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "spawn_subagent")) {
+          return { kind: "final", message: "Parent delegation request sent." };
+        }
+        return {
+          kind: "tool_calls",
+          calls: [{ id: createId("tool_call"), toolName: "spawn_subagent", args: { goal: "Inspect and patch the HTML file." } }]
+        };
+      }
+    }
+
+    const root = mkdtempSync(join(tmpdir(), "agent-workbench-subagent-write-"));
+    try {
+      writeFileSync(join(root, "index.html"), "<html></html>", "utf8");
+      const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new SubagentWriteFailureModel() });
+      const folder = await workbench.createTaskFolder({ name: "subagent-write-root", rootPath: root });
+      await workbench.grantGlobalPermission("network", "allow subagent spawn");
+      const parent = await workbench.createTask("Delegate a child patch attempt for validation.", undefined, folder.id);
+      const child = (await workbench.listChildTasks(parent.id))[0];
+
+      expect(child).toBeTruthy();
+      let failedChild = child!;
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        failedChild = (await workbench.getTask(child!.id)) ?? failedChild;
+        if (failedChild.status === "failed") break;
+      }
+
+      expect(failedChild.status).toBe("failed");
+      expect(failedChild.approvals).toHaveLength(0);
+      expect(failedChild.events.some((event) => event.type === "approval_pending")).toBe(false);
+
+      const refreshedParent = await workbench.getTask(parent.id);
+      expect(refreshedParent?.events.some((event) => event.type === "subagent_failed")).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1503,6 +1849,16 @@ class StreamingFinalModel implements ModelClient {
   }
 }
 
+class ChunkedThinkingFinalModel implements ModelClient {
+  async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    await stream?.onThinkingDelta("用户 ");
+    await stream?.onThinkingDelta("打招呼 “ ");
+    await stream?.onThinkingDelta("你好啊 ”。这是 ");
+    await stream?.onThinkingDelta("一个 简单的 问候 。");
+    return { kind: "final", message: "你好！有什么可以帮忙的吗？", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+}
+
 class StreamingToolCallModel implements ModelClient {
   async next(task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
     if (task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "list_files")) {
@@ -1541,6 +1897,71 @@ class EmptyThenFinalModel implements ModelClient {
       return { kind: "empty_response", reason: "fixture first empty", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
     }
     return { kind: "final", message: "Recovered after empty model turn.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+}
+
+class InternalContinuationThenFinalModel implements ModelClient {
+  calls = 0;
+
+  async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      return {
+        kind: "final",
+        message: "Internal continuity note. Do not quote this note verbatim or use it as the final answer: I still need to create the requested file.",
+        ...(stream?.streamId ? { streamId: stream.streamId } : {})
+      };
+    }
+    return { kind: "final", message: "Completed after continuing instead of exposing an internal note.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+}
+
+class LegacyPriorThinkingThenFinalModel implements ModelClient {
+  calls = 0;
+
+  async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      return {
+        kind: "final",
+        message:
+          "Prior thinking retained for continuity:\nNow let me update the plan and do the final verification. Let me check all the files are in order.",
+        ...(stream?.streamId ? { streamId: stream.streamId } : {})
+      };
+    }
+    return { kind: "final", message: "Completed after continuing from a legacy retained-thinking response.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+}
+
+class StreamingLegacyPriorThinkingThenFinalModel implements ModelClient {
+  calls = 0;
+
+  async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      await stream?.onAssistantDelta("Prior thinking retained for continuity:\n");
+      await stream?.onAssistantDelta("Now let me update the plan and do the final verification.");
+      return {
+        kind: "final",
+        message:
+          "Prior thinking retained for continuity:\nNow let me update the plan and do the final verification. Let me check all the files are in order.",
+        ...(stream?.streamId ? { streamId: stream.streamId } : {})
+      };
+    }
+    return { kind: "final", message: "Completed after hiding the leaked continuity stream.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+}
+
+class RepeatedInternalContinuationModel implements ModelClient {
+  calls = 0;
+
+  async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    this.calls += 1;
+    return {
+      kind: "final",
+      message: "Internal continuity note. Do not quote this note verbatim or use it as the final answer: I still need another tool call.",
+      ...(stream?.streamId ? { streamId: stream.streamId } : {})
+    };
   }
 }
 
@@ -2047,13 +2468,22 @@ describe("AgentWorkbench", () => {
 
       const completed = await workbench.createTask("create a generated note", "Create generated note", folder.id);
       const started = completed.events.find((event) => event.type === "tool_started");
-      const progress = completed.events.find((event) => event.type === "tool_progress");
+      const progressEvents = completed.events.filter((event) => event.type === "tool_progress");
+      const progress = progressEvents[0];
       const result = completed.events.find((event) => event.type === "tool_result");
       const output = JSON.parse(String(result?.payload["output"] ?? "{}")) as Record<string, unknown>;
       const changes = output["changes"] as Record<string, unknown>;
 
       expect(started?.payload["toolName"]).toBe("write_file");
       expect(String(progress?.payload["targetPath"] ?? "")).toMatch(/generated\.txt$/);
+      expect(progressEvents.map((event) => event.payload["operation"])).toEqual(expect.arrayContaining(["hash_check", "diff", "create", "commit", "verify"]));
+      expect(progressEvents.map((event) => event.payload["message"])).toEqual(expect.arrayContaining([
+        "Confirmed new-file write intent.",
+        "Computed create diff: +220 / -0 lines.",
+        "Writing file content.",
+        "File write committed; verifying written hash.",
+        "Verified written file hash."
+      ]));
       expect(result?.payload["ok"]).toBe(true);
       expect(changes["addedLines"]).toBeGreaterThan(200);
       expect(output["displayMode"]).toBe("summary_only");
@@ -2322,8 +2752,10 @@ describe("AgentWorkbench", () => {
       expect(String(requestMessages[0]?.at(-1)?.["content"] ?? "")).toContain("Trace the full request-response loop");
       expect(String(requestMessages[0]?.at(-1)?.["content"] ?? "")).not.toContain("Active Node");
       expect(requestMessages[1]?.some((message) => message["role"] === "tool")).toBe(true);
-      expect(requestMessages.some((messages) => messages.some((message) => "reasoning_content" in message))).toBe(false);
-      expect(requestMessages[1]?.find((message) => Array.isArray(message["tool_calls"]))?.["content"]).toBe("");
+      expect(requestMessages[0]?.some((message) => "reasoning_content" in message)).toBe(false);
+      const replayedToolCallMessage = requestMessages[1]?.find((message) => Array.isArray(message["tool_calls"]));
+      expect(replayedToolCallMessage?.["content"]).toBe("");
+      expect(replayedToolCallMessage?.["reasoning_content"]).toBe("I should inspect the workspace before answering.");
       expect(String(requestMessages[1]?.find((message) => message["role"] === "tool")?.["content"] ?? "")).toContain("README.md");
       expect(String(requestMessages[1]?.[0]?.["content"] ?? "")).not.toContain("## Known Files");
       const lastUser = requestMessages[1]?.filter((message) => message["role"] === "user").at(-1);
@@ -2448,9 +2880,24 @@ describe("AgentWorkbench", () => {
 
     expect(completed.status).toBe("completed");
     expect(thinking.length).toBeGreaterThan(0);
+    expect(thinking.every((event) => event.payload["uiHidden"] !== true)).toBe(true);
     expect(deltas.map((event) => event.summary).join("")).toBe("Hello stream.");
     expect(final?.summary).toBe("Hello stream.");
     expect(final?.payload["streamId"]).toBe(deltas[0]?.payload["streamId"]);
+    expect(final?.payload["reasoningContent"]).toBe("Checking the request and available evidence.");
+  });
+
+  it("reconstructs chunked streaming thinking without artificial newlines for provider replay", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new ChunkedThinkingFinalModel() });
+
+    const completed = await workbench.createTask("你好啊");
+    const thinking = completed.events.filter((event) => event.type === "thinking_delta");
+    const final = completed.events.find((event) => event.type === "assistant_message");
+
+    expect(completed.status).toBe("completed");
+    expect(thinking).toHaveLength(4);
+    expect(final?.payload["reasoningContent"]).toBe("用户 打招呼 “ 你好啊 ”。这是 一个 简单的 问候 。");
+    expect(String(final?.payload["reasoningContent"] ?? "")).not.toContain("\n");
   });
 
   it("preserves readable streaming assistant preambles when the turn continues into tool calls", async () => {
@@ -2971,8 +3418,11 @@ describe("AgentWorkbench", () => {
       mkdirSync(join(root, "src"), { recursive: true });
       const filePath = join(root, "src", "note.txt");
       writeFileSync(filePath, "before\n", "utf8");
+      const store = new InMemoryWorkbenchStore();
+      const contextAssembler = new ContextAssembler(store);
       const workbench = new AgentWorkbench({
-        store: new InMemoryWorkbenchStore(),
+        store,
+        contextAssembler,
         model: new SingleToolModel("edit_file", {
           path: "src/note.txt",
           expectedHash: "9160d4be34c8695b",
@@ -2989,11 +3439,27 @@ describe("AgentWorkbench", () => {
       expect(completed.events.some((event) => event.type === "task_checkpoint_created")).toBe(true);
       expect(checkpoints).toHaveLength(1);
       expect(readFileSync(filePath, "utf8")).toBe("after\n");
+      contextAssembler.getFileStateTracker(completed.id).updateFromToolResult({
+        id: "event_read_after_edit",
+        taskId: completed.id,
+        type: "tool_result",
+        createdAt: nowIso(),
+        summary: "Tool completed",
+        payload: {
+          ok: true,
+          toolName: "read_file",
+          output: JSON.stringify({ path: filePath, content: "after\n", hash: "fake_after", partial: false, mode: "full" })
+        }
+      });
+      expect(contextAssembler.getFileStateTracker(completed.id).buildFileStateTable()).toContain("after");
 
       const rolledBack = await workbench.rollbackTask(completed.id);
       expect(rolledBack.restoredFiles).toBe(1);
       expect(readFileSync(filePath, "utf8")).toBe("before\n");
       expect((await workbench.getTask(completed.id))?.events.some((event) => event.type === "task_rollback_completed")).toBe(true);
+      const knownFilesAfterRollback = contextAssembler.getFileStateTracker(completed.id).buildFileStateTable();
+      expect(knownFilesAfterRollback).toContain("File was rolled back");
+      expect(knownFilesAfterRollback).not.toContain("after");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -3052,9 +3518,49 @@ describe("AgentWorkbench", () => {
       const changes = parsed["changes"] as Record<string, unknown>;
 
       expect(result.ok).toBe(true);
-      expect(changes["addedLines"]).toBe(4);
+      expect(changes["addedLines"]).toBe(3);
       expect(changes["removedLines"]).toBe(0);
       expect(changes["operation"]).toBe("create");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("emits expectedHash, diff, write, commit, and verify progress for direct file writes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-file-observability-"));
+    try {
+      const tools = new ShellToolExecutor(root);
+      const progress: Array<Record<string, unknown>> = [];
+      const result = await tools.execute(
+        {
+          id: createId("tool_call"),
+          toolName: "write_file",
+          args: {
+            path: "note.txt",
+            expectedHash: "__new__",
+            content: "alpha\nbeta\n"
+          }
+        },
+        {
+          onProgress: (update) => {
+            progress.push(update as unknown as Record<string, unknown>);
+          }
+        }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(JSON.parse(result.output)["totalLines"]).toBe(2);
+      expect(progress.map((event) => event["operation"])).toEqual(expect.arrayContaining(["hash_check", "diff", "create", "commit", "verify"]));
+      expect(progress.map((event) => event["message"])).toEqual(expect.arrayContaining([
+        "Confirmed new-file write intent.",
+        "Computed create diff: +2 / -0 lines.",
+        "Writing file content.",
+        "File write committed; verifying written hash.",
+        "Verified written file hash."
+      ]));
+      expect(progress.some((event) => event["status"] === "completed" && event["operation"] === "verify")).toBe(true);
+      const diffEvent = progress.find((event) => event["operation"] === "diff");
+      expect(diffEvent?.["changes"]).toMatchObject({ addedLines: 2, removedLines: 0, operation: "create" });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -3191,7 +3697,7 @@ describe("AgentWorkbench", () => {
     }
   });
 
-  it("runs scheduled reflection and records the result without creating a normal task", async () => {
+  it("runs scheduled reflection without creating a normal task or no-op history row", async () => {
     const store = new InMemoryWorkbenchStore();
     const workbench = new AgentWorkbench({ store, model: new StreamingFinalModel() });
     await workbench.ensureDefaultScheduledTasks();
@@ -3203,7 +3709,7 @@ describe("AgentWorkbench", () => {
 
     expect(changed[0]?.type).toBe("reflection");
     expect(changed[0]?.lastRunSummary).toContain("Reflection");
-    expect(await workbench.listReflectionSessions()).toHaveLength(1);
+    expect(await workbench.listReflectionSessions()).toHaveLength(0);
     expect(await workbench.listTasks()).toHaveLength(0);
   });
 
@@ -3306,6 +3812,56 @@ describe("AgentWorkbench", () => {
     expect(task.events.some((event) => event.type === "model_empty_response" && event.payload["status"] === "retrying")).toBe(true);
     expect(task.events.some((event) => event.type === "assistant_message" && /I could not produce a result/i.test(event.summary))).toBe(false);
     expect(task.events.some((event) => event.type === "assistant_message" && event.summary === "Recovered after empty model turn.")).toBe(true);
+  });
+
+  it("retries when the model exposes an internal continuity note as a final answer", async () => {
+    const model = new InternalContinuationThenFinalModel();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model });
+    const task = await workbench.createTask("continue instead of exposing internal execution notes");
+
+    expect(model.calls).toBe(2);
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "model_no_progress" && event.payload["status"] === "retrying")).toBe(true);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary.startsWith("Internal continuity note"))).toBe(false);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary === "Completed after continuing instead of exposing an internal note.")).toBe(true);
+  });
+
+  it("retries when a legacy retained-thinking preamble is exposed as a final answer", async () => {
+    const model = new LegacyPriorThinkingThenFinalModel();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model });
+    const task = await workbench.createTask("continue after a legacy retained-thinking response");
+
+    expect(model.calls).toBe(2);
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "model_no_progress" && event.payload["status"] === "retrying")).toBe(true);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary.startsWith("Prior thinking retained"))).toBe(false);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary === "Completed after continuing from a legacy retained-thinking response.")).toBe(true);
+  });
+
+  it("hides streamed legacy retained-thinking text before retrying", async () => {
+    const model = new StreamingLegacyPriorThinkingThenFinalModel();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model });
+    const task = await workbench.createTask("do not render leaked retained-thinking deltas");
+
+    const leakedDeltas = task.events.filter((event) => event.type === "assistant_delta" && event.summary.includes("Prior thinking retained"));
+
+    expect(model.calls).toBe(2);
+    expect(task.status).toBe("completed");
+    expect(leakedDeltas.length).toBeGreaterThan(0);
+    expect(leakedDeltas.every((event) => event.payload["uiHidden"] === true)).toBe(true);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary.startsWith("Prior thinking retained"))).toBe(false);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary === "Completed after hiding the leaked continuity stream.")).toBe(true);
+  });
+
+  it("pauses instead of completing after repeated internal continuity final answers", async () => {
+    const model = new RepeatedInternalContinuationModel();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model });
+    const task = await workbench.createTask("do not complete with an internal execution note");
+
+    expect(model.calls).toBe(2);
+    expect(task.status).toBe("paused");
+    expect(task.events.filter((event) => event.type === "model_no_progress")).toHaveLength(2);
+    expect(task.events.some((event) => event.type === "assistant_message")).toBe(false);
   });
 
   it("pauses after repeated empty model responses without producing assistant body text", async () => {
@@ -3496,6 +4052,34 @@ describe("AgentWorkbench", () => {
     expect(items.some((item) => item.kind === "low_value_memory" && item.status === "not_promoted")).toBe(true);
   });
 
+  it("deduplicates low-value curator memories and allows deleting task memory records", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    for (let index = 0; index < 4; index += 1) {
+      const memory = testTaskMemory(index, {
+        domain: "workspace",
+        tools: ["list_files"],
+        title: "Check current folder contents"
+      });
+      await store.saveTaskMemory({
+        ...memory,
+        id: `memory_low_value_${index}`,
+        taskId: `task_low_value_${index}`,
+        meta: { ...memory.meta, complexity: "simple" }
+      });
+    }
+
+    const items = await workbench.listSkillCuratorItems();
+    const lowValueItems = items.filter((item) => item.kind === "low_value_memory" && item.title === "Check current folder contents");
+
+    expect(lowValueItems).toHaveLength(1);
+    expect(lowValueItems[0]?.evidence.some((line) => line.includes("similar low-value task"))).toBe(true);
+
+    await workbench.deleteTaskMemory("memory_low_value_0");
+
+    expect((await workbench.listTaskMemories()).some((memory) => memory.id === "memory_low_value_0")).toBe(false);
+  });
+
   it("deletes a task and can clean linked learning records and derived skills", async () => {
     const workbench = new AgentWorkbench({
       store: new InMemoryWorkbenchStore(),
@@ -3601,6 +4185,65 @@ describe("AgentWorkbench", () => {
     expect(generated.body).toContain("Run the tools against the current task state");
     expect(generated.body).not.toContain("Top process: node");
     expect(generated.body).not.toContain("Result:");
+  });
+
+  it("does not promote generic workspace or host-observation workflow patterns into skills", () => {
+    const workspaceMemories = Array.from({ length: 10 }, (_, index) =>
+      testTaskMemory(index, {
+        domain: "workspace",
+        tools: ["list_files", "read_file", "search_files", "edit_file", "write_file"],
+        title: `Inspect project files ${index}`
+      })
+    );
+    const hostMemories = Array.from({ length: 10 }, (_, index) =>
+      testTaskMemory(index + 20, {
+        domain: "host_observation",
+        tools: ["run_command", "list_files", "read_file"],
+        title: `Check current host state ${index}`
+      })
+    );
+
+    expect(reflectMemories(workspaceMemories).promotedSkills).toHaveLength(0);
+    expect(reflectMemories(hostMemories).promotedSkills).toHaveLength(0);
+  });
+
+  it("marks reflected memories so repeated reflection does not regenerate the same candidate skill", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    for (let index = 0; index < 10; index += 1) {
+      await store.saveTaskMemory(testTaskMemory(index, {
+        domain: "testing",
+        tools: ["run_tests", "read_file"],
+        title: `Validate release test workflow ${index}`
+      }));
+    }
+
+    const first = await workbench.runReflection();
+    expect(first.progress.nextStep).toBe("skills_promoted");
+    expect(await workbench.listSkills()).toHaveLength(1);
+    expect((await workbench.listTaskMemories()).every((memory) => memory.reflectionStatus === "reflected")).toBe(true);
+
+    const second = await workbench.runReflection();
+    expect(second.progress.nextStep).toBe("wait_for_more_task_memories");
+    expect(await workbench.listReflectionSessions()).toHaveLength(1);
+    expect(await workbench.listSkills()).toHaveLength(1);
+  });
+
+  it("does not persist no-op reflection sessions when there is not enough new evidence", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    for (let index = 0; index < 3; index += 1) {
+      await store.saveTaskMemory(testTaskMemory(index, {
+        domain: "testing",
+        tools: ["read_file"],
+        title: `Small evidence batch ${index}`
+      }));
+    }
+
+    const session = await workbench.runReflection();
+
+    expect(session.progress.nextStep).toBe("wait_for_more_task_memories");
+    expect(await workbench.listReflectionSessions()).toHaveLength(0);
   });
 
   it("uses global risk grants before showing approval UI", async () => {
@@ -3876,6 +4519,7 @@ describe("OpenAIModelClient", () => {
       });
       const traces: Array<Record<string, unknown>> = [];
       const task: TaskDetail = {
+        kind: "primary",
         id: "task_openai_roles",
         title: "你好",
         status: "running",
@@ -3939,15 +4583,19 @@ describe("OpenAIModelClient", () => {
       expect(turn.kind).toBe("final");
       expect(messages[0]?.["role"]).toBe("system");
       expect(String(messages[0]?.["content"] ?? "")).toContain("Stable Memory Files");
+      expect(String(messages[0]?.["content"] ?? "")).toContain("copy the observed text exactly");
       expect(String(messages[0]?.["content"] ?? "")).not.toContain("Task title:");
-      expect(messages.map((message) => message["role"])).toEqual(["system", "user", "assistant", "user", "assistant", "tool"]);
+      expect(messages.map((message) => message["role"])).toEqual(["system", "user", "assistant", "user", "assistant", "assistant", "tool"]);
       expect(messages[3]?.["content"]).toBe("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
-      expect(messages[4]?.["tool_calls"]).toEqual([
+      expect(String(messages[4]?.["content"] ?? "")).toContain("Internal continuity note");
+      expect(String(messages[4]?.["content"] ?? "")).toContain("Do not quote this note");
+      expect(String(messages[4]?.["content"] ?? "")).toContain("I should inspect the workspace before writing the page.");
+      expect(messages[5]?.["tool_calls"]).toEqual([
         { id: "call_list", type: "function", function: { name: "list_files", arguments: "{\"path\":\".\"}" } }
       ]);
-      expect(messages[4]?.["content"]).toBe("");
-      expect(messages[4]?.["reasoning_content"]).toBeUndefined();
-      expect(messages[5]?.["tool_call_id"]).toBe("call_list");
+      expect(messages[5]?.["content"]).toBe("");
+      expect(messages[5]?.["reasoning_content"]).toBe("I should inspect the workspace before writing the page.");
+      expect(messages[6]?.["tool_call_id"]).toBe("call_list");
       const lastUser = messages.filter((message) => message["role"] === "user").at(-1);
       expect(lastUser?.["content"]).toBe("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
       expect(String(messages.map((message) => message["content"] ?? "").join("\n"))).not.toContain("## Active Node");
@@ -3958,7 +4606,7 @@ describe("OpenAIModelClient", () => {
     }
   });
 
-  it("does not replay reasoning_content for hidden plan_update history on the next MiMo request", async () => {
+  it("replays reasoning_content for hidden plan_update history on the next MiMo request", async () => {
     const capturedRequests: Array<Record<string, unknown>> = [];
     let requestCount = 0;
     const server = createServer((request, response) => {
@@ -4024,8 +4672,98 @@ describe("OpenAIModelClient", () => {
       expect(requestCount).toBe(2);
       expect(planResult?.payload["reasoningContent"]).toBe("I should update the visible plan before editing files.");
       expect(planMessage?.["content"]).toBe("");
-      expect(planMessage?.["reasoning_content"]).toBeUndefined();
-      expect(messages.some((message) => "reasoning_content" in message)).toBe(false);
+      expect(planMessage?.["reasoning_content"]).toBe("I should update the visible plan before editing files.");
+      expect(messages.some((message) => "reasoning_content" in message)).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("keeps use_skill on the managed tool path instead of hidden model retries", async () => {
+    const capturedRequests: Array<Record<string, unknown>> = [];
+    let requestCount = 0;
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        requestCount += 1;
+        capturedRequests.push(JSON.parse(body) as Record<string, unknown>);
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        if (requestCount === 1) {
+          response.write(`data: ${JSON.stringify({
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: "call_use_audited_skill",
+                  type: "function",
+                  function: {
+                    name: "use_skill",
+                    arguments: JSON.stringify({ name: "Audited Skill" })
+                  }
+                }]
+              }
+            }]
+          })}\n\n`);
+          response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 80, completion_tokens: 8 } })}\n\n`);
+        } else {
+          response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "Used audited skill guidance." } }] })}\n\n`);
+          response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 140, completion_tokens: 6 } })}\n\n`);
+        }
+        response.write("data: [DONE]\n\n");
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      const assembler = new ContextAssembler(store);
+      const model = new OpenAIModelClient({
+        apiKey: "test-key",
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        model: "mimo-v2.5",
+        contextAssembler: assembler
+      });
+      const workbench = new AgentWorkbench({ store, contextAssembler: assembler, model });
+      const skill = await workbench.createSkill({
+        title: "Audited Skill",
+        body: "AUDITED-SKILL-GUIDANCE: use direct evidence before answering.",
+        status: "active",
+        applicability: { description: "Audited live tasks", requiredTools: ["read_file"], requiredContext: [], exclusions: [], keywords: ["audited"] },
+        sourceMemoryIds: [],
+        relatedPatterns: []
+      });
+
+      const started = await workbench.createTask("使用 Audited Skill 完成任务");
+
+      expect(started.status).toBe("waiting_approval");
+      expect(started.approvals[0]?.riskCategory).toBe("workspace_read");
+      expect(assembler.getLoadedSkillIds(started.id)).toEqual([]);
+
+      const completed = await workbench.decideApproval(started.id, started.approvals[0]!.id, "allow_for_task");
+      const requested = completed.events.find((event) => event.type === "tool_requested" && event.payload["toolName"] === "use_skill");
+      const progressEvents = completed.events.filter((event) => event.type === "tool_progress" && event.payload["toolName"] === "use_skill");
+      const result = completed.events.find((event) => event.type === "tool_result" && event.payload["toolName"] === "use_skill");
+
+      expect(completed.status).toBe("completed");
+      expect(requestCount).toBe(2);
+      expect(requested?.payload["args"]).toEqual({ name: "Audited Skill" });
+      expect(progressEvents.map((event) => event.payload["operation"])).toEqual(["use_skill", "use_skill"]);
+      expect(progressEvents.map((event) => event.payload["status"])).toEqual(["running", "completed"]);
+      expect(progressEvents.map((event) => event.payload["message"])).toEqual([
+        "Loading skill guidance for \"Audited Skill\".",
+        "Loaded skill guidance: Audited Skill."
+      ]);
+      expect(result?.payload["ok"]).toBe(true);
+      expect(completed.events.some((event) => event.type === "skill_loaded" && event.payload["skillId"] === skill.id)).toBe(true);
+      expect(JSON.stringify(capturedRequests[1])).toContain("AUDITED-SKILL-GUIDANCE");
+      expect(JSON.stringify(capturedRequests[1])).toContain("tool_call_id");
+      expect(JSON.stringify(capturedRequests[1])).toContain("use_skill");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -4065,6 +4803,7 @@ describe("OpenAIModelClient", () => {
         })
       });
       const task: TaskDetail = {
+        kind: "primary",
         id: "task_anthropic_tool_history",
         title: "Anthropic fixture",
         status: "running",
@@ -4147,6 +4886,7 @@ describe("OpenAIModelClient", () => {
         })
       });
       const task: TaskDetail = {
+        kind: "primary",
         id: "task_gemini_tool_history",
         title: "Gemini fixture",
         status: "running",
@@ -4195,6 +4935,98 @@ describe("OpenAIModelClient", () => {
     }
   });
 
+  it("returns an empty_response turn when an Anthropic Messages response has no text or tool use", async () => {
+    const server = createServer((request, response) => {
+      request.on("data", () => undefined);
+      request.on("end", () => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({
+          content: [],
+          usage: { input_tokens: 21, output_tokens: 0 }
+        }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const client = new OpenAIModelClient({
+        apiKey: "unused",
+        providerResolver: async () => ({
+          providerId: "provider_anthropic_empty",
+          protocol: "anthropic_messages",
+          apiKey: "test-key",
+          baseURL: `http://127.0.0.1:${port}`,
+          model: "claude-empty-test"
+        })
+      });
+      const task: TaskDetail = {
+        kind: "primary",
+        id: "task_anthropic_empty",
+        title: "Anthropic empty fixture",
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [{ id: "event_goal", taskId: "task_anthropic_empty", type: "user_message", createdAt: nowIso(), summary: "普通请求", payload: {} }]
+      };
+
+      const turn = await client.next(task);
+
+      expect(turn.kind).toBe("empty_response");
+      expect(turn.kind === "empty_response" ? turn.reason : "").toContain("Anthropic response contained no text or tool use");
+      expect(turn.kind === "empty_response" ? turn.usage?.inputTokens : undefined).toBe(21);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("returns an empty_response turn when a Gemini response has no text or function calls", async () => {
+    const server = createServer((request, response) => {
+      request.on("data", () => undefined);
+      request.on("end", () => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({
+          candidates: [{ content: { parts: [] } }],
+          usageMetadata: { promptTokenCount: 22, candidatesTokenCount: 0, totalTokenCount: 22 }
+        }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const client = new OpenAIModelClient({
+        apiKey: "unused",
+        providerResolver: async () => ({
+          providerId: "provider_gemini_empty",
+          protocol: "gemini",
+          apiKey: "test-key",
+          baseURL: `http://127.0.0.1:${port}/v1beta`,
+          model: "gemini-empty-test"
+        })
+      });
+      const task: TaskDetail = {
+        kind: "primary",
+        id: "task_gemini_empty",
+        title: "Gemini empty fixture",
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [{ id: "event_goal", taskId: "task_gemini_empty", type: "user_message", createdAt: nowIso(), summary: "普通请求", payload: {} }]
+      };
+
+      const turn = await client.next(task);
+
+      expect(turn.kind).toBe("empty_response");
+      expect(turn.kind === "empty_response" ? turn.reason : "").toContain("Gemini response contained no text or function calls");
+      expect(turn.kind === "empty_response" ? turn.usage?.inputTokens : undefined).toBe(22);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("returns an empty_response turn when a streaming chat response has no content or tool calls", async () => {
     const server = createServer((request, response) => {
       request.on("data", () => undefined);
@@ -4215,6 +5047,7 @@ describe("OpenAIModelClient", () => {
       });
       const traces: Array<Record<string, unknown>> = [];
       const task: TaskDetail = {
+        kind: "primary",
         id: "task_openai_empty",
         title: "Empty fixture",
         status: "running",
@@ -4264,6 +5097,7 @@ describe("OpenAIModelClient", () => {
         model: "legacy-function-call-model"
       });
       const task: TaskDetail = {
+        kind: "primary",
         id: "task_openai_legacy_function_call",
         title: "Legacy function call fixture",
         status: "running",
@@ -4551,6 +5385,36 @@ describe("ShellToolExecutor", () => {
     }
   });
 
+  it("materializes long command output inside the task work root", async () => {
+    const defaultRoot = mkdtempSync(join(tmpdir(), "scc-default-output-root-"));
+    const workRoot = mkdtempSync(join(tmpdir(), "scc-command-output-root-"));
+    try {
+      const executor = new ShellToolExecutor(defaultRoot);
+      const result = await executor.execute(
+        {
+          id: createId("tool_call"),
+          toolName: "run_command",
+          args: { command: "node -e \"console.log('x'.repeat(13050))\"" }
+        },
+        { workRoot }
+      );
+
+      expect(result.ok).toBe(true);
+      const parsed = JSON.parse(result.output) as { truncated: boolean; rawOutputRef: string; totalChars: number };
+      expect(parsed.truncated).toBe(true);
+      expect(parsed.totalChars).toBeGreaterThan(12000);
+      expect(existsSync(parsed.rawOutputRef)).toBe(true);
+
+      const taskOutputRoot = resolve(workRoot, "data", "tool-output");
+      const defaultOutputRoot = resolve(defaultRoot, "data", "tool-output");
+      expect(relative(taskOutputRoot, resolve(parsed.rawOutputRef))).not.toMatch(/^\.\.(?:[\\/]|$)/);
+      expect(relative(defaultOutputRoot, resolve(parsed.rawOutputRef))).toMatch(/^\.\.(?:[\\/]|$)/);
+    } finally {
+      rmSync(defaultRoot, { recursive: true, force: true });
+      rmSync(workRoot, { recursive: true, force: true });
+    }
+  });
+
   it("reads complete small and medium files by default without manual line pagination", async () => {
     const temp = mkdtempSync(join(tmpdir(), "tmp-scc-read-full-"));
     try {
@@ -4571,6 +5435,24 @@ describe("ShellToolExecutor", () => {
       expect(parsed["totalLines"]).toBe(320);
       expect(String(parsed["content"])).toContain("line-260");
       expect(String(parsed["content"])).toContain("line-320");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects read_file calls without a concrete path", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "tmp-scc-read-missing-path-"));
+    try {
+      const executor = new ShellToolExecutor(temp);
+
+      const result = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "read_file",
+        args: {}
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("Missing path");
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }

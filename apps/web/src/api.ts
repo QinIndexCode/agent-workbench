@@ -30,7 +30,7 @@ import type {
   ProjectMemory,
   ProjectMemoryCreateRequest,
   ProjectMemoryPatchRequest,
-  ReflectionSession,
+  CuratorRun,
   RiskCategory,
   ScheduledTask,
   ScheduledTaskCreateRequest,
@@ -48,6 +48,7 @@ import type {
   TaskDeleteRequest,
   TaskDeleteResult,
   TaskDetail,
+  TaskChildSummary,
   TaskTurn,
   TaskTurnEditRequest,
   TaskTurnRevertResult,
@@ -78,7 +79,7 @@ import type {
 
 const apiBase = import.meta.env["VITE_API_BASE"] ?? "";
 const REQUEST_TIMEOUT_MS = 30000;
-const TASK_EVENT_WINDOW = 600;
+const TASK_EVENT_WINDOW = 240;
 const SESSION_BOOTSTRAP_PATH = "/api/session/bootstrap";
 const SESSION_HEADER = "x-agent-workbench-session";
 
@@ -222,8 +223,8 @@ export const api = {
   createTask(goal: string, title?: string, folderId?: string, attachmentIds: string[] = [], options: { runMode?: "normal" | "target"; targetLimits?: { maxModelTurns?: number; maxToolCalls?: number; maxWallTimeMs?: number } } = {}): Promise<TaskDetail> {
     return request("/api/tasks", { method: "POST", body: JSON.stringify({ goal, ...(title ? { title } : {}), ...(folderId ? { folderId } : {}), ...(attachmentIds.length ? { attachmentIds } : {}), ...(options.runMode ? { runMode: options.runMode } : {}), ...(options.targetLimits ? { targetLimits: options.targetLimits } : {}) }) });
   },
-  listTasks(): Promise<TaskDetail[]> {
-    return request("/api/tasks");
+  listTasks(includeChildren = false): Promise<TaskDetail[]> {
+    return request(includeChildren ? "/api/tasks?includeChildren=true" : "/api/tasks");
   },
   listTaskFolders(): Promise<TaskFolderRecord[]> {
     return request("/api/task-folders");
@@ -243,8 +244,17 @@ export const api = {
   getTask(taskId: string): Promise<TaskDetail> {
     return request(`/api/tasks/${taskId}?eventLimit=${TASK_EVENT_WINDOW}`);
   },
+  listTaskChildren(taskId: string): Promise<TaskChildSummary[]> {
+    return request(`/api/tasks/${taskId}/children`);
+  },
   listTaskTranscript(taskId: string): Promise<TaskTranscriptItem[]> {
     return request(`/api/tasks/${taskId}/transcript`);
+  },
+  getTaskStreamText(taskId: string, streamId: string, type: "assistant_delta" | "thinking_delta"): Promise<{ streamId: string; type: "assistant_delta" | "thinking_delta"; text: string }> {
+    const url = new URL(`/api/tasks/${taskId}/stream-text`, window.location.origin);
+    url.searchParams.set("streamId", streamId);
+    url.searchParams.set("type", type);
+    return request(`${url.pathname}${url.search}`);
   },
   patchTask(taskId: string, input: TaskPatchRequest): Promise<TaskDetail> {
     return request(`/api/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(input) });
@@ -293,6 +303,9 @@ export const api = {
   },
   listTaskMemories(): Promise<TaskMemory[]> {
     return request("/api/task-memories");
+  },
+  deleteTaskMemory(id: string): Promise<void> {
+    return request(`/api/task-memories/${id}`, { method: "DELETE" });
   },
   listPatterns(): Promise<PatternRecord[]> {
     return request("/api/patterns");
@@ -369,10 +382,22 @@ export const api = {
   compactProjectMemory(folderId = "default"): Promise<MemoryDocumentCompactResult> {
     return request(`/api/project-memory/compact?folderId=${encodeURIComponent(folderId)}`, { method: "POST" });
   },
-  listReflections(): Promise<ReflectionSession[]> {
+  listCuratorRuns(): Promise<CuratorRun[]> {
+    return request("/api/curator/runs");
+  },
+  runCuratorExtraction(): Promise<CuratorRun> {
+    return request("/api/curator/runs", { method: "POST" });
+  },
+  deleteCuratorRun(id: string): Promise<void> {
+    return request(`/api/curator/runs/${id}`, { method: "DELETE" });
+  },
+  clearCuratorRuns(): Promise<void> {
+    return request("/api/curator/runs", { method: "DELETE" });
+  },
+  listReflections(): Promise<CuratorRun[]> {
     return request("/api/reflections");
   },
-  runReflection(): Promise<ReflectionSession> {
+  runReflection(): Promise<CuratorRun> {
     return request("/api/reflections", { method: "POST" });
   },
   deleteReflection(id: string): Promise<void> {

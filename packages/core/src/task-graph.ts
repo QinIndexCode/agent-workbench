@@ -218,7 +218,7 @@ function toolClassesForName(toolName: string, description: string): TaskToolClas
   if (toolName === "read_file" || toolName === "search_files" || toolName === "list_files" || toolName === "knowledge_search") return ["workspace_read"];
   if (toolName === "web_search") return ["network"];
   if (toolName === "edit_file" || toolName === "write_file") return ["workspace_write"];
-  if (toolName === "plan_update" || toolName === "use_skill" || toolName === "ask_user") return ["state"];
+  if (toolName === "plan_update" || toolName === "use_skill" || toolName === "ask_user" || toolName === "spawn_subagent") return ["state"];
   if (/(memory|skill_(create|edit|delete))/i.test(toolName)) return ["memory"];
   return [];
 }

@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ReflectionSession, SkillConflict, SkillCreateRequest, SkillDuplicateGroup, SkillRecord, SkillUpdateRequest } from "@agent-workbench/shared";
+import type { SkillConflict, SkillCreateRequest, SkillDuplicateGroup, SkillRecord, SkillUpdateRequest } from "@agent-workbench/shared";
 import { Copy, Download, Edit3, Merge, Plus, RefreshCcw, Save, Search, Trash2, X } from "lucide-react";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { MarkdownText } from "./MarkdownText.js";
-import { SettingsPrimer } from "./SettingsAssist.js";
-import { summarizeReflectionSession } from "./skillUx.js";
 
 const statuses: SkillRecord["status"][] = ["candidate", "active", "suspended", "retired"];
 const pageSize = 8;
@@ -40,7 +38,6 @@ export function SkillPanel({
   conflicts,
   language,
   query = "",
-  reflections,
   onOpenDocs,
   onCreate,
   onUpdate,
@@ -48,14 +45,13 @@ export function SkillPanel({
   onBulkDelete,
   onMergeDuplicate,
   onExport,
-  onRunReflection
+  onRunCuratorExtraction
 }: {
   skills: SkillRecord[];
   duplicates: SkillDuplicateGroup[];
   conflicts: SkillConflict[];
   language?: string | null;
   query?: string;
-  reflections?: ReflectionSession[];
   onOpenDocs?: (() => void) | undefined;
   onCreate: (input: SkillCreateRequest) => Promise<void> | void;
   onUpdate: (skillId: string, input: SkillUpdateRequest) => Promise<void> | void;
@@ -63,7 +59,7 @@ export function SkillPanel({
   onBulkDelete: (skillIds: string[]) => Promise<void> | void;
   onMergeDuplicate: (group: SkillDuplicateGroup) => Promise<void> | void;
   onExport: (skillId: string) => Promise<void> | void;
-  onRunReflection?: () => Promise<void> | void;
+  onRunCuratorExtraction?: () => Promise<void> | void;
 }) {
   const text = getSkillCopy(language);
   const safeSkills = useMemo(() => (Array.isArray(skills) ? skills : []), [skills]);
@@ -116,10 +112,14 @@ export function SkillPanel({
       <header className="libraryPanelHero">
         <div>
           <h2>{text.title}</h2>
-          <p>{text.subtitle}</p>
         </div>
         <div className="inlineActions">
-          <button className="textButton iconText" type="button" onClick={() => void onRunReflection?.()}>
+          {onOpenDocs ? (
+            <button className="textButton" type="button" onClick={onOpenDocs}>
+              {text.docs}
+            </button>
+          ) : null}
+          <button className="textButton iconText" type="button" onClick={() => void onRunCuratorExtraction?.()}>
             <RefreshCcw size={15} />
             {text.reflect}
           </button>
@@ -136,21 +136,6 @@ export function SkillPanel({
           </button>
         </div>
       </header>
-      <SettingsPrimer
-        language={language}
-        summary={text.primer.summary}
-        focus={text.primer.focus}
-        impact={text.primer.impact}
-        nextStep={text.primer.nextStep}
-        onOpenDocs={onOpenDocs}
-      />
-
-      {reflections?.[0] ? (
-        <section className="reflectionStrip">
-          <strong>{text.latestReflection}</strong>
-          <span>{summarizeReflectionSession(reflections[0], language)} · {new Date(reflections[0].createdAt).toLocaleString()}</span>
-        </section>
-      ) : null}
 
       {safeDuplicates.length > 0 ? (
         <section className="duplicateBanner">
@@ -485,10 +470,9 @@ function getSkillCopy(language?: string | null) {
   const zh = language === "zh-CN";
   return {
     title: "Skills",
-    subtitle: zh ? "浏览、编辑和导出可复用的 Agent 能力。" : "Browse, edit, and export reusable agent capabilities.",
-    reflect: zh ? "Agent 反思" : "Agent reflection",
+    docs: zh ? "文档" : "Docs",
+    reflect: zh ? "提取建议" : "Extract suggestions",
     newSkill: zh ? "新建 Skill" : "New skill",
-    latestReflection: zh ? "最近反思" : "Latest reflection",
     duplicateGroups: zh ? "组重复 Skill" : "duplicate groups",
     duplicateHelp: zh ? "检测到重复固化。合并后可以保持 Agent 记忆干净。" : "Repeated promotions were detected. Merge them to keep agent memory clean.",
     mergeAll: zh ? "全部合并" : "Merge all",
@@ -528,12 +512,6 @@ function getSkillCopy(language?: string | null) {
     noBody: zh ? "还没有 Skill 正文。" : "No skill body yet.",
     noApplicability: zh ? "未填写适用场景" : "No applicability notes",
     none: zh ? "无" : "None",
-    pageLabel: (page: number, total: number) => zh ? `第 ${page} / ${total} 页` : `Page ${page} / ${total}`,
-    primer: {
-      summary: zh ? "Skill 是可复用的执行方法，不是每次任务的原始结果备份。" : "Skills are reusable execution methods, not raw copies of one-off task output.",
-      focus: zh ? "优先维护标题、适用场景、需要的工具和排除条件，让命中结果更稳。" : "Keep the title, applicability, required tools, and exclusions precise so runtime matching stays stable.",
-      impact: zh ? "会影响任务运行时是否加载该 Skill，以及它以只读建议还是强约束的方式参与上下文。" : "Changes affect whether a task loads the skill and whether it behaves as a light suggestion or a stronger runtime constraint.",
-      nextStep: zh ? "如果你不确定一个候选是否值得启用，先去 Curator 看证据和重复判断，再决定是否激活。" : "If you are not sure a candidate should be enabled, inspect its curator evidence and duplicate grouping before activating it."
-    }
+    pageLabel: (page: number, total: number) => zh ? `第 ${page} / ${total} 页` : `Page ${page} / ${total}`
   };
 }

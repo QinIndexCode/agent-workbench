@@ -3,7 +3,6 @@ import type { KnowledgeCreateRequest, KnowledgeItem, KnowledgeModelAssetKind, Kn
 import { BrainCircuit, Download, Edit3, FileText, FileUp, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { MarkdownText } from "./MarkdownText.js";
-import { SettingsPrimer } from "./SettingsAssist.js";
 
 type KnowledgeDraft = {
   title: string;
@@ -118,9 +117,13 @@ export function KnowledgePanel({
       <header className="libraryPanelHero">
         <div>
           <h2>{text.title}</h2>
-          <p>{text.subtitle}</p>
         </div>
         <div className="inlineActions">
+          {onOpenDocs ? (
+            <button className="textButton" type="button" onClick={onOpenDocs}>
+              {text.docs}
+            </button>
+          ) : null}
           <button className="textButton iconText" type="button" onClick={() => fileRef.current?.click()}>
             <FileUp size={15} />
             {text.upload}
@@ -139,14 +142,6 @@ export function KnowledgePanel({
         </div>
         <input hidden multiple ref={fileRef} type="file" onChange={(event) => void uploadFiles(event.currentTarget.files)} />
       </header>
-      <SettingsPrimer
-        language={language}
-        summary={text.primer.summary}
-        focus={text.primer.focus}
-        impact={text.primer.impact}
-        nextStep={text.primer.nextStep}
-        onOpenDocs={onOpenDocs}
-      />
 
       <div className="knowledgeGrid libraryManagerGrid">
         <div aria-label={text.title} className="knowledgeListPane" role="region">
@@ -185,29 +180,38 @@ export function KnowledgePanel({
           ) : null}
           <div className="skillRows">
             {filtered.length === 0 ? <LibraryEmpty text={text.empty} /> : null}
-            {visibleItems.map((item) => (
-              <article className={selectedId === item.id ? "knowledgeRow selectableKnowledgeRow selected" : "knowledgeRow selectableKnowledgeRow"} key={item.id}>
-                <input
-                  aria-label={`${text.select} ${item.title}`}
-                  checked={selectedIds.has(item.id)}
-                  type="checkbox"
-                  onChange={(event) => toggleSelected(item.id, event.currentTarget.checked)}
-                />
-                <button className="knowledgeRowMain" type="button" onClick={() => setSelectedId(item.id)}>
-                  <strong>{item.title}</strong>
-                  <span>{item.kind === "file" ? item.fileName ?? text.file : text.memory}</span>
-                  <small>{item.indexStatus} · {item.chunkCount} chunks · {item.tags.slice(0, 3).join(", ") || text.noTags}</small>
-                </button>
-                <div className="rowIconActions">
-                  <button aria-label={`${text.edit} ${item.title}`} className="iconButton" type="button" onClick={() => openEdit(item)}>
-                    <Edit3 size={14} />
+            {visibleItems.map((item) => {
+              const description = summarizeKnowledgeDescription(item, item.kind === "file" ? text.file : text.memory);
+              const tagSummary = summarizeKnowledgeTags(item.tags, text.noTags);
+              return (
+                <article className={selectedId === item.id ? "knowledgeRow selectableKnowledgeRow selected" : "knowledgeRow selectableKnowledgeRow"} key={item.id}>
+                  <input
+                    aria-label={`${text.select} ${item.title}`}
+                    checked={selectedIds.has(item.id)}
+                    type="checkbox"
+                    onChange={(event) => toggleSelected(item.id, event.currentTarget.checked)}
+                  />
+                  <button className="knowledgeRowMain" type="button" onClick={() => setSelectedId(item.id)}>
+                    <strong>{item.title}</strong>
+                    <span title={description}>{description}</span>
+                    <div className="knowledgeRowMeta">
+                      <span className="knowledgeKindBadge">{item.kind === "file" ? text.file : text.memory}</span>
+                      <span className={`knowledgeStatusBadge ${item.indexStatus}`}>{text.statusLabels[item.indexStatus]}</span>
+                      <small>{text.chunkCount(item.chunkCount)}</small>
+                      <small title={tagSummary}>{tagSummary}</small>
+                    </div>
                   </button>
-                  <button aria-label={`${text.delete} ${item.title}`} className="iconButton dangerIcon" type="button" onClick={() => setDeleteTarget(item)}>
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </article>
-            ))}
+                  <div className="rowIconActions">
+                    <button aria-label={`${text.edit} ${item.title}`} className="iconButton" type="button" onClick={() => openEdit(item)}>
+                      <Edit3 size={14} />
+                    </button>
+                    <button aria-label={`${text.delete} ${item.title}`} className="iconButton dangerIcon" type="button" onClick={() => setDeleteTarget(item)}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
           <Pagination page={page} pageCount={pageCount} label={text.pageLabel(page + 1, pageCount)} onPage={setPage} />
         </div>
@@ -239,7 +243,13 @@ export function KnowledgePanel({
                 <div><dt>{text.tags}</dt><dd>{selected.tags.join(", ") || text.noTags}</dd></div>
                 <div><dt>{text.updated}</dt><dd>{new Date(selected.updatedAt).toLocaleString()}</dd></div>
                 <div><dt>{text.size}</dt><dd>{selected.size ? `${selected.size} B` : text.none}</dd></div>
-                <div><dt>{text.index}</dt><dd>{selected.indexStatus} · {selected.chunkCount}</dd></div>
+                <div>
+                  <dt>{text.index}</dt>
+                  <dd className="knowledgeMetaCell">
+                    <span className={`knowledgeStatusBadge ${selected.indexStatus}`}>{text.statusLabels[selected.indexStatus]}</span>
+                    <span>{text.chunkCount(selected.chunkCount)}</span>
+                  </dd>
+                </div>
                 <div><dt>{text.lastIndexed}</dt><dd>{selected.lastIndexedAt ? new Date(selected.lastIndexedAt).toLocaleString() : text.none}</dd></div>
                 <div><dt>{text.source}</dt><dd title={selected.sourceUri ?? selected.fileName ?? ""}>{selected.sourceUri ?? selected.fileName ?? text.none}</dd></div>
               </dl>
@@ -573,6 +583,15 @@ function splitList(value: string): string[] {
   return value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean);
 }
 
+function summarizeKnowledgeTags(tags: string[], empty: string): string {
+  return tags.slice(0, 3).join(", ") || empty;
+}
+
+function summarizeKnowledgeDescription(item: KnowledgeItem, fallback: string): string {
+  if (item.kind === "file") return item.fileName ?? fallback;
+  return item.content.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? fallback;
+}
+
 async function readUploadContent(file: File): Promise<string> {
   if (file.size > 750_000 || !isTextLike(file)) {
     return [`File: ${file.name}`, `Type: ${file.type || "unknown"}`, `Size: ${file.size} bytes`, "", "This file is stored as metadata. Ask the agent to inspect it when needed."].join("\n");
@@ -598,7 +617,7 @@ function getKnowledgeCopy(language?: string | null) {
   const zh = language === "zh-CN";
   return {
     title: zh ? "知识库" : "Knowledge",
-    subtitle: zh ? "浏览项目事实、说明文件和可引用内容。" : "Browse project facts, notes, and referenceable content.",
+    docs: zh ? "文档" : "Docs",
     upload: zh ? "上传文件" : "Upload files",
     newItem: zh ? "新建条目" : "New item",
     search: zh ? "搜索知识库" : "Search knowledge",
@@ -610,6 +629,13 @@ function getKnowledgeCopy(language?: string | null) {
     statusFilter: zh ? "按索引状态筛选" : "Filter by index status",
     allKinds: zh ? "全部类型" : "All types",
     allStatuses: zh ? "全部状态" : "All statuses",
+    statusLabels: {
+      pending: zh ? "待索引" : "Pending",
+      indexed: zh ? "已索引" : "Indexed",
+      failed: zh ? "失败" : "Failed",
+      metadata_only: zh ? "仅元数据" : "Metadata only"
+    } satisfies Record<KnowledgeItem["indexStatus"], string>,
+    chunkCount: (count: number) => zh ? `${count} 个片段` : `${count} chunks`,
     kind: zh ? "类型" : "Type",
     noTags: zh ? "无标签" : "No tags",
     edit: zh ? "编辑条目" : "Edit item",
@@ -657,12 +683,6 @@ function getKnowledgeCopy(language?: string | null) {
     tinyReranker: zh ? "启用 Tiny ONNX 重排器" : "Enable Tiny ONNX reranker",
     size: zh ? "大小" : "Size",
     none: zh ? "无" : "None",
-    pageLabel: (page: number, total: number) => zh ? `第 ${page} / ${total} 页` : `Page ${page} / ${total}`,
-    primer: {
-      summary: zh ? "知识库保存可复用资料和引用片段，用来补充当前任务，而不是代替实时工作区检查。" : "Knowledge stores reusable notes and citation-ready material that supports a task without replacing live workspace inspection.",
-      focus: zh ? "优先管理条目内容、标签和索引质量；本地检索模型只是高级增强，不该抢占首屏。" : "Prioritize item content, tagging, and index quality. Local retrieval models are an advanced enhancement and should not dominate the first screen.",
-      impact: zh ? "会影响 knowledge_search 的命中质量、主动注入摘要的稳定性，以及用户能否快速找回可信资料。" : "Changes affect knowledge_search quality, active knowledge brief stability, and how quickly users can recover trusted reference material.",
-      nextStep: zh ? "先整理内容和标签，再在 Advanced 区按需开启本地模型和重排器。" : "Clean up content and tags first, then enable local models and rerankers from the Advanced section only if needed."
-    }
+    pageLabel: (page: number, total: number) => zh ? `第 ${page} / ${total} 页` : `Page ${page} / ${total}`
   };
 }

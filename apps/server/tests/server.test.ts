@@ -7,7 +7,7 @@ import Database from "better-sqlite3";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore, McpRegistry, type ModelClient, type ModelTurn } from "@agent-workbench/core";
-import type { TaskDetail, TaskEvent, ToolCall, ToolResult } from "@agent-workbench/shared";
+import type { TaskDetail, TaskEvent, ToolApproval, ToolCall, ToolResult } from "@agent-workbench/shared";
 import { createApp } from "../src/server.js";
 import { SqliteWorkbenchStore } from "../src/sqlite-store.js";
 
@@ -81,6 +81,36 @@ class StaticFinalModelClient implements ModelClient {
   }
 }
 
+class DelegationServerModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (task.kind === "subagent") {
+      if (task.events.some((event) => event.type === "tool_result")) {
+        return { kind: "final", message: "Delegated comparison finished with the renderer evidence." };
+      }
+      return {
+        kind: "tool_calls",
+        calls: [{ id: "tool_call_read_child", toolName: "read_file", args: { path: "index.html" } }]
+      };
+    }
+    if (task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "spawn_subagent")) {
+      return { kind: "final", message: "Parent task continued after delegation." };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{
+        id: "tool_call_spawn_child",
+        toolName: "spawn_subagent",
+        args: {
+          goal: "Read the project code and compare the current renderer path.",
+          context: "Focus on the main renderer and summarize the bottleneck.",
+          fileHints: ["index.html"],
+          expectedOutput: "comparison"
+        }
+      }]
+    };
+  }
+}
+
 describe("server API", () => {
   it("bootstraps a local session token and rejects missing or cross-origin protected requests", async () => {
     const app = await createApp({ logger: false, workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore() }) });
@@ -138,6 +168,189 @@ describe("server API", () => {
     await app.close();
   });
 
+  it("hides subagent tasks from the default task list and exposes direct children explicitly", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const now = new Date().toISOString();
+    await store.saveTask({
+      kind: "primary",
+      id: "task_parent",
+      title: "Parent task",
+      folderId: "default",
+      workRoot: process.cwd(),
+      status: "running",
+      createdAt: now,
+      updatedAt: now,
+      approvals: [],
+      pendingGuidance: [],
+      events: [{ id: "event_parent", taskId: "task_parent", type: "user_message", createdAt: now, summary: "Parent request", payload: {} }]
+    });
+    await store.saveTask({
+      kind: "subagent",
+      id: "task_child",
+      title: "Child research",
+      parentTaskId: "task_parent",
+      delegation: {
+        sourceTaskId: "task_parent",
+        sourceToolCallId: "tool_spawn_child",
+        goal: "Read the code and compare implementations",
+        contextSummary: "Focus on the shared renderer path.",
+        networkEnabled: true,
+        expectedOutput: "comparison"
+      },
+      folderId: "default",
+      workRoot: process.cwd(),
+      status: "completed",
+      createdAt: now,
+      updatedAt: now,
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_child_user", taskId: "task_child", type: "user_message", createdAt: now, summary: "delegated handoff", payload: {} },
+        { id: "event_child_done", taskId: "task_child", type: "assistant_message", createdAt: now, summary: "Compared both implementations and found one shared bottleneck.", payload: {} }
+      ]
+    });
+    const app = await createTestApp({ workbench: new AgentWorkbench({ store }) });
+
+    const defaultList = (await app.inject("/api/tasks")).json() as TaskDetail[];
+    expect(defaultList.map((task) => task.id)).toEqual(["task_parent"]);
+
+    const fullList = (await app.inject("/api/tasks?includeChildren=true")).json() as TaskDetail[];
+    expect(fullList.map((task) => task.id)).toEqual(["task_parent", "task_child"]);
+
+    const children = (await app.inject("/api/tasks/task_parent/children")).json() as Array<Record<string, unknown>>;
+    expect(children).toHaveLength(1);
+    expect(children[0]?.["id"]).toBe("task_child");
+    expect(children[0]?.["parentTaskId"]).toBe("task_parent");
+    expect(children[0]?.["sourceToolCallId"]).toBe("tool_spawn_child");
+    expect(children[0]?.["lastAssistantSummary"]).toBe("Compared both implementations and found one shared bottleneck.");
+
+    await app.close();
+  });
+
+  it("redacts sensitive approval arguments before sending task details to the UI", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const now = new Date().toISOString();
+    const approval: ToolApproval = {
+      id: "approval_secret",
+      taskId: "task_secret_approval",
+      riskCategory: "shell",
+      reason: "Run a diagnostic command.",
+      status: "pending",
+      createdAt: now,
+      toolCall: {
+        id: "tool_secret",
+        toolName: "run_command",
+        args: {
+          command: "echo api_key=sk-live-secret-1234567890 && echo done",
+          authorization: "Bearer secret-token-1234567890"
+        }
+      },
+      metadata: {
+        command: "echo api_key=sk-live-secret-1234567890",
+        secretToken: "telegram-secret-token"
+      }
+    };
+    await store.saveTask({
+      id: "task_secret_approval",
+      title: "Secret approval",
+      folderId: "default",
+      workRoot: process.cwd(),
+      status: "waiting_approval",
+      createdAt: now,
+      updatedAt: now,
+      approvals: [approval],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_secret_approval",
+          taskId: "task_secret_approval",
+          type: "approval_pending",
+          createdAt: now,
+          summary: "shell: run_command",
+          payload: { approvalId: approval.id, riskCategory: "shell" }
+        }
+      ]
+    });
+    const app = await createTestApp({ workbench: new AgentWorkbench({ store }) });
+
+    const detailText = (await app.inject("/api/tasks/task_secret_approval")).body;
+    const detail = JSON.parse(detailText) as TaskDetail;
+
+    expect(detail.approvals).toHaveLength(1);
+    expect(detailText).not.toContain("sk-live-secret-1234567890");
+    expect(detailText).not.toContain("secret-token-1234567890");
+    expect(detailText).not.toContain("telegram-secret-token");
+    expect(JSON.stringify(detail.approvals[0]?.toolCall.args)).toContain("[redacted");
+    expect(JSON.stringify(detail.approvals[0]?.metadata)).toContain("[redacted-secret]");
+
+    await app.close();
+  });
+
+  it("runs delegated child tasks through the HTTP task API while keeping parent and child flows separated", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-workbench-server-subagent-"));
+    writeFileSync(join(root, "index.html"), "<html><body>delegated evidence</body></html>", "utf8");
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store, model: new DelegationServerModel() });
+    const folder = await workbench.createTaskFolder({ name: "delegation-http-root", rootPath: root });
+    await workbench.grantGlobalPermission("network", "allow delegated child spawn");
+    const app = await createTestApp({ workbench });
+
+    try {
+      const createResponse = await app.inject({
+        method: "POST",
+        url: "/api/tasks",
+        payload: {
+          goal: "Review the current implementation and delegate a focused comparison.",
+          folderId: folder.id
+        }
+      });
+      expect(createResponse.statusCode).toBe(201);
+
+      const started = createResponse.json() as TaskDetail;
+      let parent = started;
+      let children: Array<Record<string, unknown>> = [];
+      let childDetail: TaskDetail | null = null;
+
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        parent = (await app.inject(`/api/tasks/${started.id}?eventLimit=200`)).json() as TaskDetail;
+        children = (await app.inject(`/api/tasks/${started.id}/children`)).json() as Array<Record<string, unknown>>;
+        const childId = typeof children[0]?.["id"] === "string" ? String(children[0]?.["id"]) : "";
+        if (childId) {
+          childDetail = (await app.inject(`/api/tasks/${childId}?eventLimit=200`)).json() as TaskDetail;
+        }
+        if (
+          children[0]?.["status"] === "completed" &&
+          parent.events.some((event) => event.type === "subagent_completed") &&
+          childDetail?.status === "completed"
+        ) {
+          break;
+        }
+      }
+
+      const defaultList = (await app.inject("/api/tasks")).json() as TaskDetail[];
+      const fullList = (await app.inject("/api/tasks?includeChildren=true")).json() as TaskDetail[];
+
+      expect(children).toHaveLength(1);
+      expect(children[0]?.["goal"]).toBe("Read the project code and compare the current renderer path.");
+      expect(children[0]?.["status"]).toBe("completed");
+      expect(children[0]?.["lastAssistantSummary"]).toBe("Delegated comparison finished with the renderer evidence.");
+      expect(defaultList.map((task) => task.id)).toEqual([started.id]);
+      expect(fullList.map((task) => task.id)).toContain(started.id);
+      expect(fullList.some((task) => task.kind === "subagent")).toBe(true);
+      expect(parent.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "read_file")).toBe(false);
+      expect(parent.events.some((event) => event.type === "subagent_completed")).toBe(true);
+
+      expect(childDetail?.kind).toBe("subagent");
+      expect(childDetail?.parentTaskId).toBe(started.id);
+      expect(childDetail?.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "read_file")).toBe(true);
+      expect(childDetail?.events.some((event) => event.type === "assistant_message" && event.summary === "Delegated comparison finished with the renderer evidence.")).toBe(true);
+    } finally {
+      await app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps task list and task snapshots lightweight for large streamed histories", async () => {
     const store = new InMemoryWorkbenchStore();
     const now = new Date().toISOString();
@@ -180,6 +393,7 @@ describe("server API", () => {
   it("keeps audit events windowed while transcript remains complete and user-facing", async () => {
     const store = new InMemoryWorkbenchStore();
     const now = new Date().toISOString();
+    const largeRequestedContent = `${"generated line\n".repeat(700)}UNRENDERED_REQUEST_TAIL`;
     const events: TaskEvent[] = [
       {
         id: "event_task_created",
@@ -212,6 +426,14 @@ describe("server API", () => {
         createdAt: now,
         summary: "Tool evidence returned.\n\nTop entries:\n- node.exe",
         payload: { message: "Tool evidence returned.\n\nTop entries:\n- node.exe" }
+      },
+      {
+        id: "event_thinking_before_markup_final",
+        taskId: "task_windowed",
+        type: "thinking_delta",
+        createdAt: now,
+        summary: "Need to inspect the code structure first.",
+        payload: { streamId: "stream_markup_final", delta: "Need to inspect the code structure first." }
       },
       {
         id: "event_delta_before_markup_final",
@@ -255,6 +477,19 @@ describe("server API", () => {
         payload: { fileName: "logo.png", kind: "image", size: 1024 }
       },
       {
+        id: "event_tool_requested_write",
+        taskId: "task_windowed",
+        type: "tool_requested",
+        createdAt: now,
+        summary: "write_file",
+        payload: {
+          toolCallId: "tool_call_write",
+          toolName: "write_file",
+          args: { path: "src/generated.md", expectedHash: "__new__", content: largeRequestedContent },
+          riskCategory: "workspace_write"
+        }
+      },
+      {
         id: "event_context_summary",
         taskId: "task_windowed",
         type: "conversation_summary_created",
@@ -268,6 +503,14 @@ describe("server API", () => {
           ].join("\n"),
           retainedFacts: ["Original goal: Build the actual requested artifact"]
         }
+      },
+      {
+        id: "event_model_empty_response",
+        taskId: "task_windowed",
+        type: "model_empty_response",
+        createdAt: now,
+        summary: "Model returned no displayable content; retrying once.",
+        payload: { status: "retrying", reason: "empty completion" }
       },
       ...Array.from({ length: 1000 }, (_, index) => ({
         id: `event_agent_${index}`,
@@ -306,6 +549,9 @@ describe("server API", () => {
     expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_agent_tool_boilerplate");
     expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_agent_markup_final");
     expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_agent_payload_only");
+    expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_thinking_before_markup_final");
+    expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_model_empty_response");
+    expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_tool_requested_write");
     expect(transcript.map((event: TaskEvent) => event.id)).not.toContain("event_agent_empty_boilerplate");
     expect(transcript.map((event: TaskEvent) => event.id)).not.toContain("event_delta_before_markup_final");
     expect(transcript.map((event: TaskEvent) => event.id)).toContain("event_attachment");
@@ -316,9 +562,130 @@ describe("server API", () => {
     expect(JSON.stringify(transcript)).not.toContain("Original goal");
     expect(JSON.stringify(transcript)).not.toContain("Tool evidence returned");
     expect(JSON.stringify(transcript)).not.toContain("function_calls");
+    expect(JSON.stringify(transcript)).toContain("content preview truncated");
+    expect(JSON.stringify(transcript)).not.toContain("UNRENDERED_REQUEST_TAIL");
+    expect(JSON.stringify(transcript)).toContain("Need to inspect the code structure first.");
     expect(JSON.stringify(transcript)).toContain("I will inspect the code and then improve the styles.");
     expect(JSON.stringify(transcript)).toContain("Payload-only assistant body.");
     expect(JSON.stringify(transcript)).toContain("Top entries");
+    await app.close();
+  });
+
+  it("coalesces repeated transcript stream deltas before sending them to the client", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const now = new Date().toISOString();
+    await store.saveTask({
+      id: "task_transcript_streams",
+      title: "Transcript streams",
+      folderId: "default",
+      workRoot: process.cwd(),
+      status: "running",
+      createdAt: now,
+      updatedAt: now,
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_user",
+          taskId: "task_transcript_streams",
+          type: "user_message",
+          createdAt: now,
+          summary: "Review the current project and explain the next steps.",
+          payload: {}
+        },
+        {
+          id: "event_thinking_1",
+          taskId: "task_transcript_streams",
+          type: "thinking_delta",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          summary: "Inspecting the first area.",
+          payload: { streamId: "stream_thinking", delta: "Inspecting the first area." }
+        },
+        {
+          id: "event_thinking_2",
+          taskId: "task_transcript_streams",
+          type: "thinking_delta",
+          createdAt: "2026-01-01T00:00:00.010Z",
+          summary: "Inspecting the second area.",
+          payload: { streamId: "stream_thinking", delta: "Inspecting the second area." }
+        },
+        {
+          id: "event_delta_1",
+          taskId: "task_transcript_streams",
+          type: "assistant_delta",
+          createdAt: "2026-01-01T00:00:00.020Z",
+          summary: "I will inspect the code now.",
+          payload: { streamId: "stream_assistant", delta: "I will inspect the code now." }
+        },
+        {
+          id: "event_delta_2",
+          taskId: "task_transcript_streams",
+          type: "assistant_delta",
+          createdAt: "2026-01-01T00:00:00.030Z",
+          summary: "Then I will improve the styles.",
+          payload: { streamId: "stream_assistant", delta: "Then I will improve the styles." }
+        }
+      ]
+    });
+    const app = await createTestApp({ workbench: new AgentWorkbench({ store }) });
+
+    const transcript = (await app.inject("/api/tasks/task_transcript_streams/transcript")).json();
+    const thinking = transcript.filter((event: TaskEvent) => event.type === "thinking_delta");
+    const assistant = transcript.filter((event: TaskEvent) => event.type === "assistant_delta");
+
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]?.id).toBe("event_thinking_1");
+    expect(thinking[0]?.payload["delta"]).toBe("Inspecting the first area. Inspecting the second area.");
+    expect(assistant).toHaveLength(1);
+    expect(assistant[0]?.id).toBe("event_delta_1");
+    expect(assistant[0]?.payload["delta"]).toBe("I will inspect the code now. Then I will improve the styles.");
+
+    await app.close();
+  });
+
+  it("ships large thinking transcript bodies as lazy previews and exposes the full stream on demand", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const now = new Date().toISOString();
+    const largeThinking = Array.from({ length: 220 }, (_, index) => `Step ${index + 1}: inspect another part of the workspace.`).join("\n");
+    await store.saveTask({
+      id: "task_large_thinking_preview",
+      title: "Large thinking preview",
+      folderId: "default",
+      workRoot: process.cwd(),
+      status: "running",
+      createdAt: now,
+      updatedAt: now,
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_large_thinking",
+          taskId: "task_large_thinking_preview",
+          type: "thinking_delta",
+          createdAt: now,
+          summary: largeThinking,
+          payload: { streamId: "stream_large_thinking", delta: largeThinking }
+        }
+      ]
+    });
+    const app = await createTestApp({ workbench: new AgentWorkbench({ store }) });
+
+    const transcript = (await app.inject("/api/tasks/task_large_thinking_preview/transcript")).json();
+    expect(transcript).toHaveLength(1);
+    expect(transcript[0]?.type).toBe("thinking_delta");
+    expect(transcript[0]?.payload["lazyBody"]).toBe(true);
+    expect(Number(transcript[0]?.payload["fullContentChars"] ?? 0)).toBe(largeThinking.length);
+    expect(String(transcript[0]?.payload["delta"]).length).toBeLessThan(largeThinking.length);
+
+    const fullStream = (
+      await app.inject("/api/tasks/task_large_thinking_preview/stream-text?streamId=stream_large_thinking&type=thinking_delta")
+    ).json();
+    expect(fullStream).toMatchObject({
+      streamId: "stream_large_thinking",
+      type: "thinking_delta",
+      text: largeThinking
+    });
+
     await app.close();
   });
 
@@ -585,7 +952,10 @@ describe("server API", () => {
     expect(promoteResponse.statusCode).toBe(400);
     expect(promoteResponse.json().error).toContain("not eligible");
 
-    expect((await app.inject("/api/task-memories")).json().length).toBeGreaterThan(0);
+    const taskMemories = (await app.inject("/api/task-memories")).json();
+    expect(taskMemories.length).toBeGreaterThan(0);
+    expect((await app.inject({ method: "DELETE", url: `/api/task-memories/${taskMemories[0].id}` })).statusCode).toBe(204);
+    expect((await app.inject("/api/task-memories")).json().some((memory: { id: string }) => memory.id === taskMemories[0].id)).toBe(false);
     expect((await app.inject("/api/patterns")).statusCode).toBe(200);
     expect((await app.inject("/api/skill-conflicts")).statusCode).toBe(200);
     expect((await app.inject("/api/preferences")).json().language).toBe("zh-CN");
@@ -627,17 +997,17 @@ describe("server API", () => {
     expect(grantResponse.statusCode).toBe(201);
     expect((await app.inject("/api/permissions/global")).json()[0].riskCategory).toBe("host_observation");
 
-    const reflectionResponse = await app.inject({ method: "POST", url: "/api/reflections" });
-    expect(reflectionResponse.statusCode).toBe(201);
-    const reflection = reflectionResponse.json();
-    expect((await app.inject("/api/reflections")).json().some((item: { id: string }) => item.id === reflection.id)).toBe(true);
-    expect((await app.inject({ method: "DELETE", url: `/api/reflections/${reflection.id}` })).statusCode).toBe(204);
-    expect((await app.inject("/api/reflections")).json().some((item: { id: string }) => item.id === reflection.id)).toBe(false);
+    const curatorRunResponse = await app.inject({ method: "POST", url: "/api/curator/runs" });
+    expect(curatorRunResponse.statusCode).toBe(201);
+    const curatorRuns = (await app.inject("/api/curator/runs")).json();
+    expect(Array.isArray(curatorRuns)).toBe(true);
+    expect((await app.inject("/api/reflections")).json()).toEqual(curatorRuns);
+    expect((await app.inject({ method: "DELETE", url: "/api/curator/runs" })).statusCode).toBe(204);
 
     const scheduledTasks = (await app.inject("/api/scheduled-tasks")).json();
     expect(scheduledTasks.some((task: { id: string; type: string }) => task.id === "schedule_agent_reflection" && task.type === "reflection")).toBe(true);
-    const deleteReflection = await app.inject({ method: "DELETE", url: "/api/scheduled-tasks/schedule_agent_reflection" });
-    expect(deleteReflection.statusCode).toBe(400);
+    const deleteCuratorMaintenance = await app.inject({ method: "DELETE", url: "/api/scheduled-tasks/schedule_agent_reflection" });
+    expect(deleteCuratorMaintenance.statusCode).toBe(400);
 
     const memoryResponse = await app.inject({
       method: "POST",

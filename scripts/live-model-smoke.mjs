@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 
 const root = resolve(process.cwd());
@@ -19,6 +20,8 @@ if (!liveSmokeRequested) {
   process.exit(0);
 }
 
+process.env.AGENT_WORKBENCH_MODEL_TIMEOUT_MS ??= "120000";
+
 const {
   AgentWorkbench,
   CompositeToolExecutor,
@@ -29,7 +32,8 @@ const {
   KnowledgeSearchToolExecutor,
   loadOpenAiConfig,
   nowIso,
-  ShellToolExecutor
+  ShellToolExecutor,
+  WebSearchToolExecutor
 } = await import("../packages/core/dist/index.js");
 
 const config = loadOpenAiConfig();
@@ -209,13 +213,15 @@ await runCase("host observation approval", async () => {
 await runCase("denied tool path", async () => {
   const { workbench } = await createLiveWorkbench();
   let task = await workbench.createTask(
-    "请运行一个命令查看当前目录；如果工具审批被拒绝，请停止请求命令并解释你还能如何继续。",
+    "请运行一个命令查看当前目录；如果工具审批被拒绝，请停止请求命令，不要调用 ask_user，也不要继续请求其他工具，直接解释你还能如何继续。",
     "Live denied command"
   );
   task = await settleApprovals(workbench, task, () => "deny", 4);
-  assert(task.status === "completed", `expected completed after denial, got ${task.status}`);
-  assert(task.events.some((event) => event.type === "approval_resolved" && event.payload?.decision === "deny"), "expected denied approval evidence");
-  return evidence(task, { approvals: approvalSummary(task), assistant: excerpt(assistantText(task)) });
+  const deniedEvidence = evidence(task, { approvals: approvalSummary(task), assistant: excerpt(assistantText(task)) }).evidence;
+  assertWithEvidence(task.status === "completed", `expected completed after denial, got ${task.status}`, deniedEvidence);
+  assertWithEvidence(task.events.some((event) => event.type === "approval_resolved" && event.payload?.decision === "deny"), "expected denied approval evidence", deniedEvidence);
+  assertWithEvidence(!task.events.some((event) => event.type === "tool_requested" && event.payload?.toolName === "ask_user"), "denied recovery asked the user instead of giving an alternative", deniedEvidence);
+  return { status: "passed", evidence: deniedEvidence };
 });
 
 await runCase("same task follow-up", async () => {
@@ -302,18 +308,20 @@ if (stressLevel >= 4) {
       const totalsSource = readFileSync(join(fixture.root, "src", "totals.mjs"), "utf8");
       const toolOutput = toolOutputs(task).join("\n");
       const checkpoints = await workbench.listTaskCheckpoints(task.id);
+      const behavior = await fixtureBehavior(fixture.root);
       const multiEvidence = evidence(task, {
-        mathFixed: mathSource.includes("reduce"),
-        totalsFixed: totalsSource.includes("reduce") && totalsSource.includes("toFixed"),
+        mathFixed: behavior.mathGeneral,
+        totalsFixed: behavior.totalsGeneral,
         testsPassed: toolOutput.includes("math tests passed") && toolOutput.includes("totals tests passed"),
+        behavior,
         checkpoints: checkpoints.length,
         mathExcerpt: excerpt(mathSource),
         totalsExcerpt: excerpt(totalsSource),
         assistant: excerpt(assistantText(task))
       }).evidence;
       assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, multiEvidence);
-      assertWithEvidence(multiEvidence.mathFixed, "math source was not fixed", multiEvidence);
-      assertWithEvidence(multiEvidence.totalsFixed, "totals source was not fixed", multiEvidence);
+      assertWithEvidence(multiEvidence.mathFixed, "math behavior was not fixed for a non-fixture input", multiEvidence);
+      assertWithEvidence(multiEvidence.totalsFixed, "totals behavior was not fixed for a non-fixture input", multiEvidence);
       assertWithEvidence(multiEvidence.testsPassed, "npm test did not show both fixture suites passing", multiEvidence);
       assertWithEvidence(checkpoints.length >= 2, "multi-file edit did not create checkpoints for both files", multiEvidence);
       const rollback = await workbench.rollbackTask(task.id);
@@ -364,11 +372,18 @@ if (stressLevel >= 5) {
       task = await settleApprovals(workbench, task, () => "allow_for_task", 18);
       const fixedMath = readFileSync(join(fixture.root, "src", "math.mjs"), "utf8");
       const fixedTotals = readFileSync(join(fixture.root, "src", "totals.mjs"), "utf8");
-      assert(task.status === "completed", `expected completed, got ${task.status}`);
-      assert(toolOutputs(task).join("\n").includes("math tests passed"), "math fixture did not pass before follow-up");
-      assert(toolOutputs(task).join("\n").includes("totals tests passed"), "totals fixture did not pass before follow-up");
-      assert(fixedMath.includes("reduce"), "math source was not fixed before follow-up");
-      assert(fixedTotals.includes("reduce") && fixedTotals.includes("toFixed"), "totals source was not fixed before follow-up");
+      const fixedBehavior = await fixtureBehavior(fixture.root);
+      const beforeFollowUpEvidence = evidence(task, {
+        behavior: fixedBehavior,
+        mathExcerpt: excerpt(fixedMath),
+        totalsExcerpt: excerpt(fixedTotals),
+        assistant: excerpt(assistantText(task))
+      }).evidence;
+      assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, beforeFollowUpEvidence);
+      assertWithEvidence(toolOutputs(task).join("\n").includes("math tests passed"), "math fixture did not pass before follow-up", beforeFollowUpEvidence);
+      assertWithEvidence(toolOutputs(task).join("\n").includes("totals tests passed"), "totals fixture did not pass before follow-up", beforeFollowUpEvidence);
+      assertWithEvidence(fixedBehavior.mathGeneral, "math behavior was not fixed before follow-up", beforeFollowUpEvidence);
+      assertWithEvidence(fixedBehavior.totalsGeneral, "totals behavior was not fixed before follow-up", beforeFollowUpEvidence);
 
       await workbench.rollbackTask(task.id);
       const restoredMath = readFileSync(join(fixture.root, "src", "math.mjs"), "utf8");
@@ -385,7 +400,7 @@ if (stressLevel >= 5) {
           "继续这个同一个任务。",
           "请基于之前真实执行过的工具证据和刚刚 rollback 的结果，输出一个 JSON 对象，不要使用 Markdown、不要使用代码围栏、不要添加 JSON 之外的解释。",
           "不要重新运行 npm test，也不要再次编辑文件。",
-          "你必须使用 read_file 核对 rollback 后的 src/math.mjs 与 src/totals.mjs；不要读取其他文件，也不要调用除 read_file 之外的工具。",
+          "你必须且只能调用两次 read_file：第一次 path 必须是 \"src/math.mjs\"，第二次 path 必须是 \"src/totals.mjs\"；不要读取其他文件，不要使用空 path，也不要调用除 read_file 之外的工具。",
           "只允许基于你已经看到的 npm test 输出、src/math.mjs 和 src/totals.mjs 的真实内容回答，不要猜测不存在的函数或文件，不要使用“可能”“也许”或类似推测词。",
           "JSON 必须包含这些字段：",
           "- originalFailures.math.expected",
@@ -400,6 +415,7 @@ if (stressLevel >= 5) {
           "- currentTotalsExpression",
           "- restoredToOriginalBuggyState",
           "真实断言值必须是：sum([2, 3, 5]) 期望 10、实际 3；renderTotal([{ price: 2 }, { price: 5.5 }]) 期望 '$7.50'、实际 '$0.00'。",
+          "originalFailures.math.expression 和 originalFailures.totals.expression 必须填写导致失败的源码 return 表达式，不要填写测试断言调用表达式。",
           "modifiedFiles 必须列出之前真正被 edit_file 修改过的相对路径；本场景应为 [\"src/math.mjs\", \"src/totals.mjs\"]。",
           "rollback 后当前源码必须反映恢复后的真实表达式。不要新建任务。"
         ].join("\n")
@@ -415,16 +431,16 @@ if (stressLevel >= 5) {
       const followUpReadPaths = followUpToolRequests
         .filter((event) => event.payload?.toolName === "read_file")
         .map((event) => String(event.payload?.args?.path ?? ""));
-      const assistant = assistantText(continued);
-      const assistantJson = parseAssistantJson(assistant);
-      const modifiedFiles = normalizeStringArray(assistantJson.modifiedFiles);
       const longEvidence = evidence(continued, {
         summaries: summaries.length,
-        assistant: excerpt(assistant),
+        assistant: excerpt(assistantText(continued)),
         restoredMath: excerpt(restoredMath),
         restoredTotals: excerpt(restoredTotals),
         followUpReadPaths
       }).evidence;
+      const assistant = assistantText(continued);
+      const assistantJson = parseAssistantJson(assistant, longEvidence);
+      const modifiedFiles = normalizeStringArray(assistantJson.modifiedFiles);
       assertWithEvidence(continued.id === task.id, "follow-up changed task id", longEvidence);
       assertWithEvidence(continued.status === "completed", `expected completed, got ${continued.status}`, longEvidence);
       assertWithEvidence(summaries.length > 0 || continued.events.some((event) => event.type === "conversation_summary_created"), "long follow-up did not compact context", longEvidence);
@@ -452,7 +468,7 @@ if (stressLevel >= 5) {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, { timeoutMs: 300_000 });
 }
 
 await runCase("pending guidance consumption", async () => {
@@ -508,7 +524,286 @@ await runCase("memory without direct skill promotion", async () => {
   assert(memories.length === 2, `expected 2 memories, got ${memories.length}`);
   assert(skills.length === 0, `ordinary tasks directly created ${skills.length} skills`);
   return { status: "passed", evidence: { memories: memories.length, skills: skills.length } };
-});
+}, { timeoutMs: 300_000 });
+
+if (stressLevel >= 6) {
+  await runCase("explicit file tool coverage", async () => {
+    const fixture = createFixtureProject("file-tools");
+    try {
+      writeFixture(
+        fixture.root,
+        "src/search-target.mjs",
+        "export const LIVE_FILE_TOOL_MARKER = 'AW-LIVE-FILE-TOOLS';\nexport function marker() {\n  return LIVE_FILE_TOOL_MARKER;\n}\n"
+      );
+      const { workbench, folderId } = await createLiveWorkbench(fixture.root);
+      let task = await workbench.createTask(
+        [
+          "请严格按顺序验证当前项目文件工具：",
+          "1. 调用 list_files 查看 src 目录。",
+          "2. 调用 search_files 搜索 AW-LIVE-FILE-TOOLS。",
+          "3. 调用 read_file 读取 src/search-target.mjs。",
+          "4. 调用 write_file 新建 docs/file-tool-coverage.md，expectedHash 必须使用 __new__。",
+          "不要使用 edit_file，不要运行命令。最终回答列出实际用到的工具和新文档路径。"
+        ].join("\n"),
+        "Live file tool coverage",
+        folderId
+      );
+      task = await settleApprovals(workbench, task, () => "allow_for_task", 10);
+      const docPath = join(fixture.root, "docs", "file-tool-coverage.md");
+      const doc = existsSync(docPath) ? readFileSync(docPath, "utf8") : "";
+      const toolNames = toolRequestNames(task);
+      const fileEvidence = evidence(task, {
+        toolNames,
+        docCreated: Boolean(doc),
+        docExcerpt: excerpt(doc),
+        assistant: excerpt(assistantText(task))
+      }).evidence;
+      assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, fileEvidence);
+      for (const expectedTool of ["list_files", "search_files", "read_file", "write_file"]) {
+        assertWithEvidence(toolNames.includes(expectedTool), `missing ${expectedTool} tool call`, fileEvidence);
+      }
+      assertWithEvidence(!toolNames.includes("edit_file"), "used edit_file despite write_file-only instruction", fileEvidence);
+      assertWithEvidence(doc.includes("AW-LIVE-FILE-TOOLS") || assistantText(task).includes("AW-LIVE-FILE-TOOLS"), "file marker was not carried into evidence or final answer", fileEvidence);
+      return { status: "passed", evidence: fileEvidence };
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  await runCase("active skill use coverage", async () => {
+    const { workbench } = await createLiveWorkbench();
+    const skill = await workbench.createSkill({
+      title: "Live Golden Runbook",
+      body: [
+        "# Live Golden Runbook",
+        "",
+        "When this runbook is used, the final answer must include SKILL-GOLDEN-RUNBOOK and mention that the guidance came from an active skill."
+      ].join("\n"),
+      status: "active",
+      applicability: {
+        description: "Use when the user asks for the live golden runbook marker.",
+        keywords: ["golden", "runbook", "skill"]
+      }
+    });
+    let task = await workbench.createTask(
+      [
+        `请先调用 use_skill 加载名为 ${skill.title} 的技能。`,
+        "然后只用一句话回答，并包含精确文本 SKILL-GOLDEN-RUNBOOK。",
+        "不要读取文件，不要运行命令。"
+      ].join("\n"),
+      "Live skill use"
+    );
+    task = await settleApprovals(workbench, task, () => "allow_for_task", 4);
+    const toolNames = toolRequestNames(task);
+    const skillEvidence = evidence(task, {
+      skillId: skill.id,
+      skillTitle: skill.title,
+      toolNames,
+      assistant: excerpt(assistantText(task))
+    }).evidence;
+    assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, skillEvidence);
+    assertWithEvidence(toolNames.includes("use_skill"), "model did not call use_skill", skillEvidence);
+    assertWithEvidence(assistantText(task).includes("SKILL-GOLDEN-RUNBOOK"), "assistant did not use the active skill marker", skillEvidence);
+    return { status: "passed", evidence: skillEvidence };
+  });
+
+  await runCase("web search tool coverage", async () => {
+    const { workbench } = await createLiveWorkbench(undefined, { webSearch: true });
+    const payload = encodeURIComponent(
+      JSON.stringify({
+        results: [
+          {
+            title: "Agent Workbench Live Search Marker",
+            url: "https://example.test/agent-workbench-live-search",
+            snippet: "The live web search marker is AW-WEB-SEARCH-GOLDEN."
+          }
+        ]
+      })
+    );
+    await workbench.createWebSearchProvider({
+      label: "Live deterministic search",
+      kind: "custom",
+      endpoint: `data:application/json,${payload}`,
+      enabled: true
+    });
+    let task = await workbench.createTask(
+      [
+        "请调用 web_search 搜索 Agent Workbench live search marker。",
+        "最终回答必须包含精确文本 AW-WEB-SEARCH-GOLDEN，并说明这是来自搜索结果。",
+        "如果 web_search 的 tool result 中包含该 marker，你必须逐字复制该 marker，不能只写泛化摘要。",
+        "不要使用文件工具或命令。"
+      ].join("\n"),
+      "Live web search"
+    );
+    task = await settleApprovals(workbench, task, () => "allow_for_task", 6);
+    const toolNames = toolRequestNames(task);
+    const outputs = toolOutputs(task).join("\n");
+    const webEvidence = evidence(task, {
+      toolNames,
+      searchEvidence: excerpt(outputs, 1200),
+      assistant: excerpt(assistantText(task))
+    }).evidence;
+    assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, webEvidence);
+    assertWithEvidence(toolNames.includes("web_search"), "model did not call web_search", webEvidence);
+    assertWithEvidence(outputs.includes("AW-WEB-SEARCH-GOLDEN"), "web_search did not return the marker", webEvidence);
+    assertWithEvidence(assistantText(task).includes("AW-WEB-SEARCH-GOLDEN"), "assistant did not use the web search marker", webEvidence);
+    return { status: "passed", evidence: webEvidence };
+  });
+}
+
+if (stressLevel >= 7) {
+  await runCase("repeated same-thread follow-up endurance", async () => {
+    const { workbench } = await createLiveWorkbench();
+    let task = await workbench.createTask("这是长跑多轮一致性检查的第 1 轮。请只用一句话回答，不要使用工具。", "Live repeated follow-up");
+    const followUps = [
+      "第 2 轮：继续保持同一个任务，只补充一个风险点，不要使用工具。",
+      "第 3 轮：继续保持同一个任务，只补充一个验证点，不要使用工具。",
+      "第 4 轮：继续保持同一个任务，只补充一个收尾判断，不要使用工具。"
+    ];
+    for (const followUp of followUps) {
+      task = await workbench.appendMessage(task.id, followUp);
+    }
+    const tasks = await workbench.listTasks();
+    const followEvidence = evidence(task, {
+      taskCount: tasks.length,
+      userMessages: task.events.filter((event) => event.type === "user_message").length,
+      toolRequests: toolRequestNames(task),
+      assistant: excerpt(assistantText(task))
+    }).evidence;
+    assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, followEvidence);
+    assertWithEvidence(tasks.length === 1, `expected one task after repeated follow-up, got ${tasks.length}`, followEvidence);
+    assertWithEvidence(task.events.filter((event) => event.type === "user_message").length === 4, "follow-up turns were not retained on the same thread", followEvidence);
+    assertWithEvidence(toolRequestNames(task).length === 0, "no-tool follow-up endurance unexpectedly requested tools", followEvidence);
+    return { status: "passed", evidence: followEvidence };
+  });
+
+  await runCase("long command output materialization", async () => {
+    const fixture = createFixtureProject("long-output-live");
+    try {
+      const { workbench, folderId } = await createLiveWorkbench(fixture.root);
+      let task = await workbench.createTask(
+        [
+          "请运行下面这个精确命令来生成长输出，然后总结工具是否将原文物化到 rawOutputRef：",
+          "node -e \"for (let i = 0; i < 520; i++) console.log('LIVE-LONG-OUTPUT-' + i + '-' + 'x'.repeat(40))\"",
+          "不要读取文件，不要修改文件。最终回答必须提到 rawOutputRef 或 output truncated。"
+        ].join("\n"),
+        "Live long output",
+        folderId
+      );
+      task = await settleApprovals(workbench, task, () => "allow_for_task", 6);
+      const output = toolOutputs(task).join("\n");
+      const longOutputEvidence = evidence(task, {
+        outputEvidence: excerpt(output, 1800),
+        assistant: excerpt(assistantText(task))
+      }).evidence;
+      assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, longOutputEvidence);
+      assertWithEvidence(toolRequestNames(task).includes("run_command"), "model did not run the long output command", longOutputEvidence);
+      assertWithEvidence(output.includes("rawOutputRef"), "long output was not materialized with rawOutputRef", longOutputEvidence);
+      assertWithEvidence(output.includes("output truncated"), "long output summary did not record truncation", longOutputEvidence);
+      return { status: "passed", evidence: longOutputEvidence };
+    } finally {
+      fixture.cleanup();
+    }
+  }, { timeoutMs: 300_000 });
+}
+
+if (stressLevel >= 8) {
+  await runCase("concurrent no-tool task isolation", async () => {
+    const { workbench } = await createLiveWorkbench();
+    const [left, right] = await Promise.all([
+      workbench.createTask("并发隔离检查 A：只回答 A-ISOLATED，不要使用工具。", "Live concurrent A"),
+      workbench.createTask("并发隔离检查 B：只回答 B-ISOLATED，不要使用工具。", "Live concurrent B")
+    ]);
+    const tasks = await workbench.listTasks();
+    const concurrentEvidence = {
+      leftTaskId: left.id,
+      rightTaskId: right.id,
+      leftStatus: left.status,
+      rightStatus: right.status,
+      taskCount: tasks.length,
+      leftAssistant: excerpt(assistantText(left)),
+      rightAssistant: excerpt(assistantText(right)),
+      leftToolRequests: toolRequestNames(left),
+      rightToolRequests: toolRequestNames(right)
+    };
+    assertWithEvidence(left.id !== right.id, "concurrent tasks reused the same task id", concurrentEvidence);
+    assertWithEvidence(left.status === "completed" && right.status === "completed", "concurrent no-tool tasks did not both complete", concurrentEvidence);
+    assertWithEvidence(tasks.length === 2, `expected two concurrent tasks, got ${tasks.length}`, concurrentEvidence);
+    assertWithEvidence(toolRequestNames(left).length === 0 && toolRequestNames(right).length === 0, "concurrent no-tool tasks unexpectedly requested tools", concurrentEvidence);
+    return { status: "passed", evidence: concurrentEvidence };
+  });
+
+  await runCase("combined skill knowledge web search chain", async () => {
+    const { workbench } = await createLiveWorkbench(undefined, { knowledge: true, webSearch: true });
+    const skill = await workbench.createSkill({
+      title: "Combined Live Verification Skill",
+      body: [
+        "# Combined Live Verification Skill",
+        "",
+        "When this skill is used, the final answer must include SKILL-COMBINED-MARKER."
+      ].join("\n"),
+      status: "active",
+      applicability: {
+        description: "Use when the user asks for combined live verification.",
+        keywords: ["combined", "verification", "skill"]
+      }
+    });
+    await workbench.createKnowledgeItem({
+      kind: "memory",
+      title: "Combined Live Knowledge Marker",
+      sourceUri: "agent-workbench://live-smoke/combined-knowledge.md",
+      tags: ["live-smoke", "combined"],
+      content: "The combined live knowledge marker is COMBINED-KNOWLEDGE-MARKER."
+    });
+    const payload = encodeURIComponent(
+      JSON.stringify({
+        results: [
+          {
+            title: "Combined Live Web Marker",
+            url: "https://example.test/combined-live-web-marker",
+            snippet: "The combined live web marker is AW-COMBINED-WEB-MARKER."
+          }
+        ]
+      })
+    );
+    await workbench.createWebSearchProvider({
+      label: "Combined deterministic search",
+      kind: "custom",
+      endpoint: `data:application/json,${payload}`,
+      enabled: true
+    });
+    let task = await workbench.createTask(
+      [
+        "请完成一次组合工具链验证：",
+        `1. 调用 use_skill 加载名为 ${skill.title} 的技能。`,
+        "2. 调用 knowledge_search 查询 COMBINED-KNOWLEDGE-MARKER。",
+        "3. 调用 web_search 查询 Agent Workbench combined live web marker。",
+        "最终回答必须逐字包含 SKILL-COMBINED-MARKER、COMBINED-KNOWLEDGE-MARKER、AW-COMBINED-WEB-MARKER。",
+        "不要读取文件，不要运行命令。"
+      ].join("\n"),
+      "Live combined tools"
+    );
+    task = await settleApprovals(workbench, task, () => "allow_for_task", 10);
+    const toolNames = toolRequestNames(task);
+    const outputs = toolOutputs(task).join("\n");
+    const assistant = assistantText(task);
+    const combinedEvidence = evidence(task, {
+      skillId: skill.id,
+      toolNames,
+      toolOutput: excerpt(outputs, 1800),
+      assistant: excerpt(assistant)
+    }).evidence;
+    assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, combinedEvidence);
+    for (const toolName of ["use_skill", "knowledge_search", "web_search"]) {
+      assertWithEvidence(toolNames.includes(toolName), `combined chain did not call ${toolName}`, combinedEvidence);
+    }
+    for (const marker of ["SKILL-COMBINED-MARKER", "COMBINED-KNOWLEDGE-MARKER", "AW-COMBINED-WEB-MARKER"]) {
+      assertWithEvidence(`${outputs}\n${assistant}`.includes(marker), `combined chain lost marker ${marker}`, combinedEvidence);
+      assertWithEvidence(assistant.includes(marker), `assistant final answer omitted marker ${marker}`, combinedEvidence);
+    }
+    return { status: "passed", evidence: combinedEvidence };
+  });
+}
 
 await runCase("knowledge rag citation", async () => {
   const { workbench } = await createLiveWorkbench(undefined, { knowledge: true });
@@ -607,9 +902,11 @@ async function createLiveWorkbench(rootPath, options = {}) {
     preferenceProvider: () => store.getPreferences()
   });
   const fallbackTools = new ShellToolExecutor();
-  const tools = options.knowledge
-    ? new CompositeToolExecutor(fallbackTools, [new KnowledgeSearchToolExecutor(store)])
-    : fallbackTools;
+  const delegates = [
+    ...(options.knowledge ? [new KnowledgeSearchToolExecutor(store)] : []),
+    ...(options.webSearch ? [new WebSearchToolExecutor(store)] : [])
+  ];
+  const tools = delegates.length > 0 ? new CompositeToolExecutor(fallbackTools, delegates) : fallbackTools;
   const workbench = new AgentWorkbench({ store, contextAssembler, model, tools });
   if (!rootPath) return { workbench, store, folderId: "default" };
   const folder = await workbench.createTaskFolder({ name: "Live fixture", rootPath });
@@ -627,10 +924,10 @@ async function settleApprovals(workbench, task, decide, maxRounds = 8) {
   return current;
 }
 
-async function runCase(name, fn) {
+async function runCase(name, fn, options = {}) {
   const started = Date.now();
   try {
-    const result = await withTimeout(fn(), 180_000, name);
+    const result = await withTimeout(fn(), options.timeoutMs ?? 180_000, name);
     const evidencePayload = result?.evidence ?? result ?? {};
     assertTraceBudgets(evidencePayload);
     report.cases.push({
@@ -639,6 +936,7 @@ async function runCase(name, fn) {
       durationMs: Date.now() - started,
       evidence: evidencePayload
     });
+    await writeLiveSmokeReport(refreshSummary(report));
     console.log(`PASS ${name}`);
   } catch (error) {
     const evidencePayload = error instanceof EvidenceError ? error.evidence : {};
@@ -651,8 +949,19 @@ async function runCase(name, fn) {
       error: sanitizeError(error),
       evidence: evidencePayload
     });
+    await writeLiveSmokeReport(refreshSummary(report));
     console.error(`FAIL ${name} [${failureClass}]: ${sanitizeError(error)}`);
   }
+}
+
+function refreshSummary(data) {
+  const failed = data.cases.filter((item) => item.status === "failed");
+  data.summary = {
+    totalCases: data.cases.length,
+    passedCases: data.cases.filter((item) => item.status === "passed").length,
+    failedCases: failed.length
+  };
+  return data;
 }
 
 function evidence(task, extra = {}) {
@@ -705,6 +1014,24 @@ function createFixtureProject(name) {
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
+async function fixtureBehavior(fixtureRoot) {
+  const version = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const math = await import(`${pathToFileURL(join(fixtureRoot, "src", "math.mjs")).href}?${version}`);
+  const totals = await import(`${pathToFileURL(join(fixtureRoot, "src", "totals.mjs")).href}?${version}`);
+  const sumGeneral = typeof math.sum === "function" ? math.sum([1, 4, 9]) : undefined;
+  const averageGeneral = typeof math.average === "function" ? math.average([3, 6, 9]) : undefined;
+  const totalGeneral = typeof totals.renderTotal === "function"
+    ? totals.renderTotal([{ price: 1.25 }, { price: 2 }, { price: 3.5 }])
+    : undefined;
+  return {
+    sumGeneral,
+    averageGeneral,
+    totalGeneral,
+    mathGeneral: sumGeneral === 14 && averageGeneral === 6,
+    totalsGeneral: totalGeneral === "$6.75"
+  };
+}
+
 async function seedLongConversationHistory(store, task, marker, noteCount = 34) {
   const seeded = { ...task, events: [...task.events] };
   for (let index = 0; index < noteCount; index++) {
@@ -737,14 +1064,18 @@ function assistantText(task) {
   return [...task.events].reverse().find((event) => event.type === "assistant_message")?.summary ?? "";
 }
 
-function parseAssistantJson(text) {
+function parseAssistantJson(text, evidencePayload = undefined) {
   const raw = String(text ?? "").trim();
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = (fenced?.[1] ?? raw).trim();
   const start = candidate.indexOf("{");
   const end = candidate.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("assistant did not return a JSON object");
-  return JSON.parse(candidate.slice(start, end + 1));
+  if (start < 0 || end <= start) throw new EvidenceError("assistant did not return a JSON object", evidencePayload ?? { assistant: excerpt(raw) });
+  try {
+    return JSON.parse(candidate.slice(start, end + 1));
+  } catch (error) {
+    throw new EvidenceError(`assistant returned malformed JSON: ${sanitizeError(error)}`, evidencePayload ?? { assistant: excerpt(raw) });
+  }
 }
 
 function normalizeStringArray(value) {
@@ -766,6 +1097,10 @@ function normalizeQuotedValue(value) {
 
 function toolOutputs(task) {
   return task.events.filter((event) => event.type === "tool_result").map((event) => String(event.payload?.output ?? ""));
+}
+
+function toolRequestNames(task) {
+  return task.events.filter((event) => event.type === "tool_requested").map((event) => String(event.payload?.toolName ?? ""));
 }
 
 function approvalSummary(task) {

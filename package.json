@@ -20,7 +20,7 @@
     "test:stress": "vitest run tests/stress/stress.test.ts",
     "test:web-budgets": "node scripts/check-web-budgets.mjs",
     "smoke:live-model": "npm.cmd run build && node scripts/live-model-smoke.mjs",
-    "test:e2e": "npm.cmd run build && playwright test tests/e2e/workbench.spec.ts tests/e2e/flagship-ui.spec.ts && node scripts/check-playwright-results.mjs",
+    "test:e2e": "npm.cmd run build && playwright test tests/e2e/workbench.spec.ts tests/e2e/flagship-ui.spec.ts tests/e2e/responsiveness.spec.ts && node scripts/check-playwright-results.mjs",
     "test:a11y": "npm.cmd run build && playwright test tests/e2e/accessibility.spec.ts",
     "typecheck": "tsc -b packages/shared packages/core apps/server apps/web",
     "check:no-old-control": "node scripts/check-no-old-control.mjs",

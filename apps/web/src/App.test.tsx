@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GlobalPermissionGrant, IntegrationProviderConfig, KnowledgeItem, MemoryDocument, MemoryDocumentCompactResult, ModelProviderRecord, ProjectMemory, RiskCategory, ScheduledTask, SkillRecord, TaskDetail, TaskEvent, TaskFolderRecord, ToolApproval, UserPreferences, WebSearchProviderConfig } from "@agent-workbench/shared";
 import { App } from "./App.js";
 import { ApprovalCard } from "./components/ApprovalCard.js";
 import { Composer } from "./components/Composer.js";
-import { CompactList } from "./components/LearningPanel.js";
 import { McpPanel } from "./components/McpPanel.js";
 import { KnowledgePanel } from "./components/KnowledgePanel.js";
 import { IntegrationsPanel } from "./components/IntegrationsPanel.js";
@@ -19,7 +18,7 @@ import { TaskList } from "./components/TaskList.js";
 import { TaskThread } from "./components/TaskThread.js";
 import { Timeline } from "./components/Timeline.js";
 import { WebSearchPanel } from "./components/WebSearchPanel.js";
-import { coalesceRealtimeEvents, compactTaskEventsForTranscript, mergeSelectedTaskShell, parseRealtimeMessage } from "./useWorkbenchData.js";
+import { applyTaskShellEvents, compactTaskEventsForTranscript, mergeSelectedTaskShell } from "./useWorkbenchData.js";
 
 afterEach(() => {
   cleanup();
@@ -121,6 +120,7 @@ describe("Composer", () => {
 
 describe("Workbench components", () => {
   const task: TaskDetail = {
+    kind: "primary",
     id: "task_1",
     title: "Check host",
     folderId: "default",
@@ -221,6 +221,172 @@ describe("Workbench components", () => {
     expect(screen.getByRole("heading", { name: "New task" })).toBeInTheDocument();
     expect(screen.getByLabelText("Task input")).toHaveValue("");
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("renders delegated child work cards above the timeline and opens a child thread on click", async () => {
+    const onOpenDelegatedTask = vi.fn();
+    render(
+      <TaskThread
+        task={{ ...task, kind: "primary", status: "running" }}
+        delegatedChildren={[{
+          id: "task_child_1",
+          title: "Renderer comparison",
+          status: "running",
+          updatedAt: new Date().toISOString(),
+          parentTaskId: "task_1",
+          sourceToolCallId: "tool_spawn_child_1",
+          goal: "Compare the renderer paths",
+          statusText: "Inspecting the main renderer flow.",
+          activeToolName: "read_file"
+        }]}
+        busy={false}
+        error={null}
+        language="en-US"
+        engineStatus="running"
+        preferences={null}
+        attachments={[]}
+        attachmentBusy={false}
+        attachmentError={null}
+        modelLabel="mimo-v2.5"
+        modelOptions={[{ label: "Mimo v2.5", value: "mimo-v2.5" }]}
+        permissionPreset="ask"
+        permissionScopeLabel="Approval"
+        onModelChange={vi.fn()}
+        onFilesSelected={vi.fn()}
+        onRemoveAttachment={vi.fn()}
+        onOpenConnect={vi.fn()}
+        onOpenCustomPermissions={vi.fn()}
+        onRestoreCustomPermissions={vi.fn()}
+        hasCustomSnapshot={false}
+        onPermissionPresetChange={vi.fn()}
+        onOpenTasks={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+        onRetryTitle={vi.fn()}
+        onUseLocalTitle={vi.fn()}
+        onApprovalDecision={vi.fn()}
+        onOpenDelegatedTask={onOpenDelegatedTask}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "Delegated Work" })).toBeInTheDocument();
+    expect(await screen.findByText("check processes")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Renderer comparison/i }));
+    expect(onOpenDelegatedTask).toHaveBeenCalledWith("task_child_1");
+  });
+
+  it("shows a parent breadcrumb when viewing a child task", () => {
+    const onReturnToParent = vi.fn();
+    render(
+      <TaskThread
+        task={{ ...task, kind: "subagent", id: "task_child_2", title: "Child thread", parentTaskId: "task_1", status: "completed" }}
+        parentTask={{ ...task, kind: "primary", title: "Parent thread" }}
+        busy={false}
+        error={null}
+        language="en-US"
+        engineStatus="running"
+        preferences={null}
+        attachments={[]}
+        attachmentBusy={false}
+        attachmentError={null}
+        modelLabel="mimo-v2.5"
+        modelOptions={[{ label: "Mimo v2.5", value: "mimo-v2.5" }]}
+        permissionPreset="ask"
+        permissionScopeLabel="Approval"
+        onModelChange={vi.fn()}
+        onFilesSelected={vi.fn()}
+        onRemoveAttachment={vi.fn()}
+        onOpenConnect={vi.fn()}
+        onOpenCustomPermissions={vi.fn()}
+        onRestoreCustomPermissions={vi.fn()}
+        hasCustomSnapshot={false}
+        onPermissionPresetChange={vi.fn()}
+        onOpenTasks={vi.fn()}
+        onSubmit={vi.fn()}
+        onStop={vi.fn()}
+        onRetryTitle={vi.fn()}
+        onUseLocalTitle={vi.fn()}
+        onApprovalDecision={vi.fn()}
+        onReturnToParent={onReturnToParent}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Parent thread/i }));
+    expect(onReturnToParent).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a child task route selected across background task-shell refreshes even when the list excludes children", async () => {
+    window.history.replaceState({}, "", "/tasks/task_child_route");
+    const now = new Date().toISOString();
+    const parentTask: TaskDetail = {
+      ...task,
+      kind: "primary",
+      id: "task_parent_route",
+      title: "Parent route thread",
+      status: "completed",
+      events: [
+        {
+          id: "event_parent_route_goal",
+          taskId: "task_parent_route",
+          type: "user_message",
+          createdAt: now,
+          summary: "Parent route goal",
+          payload: {}
+        }
+      ]
+    };
+    const childTask: TaskDetail = {
+      ...task,
+      kind: "subagent",
+      id: "task_child_route",
+      title: "Child route thread",
+      parentTaskId: "task_parent_route",
+      status: "completed",
+      events: [
+        {
+          id: "event_child_route_goal",
+          taskId: "task_child_route",
+          type: "user_message",
+          createdAt: now,
+          summary: "Delegated route goal",
+          payload: {}
+        },
+        {
+          id: "event_child_route_final",
+          taskId: "task_child_route",
+          type: "assistant_message",
+          createdAt: now,
+          summary: "Child route answer",
+          payload: {}
+        }
+      ]
+    };
+    const requests: string[] = [];
+
+    stubAuthedFetch(async (url) => {
+      requests.push(url);
+      if (url === "/health") return jsonResponse({ ok: true });
+      if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+      if (url === "/api/preferences") return jsonResponse(defaultPreferences("en-US"));
+      if (url === "/api/tasks") return jsonResponse([parentTask]);
+      if (url === "/api/tasks/task_child_route" || url.startsWith("/api/tasks/task_child_route?")) return jsonResponse(childTask);
+      if (url === "/api/tasks/task_child_route/transcript") return jsonResponse(childTask.events);
+      if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+      return jsonResponse([]);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Child route thread" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Parent route thread\s*\/\s*Child route thread/i })).toBeInTheDocument();
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2700));
+    });
+    await waitFor(() => expect(requests.filter((url) => url === "/api/tasks/task_child_route/transcript").length).toBeGreaterThanOrEqual(2));
+
+    expect(screen.getByRole("heading", { name: "Child route thread" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/tasks/task_child_route");
   });
 
   it("confirms task deletion and exposes learning cleanup choices", async () => {
@@ -439,6 +605,200 @@ describe("Workbench components", () => {
     expect(screen.getByText("Candidate skill is not active yet.")).toBeInTheDocument();
   });
 
+  it("uses the sidebar as a file rollback timeline and opens rollback checks in the chat", async () => {
+    const now = new Date().toISOString();
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const onPreviewRollback = vi.fn().mockResolvedValue({
+      taskId: "task_rollback",
+      checkpointId: "checkpoint_1",
+      workRoot: process.cwd(),
+      restorableFiles: 1,
+      deletableFiles: 0,
+      skippedFiles: 0,
+      createdAt: now,
+      files: [{
+        path: `${process.cwd()}\\src\\math.ts`,
+        relativePath: "src/math.ts",
+        status: "modified",
+        existedBefore: true,
+        existsNow: true,
+        canRollback: true,
+        sizeBefore: 12,
+        sizeNow: 20
+      }]
+    });
+    const onRollback = vi.fn().mockResolvedValue({
+      taskId: "task_rollback",
+      checkpointId: "checkpoint_1",
+      workRoot: process.cwd(),
+      restoredFiles: 1,
+      deletedFiles: 0,
+      skippedFiles: 0,
+      createdAt: now,
+      files: []
+    });
+    const onRevertTurn = vi.fn().mockResolvedValue("Rollback discussion draft");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const rollbackTask: TaskDetail = {
+      ...task,
+      id: "task_rollback",
+      status: "completed",
+      events: [
+        {
+          id: "event_user_rollback",
+          taskId: "task_rollback",
+          type: "user_message",
+          createdAt: now,
+          summary: "Please fix src/math.ts and keep the change reversible.",
+          payload: { turnId: "turn_rollback" }
+        },
+        {
+          id: "event_tool_request",
+          taskId: "task_rollback",
+          type: "tool_requested",
+          createdAt: now,
+          summary: "edit_file",
+          payload: { toolCallId: "call_edit", toolName: "edit_file", args: { path: "src/math.ts" } }
+        },
+        {
+          id: "event_checkpoint",
+          taskId: "task_rollback",
+          type: "task_checkpoint_created",
+          createdAt: now,
+          summary: "Checkpoint created before edit_file.",
+          payload: { checkpointId: "checkpoint_1", toolCallId: "call_edit", toolName: "edit_file", fileCount: 1 }
+        },
+        {
+          id: "event_token_usage",
+          taskId: "task_rollback",
+          type: "token_usage_recorded",
+          createdAt: now,
+          summary: "Provider token usage recorded.",
+          payload: { inputTokens: 999999, outputTokens: 999999, totalTokens: 1999998 }
+        }
+      ],
+      approvals: [],
+      pendingGuidance: []
+    };
+
+    try {
+      const { container } = render(
+        <TaskThread
+          task={rollbackTask}
+          busy={false}
+          error={null}
+          language="en-US"
+          engineStatus="running"
+          preferences={null}
+          attachments={[]}
+          attachmentBusy={false}
+          attachmentError={null}
+          modelLabel="mimo-v2.5"
+          modelOptions={[{ label: "Mimo v2.5", value: "mimo-v2.5" }]}
+          permissionPreset="ask"
+          permissionScopeLabel="Approval"
+          onModelChange={vi.fn()}
+          onFilesSelected={vi.fn()}
+          onRemoveAttachment={vi.fn()}
+          onOpenConnect={vi.fn()}
+          onOpenCustomPermissions={vi.fn()}
+          onRestoreCustomPermissions={vi.fn()}
+          hasCustomSnapshot={false}
+          onPermissionPresetChange={vi.fn()}
+          onOpenTasks={vi.fn()}
+          onSubmit={vi.fn()}
+          onStop={vi.fn()}
+          onPreviewRollback={onPreviewRollback}
+          onRollback={onRollback}
+          onRevertTurn={onRevertTurn}
+          onRetryTitle={vi.fn()}
+          onUseLocalTitle={vi.fn()}
+          onApprovalDecision={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText("File rollback timeline")).toBeInTheDocument();
+      expect(screen.getByText("Click a rollback point to inspect it in the chat timeline.")).toBeInTheDocument();
+      expect(screen.getByText(".../src/math.ts")).toBeInTheDocument();
+      expect(screen.queryByText("Review checkpoints")).not.toBeInTheDocument();
+      expect(screen.queryByText("Token usage")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Files/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Revert turn/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Rollback selected files/i })).not.toBeInTheDocument();
+
+      const sidebarPoint = container.querySelector(".rollbackCheckpointMain");
+      expect(sidebarPoint).not.toBeNull();
+      fireEvent.click(sidebarPoint as HTMLElement);
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+      expect(container.querySelector(".taskPlanPanel")?.className).toContain("collapsed");
+
+      fireEvent.click(screen.getByRole("button", { name: /Inspect rollback point/i }));
+      await waitFor(() => expect(onPreviewRollback).toHaveBeenCalledWith({ checkpointId: "checkpoint_1" }));
+      expect(screen.getAllByText("src/math.ts").length).toBeGreaterThan(0);
+      fireEvent.click(screen.getByRole("button", { name: /Rollback selected files/i }));
+      await waitFor(() => expect(onRollback).toHaveBeenCalledWith({ checkpointId: "checkpoint_1", filePaths: [`${process.cwd()}\\src\\math.ts`] }));
+      expect(onRevertTurn).not.toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
+
+  it("keeps rollback preview errors and empty states in the checkpoint chat card", async () => {
+    const now = new Date().toISOString();
+    const checkpointTask: TaskDetail = {
+      ...task,
+      id: "task_checkpoint_empty",
+      status: "completed",
+      events: [{
+        id: "event_checkpoint_empty",
+        taskId: "task_checkpoint_empty",
+        type: "task_checkpoint_created",
+        createdAt: now,
+        summary: "Checkpoint created before edit_file.",
+        payload: { checkpointId: "checkpoint_empty", toolName: "edit_file", fileCount: 0 }
+      }],
+      approvals: []
+    };
+    const failingPreview = vi.fn().mockRejectedValue(new Error("No checkpoint is available for this task."));
+    const emptyPreview = vi.fn().mockResolvedValue({
+      taskId: "task_checkpoint_empty",
+      checkpointId: "checkpoint_empty",
+      workRoot: process.cwd(),
+      restorableFiles: 0,
+      deletableFiles: 0,
+      skippedFiles: 0,
+      createdAt: now,
+      files: []
+    });
+
+    const { rerender } = render(
+      <Timeline
+        task={checkpointTask}
+        onPreviewRollback={failingPreview}
+        onRollback={vi.fn()}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Inspect rollback point/i }));
+    expect(await screen.findByText("No checkpoint is available for this task.")).toBeInTheDocument();
+
+    rerender(
+      <Timeline
+        task={checkpointTask}
+        onPreviewRollback={emptyPreview}
+        onRollback={vi.fn()}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Inspect rollback point/i }));
+    expect(await screen.findByText("This rollback point has no files to inspect.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Rollback selected files/i })).toBeDisabled();
+  });
+
   it("windows very large timelines so old events do not overload the DOM", () => {
     const events = Array.from({ length: 390 }, (_, index) => ({
       id: `event_window_${index}`,
@@ -573,6 +933,62 @@ describe("Workbench components", () => {
     expect(merged.events[0]?.type).toBe("conversation_summary_created");
   });
 
+  it("ignores stale task-shell refreshes after a newer polling snapshot", () => {
+    const currentTask: TaskDetail = {
+      ...task,
+      status: "completed",
+      updatedAt: "2026-05-17T10:00:02.000Z",
+      events: []
+    };
+    const staleShell: TaskDetail = {
+      ...currentTask,
+      status: "running",
+      updatedAt: "2026-05-17T10:00:01.000Z"
+    };
+
+    const merged = mergeSelectedTaskShell(currentTask, staleShell);
+
+    expect(merged.status).toBe("completed");
+    expect(merged.updatedAt).toBe(currentTask.updatedAt);
+  });
+
+  it("applies realtime title and status events to the task shell immediately", () => {
+    const currentTask: TaskDetail = {
+      ...task,
+      title: "Create Or",
+      status: "running",
+      updatedAt: "2026-05-17T10:00:01.000Z",
+      events: []
+    };
+
+    const merged = applyTaskShellEvents(currentTask, [
+      {
+        id: "event_title_update",
+        taskId: "task_1",
+        type: "task_title_updated",
+        createdAt: "2026-05-17T10:00:02.000Z",
+        summary: "Create validation-probe-lines.txt with five lines",
+        payload: {
+          previousTitle: "Create Or",
+          newTitle: "Create validation-probe-lines.txt with five lines",
+          uiHidden: true
+        }
+      },
+      {
+        id: "event_status_update",
+        taskId: "task_1",
+        type: "status_changed",
+        createdAt: "2026-05-17T10:00:03.000Z",
+        summary: "completed",
+        payload: {}
+      }
+    ]);
+
+    expect(merged.title).toBe("Create validation-probe-lines.txt with five lines");
+    expect(merged.status).toBe("completed");
+    expect(merged.updatedAt).toBe("2026-05-17T10:00:03.000Z");
+  });
+
   it("keeps tool evidence collapsed, path-focused, and free of placeholder text", () => {
     const { container } = render(
       <Timeline
@@ -650,7 +1066,7 @@ describe("Workbench components", () => {
     expect(screen.queryByText(hugeReadMarker)).not.toBeInTheDocument();
   });
 
-  it("preserves readable assistant preambles for turns that continued into tools", () => {
+  it("preserves readable assistant and thinking preambles for turns that continued into tools", () => {
     const { container } = render(
       <Timeline
         task={{
@@ -692,7 +1108,8 @@ describe("Workbench components", () => {
     );
 
     expect(screen.getByText("Now let me read the file.")).toBeInTheDocument();
-    expect(screen.queryByText("Need to inspect the file first.")).not.toBeInTheDocument();
+    expect(screen.getByText("Thinking")).toBeInTheDocument();
+    expect(screen.getAllByText("Need to inspect the file first.").length).toBeGreaterThan(0);
     expect(container.querySelector(".event.assistant_delta")).not.toBeNull();
     expect(container.querySelectorAll(".event.tool_result")).toHaveLength(1);
   });
@@ -767,6 +1184,121 @@ describe("Workbench components", () => {
     expect(screen.getAllByText("src/generated/large-blog.tsx").length).toBeGreaterThan(0);
     expect(screen.getByText(/Large change/)).toBeInTheDocument();
     expect(screen.queryByText("hidden debug arg")).not.toBeInTheDocument();
+  });
+
+  it("shows requested tools and live file line changes before completion", () => {
+    const { container } = render(
+      <Timeline
+        task={{
+          ...task,
+          status: "running",
+          events: [
+            {
+              id: "event_tool_requested",
+              taskId: "task_1",
+              type: "tool_requested",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              summary: "edit_file",
+              payload: {
+                toolCallId: "tool_call_requested",
+                toolName: "edit_file",
+                args: { path: "src/ui/TaskThread.tsx", expectedHash: "abc123" },
+                riskCategory: "workspace_write"
+              }
+            },
+            {
+              id: "event_tool_progress_requested",
+              taskId: "task_1",
+              type: "tool_progress",
+              createdAt: "2026-01-01T00:00:00.100Z",
+              summary: "Applying edit",
+              payload: {
+                toolCallId: "tool_call_requested",
+                toolName: "edit_file",
+                status: "running",
+                targetPath: "src/ui/TaskThread.tsx",
+                operation: "edit",
+                changes: { path: "src/ui/TaskThread.tsx", addedLines: 4, removedLines: 2, operation: "edit" },
+                progress: { processed: 0, total: 1200, unit: "bytes" },
+                message: "Applying edit"
+              }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(container.querySelectorAll(".event.tool_call.tool_pending")).toHaveLength(1);
+    expect(screen.getByText(".../ui/TaskThread.tsx")).toBeInTheDocument();
+    expect(screen.getByText("+4")).toBeInTheDocument();
+    expect(screen.getByText("-2")).toBeInTheDocument();
+    expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(screen.queryByText("Done")).not.toBeInTheDocument();
+  });
+
+  it("shows completed file line changes from result metadata without requiring expansion", () => {
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "running",
+          events: [
+            {
+              id: "event_tool_result_only",
+              taskId: "task_1",
+              type: "tool_result",
+              createdAt: "2026-01-01T00:00:00.200Z",
+              summary: "Tool completed",
+              payload: {
+                toolCallId: "tool_call_result_only",
+                toolName: "write_file",
+                ok: true,
+                output: JSON.stringify({
+                  status: "success",
+                  path: "src/generated/task-report.md",
+                  changes: { path: "src/generated/task-report.md", addedLines: 12, removedLines: 3, operation: "write" },
+                  displayMode: "summary_only"
+                })
+              }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(".../generated/task-report.md")).toBeInTheDocument();
+    expect(screen.getByText("+12")).toBeInTheDocument();
+    expect(screen.getByText("-3")).toBeInTheDocument();
+    expect(screen.getByText("Done")).toBeInTheDocument();
+  });
+
+  it("renders live long assistant streams as a bounded plain-text preview", () => {
+    const longStream = `${"alpha ".repeat(2000)}middle-marker-${"beta ".repeat(2000)}tail-marker`;
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "running",
+          events: [
+            {
+              id: "event_long_live_stream",
+              taskId: "task_1",
+              type: "assistant_delta",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              summary: longStream,
+              payload: { streamId: "stream_long_live", delta: longStream }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/Live preview:/)).toBeInTheDocument();
+    expect(screen.getByText(/tail-marker/)).toBeInTheDocument();
+    expect(screen.queryByText(/middle-marker/)).not.toBeInTheDocument();
   });
 
   it("strips provider fallback tool boilerplate from assistant messages", () => {
@@ -877,6 +1409,184 @@ describe("Workbench components", () => {
     expect(container.querySelector(".timelineItemShell.fromLeft .event.assistant_delta")).not.toBeNull();
   });
 
+  it("normalizes broken CJK spacing inside thinking cards for display", () => {
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "running",
+          events: [
+            {
+              id: "event_spaced_thinking",
+              taskId: "task_1",
+              type: "thinking_delta",
+              createdAt: new Date().toISOString(),
+              summary: "用户 打招呼 “ 你好啊 ”。这是 一个 简单的 问候 。",
+              payload: {
+                streamId: "stream_spaced_thinking",
+                delta: "用户 打招呼 “ 你好啊 ”。这是 一个 简单的 问候 。"
+              }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getAllByText("用户打招呼“你好啊”。这是一个简单的问候。").length).toBeGreaterThan(0);
+  });
+
+  it("coalesces streamed thinking chunks into one card without artificial line breaks", async () => {
+    const { container } = render(
+      <Timeline
+        task={{
+          ...task,
+          status: "running",
+          events: [
+            {
+              id: "event_thinking_chunk_1",
+              taskId: "task_1",
+              type: "thinking_delta",
+              createdAt: new Date().toISOString(),
+              summary: "用户 ",
+              payload: { streamId: "stream_chunked_thinking", delta: "用户 " }
+            },
+            {
+              id: "event_thinking_chunk_2",
+              taskId: "task_1",
+              type: "thinking_delta",
+              createdAt: new Date().toISOString(),
+              summary: "打招呼 “ ",
+              payload: { streamId: "stream_chunked_thinking", delta: "打招呼 “ " }
+            },
+            {
+              id: "event_thinking_chunk_3",
+              taskId: "task_1",
+              type: "thinking_delta",
+              createdAt: new Date().toISOString(),
+              summary: "你好啊 ”。这是 ",
+              payload: { streamId: "stream_chunked_thinking", delta: "你好啊 ”。这是 " }
+            },
+            {
+              id: "event_thinking_chunk_4",
+              taskId: "task_1",
+              type: "thinking_delta",
+              createdAt: new Date().toISOString(),
+              summary: "一个 简单的 问候 。",
+              payload: { streamId: "stream_chunked_thinking", delta: "一个 简单的 问候 。" }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(container.querySelectorAll(".thinkingDetails")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /Thinking/ }));
+    await waitFor(() => {
+      expect(container.querySelector(".thinkingBodyText")).not.toBeNull();
+    });
+    expect(container.querySelector(".thinkingBodyText")?.textContent).toBe("用户打招呼“你好啊”。这是一个简单的问候。");
+  });
+
+  it("does not mount the thinking body until the card is expanded", async () => {
+    const { container } = render(
+      <Timeline
+        task={{
+          ...task,
+          status: "running",
+          events: [
+            {
+              id: "event_lazy_thinking",
+              taskId: "task_1",
+              type: "thinking_delta",
+              createdAt: new Date().toISOString(),
+              summary: "Line one.\nLine two.\nLine three.",
+              payload: {
+                streamId: "stream_lazy_thinking",
+                delta: "Line one.\nLine two.\nLine three."
+              }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(container.querySelector(".thinkingBody .markdownText, .thinkingBodyText")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Thinking/ }));
+    await waitFor(() => {
+      expect(container.querySelector(".thinkingBody .markdownText, .thinkingBodyText")).not.toBeNull();
+    });
+  });
+
+  it("renders very large thinking bodies as plain text to avoid heavy markdown parsing", async () => {
+    const longThinking = Array.from({ length: 140 }, (_, index) => `Step ${index + 1}: inspect another part of the workspace.`).join("\n");
+    const { container } = render(
+      <Timeline
+        task={{
+          ...task,
+          status: "running",
+          events: [
+            {
+              id: "event_large_thinking",
+              taskId: "task_1",
+              type: "thinking_delta",
+              createdAt: new Date().toISOString(),
+              summary: longThinking,
+              payload: {
+                streamId: "stream_large_thinking",
+                delta: longThinking
+              }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Thinking/ }));
+    await waitFor(() => {
+      expect(container.querySelector(".thinkingBodyText")).not.toBeNull();
+    });
+    expect(container.querySelector(".thinkingBody .markdownText")).toBeNull();
+  });
+
+  it("loads the full thinking body on demand when the transcript only ships a lazy preview", async () => {
+    const onLoadStreamText = vi.fn().mockResolvedValue("Line 1: inspect the structure.\nLine 2: summarize the visible issues.");
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "running",
+          events: [
+            {
+              id: "event_lazy_transcript_preview",
+              taskId: "task_1",
+              type: "thinking_delta",
+              createdAt: new Date().toISOString(),
+              summary: "Line 1: inspect the structure.\n\n[Output truncated: 6400 characters omitted. Full evidence is available in the audit log.]",
+              payload: {
+                streamId: "stream_lazy_preview",
+                delta: "Line 1: inspect the structure.\n\n[Output truncated: 6400 characters omitted. Full evidence is available in the audit log.]",
+                lazyBody: true,
+                fullContentChars: 7000
+              }
+            }
+          ]
+        }}
+        onLoadStreamText={onLoadStreamText}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Thinking/ }));
+    await waitFor(() => {
+      expect(onLoadStreamText).toHaveBeenCalledWith("task_1", "stream_lazy_preview", "thinking_delta");
+    });
+    expect(await screen.findByText(/Line 2: summarize the visible issues\./)).toBeInTheDocument();
+  });
+
   it("keeps assistant body visible when final stream text is stripped", () => {
     render(
       <Timeline
@@ -908,6 +1618,48 @@ describe("Workbench components", () => {
 
     expect(screen.getByText("I will read the project and then optimize the styles.")).toBeInTheDocument();
     expect(screen.queryByText("Tool evidence returned.")).not.toBeInTheDocument();
+  });
+
+  it("keeps thinking visible after the same stream receives a final assistant message", () => {
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "completed",
+          events: [
+            {
+              id: "event_thinking_before_final",
+              taskId: "task_1",
+              type: "thinking_delta",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              summary: "I should inspect the current layout before answering.",
+              payload: { streamId: "stream_keep_thinking", delta: "I should inspect the current layout before answering." }
+            },
+            {
+              id: "event_delta_before_final",
+              taskId: "task_1",
+              type: "assistant_delta",
+              createdAt: "2026-01-01T00:00:00.005Z",
+              summary: "I will review the layout now.",
+              payload: { streamId: "stream_keep_thinking", delta: "I will review the layout now." }
+            },
+            {
+              id: "event_final_keep_thinking",
+              taskId: "task_1",
+              type: "assistant_message",
+              createdAt: "2026-01-01T00:00:00.010Z",
+              summary: "I will review the layout now.",
+              payload: { streamId: "stream_keep_thinking" }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Thinking")).toBeInTheDocument();
+    expect(screen.getAllByText("I should inspect the current layout before answering.").length).toBeGreaterThan(0);
+    expect(screen.getByText("I will review the layout now.")).toBeInTheDocument();
   });
 
   it("keeps assistant body visible when final text only exists in payload", () => {
@@ -1009,6 +1761,76 @@ describe("Workbench components", () => {
     ]);
 
     expect(transcript).toHaveLength(0);
+  });
+
+  it("keeps model empty-response notices in the client transcript", () => {
+    const transcript = compactTaskEventsForTranscript([
+      {
+        id: "event_empty_response_retry",
+        taskId: "task_1",
+        type: "model_empty_response",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        summary: "Model returned no displayable content; retrying once.",
+        payload: { status: "retrying", reason: "empty completion" }
+      }
+    ]);
+
+    expect(transcript).toHaveLength(1);
+    expect(transcript[0]?.type).toBe("model_empty_response");
+  });
+
+  it("keeps requested tools in the client transcript so queued work is visible", () => {
+    const transcript = compactTaskEventsForTranscript([
+      {
+        id: "event_requested_tool",
+        taskId: "task_1",
+        type: "tool_requested",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        summary: "edit_file",
+        payload: {
+          toolCallId: "tool_call_requested",
+          toolName: "edit_file",
+          args: { path: "src/App.tsx" },
+          riskCategory: "workspace_write"
+        }
+      }
+    ]);
+
+    expect(transcript).toHaveLength(1);
+    expect(transcript[0]?.type).toBe("tool_requested");
+  });
+
+  it("keeps thinking transcript items after a same-stream assistant final arrives", () => {
+    const transcript = compactTaskEventsForTranscript([
+      {
+        id: "event_transcript_thinking",
+        taskId: "task_1",
+        type: "thinking_delta",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        summary: "I should inspect the current layout before answering.",
+        payload: { streamId: "stream_transcript_keep_thinking", delta: "I should inspect the current layout before answering." }
+      },
+      {
+        id: "event_transcript_delta",
+        taskId: "task_1",
+        type: "assistant_delta",
+        createdAt: "2026-01-01T00:00:00.005Z",
+        summary: "I will review the layout now.",
+        payload: { streamId: "stream_transcript_keep_thinking", delta: "I will review the layout now." }
+      },
+      {
+        id: "event_transcript_final",
+        taskId: "task_1",
+        type: "assistant_message",
+        createdAt: "2026-01-01T00:00:00.010Z",
+        summary: "I will review the layout now.",
+        payload: { streamId: "stream_transcript_keep_thinking" }
+      }
+    ]);
+
+    expect(transcript.map((event) => event.id)).toContain("event_transcript_thinking");
+    expect(transcript.map((event) => event.id)).not.toContain("event_transcript_delta");
+    expect(transcript.map((event) => event.id)).toContain("event_transcript_final");
   });
 
   it("does not render empty assistant final cards after boilerplate cleanup", () => {
@@ -1130,16 +1952,16 @@ describe("Workbench components", () => {
     expect(container.querySelector(".event.running_status .thinkingDots")).not.toBeNull();
   });
 
-  it("coalesces burst streaming deltas before appending them to live task state", () => {
-    const base: TaskEvent = {
-      id: "event_delta_0",
-      taskId: "task_1",
-      type: "assistant_delta",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      summary: "chunk-0",
-      payload: { streamId: "stream_fast", delta: "chunk-0" }
-    };
-    const burst: TaskEvent[] = [
+  it("coalesces burst streaming deltas before rendering transcript state", () => {
+    const transcript = compactTaskEventsForTranscript([
+      {
+        id: "event_delta_0",
+        taskId: "task_1",
+        type: "assistant_delta",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        summary: "chunk-0",
+        payload: { streamId: "stream_fast", delta: "chunk-0" }
+      },
       {
         id: "event_delta_1",
         taskId: "task_1",
@@ -1164,23 +1986,47 @@ describe("Workbench components", () => {
         summary: "Tool completed",
         payload: { toolName: "read_file", ok: true, output: "{}" }
       }
-    ];
+    ]);
 
-    const merged = coalesceRealtimeEvents([base], burst);
-
-    expect(merged.events).toHaveLength(2);
-    expect(merged.acceptedEvents).toHaveLength(3);
-    expect(merged.events[0]?.summary).toBe("chunk-0 chunk-1 chunk-2");
-    expect(merged.events[0]?.payload["delta"]).toBe("chunk-0 chunk-1 chunk-2");
-    expect(merged.events[1]?.type).toBe("tool_result");
+    expect(transcript).toHaveLength(2);
+    expect(transcript[0]?.summary).toBe("chunk-0 chunk-1 chunk-2");
+    expect(transcript[0]?.payload["delta"]).toBe("chunk-0 chunk-1 chunk-2");
+    expect(transcript[1]?.type).toBe("tool_result");
   });
 
-  it("parses websocket heartbeat messages without treating them as task events", () => {
-    expect(parseRealtimeMessage(JSON.stringify({ type: "heartbeat", taskId: "task_1", timestamp: "2026-01-01T00:00:00.000Z" }))).toEqual({
-      type: "heartbeat",
-      taskId: "task_1",
-      timestamp: "2026-01-01T00:00:00.000Z"
-    });
+  it("coalesces long thinking bursts into a single transcript stream entry", () => {
+    const transcript = compactTaskEventsForTranscript([
+      {
+        id: "thinking_chunk_1",
+        taskId: "task_1",
+        type: "thinking_delta",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        summary: "Inspecting the first file.",
+        payload: { streamId: "thinking_stream", delta: "Inspecting the first file." }
+      },
+      {
+        id: "thinking_chunk_2",
+        taskId: "task_1",
+        type: "thinking_delta",
+        createdAt: "2026-01-01T00:00:00.010Z",
+        summary: "Inspecting the second file.",
+        payload: { streamId: "thinking_stream", delta: "Inspecting the second file." }
+      },
+      {
+        id: "thinking_chunk_3",
+        taskId: "task_1",
+        type: "thinking_delta",
+        createdAt: "2026-01-01T00:00:00.020Z",
+        summary: "Summarizing the visible layout issues.",
+        payload: { streamId: "thinking_stream", delta: "Summarizing the visible layout issues." }
+      }
+    ]);
+
+    expect(transcript).toHaveLength(1);
+    expect(transcript[0]?.type).toBe("thinking_delta");
+    expect(transcript[0]?.payload["delta"]).toBe(
+      "Inspecting the first file. Inspecting the second file. Summarizing the visible layout issues."
+    );
   });
 
   it("uses side-aware animation shells for user and assistant cards", () => {
@@ -1248,7 +2094,7 @@ describe("Workbench components", () => {
     expect(screen.getByText("Visible answer.")).toBeInTheDocument();
   });
 
-  it("only keeps copy actions visible when the last timeline item is assistant body text", () => {
+  it("keeps copy actions visible on the latest assistant body even when status items follow", () => {
     const { container } = render(
       <Timeline
         task={{
@@ -1279,7 +2125,69 @@ describe("Workbench components", () => {
 
     expect(screen.getByText("I will inspect the current files first.")).toBeInTheDocument();
     expect(screen.getByText("Thinking")).toBeInTheDocument();
-    expect(container.querySelector(".event.assistant_message .messageActions")).not.toHaveClass("alwaysVisible");
+    expect(container.querySelector(".event.assistant_message .messageActions")).toHaveClass("alwaysVisible");
+  });
+
+  it("keeps thinking cards visible when tool events follow before any final assistant message", () => {
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "running",
+          events: [
+            {
+              id: "event_user_live_think",
+              taskId: "task_1",
+              type: "user_message",
+              createdAt: new Date().toISOString(),
+              summary: "Read the project and then optimize the styles.",
+              payload: {}
+            },
+            {
+              id: "event_live_thinking",
+              taskId: "task_1",
+              type: "thinking_delta",
+              createdAt: new Date().toISOString(),
+              summary: "I should inspect the entry file before making styling changes.",
+              payload: {
+                streamId: "stream_live_think",
+                delta: "I should inspect the entry file before making styling changes."
+              }
+            },
+            {
+              id: "event_live_tool_started",
+              taskId: "task_1",
+              type: "tool_started",
+              createdAt: new Date().toISOString(),
+              summary: "read_file started",
+              payload: {
+                toolCallId: "tool_read_entry",
+                toolName: "read_file",
+                args: { path: "index.html" }
+              }
+            },
+            {
+              id: "event_live_tool_result",
+              taskId: "task_1",
+              type: "tool_result",
+              createdAt: new Date().toISOString(),
+              summary: "read_file completed",
+              payload: {
+                toolCallId: "tool_read_entry",
+                toolName: "read_file",
+                ok: true,
+                output: JSON.stringify({ summary: "Read index.html", path: "index.html" })
+              }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Thinking")).toBeInTheDocument();
+    expect(screen.getAllByText(/I should inspect the entry file before making styling changes\./).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /index\.html/ })).toBeInTheDocument();
   });
 
   it("renders assistant markdown as structured content", () => {
@@ -1345,6 +2253,33 @@ describe("Workbench components", () => {
     );
     fireEvent.click(screen.getByText("Allow once"));
     expect(onDecision).toHaveBeenCalledWith("approval_1", "allow_once");
+  });
+
+  it("renders ask-user options as clickable buttons and answers with the selected option", () => {
+    const onAnswerUserInput = vi.fn();
+    render(
+      <Timeline
+        task={{
+          ...task,
+          status: "waiting_for_user",
+          events: [
+            {
+              id: "event_user_input",
+              taskId: "task_test",
+              type: "user_input_requested",
+              createdAt: new Date().toISOString(),
+              summary: "Choose how to continue.",
+              payload: { options: ["Option A", "Option B"], status: "pending" }
+            }
+          ]
+        }}
+        onApprovalDecision={vi.fn()}
+        onAnswerUserInput={onAnswerUserInput}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Option B" }));
+    expect(onAnswerUserInput).toHaveBeenCalledWith("Option B");
   });
 
   it("renders approval decisions", () => {
@@ -1461,7 +2396,7 @@ describe("Workbench components", () => {
     const task: ScheduledTask = {
       id: "schedule_agent_reflection",
       type: "reflection",
-      title: "Agent self-reflection",
+      title: "Skill Curator maintenance",
       prompt: "Review recent task memories.",
       permissionPreset: "ask",
       schedule: { kind: "calendar", frequency: "daily", timeOfDay: "02:00" },
@@ -1875,12 +2810,6 @@ describe("Workbench components", () => {
     expect(onDelete).toHaveBeenCalledWith("integration_discord");
   });
 
-  it("renders compact governance rows", () => {
-    render(<CompactList title="Skills" rows={[{ id: "skill_1", label: "Host observation", meta: "active" }]} />);
-    expect(screen.getByText("Host observation")).toBeInTheDocument();
-    expect(screen.getByText("active")).toBeInTheDocument();
-  });
-
   it("keeps skill settings usable with normalized skill rows", () => {
     render(
       <SkillPanel
@@ -2029,7 +2958,7 @@ describe("Workbench components", () => {
           url === "/api/skill-conflicts" ||
           url === "/api/skill-curator" ||
           url === "/api/permissions/global" ||
-          url === "/api/reflections" ||
+          url === "/api/curator/runs" ||
           url === "/api/project-memories" ||
           url === "/api/mcp/servers" ||
           url === "/api/mcp/tools" ||
@@ -2127,7 +3056,7 @@ describe("Workbench components", () => {
     expect(requests).not.toEqual(expect.arrayContaining([
       "/api/skills",
       "/api/skill-curator",
-      "/api/reflections",
+      "/api/curator/runs",
       "/api/project-memories",
       "/api/knowledge",
       "/api/mcp/servers",
@@ -2179,6 +3108,193 @@ describe("Workbench components", () => {
     expect(await screen.findByRole("heading", { name: "Cold create" })).toBeInTheDocument();
     expect(requests.filter((entry) => entry.includes("/api/tasks/task_create_once/transcript"))).toHaveLength(0);
     expect(requests.filter((entry) => entry.includes("/api/tasks/task_create_once?eventLimit=") || entry.endsWith(" /api/tasks/task_create_once"))).toHaveLength(1);
+  });
+
+  it("uses WebSocket as the live transcript transport and keeps polling as a fallback", async () => {
+    const now = new Date("2026-05-17T10:00:00.000Z").toISOString();
+    const later = new Date("2026-05-17T10:00:01.000Z").toISOString();
+    const runningTask: TaskDetail = {
+      ...task,
+      id: "task_polling_transport",
+      title: "Polling transport",
+      status: "running",
+      approvals: [],
+      updatedAt: now,
+      events: [
+        {
+          id: "event_polling_user",
+          taskId: "task_polling_transport",
+          type: "user_message",
+          createdAt: now,
+          summary: "持续显示修改进度",
+          payload: {}
+        }
+      ]
+    };
+    const syncedTask: TaskDetail = { ...runningTask, updatedAt: later };
+    const syncedTranscript: TaskEvent[] = [
+      ...runningTask.events,
+      {
+        id: "event_polling_delta",
+        taskId: "task_polling_transport",
+        type: "assistant_delta",
+        createdAt: later,
+        summary: "已同步文件变化：+12 -3",
+        payload: { streamId: "stream_polling_transport", delta: "已同步文件变化：+12 -3" }
+      },
+      {
+        id: "event_polling_empty_response",
+        taskId: "task_polling_transport",
+        type: "model_empty_response",
+        createdAt: later,
+        summary: "Model returned no displayable content; retrying once.",
+        payload: { status: "retrying", reason: "empty completion" }
+      }
+    ];
+    const webSockets: Array<{
+      url: string;
+      readyState: number;
+      close: ReturnType<typeof vi.fn>;
+      onopen: ((event: Event) => void) | null;
+      onmessage: ((event: MessageEvent) => void) | null;
+      onerror: ((event: Event) => void) | null;
+      onclose: ((event: CloseEvent) => void) | null;
+    }> = [];
+    const webSocketConstructor = vi.fn((url: string) => {
+      const socket = {
+        url,
+        readyState: 1,
+        close: vi.fn(),
+        onopen: null,
+        onmessage: null,
+        onerror: null,
+        onclose: null
+      };
+      webSockets.push(socket);
+      return socket;
+    });
+    const requests: string[] = [];
+    vi.stubGlobal("WebSocket", webSocketConstructor);
+    stubAuthedFetch(async (url) => {
+        requests.push(url);
+        if (url === "/health") return jsonResponse({ ok: true });
+        if (url === "/api/tasks") return jsonResponse([runningTask]);
+        if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+        if (url === "/api/preferences") return jsonResponse(defaultPreferences("zh-CN"));
+        if (url === "/api/tasks/task_polling_transport" || url.startsWith("/api/tasks/task_polling_transport?")) return jsonResponse(syncedTask);
+        if (url === "/api/tasks/task_polling_transport/transcript") {
+          return jsonResponse(syncedTranscript);
+        }
+        if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+        return jsonResponse([]);
+      });
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Polling transport" })).toBeInTheDocument();
+    await waitFor(() => expect(webSocketConstructor).toHaveBeenCalledOnce());
+    expect(webSockets[0]?.url).toContain("/api/tasks/task_polling_transport/events/ws");
+    expect(webSockets[0]?.url).toContain("session=");
+
+    await act(async () => {
+      webSockets[0]?.onopen?.(new Event("open"));
+      webSockets[0]?.onmessage?.({ data: JSON.stringify({ type: "event", event: syncedTranscript[1] }) } as MessageEvent);
+      webSockets[0]?.onmessage?.({ data: JSON.stringify({ type: "event", event: syncedTranscript[2] }) } as MessageEvent);
+    });
+    expect(await screen.findByText("已同步文件变化：+12 -3")).toBeInTheDocument();
+    expect(await screen.findByText("模型本轮未返回可展示内容，正在自动重试一次。")).toBeInTheDocument();
+    await act(async () => {
+      webSockets[0]?.onclose?.(new CloseEvent("close"));
+    });
+    await waitFor(() => expect(webSocketConstructor).toHaveBeenCalledTimes(2), { timeout: 1200 });
+    expect(requests.some((url) => url.includes("/events/ws"))).toBe(false);
+  });
+
+  it("batches rapid streaming transcript events and keeps long live text bounded", async () => {
+    const now = new Date("2026-05-17T10:10:00.000Z").toISOString();
+    const runningTask: TaskDetail = {
+      ...task,
+      id: "task_stream_pressure",
+      title: "Stream pressure",
+      status: "running",
+      approvals: [],
+      updatedAt: now,
+      events: [
+        {
+          id: "event_pressure_user",
+          taskId: "task_stream_pressure",
+          type: "user_message",
+          createdAt: now,
+          summary: "快速输出大量文本",
+          payload: {}
+        }
+      ]
+    };
+    const webSockets: Array<{
+      url: string;
+      readyState: number;
+      close: ReturnType<typeof vi.fn>;
+      onopen: ((event: Event) => void) | null;
+      onmessage: ((event: MessageEvent) => void) | null;
+      onerror: ((event: Event) => void) | null;
+      onclose: ((event: CloseEvent) => void) | null;
+    }> = [];
+    const webSocketConstructor = vi.fn((url: string) => {
+      const socket = {
+        url,
+        readyState: 1,
+        close: vi.fn(),
+        onopen: null,
+        onmessage: null,
+        onerror: null,
+        onclose: null
+      };
+      webSockets.push(socket);
+      return socket;
+    });
+    vi.stubGlobal("WebSocket", webSocketConstructor);
+    stubAuthedFetch(async (url) => {
+        if (url === "/health") return jsonResponse({ ok: true });
+        if (url === "/api/tasks") return jsonResponse([runningTask]);
+        if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+        if (url === "/api/preferences") return jsonResponse(defaultPreferences("zh-CN"));
+        if (url === "/api/tasks/task_stream_pressure" || url.startsWith("/api/tasks/task_stream_pressure?")) return jsonResponse(runningTask);
+        if (url === "/api/tasks/task_stream_pressure/transcript") return jsonResponse(runningTask.events);
+        if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+        return jsonResponse([]);
+      });
+
+    const { container } = render(<App />);
+    expect(await screen.findByRole("heading", { name: "Stream pressure" })).toBeInTheDocument();
+    await waitFor(() => expect(webSocketConstructor).toHaveBeenCalledOnce());
+
+    const deltas = Array.from({ length: 360 }, (_, index) => {
+      const marker = index === 180 ? " OMITTED-MIDDLE-MARKER " : index === 359 ? " VISIBLE-TAIL-MARKER " : "";
+      const delta = `${marker}chunk-${index.toString().padStart(3, "0")}-${"x".repeat(80)}\n`;
+      return {
+        id: `event_pressure_delta_${index}`,
+        taskId: "task_stream_pressure",
+        type: "assistant_delta" as const,
+        createdAt: now,
+        summary: delta,
+        payload: { streamId: "stream_pressure", delta }
+      };
+    });
+
+    await act(async () => {
+      webSockets[0]?.onopen?.(new Event("open"));
+      for (const event of deltas) {
+        webSockets[0]?.onmessage?.({ data: JSON.stringify({ type: "event", event }) } as MessageEvent);
+      }
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    });
+
+    expect(await screen.findByText(/VISIBLE-TAIL-MARKER/)).toBeInTheDocument();
+    expect(screen.queryByText(/OMITTED-MIDDLE-MARKER/)).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".event.assistant_delta")).toHaveLength(1);
+    expect(container.querySelector(".timelineLongText.live")).not.toBeNull();
+    fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "still responsive" } });
+    expect(screen.getByLabelText("Task input")).toHaveValue("still responsive");
   });
 
   it("keeps a created running task visible when transcript hydration times out", async () => {
@@ -2295,24 +3411,34 @@ describe("Workbench components", () => {
     await waitFor(() => expect(createCalls).toEqual(["check this folder"]));
   });
 
-  it("requires an explicit permission preset before starting target mode", async () => {
+  it("requires an explicit permission preset before starting goal mode with non-destructive max", async () => {
     const now = new Date().toISOString();
     const created: TaskDetail = {
       ...task,
       id: "task_target",
-      title: "Target run",
+      title: "Goal run",
       status: "running",
+      runMode: "target",
+      targetLimits: { maxModelTurns: 160, maxToolCalls: 500, maxWallTimeMs: 14_400_000 },
       approvals: [],
       events: []
     };
     const grants: GlobalPermissionGrant[] = [];
     const grantCalls: RiskCategory[] = [];
     const createBodies: Array<{ goal: string; runMode?: string }> = [];
+    const preferencePatches: Array<Record<string, unknown>> = [];
+    let preferences = defaultPreferences("en-US");
 
     stubAuthedFetch(async (url, init) => {
         const method = init?.method ?? "GET";
         if (url === "/api/task-folders") return jsonResponse(defaultFolders());
-        if (url === "/api/preferences") return jsonResponse(defaultPreferences("en-US"));
+        if (url === "/api/preferences" && method === "PATCH") {
+          const patch = JSON.parse(String(init?.body)) as Partial<UserPreferences>;
+          preferencePatches.push(patch as Record<string, unknown>);
+          preferences = { ...preferences, ...patch, updatedAt: now };
+          return jsonResponse(preferences);
+        }
+        if (url === "/api/preferences") return jsonResponse(preferences);
         if (url === "/api/permissions/global" && method === "POST") {
           const body = JSON.parse(String(init?.body)) as { riskCategory: RiskCategory };
           grantCalls.push(body.riskCategory);
@@ -2344,20 +3470,110 @@ describe("Workbench components", () => {
 
     render(<App />);
     expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "/target repair the failing check" } });
+    fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "/goal repair the failing check" } });
     fireEvent.click(getSendButton());
 
-    const dialog = await screen.findByRole("dialog", { name: "Start /target" });
+    const dialog = await screen.findByRole("dialog", { name: "Start /goal" });
     expect(createBodies).toHaveLength(0);
-    const startButton = within(dialog).getByRole("button", { name: "Start target mode" });
+    expect(within(dialog).getByText(/spend more model quota|more quota/i)).toBeInTheDocument();
+    const startButton = within(dialog).getByRole("button", { name: "Start goal mode" });
     expect(startButton).toBeDisabled();
 
-    fireEvent.click(within(dialog).getByRole("radio", { name: /Read only/ }));
+    fireEvent.click(within(dialog).getByRole("radio", { name: /Non-destructive max/ }));
     await waitFor(() => expect(startButton).not.toBeDisabled());
     fireEvent.click(startButton);
 
-    await waitFor(() => expect(grantCalls).toEqual(["host_observation", "workspace_read"]));
+    await waitFor(() => expect(preferencePatches).toEqual([
+      expect.objectContaining({
+        permissionMode: "auto_approval",
+        autoApproveRiskCategories: ["host_observation", "workspace_read", "workspace_write", "shell", "network"]
+      })
+    ]));
+    expect(grantCalls).not.toContain("destructive");
     await waitFor(() => expect(createBodies).toEqual([expect.objectContaining({ goal: "repair the failing check", runMode: "target" })]));
+    expect(await screen.findByText(/Goal mode/)).toBeInTheDocument();
+    expect(screen.getByText(/Non-destructive max/)).toBeInTheDocument();
+  });
+
+  it("does not start removed target command and points users to goal", async () => {
+    stubAuthedFetch(async (url) => {
+        if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+        if (url === "/api/preferences") return jsonResponse(defaultPreferences("en-US"));
+        if (url === "/api/tasks") return jsonResponse([]);
+        if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+        return jsonResponse([]);
+      });
+
+    render(<App />);
+    expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "/target repair the failing check" } });
+    fireEvent.click(getSendButton());
+
+    expect(await screen.findByText(/\/target command has been removed/i)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: /Start \/goal/ })).not.toBeInTheDocument();
+  });
+
+  it("requires an extra acknowledgement before full risk goal mode", async () => {
+    const now = new Date().toISOString();
+    const created: TaskDetail = {
+      ...task,
+      id: "task_goal_full_risk",
+      title: "Goal full risk",
+      status: "running",
+      runMode: "target",
+      targetLimits: { maxModelTurns: 160, maxToolCalls: 500, maxWallTimeMs: 14_400_000 },
+      approvals: [],
+      events: []
+    };
+    const grants: GlobalPermissionGrant[] = [];
+    const grantCalls: RiskCategory[] = [];
+    const createBodies: Array<{ goal: string; runMode?: string }> = [];
+    let preferences = defaultPreferences("en-US");
+
+    stubAuthedFetch(async (url, init) => {
+        const method = init?.method ?? "GET";
+        if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+        if (url === "/api/preferences" && method === "PATCH") {
+          const patch = JSON.parse(String(init?.body)) as Partial<UserPreferences>;
+          preferences = { ...preferences, ...patch, updatedAt: now };
+          return jsonResponse(preferences);
+        }
+        if (url === "/api/preferences") return jsonResponse(preferences);
+        if (url === "/api/permissions/global" && method === "POST") {
+          const body = JSON.parse(String(init?.body)) as { riskCategory: RiskCategory };
+          grantCalls.push(body.riskCategory);
+          const grant: GlobalPermissionGrant = { id: `grant_${body.riskCategory}`, riskCategory: body.riskCategory, reason: "goal full risk", grantedBy: "test", grantedAt: now };
+          grants.push(grant);
+          return jsonResponse(grant);
+        }
+        if (url === "/api/permissions/global") return jsonResponse(grants);
+        if (url === "/api/tasks" && method === "POST") {
+          const body = JSON.parse(String(init?.body)) as { goal: string; runMode?: string };
+          createBodies.push(body);
+          return jsonResponse({ ...created, events: [{ id: "event_goal_full_risk", taskId: created.id, type: "user_message", createdAt: now, summary: body.goal, payload: {} }] });
+        }
+        if (url === "/api/tasks") return jsonResponse(createBodies.length ? [created] : []);
+        if (url === "/api/tasks/task_goal_full_risk" || url.startsWith("/api/tasks/task_goal_full_risk?")) return jsonResponse(created);
+        if (url === "/api/tasks/task_goal_full_risk/transcript") return jsonResponse(created.events);
+        if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+        return jsonResponse([]);
+      });
+
+    render(<App />);
+    expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "/goal repair with full access" } });
+    fireEvent.click(getSendButton());
+
+    const dialog = await screen.findByRole("dialog", { name: "Start /goal" });
+    const startButton = within(dialog).getByRole("button", { name: "Start goal mode" });
+    fireEvent.click(within(dialog).getByRole("radio", { name: /Full risk/ }));
+    expect(startButton).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /globally allows destructive/i }));
+    await waitFor(() => expect(startButton).not.toBeDisabled());
+    fireEvent.click(startButton);
+
+    await waitFor(() => expect(grantCalls).toEqual(["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"]));
+    await waitFor(() => expect(createBodies).toEqual([expect.objectContaining({ goal: "repair with full access", runMode: "target" })]));
   });
 
   it("renders the full transcript endpoint instead of rebuilding chat from windowed events", async () => {
@@ -2422,7 +3638,7 @@ describe("Workbench components", () => {
           url === "/api/skill-conflicts" ||
           url === "/api/skill-curator" ||
           url === "/api/permissions/global" ||
-          url === "/api/reflections" ||
+          url === "/api/curator/runs" ||
           url === "/api/project-memories" ||
           url === "/api/mcp/servers" ||
           url === "/api/mcp/tools" ||
@@ -2485,7 +3701,7 @@ describe("Workbench components", () => {
           url === "/api/skill-conflicts" ||
           url === "/api/skill-curator" ||
           url === "/api/permissions/global" ||
-          url === "/api/reflections" ||
+          url === "/api/curator/runs" ||
           url === "/api/project-memories" ||
           url === "/api/mcp/servers" ||
           url === "/api/mcp/tools" ||
@@ -2590,7 +3806,7 @@ describe("Workbench components", () => {
     stubAuthedFetch(async (url) => {
       if (url === "/api/task-folders") return jsonResponse(defaultFolders());
       if (url === "/api/tasks") return jsonResponse([]);
-      if (url === "/api/preferences") return jsonResponse(defaultPreferences("en-US"));
+      if (url === "/api/preferences") return jsonResponse(defaultPreferences("zh-CN"));
       if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
       return jsonResponse([]);
     });
@@ -2680,7 +3896,7 @@ function isWorkbenchCollectionEndpoint(url: string): boolean {
     url === "/api/skills/duplicates" ||
     url === "/api/skill-conflicts" ||
     url === "/api/skill-curator" ||
-    url === "/api/reflections" ||
+    url === "/api/curator/runs" ||
     url === "/api/project-memories" ||
     url === "/api/mcp/servers" ||
     url === "/api/mcp/tools" ||

@@ -1,6 +1,32 @@
 import { SkillRecordSchema, type ExperienceRecord, type PatternRecord, type ReflectionSession, type SkillConflict, type SkillDuplicateGroup, type SkillRecord, type TaskDetail, type TaskMemory } from "@agent-workbench/shared";
 import { createId, nowIso } from "./ids.js";
 
+const GENERIC_WORKFLOW_TOOLS = new Set(["edit_file", "list_files", "read_file", "run_command", "search_files", "write_file"]);
+const GENERIC_PATTERN_TOKENS = new Set([
+  "agent",
+  "code",
+  "file",
+  "files",
+  "general",
+  "host",
+  "host_observation",
+  "observation",
+  "pattern",
+  "project",
+  "read",
+  "search",
+  "task",
+  "tasks",
+  "tool",
+  "tools",
+  "workflow",
+  "workspace",
+  "代码",
+  "任务",
+  "文件",
+  "项目"
+]);
+
 export function createTaskMemory(task: TaskDetail): TaskMemory {
   const userGoal = latestMeaningfulUserGoal(task) ?? "Untitled task";
   const assistantResult = [...task.events].reverse().find((event) => event.type === "assistant_message")?.summary ?? "";
@@ -82,6 +108,7 @@ export function reflectMemories(memories: TaskMemory[], existingPatterns: Patter
 } {
   const started = nowIso();
   const pending = memories.filter((memory) => memory.reflectionStatus === "pending");
+  const sourceMemories = pending.length > 0 ? pending : [];
   const session: ReflectionSession = {
     id: createId("reflection"),
     status: "completed",
@@ -92,13 +119,13 @@ export function reflectMemories(memories: TaskMemory[], existingPatterns: Patter
     completedAt: nowIso()
   };
 
-  if (memories.length < 5) {
+  if (sourceMemories.length < 5) {
     return { session, patterns: [], promotedSkills: [] };
   }
 
-  const domains = groupByDomain(pending.length > 0 ? pending : memories);
+  const domains = groupByDomain(sourceMemories);
   session.progress.completedDomains = [...domains.keys()].slice(0, 2);
-  if (memories.length < 10) {
+  if (sourceMemories.length < 10) {
     session.progress.phase = "meta";
     return { session, patterns: [], promotedSkills: [] };
   }
@@ -125,6 +152,7 @@ export function shouldPromoteToSkill(pattern: PatternRecord): boolean {
   if (pattern.successCount / total < 0.75) return false;
   if (pattern.status !== "stable") return false;
   if (pattern.content.toolSequence.length < 2) return false;
+  if (isGenericWorkflowPattern(pattern)) return false;
   return pattern.confidence >= 0.8;
 }
 
@@ -474,6 +502,18 @@ function createPattern(domain: string, memories: TaskMemory[]): PatternRecord {
     createdAt: now,
     lastValidatedAt: now
   };
+}
+
+function isGenericWorkflowPattern(pattern: PatternRecord): boolean {
+  const domainHints = pattern.trigger.domainHints.map((hint) => hint.toLowerCase());
+  const broadDomain = domainHints.length === 0 || domainHints.every((hint) => ["general", "host_observation", "workspace"].includes(hint));
+  if (!broadDomain) return false;
+  const requiredTools = pattern.trigger.requiredTools.map((tool) => tool.toLowerCase());
+  const genericToolsOnly = requiredTools.length > 0 && requiredTools.every((tool) => GENERIC_WORKFLOW_TOOLS.has(tool));
+  if (!genericToolsOnly) return false;
+  const usefulKeywords = stableTokens(pattern.trigger.keywords.flatMap(tokenize)).filter((token) => !GENERIC_PATTERN_TOKENS.has(token));
+  const genericTitle = /^(general|host_observation|workspace)\s+workflow pattern$/i.test(pattern.title.trim());
+  return genericTitle || usefulKeywords.length < 4;
 }
 
 function mergePattern(existing: PatternRecord, next: PatternRecord): PatternRecord {

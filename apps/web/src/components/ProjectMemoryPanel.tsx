@@ -4,7 +4,6 @@ import { BookMarked, Database, Edit3, Plus, Save, Scissors, Search, Trash2, User
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { MarkdownText } from "./MarkdownText.js";
-import { SettingsPrimer } from "./SettingsAssist.js";
 
 type MemoryDocKey = "user" | "project";
 type ProjectMemoryCategory = ProjectMemoryCreateRequest["category"];
@@ -117,21 +116,19 @@ export function ProjectMemoryPanel({
       <header className="libraryPanelHero">
         <div>
           <h2>{text.title}</h2>
-          <p>{text.subtitle}</p>
         </div>
-        <button className="subtleButton iconText" type="button" onClick={() => { setEditingMemoryId(null); setDraft(emptyDraft()); setDraftOpen(true); }}>
-          <Plus size={15} />
-          {text.newMemory}
-        </button>
+        <div className="inlineActions">
+          {onOpenDocs ? (
+            <button className="textButton" type="button" onClick={onOpenDocs}>
+              {text.docs}
+            </button>
+          ) : null}
+          <button className="subtleButton iconText" type="button" onClick={() => { setEditingMemoryId(null); setDraft(emptyDraft()); setDraftOpen(true); }}>
+            <Plus size={15} />
+            {text.newMemory}
+          </button>
+        </div>
       </header>
-      <SettingsPrimer
-        language={language}
-        summary={text.primer.summary}
-        focus={text.primer.focus}
-        impact={text.primer.impact}
-        nextStep={text.primer.nextStep}
-        onOpenDocs={onOpenDocs}
-      />
 
       {error ? <p className="formError">{error}</p> : null}
       {compactResult ? (
@@ -143,16 +140,22 @@ export function ProjectMemoryPanel({
           <div className="memoryDocList">
             <button className={activeDoc === "user" ? "knowledgeRow selected" : "knowledgeRow"} type="button" onClick={() => setActiveDoc("user")}>
               <span className="providerIcon"><UserRound size={15} /></span>
-              <span>
+              <span className="knowledgeRowMain memoryDocMain">
                 <strong>{text.userProfile}</strong>
-                <small>{userDoc?.fileName ?? "USER.md"} · {text.charCount(userContent.length, userDoc?.charLimit)}</small>
+                <span className="knowledgeRowMeta">
+                  <span className="memoryCategoryBadge">{userDoc?.fileName ?? "USER.md"}</span>
+                  <small>{text.charCount(userContent.length, userDoc?.charLimit)}</small>
+                </span>
               </span>
             </button>
             <button className={activeDoc === "project" ? "knowledgeRow selected" : "knowledgeRow"} type="button" onClick={() => setActiveDoc("project")}>
               <span className="providerIcon"><BookMarked size={15} /></span>
-              <span>
+              <span className="knowledgeRowMain memoryDocMain">
                 <strong>{text.projectMemory}</strong>
-                <small>{folder?.name ?? folderId} · {text.charCount(projectContent.length, projectDoc?.charLimit)}</small>
+                <span className="knowledgeRowMeta">
+                  <span className="memoryCategoryBadge" title={folder?.name ?? folderId}>{folder?.name ?? folderId}</span>
+                  <small>{text.charCount(projectContent.length, projectDoc?.charLimit)}</small>
+                </span>
               </span>
             </button>
           </div>
@@ -163,25 +166,30 @@ export function ProjectMemoryPanel({
           </label>
           <div className="skillRows">
             {filteredMemories.length === 0 ? <LibraryEmpty text={text.empty} /> : null}
-            {filteredMemories.map((memory) => (
-              <article className={selectedMemory?.id === memory.id ? "knowledgeRow selected" : "knowledgeRow"} key={memory.id}>
-                <button className="knowledgeRowMain" type="button" onClick={() => setSelectedMemoryId(memory.id)}>
-                  <strong>{memory.title}</strong>
-                  <span>{text.categories[memory.category]}</span>
-                  <small>{memory.tags.slice(0, 3).join(", ") || text.noTags}</small>
-                </button>
-                <div className="rowIconActions">
-                  {onUpdateMemory ? (
-                    <button aria-label={`${text.edit} ${memory.title}`} className="iconButton" type="button" onClick={() => openEditMemory(memory)}>
-                      <Edit3 size={14} />
-                    </button>
-                  ) : null}
-                  <button aria-label={`${text.delete} ${memory.title}`} className="iconButton dangerIcon" type="button" onClick={() => setDeleteTarget(memory)}>
-                    <Trash2 size={14} />
+            {filteredMemories.map((memory) => {
+              const tagSummary = summarizeMemoryTags(memory.tags, text.noTags);
+              return (
+                <article className={selectedMemory?.id === memory.id ? "knowledgeRow selected" : "knowledgeRow"} key={memory.id}>
+                  <button className="knowledgeRowMain" type="button" onClick={() => setSelectedMemoryId(memory.id)}>
+                    <strong>{memory.title}</strong>
+                    <div className="knowledgeRowMeta">
+                      <span className={`memoryCategoryBadge ${memory.category}`}>{text.categories[memory.category]}</span>
+                      <small title={tagSummary}>{tagSummary}</small>
+                    </div>
                   </button>
-                </div>
-              </article>
-            ))}
+                  <div className="rowIconActions">
+                    {onUpdateMemory ? (
+                      <button aria-label={`${text.edit} ${memory.title}`} className="iconButton" type="button" onClick={() => openEditMemory(memory)}>
+                        <Edit3 size={14} />
+                      </button>
+                    ) : null}
+                    <button aria-label={`${text.delete} ${memory.title}`} className="iconButton dangerIcon" type="button" onClick={() => setDeleteTarget(memory)}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </div>
 
@@ -224,7 +232,10 @@ export function ProjectMemoryPanel({
             {selectedMemory ? (
               <>
                 <dl className="libraryMetaGrid">
-                  <div><dt>{text.category}</dt><dd>{text.categories[selectedMemory.category]}</dd></div>
+                  <div>
+                    <dt>{text.category}</dt>
+                    <dd><span className={`memoryCategoryBadge ${selectedMemory.category}`}>{text.categories[selectedMemory.category]}</span></dd>
+                  </div>
                   <div><dt>{text.tags}</dt><dd>{selectedMemory.tags.join(", ") || text.noTags}</dd></div>
                   <div><dt>{text.updated}</dt><dd>{new Date(selectedMemory.updatedAt).toLocaleString()}</dd></div>
                   <div><dt>{text.project}</dt><dd>{selectedMemory.projectId}</dd></div>
@@ -392,11 +403,15 @@ function splitList(value: string): string[] {
   return value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean);
 }
 
+function summarizeMemoryTags(tags: string[], empty: string): string {
+  return tags.slice(0, 3).join(", ") || empty;
+}
+
 function getMemoryCopy(language?: string | null) {
   const zh = language === "zh-CN";
   return {
     title: zh ? "记忆" : "Memory",
-    subtitle: zh ? "管理常驻用户画像、项目记忆文档和结构化项目事实。" : "Manage the durable user profile, project memory document, and structured project facts.",
+    docs: zh ? "文档" : "Docs",
     userProfile: zh ? "用户画像" : "User profile",
     projectMemory: zh ? "项目记忆" : "Project memory",
     newMemory: zh ? "新建项目记忆" : "New project memory",
@@ -436,12 +451,6 @@ function getMemoryCopy(language?: string | null) {
     deleteTitle: zh ? "删除项目记忆？" : "Delete project memory?",
     deleteBody: (title: string) => zh ? `“${title}” 会从结构化项目记忆中移除。` : `"${title}" will be removed from structured project memory.`,
     charCount: (chars: number, limit?: number) => limit ? `${chars} / ${limit}` : `${chars}`,
-    compacted: (before: number, after: number, lines: number) => zh ? `已压缩项目记忆：${before} -> ${after} 字符，移除 ${lines} 行。` : `Compacted project memory: ${before} -> ${after} chars, removed ${lines} lines.`,
-    primer: {
-      summary: zh ? "这里保存长期有效的用户画像、项目记忆文档，以及结构化的项目事实。" : "This page stores durable user profile notes, project memory documents, and structured project facts.",
-      focus: zh ? "把真正会反复影响任务判断的内容留在这里，而不是把一次性的任务输出堆进长期记忆。" : "Keep only information that repeatedly affects task decisions here instead of dumping one-off task output into durable memory.",
-      impact: zh ? "会影响新任务启动时的背景上下文、长期约定是否被保留，以及记忆是否会逐渐失真或膨胀。" : "Changes affect startup context for new tasks, whether long-term conventions are retained, and whether memory stays compact instead of drifting or bloating.",
-      nextStep: zh ? "先更新 USER.md 或 MEMORY.md，再按分类补结构化项目事实；如果文档膨胀，再执行压缩。" : "Update USER.md or MEMORY.md first, then add structured facts by category. Compact the document if it starts growing noisy."
-    }
+    compacted: (before: number, after: number, lines: number) => zh ? `已压缩项目记忆：${before} -> ${after} 字符，移除 ${lines} 行。` : `Compacted project memory: ${before} -> ${after} chars, removed ${lines} lines.`
   };
 }

@@ -454,9 +454,10 @@ test("covers library, reflection, and history management", async ({ page, reques
   await page.locator(".confirmDialog").getByRole("button", { name: "Delete" }).click();
   await expect(memoryRow).toHaveCount(0);
 
-  await page.getByRole("button", { name: /Reflections/ }).click();
-  await page.getByRole("button", { name: "Run reflection" }).click();
-  await expect(page.locator(".reflectionList")).toBeVisible();
+  await page.getByRole("button", { name: /Curator/ }).click();
+  await expect(page.getByRole("heading", { name: "Skill Curator" })).toBeVisible();
+  await page.getByRole("button", { name: "Extract suggestions" }).click();
+  await expect(page.locator(".curatorPanel")).toContainText("Review queue");
 
   await openNavItem(page, /History/);
   await expect(page.getByRole("heading", { name: "History" })).toBeVisible();

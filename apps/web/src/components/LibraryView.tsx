@@ -1,19 +1,18 @@
 import type { ReactNode } from "react";
-import { BrainCircuit, BookOpen, Database, Menu, Search, Sparkles, WandSparkles } from "lucide-react";
+import { BookOpen, Database, Menu, Search, Sparkles, WandSparkles } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
 import "../styles/settings.css";
 import { PanelBoundary } from "./PanelBoundary.js";
 
-export type LibrarySection = "skills" | "curator" | "knowledge" | "memory" | "reflections";
+export type LibrarySection = "skills" | "curator" | "knowledge" | "memory";
 
-const sectionIds: LibrarySection[] = ["skills", "curator", "knowledge", "memory", "reflections"];
+const sectionIds: LibrarySection[] = ["skills", "curator", "knowledge", "memory"];
 
 const sectionIcons: Record<LibrarySection, ReactNode> = {
   skills: <Sparkles size={16} />,
   curator: <WandSparkles size={16} />,
   knowledge: <BookOpen size={16} />,
-  memory: <Database size={16} />,
-  reflections: <BrainCircuit size={16} />
+  memory: <Database size={16} />
 };
 
 export function LibraryView({
@@ -87,8 +86,7 @@ function getLibraryCopy(language?: string | null) {
       skills: "Skills",
       curator: "Curator",
       knowledge: zh ? "知识库" : "Knowledge",
-      memory: zh ? "记忆" : "Memory",
-      reflections: zh ? "Agent 反思" : "Reflections"
+      memory: zh ? "记忆" : "Memory"
     }
   };
 }

@@ -69,6 +69,13 @@ export class ShellToolExecutor implements ToolExecutor {
   }
 
   async execute(call: ToolCall, options: ToolExecutionOptions = {}): Promise<ToolResult> {
+    const scopedRoot = this.rootFor(options);
+    if (scopedRoot !== this.workspaceRoot) {
+      const scopedExecutor = new ShellToolExecutor(scopedRoot, this.defaultTimeoutMs);
+      const { workRoot: _workRoot, ...scopedOptions } = options;
+      return scopedExecutor.execute(call, scopedOptions);
+    }
+
     if (call.toolName === "run_command") {
       return this.runCommand(call, options);
     }
@@ -183,7 +190,11 @@ export class ShellToolExecutor implements ToolExecutor {
 
   private async readFile(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     try {
-      const path = await this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
+      const requestedPath = String(call.args["path"] ?? "").trim();
+      if (!requestedPath) {
+        return this.result(call, false, "Missing path.");
+      }
+      const path = await this.resolveWorkspacePath(requestedPath, this.rootFor(options));
       if (isInternalTracePath(path)) {
         return this.result(call, false, "Agent Workbench internal trace files are excluded from workspace read tools.");
       }
@@ -291,6 +302,12 @@ export class ShellToolExecutor implements ToolExecutor {
     const path = await this.resolveWorkspacePath(String(call.args["path"] ?? ""), this.rootFor(options));
     const expectedHash = String(call.args["expectedHash"] ?? "");
     if (!expectedHash) {
+      await emitToolProgress(options, {
+        status: "failed",
+        targetPath: path,
+        operation: "hash_check",
+        message: "Missing expectedHash; refusing to edit without a current file read."
+      });
       return this.result(call, false, "Missing expectedHash. Read the file first, or use __new__ when creating a new file.");
     }
 
@@ -300,8 +317,22 @@ export class ShellToolExecutor implements ToolExecutor {
     const isNewFileIntent = !fileExists && expectedHash === "__new__";
 
     if (!isNewFileIntent && expectedHash !== currentHash) {
+      await emitToolProgress(options, {
+        status: "failed",
+        targetPath: path,
+        operation: "hash_check",
+        message: "Expected hash did not match the current file; write was not started."
+      });
       return this.conflictResult(call, path, expectedHash, currentHash, "File changed before write. The file may have been modified by another user or agent; read it again before editing.");
     }
+
+    await emitToolProgress(options, {
+      status: "running",
+      targetPath: path,
+      operation: "hash_check",
+      message: isNewFileIntent ? "Confirmed new-file write intent." : "Verified expectedHash against current file.",
+      progress: { processed: fileExists ? Buffer.byteLength(current, "utf8") : 0, total: fileExists ? Buffer.byteLength(current, "utf8") : 0, unit: "bytes" }
+    });
 
     return { path, current, currentHash, existed: fileExists };
   }
@@ -357,15 +388,58 @@ export class ShellToolExecutor implements ToolExecutor {
 
       const next = lines.join("\n");
       const changes = lineChangeSummary(path, current, next, existed ? "edit" : "create", existed);
+      const nextBytes = Buffer.byteLength(next, "utf8");
+      const displayMode = isLargeChange(changes, next) ? "summary_only" : "inline";
+      await emitToolProgress(options, {
+        status: "running",
+        targetPath: path,
+        operation: "diff",
+        message: `Computed ${changes.operation} diff: +${changes.addedLines} / -${changes.removedLines} lines.`,
+        changes,
+        progress: { processed: changes.addedLines + changes.removedLines, total: changes.addedLines + changes.removedLines, unit: "lines" },
+        displayMode
+      });
       await emitToolProgress(options, {
         status: "running",
         targetPath: path,
         operation: changes.operation,
+        message: "Writing updated file content.",
         changes,
-        progress: { processed: 0, total: Buffer.byteLength(next, "utf8"), unit: "bytes" },
-        displayMode: isLargeChange(changes, next) ? "summary_only" : "inline"
+        progress: { processed: 0, total: nextBytes, unit: "bytes" },
+        displayMode
       });
-      await writeTextFileInChunks(path, next, options, { path, changes, operation: changes.operation, totalBytes: Buffer.byteLength(next, "utf8"), displayMode: isLargeChange(changes, next) ? "summary_only" : "inline" });
+      await writeTextFileInChunks(path, next, options, { path, changes, operation: changes.operation, totalBytes: nextBytes, displayMode });
+      await emitToolProgress(options, {
+        status: "running",
+        targetPath: path,
+        operation: "commit",
+        message: "File write committed; verifying written hash.",
+        changes,
+        progress: { processed: nextBytes, total: nextBytes, unit: "bytes" },
+        displayMode
+      });
+      const verification = await verifyWrittenFile(path, next);
+      if (!verification.ok) {
+        await emitToolProgress(options, {
+          status: "failed",
+          targetPath: path,
+          operation: "verify",
+          message: verification.message,
+          changes,
+          progress: { processed: nextBytes, total: nextBytes, unit: "bytes" },
+          displayMode
+        });
+        return this.result(call, false, verification.message);
+      }
+      await emitToolProgress(options, {
+        status: "completed",
+        targetPath: path,
+        operation: "verify",
+        message: "Verified written file hash.",
+        changes,
+        progress: { processed: nextBytes, total: nextBytes, unit: "bytes" },
+        displayMode
+      });
       return this.result(
         call,
         true,
@@ -376,7 +450,7 @@ export class ShellToolExecutor implements ToolExecutor {
           changed: current !== next,
           changes,
           editsApplied: appliedEdits.reverse(),
-          displayMode: isLargeChange(changes, next) ? "summary_only" : "inline"
+          displayMode
         }, null, 2)
       );
     } catch (error) {
@@ -397,12 +471,53 @@ export class ShellToolExecutor implements ToolExecutor {
       await emitToolProgress(options, {
         status: "running",
         targetPath: path,
+        operation: "diff",
+        message: `Computed ${changes.operation} diff: +${changes.addedLines} / -${changes.removedLines} lines.`,
+        changes,
+        progress: { processed: changes.addedLines + changes.removedLines, total: changes.addedLines + changes.removedLines, unit: "lines" },
+        displayMode
+      });
+      await emitToolProgress(options, {
+        status: "running",
+        targetPath: path,
         operation: changes.operation,
+        message: "Writing file content.",
         changes,
         progress: { processed: 0, total: totalBytes, unit: "bytes" },
         displayMode
       });
       await writeTextFileInChunks(path, content, options, { path, changes, operation: changes.operation, totalBytes, displayMode });
+      await emitToolProgress(options, {
+        status: "running",
+        targetPath: path,
+        operation: "commit",
+        message: "File write committed; verifying written hash.",
+        changes,
+        progress: { processed: totalBytes, total: totalBytes, unit: "bytes" },
+        displayMode
+      });
+      const verification = await verifyWrittenFile(path, content);
+      if (!verification.ok) {
+        await emitToolProgress(options, {
+          status: "failed",
+          targetPath: path,
+          operation: "verify",
+          message: verification.message,
+          changes,
+          progress: { processed: totalBytes, total: totalBytes, unit: "bytes" },
+          displayMode
+        });
+        return this.result(call, false, verification.message);
+      }
+      await emitToolProgress(options, {
+        status: "completed",
+        targetPath: path,
+        operation: "verify",
+        message: "Verified written file hash.",
+        changes,
+        progress: { processed: totalBytes, total: totalBytes, unit: "bytes" },
+        displayMode
+      });
       return this.result(
         call,
         true,
@@ -414,7 +529,7 @@ export class ShellToolExecutor implements ToolExecutor {
             changed: current !== content,
             changes,
             sizeBytes: totalBytes,
-            totalLines: content.split(/\r?\n/).length,
+            totalLines: countContentLines(content),
             displayMode
           },
           null,
@@ -613,7 +728,9 @@ function lineChangeSummary(
 
 function splitComparableLines(value: string): string[] {
   if (!value) return [];
-  return normalizeNewlines(value).split("\n");
+  const lines = normalizeNewlines(value).split("\n");
+  if (lines.length > 1 && lines.at(-1) === "") lines.pop();
+  return lines;
 }
 
 function countContentLines(value: string): number {
@@ -740,7 +857,7 @@ async function readTextFileProfile(path: string, sizeBytes: number): Promise<{ c
     carry = lines.pop() ?? "";
     for (const line of lines) consumeLine(line);
   }
-  consumeLine(carry);
+  if (carry.length > 0) consumeLine(carry);
 
   const content = contentParts.join("");
   const omittedLines = Math.max(0, totalLines - headLines.length - tailLines.length);
@@ -775,7 +892,7 @@ async function readTextLineRange(path: string, offset: number, limit: number): P
     carry = lines.pop() ?? "";
     for (const line of lines) consumeLine(line);
   }
-  consumeLine(carry);
+  if (carry.length > 0) consumeLine(carry);
 
   return { content: selected.join("\n"), totalLines, hash: hasher.digest("hex").slice(0, 16) };
 }
@@ -814,6 +931,14 @@ async function writeTextFileInChunks(
   } finally {
     await handle.close();
   }
+}
+
+async function verifyWrittenFile(path: string, expectedContent: string): Promise<{ ok: true } | { ok: false; message: string }> {
+  const actual = await readFile(path, "utf8").catch((error: unknown) => {
+    throw new Error(`Unable to verify written file: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  if (hash(actual) === hash(expectedContent)) return { ok: true };
+  return { ok: false, message: "Written file hash did not match the intended content; inspect the file before continuing." };
 }
 
 async function emitToolProgress(options: ToolExecutionOptions, progress: ToolProgressUpdate): Promise<void> {

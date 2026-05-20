@@ -77,7 +77,7 @@ export function ScheduledTasksPanel({
         ) : null}
         {visibleTasks.map((task) => (
           <article className={isDefaultReflectionTask(task) ? "providerRow scheduledTaskRow systemTaskRow" : "providerRow scheduledTaskRow"} key={task.id}>
-            <span className={task.type === "reflection" ? "providerIcon reflectionIcon" : "providerIcon"}>
+            <span className={task.type === "reflection" ? "providerIcon curatorTaskIcon" : "providerIcon"}>
               {task.type === "reflection" ? <Sparkles size={17} /> : <CalendarClock size={17} />}
             </span>
             <div className="scheduledTaskMain">
@@ -129,7 +129,7 @@ export function ScheduledTasksPanel({
       </div>
       {hasReflectionTask ? (
         <p className="inlineNotice">
-          <span>{zh ? "内置 reflection 任务用于整理近期任务记忆与模式。它可以暂停或编辑，但不会像普通任务那样提供删除按钮。" : "The built-in reflection task keeps recent task memory and reusable patterns in shape. You can pause or edit it, but it is intentionally protected from delete controls."}</span>
+          <span>{zh ? "内置 Curator 维护任务用于整理近期任务记忆与模式。它可以暂停或编辑，但不会像普通任务那样提供删除按钮。" : "The built-in Curator maintenance task keeps recent task memory and reusable patterns in shape. You can pause or edit it, but it is intentionally protected from delete controls."}</span>
         </p>
       ) : null}
       {scheduledTasks.length > pageSize ? (

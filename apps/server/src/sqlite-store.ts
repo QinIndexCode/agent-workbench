@@ -110,6 +110,13 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
     return this.list<TaskDetail>("tasks").map((task) => normalizeTaskDetail(task)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
+  async listChildTasks(parentTaskId: string): Promise<TaskDetail[]> {
+    return this.list<TaskDetail>("tasks")
+      .map((task) => normalizeTaskDetail(task))
+      .filter((task) => task.parentTaskId === parentTaskId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
   async deleteTask(taskId: string): Promise<void> {
     this.delete("tasks", taskId);
   }

@@ -1,9 +1,8 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentProps, type ComponentType } from "react";
 import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup, TaskAttachment, UserPreferences } from "@agent-workbench/shared";
 import { type AppRoute, useAppRoute } from "./app-router.js";
 import { api } from "./api.js";
 import { ProviderBrandIcon } from "./components/ProviderBrandIcon.js";
-import { SupportDialog } from "./components/SupportDialog.js";
 import { TaskList } from "./components/TaskList.js";
 import { TaskThread } from "./components/TaskThread.js";
 import type { ComposerMode, ComposerPermissionMode, PermissionPreset } from "./components/Composer.js";
@@ -12,27 +11,67 @@ import type { SettingsSection } from "./components/SettingsView.js";
 import type { DocsSection } from "./docs/index.js";
 import { useWorkbenchData } from "./useWorkbenchData.js";
 
-const DocsView = lazy(() => import("./components/DocsView.js").then((module) => ({ default: module.DocsView })));
-const HistoryPage = lazy(() => import("./components/HistoryPage.js").then((module) => ({ default: module.HistoryPage })));
-const IntegrationsPanel = lazy(() => import("./components/IntegrationsPanel.js").then((module) => ({ default: module.IntegrationsPanel })));
-const KnowledgePanel = lazy(() => import("./components/KnowledgePanel.js").then((module) => ({ default: module.KnowledgePanel })));
-const LibraryView = lazy(() => import("./components/LibraryView.js").then((module) => ({ default: module.LibraryView })));
-const McpPanel = lazy(() => import("./components/McpPanel.js").then((module) => ({ default: module.McpPanel })));
-const ModelProvidersPanel = lazy(() => import("./components/ModelProvidersPanel.js").then((module) => ({ default: module.ModelProvidersPanel })));
-const PermissionsPanel = lazy(() => import("./components/PermissionsPanel.js").then((module) => ({ default: module.PermissionsPanel })));
-const ProjectMemoryPanel = lazy(() => import("./components/ProjectMemoryPanel.js").then((module) => ({ default: module.ProjectMemoryPanel })));
-const ReflectionPanel = lazy(() => import("./components/ReflectionPanel.js").then((module) => ({ default: module.ReflectionPanel })));
-const SettingsView = lazy(() => import("./components/SettingsView.js").then((module) => ({ default: module.SettingsView })));
-const ScheduledTasksPanel = lazy(() => import("./components/ScheduledTasksPanel.js").then((module) => ({ default: module.ScheduledTasksPanel })));
-const SkillCuratorPanel = lazy(() => import("./components/SkillCuratorPanel.js").then((module) => ({ default: module.SkillCuratorPanel })));
-const SkillPanel = lazy(() => import("./components/SkillPanel.js").then((module) => ({ default: module.SkillPanel })));
-const WebSearchPanel = lazy(() => import("./components/WebSearchPanel.js").then((module) => ({ default: module.WebSearchPanel })));
+type PreloadableComponent<TProps extends object> = ComponentType<TProps> & {
+  preload: () => Promise<void>;
+};
+
+function preloadable<TProps extends object>(loader: () => Promise<{ default: ComponentType<TProps> }>): PreloadableComponent<TProps> {
+  let resolved: ComponentType<TProps> | null = null;
+  let loading: Promise<{ default: ComponentType<TProps> }> | null = null;
+  const load = () => {
+    loading ??= loader().then((module) => {
+      resolved = module.default;
+      return module;
+    });
+    return loading;
+  };
+  const LazyComponent = lazy(load);
+  const Component = ((props: TProps) => {
+    const ResolvedComponent = resolved;
+    return ResolvedComponent ? <ResolvedComponent {...props} /> : <LazyComponent {...props} />;
+  }) as unknown as PreloadableComponent<TProps>;
+  Component.preload = () => load().then(() => undefined);
+  return Component;
+}
+
+const DocsView = preloadable<ComponentProps<typeof import("./components/DocsView.js").DocsView>>(() => import("./components/DocsView.js").then((module) => ({ default: module.DocsView })));
+const HistoryPage = preloadable<ComponentProps<typeof import("./components/HistoryPage.js").HistoryPage>>(() => import("./components/HistoryPage.js").then((module) => ({ default: module.HistoryPage })));
+const IntegrationsPanel = preloadable<ComponentProps<typeof import("./components/IntegrationsPanel.js").IntegrationsPanel>>(() => import("./components/IntegrationsPanel.js").then((module) => ({ default: module.IntegrationsPanel })));
+const KnowledgePanel = preloadable<ComponentProps<typeof import("./components/KnowledgePanel.js").KnowledgePanel>>(() => import("./components/KnowledgePanel.js").then((module) => ({ default: module.KnowledgePanel })));
+const LibraryView = preloadable<ComponentProps<typeof import("./components/LibraryView.js").LibraryView>>(() => import("./components/LibraryView.js").then((module) => ({ default: module.LibraryView })));
+const McpPanel = preloadable<ComponentProps<typeof import("./components/McpPanel.js").McpPanel>>(() => import("./components/McpPanel.js").then((module) => ({ default: module.McpPanel })));
+const ModelProvidersPanel = preloadable<ComponentProps<typeof import("./components/ModelProvidersPanel.js").ModelProvidersPanel>>(() => import("./components/ModelProvidersPanel.js").then((module) => ({ default: module.ModelProvidersPanel })));
+const PermissionsPanel = preloadable<ComponentProps<typeof import("./components/PermissionsPanel.js").PermissionsPanel>>(() => import("./components/PermissionsPanel.js").then((module) => ({ default: module.PermissionsPanel })));
+const ProjectMemoryPanel = preloadable<ComponentProps<typeof import("./components/ProjectMemoryPanel.js").ProjectMemoryPanel>>(() => import("./components/ProjectMemoryPanel.js").then((module) => ({ default: module.ProjectMemoryPanel })));
+const SettingsView = preloadable<ComponentProps<typeof import("./components/SettingsView.js").SettingsView>>(() => import("./components/SettingsView.js").then((module) => ({ default: module.SettingsView })));
+const ScheduledTasksPanel = preloadable<ComponentProps<typeof import("./components/ScheduledTasksPanel.js").ScheduledTasksPanel>>(() => import("./components/ScheduledTasksPanel.js").then((module) => ({ default: module.ScheduledTasksPanel })));
+const SkillCuratorPanel = preloadable<ComponentProps<typeof import("./components/SkillCuratorPanel.js").SkillCuratorPanel>>(() => import("./components/SkillCuratorPanel.js").then((module) => ({ default: module.SkillCuratorPanel })));
+const SkillPanel = preloadable<ComponentProps<typeof import("./components/SkillPanel.js").SkillPanel>>(() => import("./components/SkillPanel.js").then((module) => ({ default: module.SkillPanel })));
+const SupportDialog = preloadable<ComponentProps<typeof import("./components/SupportDialog.js").SupportDialog>>(() => import("./components/SupportDialog.js").then((module) => ({ default: module.SupportDialog })));
+const WebSearchPanel = preloadable<ComponentProps<typeof import("./components/WebSearchPanel.js").WebSearchPanel>>(() => import("./components/WebSearchPanel.js").then((module) => ({ default: module.WebSearchPanel })));
+const preloadablePages = [
+  DocsView,
+  HistoryPage,
+  LibraryView,
+  SettingsView,
+  SkillPanel,
+  SkillCuratorPanel,
+  KnowledgePanel,
+  ProjectMemoryPanel,
+  ModelProvidersPanel,
+  PermissionsPanel,
+  McpPanel,
+  IntegrationsPanel,
+  ScheduledTasksPanel,
+  WebSearchPanel
+] as const;
 
 const allRiskCategories: RiskCategory[] = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"];
 const readOnlyRiskCategories: RiskCategory[] = ["host_observation", "workspace_read"];
 const defaultAutoApprovalRiskCategories: UserPreferences["autoApproveRiskCategories"] = ["host_observation", "workspace_read", "network"];
 const nonDestructiveRiskCategories: UserPreferences["autoApproveRiskCategories"] = ["host_observation", "workspace_read", "workspace_write", "shell", "network"];
 type PermissionMode = UserPreferences["permissionMode"];
+type GoalPermissionPreset = "ask" | "non_destructive" | "full_risk";
 const settingsDocsSections: Record<SettingsSection, DocsSection> = {
   providers: "providers",
   permissions: "permissions",
@@ -46,8 +85,7 @@ const libraryDocsSections: Record<LibrarySection, DocsSection> = {
   skills: "skills",
   curator: "curator",
   knowledge: "knowledge",
-  memory: "memory",
-  reflections: "reflections"
+  memory: "memory"
 };
 const LAST_TASK_FOLDER_KEY = "agent-workbench.lastTaskFolderId";
 const LEGACY_LAST_TASK_FOLDER_KEY = "scc.lastTaskFolderId";
@@ -76,12 +114,17 @@ export function App() {
   const [optimisticPermissionRisks, setOptimisticPermissionRisks] = useState<RiskCategory[] | null>(null);
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [permissionError, setPermissionError] = useState<string | null>(null);
-  const [targetConfirmation, setTargetConfirmation] = useState<{ goal: string; attachmentIds: string[] } | null>(null);
+  const [goalConfirmation, setGoalConfirmation] = useState<{ goal: string; attachmentIds: string[] } | null>(null);
+  const [commandIssue, setCommandIssue] = useState<string | null>(null);
   const [resolvedTheme, setResolvedTheme] = useState<"dark" | "light">("dark");
   const permissionMutationRef = useRef<Promise<void> | null>(null);
   const language = data.preferences?.language ?? "zh-CN";
   const theme = data.preferences?.theme ?? "dark";
   const activeTask = route.view === "tasks" && route.newTask ? null : data.selected;
+  const activeParentTask =
+    activeTask?.kind === "subagent" && activeTask.parentTaskId
+      ? data.tasks.find((task) => task.id === activeTask.parentTaskId) ?? null
+      : null;
   const activeTranscript = route.view === "tasks" && route.newTask ? [] : data.selectedTranscript;
   const selectedId = route.view === "tasks" && route.newTask ? null : data.selectedId;
   const syncFresh = data.lastSuccessfulSyncAt === null || Date.now() - data.lastSuccessfulSyncAt < 35_000;
@@ -147,6 +190,8 @@ export function App() {
     const lang = language === "zh-CN" ? "zh-CN" : "en";
     if (html.lang !== lang) html.lang = lang;
   }, [language]);
+
+  useEffect(() => preloadAppPagesDuringIdle(language), [language]);
 
   const routeSyncRef = useRef({
     clearSelection: data.clearSelection,
@@ -260,13 +305,15 @@ export function App() {
       {activeView === "tasks" ? (
         <TaskThread
           task={activeTask}
+          parentTask={activeParentTask}
+          delegatedChildren={activeTask?.kind === "subagent" ? [] : data.selectedChildren}
           transcriptEvents={activeTranscript}
           busy={data.busy}
           busySince={data.busySince}
           attachments={pendingAttachments}
           attachmentBusy={attachmentBusy}
           attachmentError={attachmentError}
-          error={data.error}
+          error={commandIssue ?? data.error}
           language={language}
           engineStatus={engineStatus}
           folderOptions={taskFolderOptions}
@@ -298,13 +345,25 @@ export function App() {
           onCancelBusy={() => data.cancelBusy()}
           onPreviewRollback={(input) => data.selected ? data.previewRollbackTask(data.selected.id, input) : Promise.reject(new Error("No task selected"))}
           onRollback={(input) => data.selected ? data.rollbackTask(data.selected.id, input) : Promise.reject(new Error("No task selected"))}
+          onLoadStreamText={(taskId, streamId, type) => data.getTaskStreamText(taskId, streamId, type)}
           onRevertTurn={(turnId) => data.selected ? data.revertTaskTurn(data.selected.id, turnId) : Promise.reject(new Error("No task selected"))}
           onLoadContextSummaries={() => data.selected ? api.listConversationSummaries(data.selected.id) : Promise.resolve([])}
-          onLoadPromptCacheStats={() => data.selected ? api.listPromptCacheStats(data.selected.id) : Promise.resolve([])}
           titleIssue={titleIssue}
           onRetryTitle={() => titleIssue && submitNewTask(titleIssue.goal, false)}
           onUseLocalTitle={() => titleIssue && submitNewTask(titleIssue.goal, true)}
           onApprovalDecision={(approvalId, decision) => approve(approvalId, decision)}
+          onAnswerUserInput={(answer) => answerUserInput(answer)}
+          onOpenDelegatedTask={(taskId) => {
+            safeLocalStorageSet(LAST_TASK_KEY, taskId);
+            navigateRoute({ view: "tasks", taskId });
+            void data.selectTask(taskId);
+          }}
+          onReturnToParent={() => {
+            if (!activeParentTask) return;
+            safeLocalStorageSet(LAST_TASK_KEY, activeParentTask.id);
+            navigateRoute({ view: "tasks", taskId: activeParentTask.id });
+            void data.selectTask(activeParentTask.id);
+          }}
         />
       ) : activeView === "history" ? (
         <HistoryPage
@@ -335,9 +394,8 @@ export function App() {
                 skills={data.skills}
                 duplicates={data.skillDuplicates}
                 conflicts={data.skillConflicts}
-                reflections={data.reflections}
                 onOpenDocs={() => openDocs(libraryDocsSections.skills)}
-                onRunReflection={() => void data.runSideAction(() => api.runReflection())}
+                onRunCuratorExtraction={() => void data.runSideAction(() => api.runCuratorExtraction())}
                 onCreate={(input) => data.runSideAction(() => api.createSkill(input))}
                 onUpdate={(skillId, input) => data.runSideAction(() => api.patchSkill(skillId, input))}
                 onDelete={(skillId) => data.runSideAction(() => api.deleteSkill(skillId))}
@@ -350,10 +408,14 @@ export function App() {
               <SkillCuratorPanel
                 items={data.skillCurator}
                 language={language}
-                reflections={data.reflections}
+                conflicts={data.skillConflicts}
+                duplicates={data.skillDuplicates}
+                curatorRuns={data.curatorRuns}
                 onOpenDocs={() => openDocs(libraryDocsSections.curator)}
-                onRunReflection={() => void data.runSideAction(() => api.runReflection())}
-                onDeleteReflection={(id) => data.runSideAction(() => api.deleteReflection(id))}
+                onRunCuratorExtraction={() => void data.runSideAction(() => api.runCuratorExtraction())}
+                onDeleteCuratorRun={(id) => data.runSideAction(() => api.deleteCuratorRun(id))}
+                onDeleteMemory={(id) => data.runSideAction(() => api.deleteTaskMemory(id))}
+                onClearCuratorRuns={() => data.runSideAction(() => api.clearCuratorRuns())}
                 onActivateSkill={(skillId) => data.runSideAction(() => api.patchSkill(skillId, { status: "active" }))}
                 onSuspendSkill={(skillId) => data.runSideAction(() => api.patchSkill(skillId, { status: "suspended" }))}
                 onMergeDuplicate={(skillIds) => mergeDuplicateIds(skillIds)}
@@ -397,18 +459,6 @@ export function App() {
                 onCreate={(input) => data.runSideAction(() => api.createProjectMemory(input))}
                 onUpdateMemory={(id, input) => data.runSideAction(() => api.patchProjectMemory(id, input))}
                 onDelete={(id) => data.runSideAction(() => api.deleteProjectMemory(id))}
-              />
-            ),
-            reflections: (
-              <ReflectionPanel
-                conflicts={data.skillConflicts}
-                duplicates={data.skillDuplicates}
-                language={language}
-                reflections={data.reflections}
-                onOpenDocs={() => openDocs(libraryDocsSections.reflections)}
-                onRunReflection={() => void data.runSideAction(() => api.runReflection())}
-                onDeleteReflection={(id) => data.runSideAction(() => api.deleteReflection(id))}
-                onClearReflections={() => data.runSideAction(() => api.clearReflections())}
               />
             )
           }}
@@ -520,14 +570,18 @@ export function App() {
         </SettingsView>
       )}
       </Suspense>
-      <TargetModeDialog
+      <GoalModeDialog
         busy={permissionBusy || data.busy}
         language={language}
-        open={Boolean(targetConfirmation)}
-        onCancel={() => setTargetConfirmation(null)}
-        onConfirm={(preset) => confirmTargetMode(preset)}
+        open={Boolean(goalConfirmation)}
+        onCancel={() => setGoalConfirmation(null)}
+        onConfirm={(preset) => confirmGoalMode(preset)}
       />
-      <SupportDialog language={language} open={supportOpen} onClose={() => setSupportOpen(false)} onOpenDocs={() => openDocs()} />
+      {supportOpen ? (
+        <Suspense fallback={null}>
+          <SupportDialog language={language} open={supportOpen} onClose={() => setSupportOpen(false)} onOpenDocs={() => openDocs()} />
+        </Suspense>
+      ) : null}
     </main>
   );
 
@@ -544,15 +598,20 @@ export function App() {
   async function submitComposerAfterPermissionSync(mode: ComposerMode, text: string) {
     if (!(await waitForPermissionMutation())) return;
     const attachmentIds = pendingAttachments.map((attachment) => attachment.id);
-    const target = parseTargetCommand(text);
-    if (target.runMode === "target") {
-      setTargetConfirmation({ goal: target.goal, attachmentIds });
+    const goalCommand = parseGoalCommand(text);
+    if (goalCommand.error) {
+      setCommandIssue(goalCommand.error);
+      return;
+    }
+    setCommandIssue(null);
+    if (goalCommand.runMode === "target") {
+      setGoalConfirmation({ goal: goalCommand.goal, attachmentIds });
       return;
     }
     if (mode === "guidance" || mode === "continue") {
       setTitleIssue(null);
       void data.runTaskAction(async () => {
-        const task = activeTask ? await api.sendMessage(activeTask.id, text, attachmentIds) : await submitNewTaskAction(target.goal, false, attachmentIds, target.runMode);
+        const task = activeTask ? await api.sendMessage(activeTask.id, text, attachmentIds) : await submitNewTaskAction(goalCommand.goal, false, attachmentIds, goalCommand.runMode);
         setPendingAttachments([]);
         return task;
       });
@@ -560,17 +619,23 @@ export function App() {
     }
     setTitleIssue(null);
     void data.runTaskAction(async () => {
-      const task = await submitNewTaskAction(target.goal, false, attachmentIds, target.runMode);
+      const task = await submitNewTaskAction(goalCommand.goal, false, attachmentIds, goalCommand.runMode);
       setPendingAttachments([]);
       return task;
     });
   }
 
-  async function confirmTargetMode(preset: PermissionPreset) {
-    const confirmation = targetConfirmation;
+  async function confirmGoalMode(preset: GoalPermissionPreset) {
+    const confirmation = goalConfirmation;
     if (!confirmation) return;
-    if (!(await runPermissionPresetMutation(preset))) return;
-    setTargetConfirmation(null);
+    const permissionUpdated =
+      preset === "non_destructive"
+        ? await runPermissionModeMutation("auto_approval", nonDestructiveRiskCategories)
+        : preset === "full_risk"
+          ? await runPermissionModeMutation("full_access")
+          : await runPermissionModeMutation("ask");
+    if (!permissionUpdated) return;
+    setGoalConfirmation(null);
     await data.runTaskAction(async () => {
       const task = await submitNewTaskAction(confirmation.goal, false, confirmation.attachmentIds, "target");
       setPendingAttachments([]);
@@ -614,6 +679,11 @@ export function App() {
     })();
   }
 
+  function answerUserInput(answer: string) {
+    if (!data.selected) return;
+    void data.runTaskAction(() => api.sendMessage(data.selected!.id, answer, []));
+  }
+
   function updatePreference(patch: PreferencesPatch) {
     void data.runSideAction(() => api.updatePreferences(patch));
   }
@@ -632,7 +702,7 @@ export function App() {
   }
 
   async function runPermissionModeMutation(mode: PermissionMode, selectedRisks?: RiskCategory[]): Promise<boolean> {
-    const optimisticPreset: ComposerPermissionMode = mode === "full_access" ? "all" : mode === "read_only" ? "read_only" : mode === "custom" ? "custom" : "ask";
+    const optimisticPreset: ComposerPermissionMode = mode === "full_access" ? "all" : mode === "read_only" ? "read_only" : (mode === "custom" || mode === "auto_approval") ? "custom" : "ask";
     const target = new Set<RiskCategory>(targetRisksForPermissionMode(mode, selectedRisks));
     const preferencePatch = preferencesForPermissionMode(mode, selectedRisks);
     setOptimisticPermissionMode(mode);
@@ -796,7 +866,7 @@ export function App() {
   }
 }
 
-function TargetModeDialog({
+function GoalModeDialog({
   busy,
   language,
   open,
@@ -807,37 +877,42 @@ function TargetModeDialog({
   language: string;
   open: boolean;
   onCancel: () => void;
-  onConfirm: (preset: PermissionPreset) => Promise<void> | void;
+  onConfirm: (preset: GoalPermissionPreset) => Promise<void> | void;
 }) {
-  const [selected, setSelected] = useState<PermissionPreset | null>(null);
+  const [selected, setSelected] = useState<GoalPermissionPreset | null>(null);
+  const [fullRiskAcknowledged, setFullRiskAcknowledged] = useState(false);
   const zh = language === "zh-CN";
   useEffect(() => {
-    if (open) setSelected(null);
+    if (open) {
+      setSelected(null);
+      setFullRiskAcknowledged(false);
+    }
   }, [open]);
   if (!open) return null;
-  const options: Array<{ value: PermissionPreset; label: string; detail: string }> = zh
+  const options: Array<{ value: GoalPermissionPreset; label: string; detail: string }> = zh
     ? [
-        { value: "ask", label: "Ask", detail: "每次高风险工具调用前询问。" },
-        { value: "read_only", label: "Read only", detail: "允许只读观察与工作区读取，写入仍需审批。" },
-        { value: "all", label: "All", detail: "允许完整权限预设；破坏性操作仍需权限系统约束。" }
+        { value: "ask", label: "Ask every time", detail: "保持逐次审批；/goal 仍会更主动推进和验证。" },
+        { value: "non_destructive", label: "Non-destructive max", detail: "自动放开观察、读取、写入、shell 和网络；破坏性操作仍不自动审批。" },
+        { value: "full_risk", label: "Full risk", detail: "全局允许全部风险类别，包括删除、覆盖和终止进程等高危操作。" }
       ]
     : [
-        { value: "ask", label: "Ask", detail: "Ask before each higher-risk tool call." },
-        { value: "read_only", label: "Read only", detail: "Allow observation and workspace reads; writes still require approval." },
-        { value: "all", label: "All", detail: "Use the full preset; destructive actions remain governed by permissions." }
+        { value: "ask", label: "Ask every time", detail: "Keep per-tool approval; /goal will still push harder and verify longer." },
+        { value: "non_destructive", label: "Non-destructive max", detail: "Auto-approve observe, read, write, shell, and network risks. Destructive stays outside automation." },
+        { value: "full_risk", label: "Full risk", detail: "Globally allow every risk class, including delete, overwrite, and process termination." }
       ];
+  const requiresFullRiskAcknowledgement = selected === "full_risk" && !fullRiskAcknowledged;
   return (
     <div className="modalBackdrop stdBackdrop" role="presentation" onClick={(event) => { if (event.currentTarget === event.target && !busy) onCancel(); }}>
-      <section aria-modal="true" aria-labelledby="target-mode-title" className="stdModal stdModalNarrow targetModeDialog" role="dialog">
+      <section aria-modal="true" aria-labelledby="goal-mode-title" className="stdModal stdModalNarrow targetModeDialog goalModeDialog" role="dialog">
         <div className="stdHeader">
-          <h3 id="target-mode-title">{zh ? "启动 /target" : "Start /target"}</h3>
+          <h3 id="goal-mode-title">{zh ? "启动 /goal" : "Start /goal"}</h3>
           <button aria-label={zh ? "取消" : "Cancel"} className="stdClose" disabled={busy} type="button" onClick={onCancel}>×</button>
         </div>
         <div className="stdBody">
           <p className="stdDialogHelp">
             {zh
-              ? "/target 是实验功能，会消耗更多 token、运行更久，且可能不可控。启动前必须显式选择权限范围，可随时暂停或取消。"
-              : "/target is experimental. It may use more tokens, run longer, and be less predictable. Choose a permission preset before starting; you can pause or cancel anytime."}
+              ? "/goal 会更主动地持续探索、实现和验证目标，可能消耗更多模型额度、运行更久、连续读写文件、运行命令或访问网络。你可以随时暂停。"
+              : "/goal pushes harder toward a verified goal. It may spend more model quota, run longer, repeatedly read/write files, run commands, or access the network. You can pause anytime."}
           </p>
           <div className="targetPermissionGrid" role="radiogroup" aria-label={zh ? "选择权限范围" : "Choose permission preset"}>
             {options.map((option) => (
@@ -855,13 +930,28 @@ function TargetModeDialog({
               </button>
             ))}
           </div>
+          {selected === "full_risk" ? (
+            <label className="goalDangerAck">
+              <input
+                checked={fullRiskAcknowledged}
+                disabled={busy}
+                type="checkbox"
+                onChange={(event) => setFullRiskAcknowledged(event.target.checked)}
+              />
+              <span>
+                {zh
+                  ? "我理解 Full risk 会全局允许 destructive 操作，可能删除、覆盖、终止进程或不可逆改变本机/远程状态。"
+                  : "I understand Full risk globally allows destructive operations that may delete, overwrite, terminate processes, or irreversibly change local or remote state."}
+              </span>
+            </label>
+          ) : null}
         </div>
         <div className="stdFooter">
           <button className="stdCancelBtn" disabled={busy} type="button" onClick={onCancel}>
             {zh ? "取消" : "Cancel"}
           </button>
-          <button className="primaryInlineButton" disabled={!selected || busy} type="button" onClick={() => selected && onConfirm(selected)}>
-            {busy ? (zh ? "正在启动..." : "Starting...") : (zh ? "启动目标模式" : "Start target mode")}
+          <button className="primaryInlineButton" disabled={!selected || requiresFullRiskAcknowledgement || busy} type="button" onClick={() => selected && onConfirm(selected)}>
+            {busy ? (zh ? "正在启动..." : "Starting...") : (zh ? "启动目标完成模式" : "Start goal mode")}
           </button>
         </div>
       </section>
@@ -882,13 +972,23 @@ function sameRoute(left: AppRoute, right: AppRoute): boolean {
   return true;
 }
 
-function parseTargetCommand(text: string): { goal: string; runMode: "normal" | "target" } {
+function parseGoalCommand(text: string): { goal: string; runMode: "normal" | "target"; error?: string } {
   const trimmed = text.trim();
-  if (!trimmed.startsWith("/target")) return { goal: text, runMode: "normal" };
-  const boundary = trimmed.length === "/target".length || /\s/.test(trimmed.charAt("/target".length));
-  if (!boundary) return { goal: text, runMode: "normal" };
-  const goal = trimmed.slice("/target".length).trim();
+  if (isSlashCommand(trimmed, "/target")) {
+    return {
+      goal: text,
+      runMode: "normal",
+      error: "The /target command has been removed; use /goal to start goal mode. /target 指令已移除，请使用 /goal。"
+    };
+  }
+  if (!isSlashCommand(trimmed, "/goal")) return { goal: text, runMode: "normal" };
+  const goal = trimmed.slice("/goal".length).trim();
   return { goal: goal || trimmed, runMode: "target" };
+}
+
+function isSlashCommand(trimmed: string, command: string): boolean {
+  if (!trimmed.startsWith(command)) return false;
+  return trimmed.length === command.length || /\s/.test(trimmed.charAt(command.length));
 }
 
 function safeLocalStorageGet(key: string, legacyKey?: string): string | null {
@@ -907,6 +1007,56 @@ function safeLocalStorageSet(key: string, value: string): void {
   } catch {
     // Ignore storage failures; current in-memory UI state remains authoritative.
   }
+}
+
+function preloadAppPagesDuringIdle(language: string | null | undefined): () => void {
+  const jobs: Array<() => Promise<void>> = [
+    ...preloadablePages.map((page) => () => page.preload()),
+    () => import("./docs/index.js").then((module) => module.preloadDocContents(language))
+  ];
+  return runIdlePreloadQueue(jobs);
+}
+
+function runIdlePreloadQueue(jobs: Array<() => Promise<void>>): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  let cancelled = false;
+  let idleHandle: number | null = null;
+  let timeoutHandle: number | null = null;
+  const clearScheduled = () => {
+    if (idleHandle !== null) {
+      window.cancelIdleCallback?.(idleHandle);
+      idleHandle = null;
+    }
+    if (timeoutHandle !== null) {
+      window.clearTimeout(timeoutHandle);
+      timeoutHandle = null;
+    }
+  };
+  const scheduleNext = () => {
+    if (cancelled) return;
+    const runNext = () => {
+      idleHandle = null;
+      timeoutHandle = null;
+      if (cancelled) return;
+      const job = jobs.shift();
+      if (!job) return;
+      void job()
+        .catch(() => undefined)
+        .finally(() => {
+          scheduleNext();
+        });
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      idleHandle = window.requestIdleCallback(runNext, { timeout: 2500 });
+    } else {
+      timeoutHandle = window.setTimeout(runNext, 350);
+    }
+  };
+  scheduleNext();
+  return () => {
+    cancelled = true;
+    clearScheduled();
+  };
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {

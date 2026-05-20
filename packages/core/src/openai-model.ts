@@ -63,43 +63,11 @@ export class OpenAIModelClient implements ModelClient {
   }
 
   async next(task: TaskDetail, stream?: ModelStreamHandlers): Promise<ModelTurn> {
-    return this.nextWithSkillRetries(task, 0, stream);
-  }
-
-  private async nextWithSkillRetries(task: TaskDetail, skillRetryCount: number, stream?: ModelStreamHandlers): Promise<ModelTurn> {
     const context = this.contextAssembler ? await this.contextAssembler.assemble(task) : null;
     const preferences = await this.preferenceProvider?.();
     const dynamicTools = (await this.toolProvider?.listModelTools()) ?? [];
     const modelTools = selectModelToolsForTask(task, dynamicTools);
-    const turn = await this.nextWithProviderFallbacks(task, context, preferences, modelTools, stream);
-    if (turn.kind !== "tool_calls") return turn;
-
-    const skillCall = turn.calls.find((call) => call.toolName === "use_skill");
-    let requestedSkillId = "";
-    if (skillCall && this.contextAssembler) {
-      requestedSkillId = String(skillCall.args["skillId"] ?? skillCall.args["name"] ?? skillCall.args["title"] ?? "").trim();
-      if (requestedSkillId) {
-        const skill = await this.contextAssembler.loadSkill(task.id, requestedSkillId);
-        if ((skill || skillRetryCount < 2) && skillRetryCount < 3) return this.nextWithSkillRetries(task, skillRetryCount + 1, stream);
-      }
-    }
-
-    const executableCalls = turn.calls.filter((call) => call.toolName !== "use_skill");
-    if (executableCalls.length > 0) return { ...turn, calls: executableCalls };
-    if (skillCall) {
-      return {
-        kind: "final",
-        message: requestedSkillId ? "I loaded the requested skill and need another model turn to continue." : "I need the skill name or ID before I can load a skill.",
-        ...(stream?.streamId ? { streamId: stream.streamId } : {}),
-        ...(turn.usage ? { usage: turn.usage } : {})
-      };
-    }
-    return {
-      kind: "final",
-      message: "I loaded the requested skill and need another model turn to continue.",
-      ...(stream?.streamId ? { streamId: stream.streamId } : {}),
-      ...(turn.usage ? { usage: turn.usage } : {})
-    };
+    return await this.nextWithProviderFallbacks(task, context, preferences, modelTools, stream);
   }
 
   private async nextWithProviderFallbacks(
@@ -170,7 +138,8 @@ export class OpenAIModelClient implements ModelClient {
     }
     const client = this.clientFor(baseURL, apiKey);
     const callSignal = this.createCallSignal(stream?.signal);
-    const messages = toOpenAIChatMessages(contextMessages(context, task));
+    const replayReasoningContent = shouldReplayReasoningContentForOpenAICompatible(provider, model, baseURL);
+    const messages = toOpenAIChatMessages(contextMessages(context, task), { replayReasoningContent });
     const request: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
       model,
       messages,
@@ -585,7 +554,10 @@ function systemTextFromMessages(messages: CanonicalModelMessage[]): string {
     .join("\n\n") || fallbackInstructions();
 }
 
-function toOpenAIChatMessages(messages: CanonicalModelMessage[]): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+function toOpenAIChatMessages(
+  messages: CanonicalModelMessage[],
+  options: { replayReasoningContent?: boolean } = {}
+): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
   return messages.flatMap((message): OpenAI.Chat.Completions.ChatCompletionMessageParam[] => {
     if (message.role === "system") return [{ role: "system", content: message.content }];
     if (message.role === "user") return [{ role: "user", content: message.content }];
@@ -597,7 +569,16 @@ function toOpenAIChatMessages(messages: CanonicalModelMessage[]): OpenAI.Chat.Co
       }];
     }
     const toolCalls = message.toolCalls ?? [];
-    if (toolCalls.length === 0) return [{ role: "assistant", content: message.content ?? "" }];
+    if (toolCalls.length === 0) {
+      const assistantMessage: Record<string, unknown> = {
+        role: "assistant",
+        content: message.content ?? ""
+      };
+      if (options.replayReasoningContent && message.reasoningContent) {
+        assistantMessage["reasoning_content"] = message.reasoningContent;
+      }
+      return [assistantMessage as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam];
+    }
     const assistantMessage: Record<string, unknown> = {
       role: "assistant",
       content: message.content ?? "",
@@ -610,8 +591,23 @@ function toOpenAIChatMessages(messages: CanonicalModelMessage[]): OpenAI.Chat.Co
         }
       }))
     };
+    if (options.replayReasoningContent && message.reasoningContent) {
+      assistantMessage["reasoning_content"] = message.reasoningContent;
+    }
     return [assistantMessage as unknown as OpenAI.Chat.Completions.ChatCompletionMessageParam];
   });
+}
+
+function shouldReplayReasoningContentForOpenAICompatible(
+  provider: ResolvedModelProviderConfig | undefined,
+  model: string | undefined,
+  baseURL: string | undefined
+): boolean {
+  const fingerprint = [provider?.providerId, model, baseURL]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join(" ")
+    .toLowerCase();
+  return fingerprint.includes("mimo") || fingerprint.includes("xiaomimimo");
 }
 
 function toAnthropicMessages(messages: CanonicalModelMessage[]): Array<Record<string, unknown>> {
@@ -1310,6 +1306,20 @@ function toolDefinitions(): ModelToolDefinition[] {
             }
           }
         }, [])
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "spawn_subagent",
+        description: "Delegate a bounded read-only research subtask to a child agent that may inspect local files, host state, and the network, but cannot edit files, run destructive commands, ask the user, or spawn another subagent. Use only when a parallel research thread will materially help the current task.",
+        parameters: strictObject({
+          goal: { type: "string", description: "The exact delegated research goal." },
+          context: { type: "string", description: "Optional short context the child agent should know before it starts." },
+          fileHints: { type: "array", items: { type: "string" }, description: "Optional likely-relevant files or directories." },
+          title: { type: "string", description: "Optional short child task title." },
+          expectedOutput: { type: "string", enum: ["summary", "checklist", "comparison"], description: "The preferred shape of the child agent's final summary." }
+        }, ["goal"])
       }
     },
     {

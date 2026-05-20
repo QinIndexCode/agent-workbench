@@ -14,6 +14,7 @@ import {
   createModelClientFromEnvironment,
   loadOpenAiProviderConfig,
   parseWecomCallbackXml,
+  sanitizeSensitiveValue,
   type OpenAIProviderConfigWithName,
   type ResolvedModelProviderConfig
 } from "@agent-workbench/core";
@@ -69,7 +70,7 @@ import {
   WebSearchProviderCreateRequestSchema,
   WebSearchProviderPatchRequestSchema
 } from "@agent-workbench/shared";
-import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { ZodError, z } from "zod";
 import { createAgentWorkbenchMcpServer } from "./agent-workbench-mcp-server.js";
 import { SqliteWorkbenchStore } from "./sqlite-store.js";
@@ -83,6 +84,7 @@ const MAX_EVENT_WINDOW = 1200;
 const LIST_EVENT_WINDOW = 0;
 const MAX_UI_OUTPUT_CHARS = 12000;
 const MAX_UI_SUMMARY_CHARS = 8000;
+const MAX_TRANSCRIPT_STREAM_INLINE_CHARS = 4000;
 const TASK_WS_HEARTBEAT_MS = 10_000;
 const SESSION_HEADER = "x-agent-workbench-session";
 const LEGACY_SESSION_HEADER = "x-scc-session";
@@ -105,10 +107,16 @@ function parseEventWindow(query: unknown, fallback = DEFAULT_EVENT_WINDOW): numb
   return Math.min(Math.max(limit, 0), MAX_EVENT_WINDOW);
 }
 
+function parseIncludeChildren(query: unknown, fallback = false): boolean {
+  const value = z.object({ includeChildren: z.coerce.boolean().optional() }).safeParse(query);
+  return value.success ? value.data.includeChildren ?? fallback : fallback;
+}
+
 function taskForTransport(task: TaskDetail, eventLimit = DEFAULT_EVENT_WINDOW): TaskDetail {
   const events = eventLimit <= 0 ? [] : selectEventsForTransport(task.events, eventLimit).map(compactEventForTransport);
   return {
     ...task,
+    approvals: sanitizeSensitiveValue(task.approvals),
     events,
     pendingGuidance: task.pendingGuidance.map(compactEventForTransport)
   };
@@ -157,12 +165,77 @@ function buildTaskTranscript(task: TaskDetail): TaskTranscriptItem[] {
     if (!isTranscriptVisibleEvent(event)) return false;
     if (event.payload["uiHidden"] === true) return false;
     if (isInlineToolMarkupEvent(event)) return false;
-    if ((event.type === "assistant_delta" || event.type === "thinking_delta") && finalStreamIds.has(String(event.payload["streamId"] ?? ""))) return false;
+    if (event.type === "assistant_delta" && finalStreamIds.has(String(event.payload["streamId"] ?? ""))) return false;
     if (event.type !== "approval_pending") return true;
     const approvalId = String(event.payload["approvalId"] ?? "");
     return task.approvals.some((approval) => approval.id === approvalId && approval.status === "pending");
   }).map((event) => applyAssistantFinalFallback(event, finalFallbacks));
-  return normalized.filter((event) => event.type !== "assistant_message" || Boolean(visibleAssistantText(event)));
+  return coalesceTranscriptStreamEvents(
+    normalized.filter((event) => event.type !== "assistant_message" || Boolean(visibleAssistantText(event)))
+  );
+}
+
+function coalesceTranscriptStreamEvents(events: TaskTranscriptItem[]): TaskTranscriptItem[] {
+  if (events.length <= 1) return events;
+  const merged: TaskTranscriptItem[] = [];
+  for (const event of events) {
+    if (mergeTranscriptStreamDelta(merged, event)) continue;
+    merged.push(event);
+  }
+  return merged;
+}
+
+function mergeTranscriptStreamDelta(events: TaskTranscriptItem[], incoming: TaskTranscriptItem): boolean {
+  if (!isTranscriptStreamDelta(incoming) || events.length === 0) return false;
+  const candidate = events[events.length - 1];
+  if (!candidate || !isTranscriptStreamDelta(candidate)) return false;
+  if (candidate.type !== incoming.type) return false;
+  if (transcriptStreamKey(candidate) !== transcriptStreamKey(incoming)) return false;
+  const mergedDelta = appendTranscriptStreamText(transcriptStreamText(candidate), transcriptStreamText(incoming));
+  const mergedSummary = appendTranscriptStreamText(candidate.summary ?? "", incoming.summary ?? transcriptStreamText(incoming));
+  events[events.length - 1] = {
+    ...candidate,
+    createdAt: incoming.createdAt,
+    summary: mergedSummary,
+    payload: {
+      ...candidate.payload,
+      ...incoming.payload,
+      delta: mergedDelta
+    }
+  };
+  return true;
+}
+
+function isTranscriptStreamDelta(event: TaskTranscriptItem): event is TaskTranscriptItem & { type: "assistant_delta" | "thinking_delta" } {
+  return event.type === "assistant_delta" || event.type === "thinking_delta";
+}
+
+function transcriptStreamKey(event: TaskTranscriptItem): string {
+  return `${event.type}:${String(event.payload["streamId"] ?? event.id)}`;
+}
+
+function transcriptStreamText(event: TaskTranscriptItem): string {
+  const delta = event.payload["delta"];
+  return typeof delta === "string" ? delta : event.summary ?? "";
+}
+
+function appendTranscriptStreamText(current: string, delta: string): string {
+  if (!current) return current + delta;
+  return `${current}${assistantStreamSeparator(current, delta)}${delta}`;
+}
+
+function collectTranscriptStreamText(
+  events: TaskEvent[],
+  type: "assistant_delta" | "thinking_delta",
+  streamId: string
+): string {
+  let current = "";
+  for (const event of events) {
+    if (event.type !== type) continue;
+    if (String(event.payload["streamId"] ?? "") !== streamId) continue;
+    current = appendTranscriptStreamText(current, transcriptStreamText(event));
+  }
+  return current.trim();
 }
 
 function buildAssistantFinalFallbacks(events: TaskEvent[]): Map<string, string> {
@@ -202,13 +275,19 @@ function isTranscriptVisibleEvent(event: TaskEvent): boolean {
     event.type === "assistant_delta" ||
     event.type === "assistant_message" ||
     event.type === "thinking_delta" ||
+    event.type === "subagent_spawned" ||
+    event.type === "subagent_status_changed" ||
+    event.type === "subagent_completed" ||
+    event.type === "subagent_failed" ||
     event.type === "guidance_pending" ||
     event.type === "user_input_requested" ||
     event.type === "user_input_answered" ||
     event.type === "approval_pending" ||
+    event.type === "tool_requested" ||
     event.type === "tool_started" ||
     event.type === "tool_progress" ||
     event.type === "tool_result" ||
+    event.type === "model_empty_response" ||
     event.type === "model_no_progress" ||
     event.type === "task_checkpoint_created" ||
     event.type === "task_rollback_completed" ||
@@ -219,6 +298,22 @@ function isTranscriptVisibleEvent(event: TaskEvent): boolean {
 }
 
 function compactTranscriptItemForTransport(event: TaskTranscriptItem): TaskTranscriptItem {
+  if (event.type === "thinking_delta") {
+    const fullText = transcriptStreamText(event);
+    if (fullText.length > MAX_TRANSCRIPT_STREAM_INLINE_CHARS) {
+      const preview = compactTranscriptText(fullText, MAX_TRANSCRIPT_STREAM_INLINE_CHARS);
+      return {
+        ...event,
+        summary: preview,
+        payload: {
+          ...event.payload,
+          delta: preview,
+          lazyBody: true,
+          fullContentChars: fullText.length
+        }
+      };
+    }
+  }
   if (event.type === "assistant_message" || event.type === "assistant_delta") {
     return {
       ...event,
@@ -226,21 +321,80 @@ function compactTranscriptItemForTransport(event: TaskTranscriptItem): TaskTrans
       payload: stripAssistantPayloadBoilerplate(event.payload)
     };
   }
-  if (event.type !== "tool_result" && event.type !== "tool_progress" && event.type !== "tool_started" && event.type !== "web_search_result") return event;
+  if (event.type !== "tool_requested" && event.type !== "tool_result" && event.type !== "tool_progress" && event.type !== "tool_started" && event.type !== "web_search_result") return event;
   const summary = compactTranscriptText(event.summary, MAX_UI_SUMMARY_CHARS);
-  const payload: Record<string, unknown> = { ...event.payload };
-  if (typeof payload["output"] === "string") payload["output"] = compactTranscriptText(payload["output"], MAX_UI_OUTPUT_CHARS);
-  if (typeof payload["summary"] === "string") payload["summary"] = compactTranscriptText(payload["summary"], MAX_UI_SUMMARY_CHARS);
+  const payload = compactToolEventPayloadForTransport(event.payload, "transcript");
   return { ...event, summary, payload };
 }
 
 function compactEventForTransport(event: TaskEvent): TaskEvent {
   const summary = compactUiText(event.summary, MAX_UI_SUMMARY_CHARS);
-  const payload: Record<string, unknown> = { ...event.payload };
+  const payload: Record<string, unknown> =
+    event.type === "tool_requested" ||
+    event.type === "tool_started" ||
+    event.type === "tool_progress" ||
+    event.type === "tool_result" ||
+    event.type === "web_search_result"
+      ? compactToolEventPayloadForTransport(event.payload, "event")
+      : { ...event.payload };
   if (typeof payload["output"] === "string") payload["output"] = compactUiText(payload["output"], MAX_UI_OUTPUT_CHARS);
   if (typeof payload["delta"] === "string") payload["delta"] = compactUiText(payload["delta"], MAX_UI_OUTPUT_CHARS);
   if (typeof payload["summary"] === "string") payload["summary"] = compactUiText(payload["summary"], MAX_UI_SUMMARY_CHARS);
   return { ...event, summary, payload };
+}
+
+function compactToolEventPayloadForTransport(payload: Record<string, unknown>, mode: "event" | "transcript"): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...payload };
+  if (typeof next["output"] === "string") next["output"] = compactTranscriptText(next["output"], MAX_UI_OUTPUT_CHARS);
+  if (typeof next["summary"] === "string") next["summary"] = compactTranscriptText(next["summary"], MAX_UI_SUMMARY_CHARS);
+  if (next["args"] && typeof next["args"] === "object" && !Array.isArray(next["args"])) {
+    next["args"] = compactToolArgsForTransport(next["args"] as Record<string, unknown>, mode);
+  }
+  return next;
+}
+
+function compactToolArgsForTransport(args: Record<string, unknown>, mode: "event" | "transcript"): Record<string, unknown> {
+  const maxStringChars = mode === "transcript" ? 1200 : 1800;
+  const next: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (key === "content" && typeof value === "string") {
+      next[key] = compactToolArgText(value, maxStringChars, "content");
+      next["contentChars"] = value.length;
+      continue;
+    }
+    if (key === "edits" && Array.isArray(value)) {
+      next[key] = value.slice(0, 12).map((item) => compactEditArgForTransport(item, maxStringChars));
+      if (value.length > 12) next["omittedEditCount"] = value.length - 12;
+      continue;
+    }
+    if (typeof value === "string") {
+      next[key] = compactToolArgText(value, maxStringChars, key);
+      continue;
+    }
+    next[key] = value;
+  }
+  return next;
+}
+
+function compactEditArgForTransport(value: unknown, maxStringChars: number): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  const next: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    if ((key === "newText" || key === "expectedText") && typeof entry === "string") {
+      next[key] = compactToolArgText(entry, Math.min(700, maxStringChars), key);
+      next[`${key}Chars`] = entry.length;
+      continue;
+    }
+    next[key] = entry;
+  }
+  return next;
+}
+
+function compactToolArgText(value: string, maxChars: number, label: string): string {
+  if (value.length <= maxChars) return value;
+  const omitted = value.length - maxChars;
+  return `${value.slice(0, maxChars)}\n\n[${label} preview truncated: ${omitted} characters omitted.]`;
 }
 
 function isInlineToolMarkupEvent(event: TaskEvent): boolean {
@@ -432,7 +586,10 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   }));
   app.get("/api/session/bootstrap", async () => ({ sessionToken }));
 
-  app.get("/api/tasks", async () => (await workbench.listTasks()).map((task) => taskForTransport(task, LIST_EVENT_WINDOW)));
+  app.get("/api/tasks", async (request) => {
+    const includeChildren = parseIncludeChildren(request.query);
+    return (await workbench.listTasks({ includeChildren })).map((task) => taskForTransport(task, LIST_EVENT_WINDOW));
+  });
 
   app.post("/api/tasks/title", async (request, reply) => {
     const input = TaskTitleRequestSchema.parse(request.body);
@@ -506,6 +663,12 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     return task ? taskForTransport(task, eventLimit) : reply.code(404).send({ error: "Task not found" });
   });
 
+  app.get("/api/tasks/:id/children", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const task = await workbench.getTask(id);
+    return task ? workbench.listTaskChildren(id) : reply.code(404).send({ error: "Task not found" });
+  });
+
   app.patch("/api/tasks/:id", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const input = TaskPatchRequestSchema.parse(request.body);
@@ -538,6 +701,18 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const task = await workbench.getTask(id);
     return task ? taskTranscriptForTransport(task) : reply.code(404).send({ error: "Task not found" });
+  });
+
+  app.get("/api/tasks/:id/stream-text", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const query = z.object({
+      streamId: z.string().min(1),
+      type: z.enum(["assistant_delta", "thinking_delta"])
+    }).parse(request.query);
+    const task = await workbench.getTask(id);
+    if (!task) return reply.code(404).send({ error: "Task not found" });
+    const text = collectTranscriptStreamText(task.events, query.type, query.streamId);
+    return text ? { streamId: query.streamId, type: query.type, text } : reply.code(404).send({ error: "Stream not found" });
   });
 
   app.get("/api/tasks/:id/attachments", async (request, reply) => {
@@ -681,6 +856,11 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.get("/api/experiences", async () => workbench.listExperiences());
   app.get("/api/task-memories", async () => workbench.listTaskMemories());
+  app.delete("/api/task-memories/:id", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    await workbench.deleteTaskMemory(id);
+    return reply.code(204).send();
+  });
   app.get("/api/patterns", async () => workbench.listPatterns());
 
   app.post("/api/experiences/:id/promote", async (request, reply) => {
@@ -931,20 +1111,27 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     return reply.code(204).send();
   });
 
-  app.get("/api/reflections", async () => workbench.listReflectionSessions());
-
-  app.post("/api/reflections", async (request, reply) => reply.code(201).send(await workbench.runReflection()));
-
-  app.delete("/api/reflections", async (_request, reply) => {
+  const listCuratorRuns = async () => workbench.listReflectionSessions();
+  const createCuratorRun = async (_request: unknown, reply: FastifyReply) => reply.code(201).send(await workbench.runReflection());
+  const clearCuratorRuns = async (_request: unknown, reply: FastifyReply) => {
     await workbench.clearReflectionSessions();
     return reply.code(204).send();
-  });
-
-  app.delete("/api/reflections/:id", async (request, reply) => {
+  };
+  const deleteCuratorRun = async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     await workbench.deleteReflectionSession(id);
     return reply.code(204).send();
-  });
+  };
+
+  app.get("/api/curator/runs", listCuratorRuns);
+  app.post("/api/curator/runs", createCuratorRun);
+  app.delete("/api/curator/runs", clearCuratorRuns);
+  app.delete("/api/curator/runs/:id", deleteCuratorRun);
+
+  app.get("/api/reflections", listCuratorRuns);
+  app.post("/api/reflections", createCuratorRun);
+  app.delete("/api/reflections", clearCuratorRuns);
+  app.delete("/api/reflections/:id", deleteCuratorRun);
 
   app.get("/api/project-memories", async (request) => {
     const query = z.object({ projectId: z.string().optional() }).parse(request.query);

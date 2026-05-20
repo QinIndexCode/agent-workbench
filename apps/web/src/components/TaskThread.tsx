@@ -1,18 +1,20 @@
-import type { ApprovalDecision, TaskAttachment, TaskDetail, TaskTranscriptItem, UserPreferences } from "@agent-workbench/shared";
-import { AlertCircle, Menu, PanelRightClose, PanelRightOpen, X } from "lucide-react";
-import { memo, useEffect, useMemo, useState } from "react";
+import type { ApprovalDecision, TaskAttachment, TaskChildSummary, TaskDetail, TaskEvent, TaskTranscriptItem, UserPreferences } from "@agent-workbench/shared";
+import { AlertCircle, FileClock, Flag, Menu, PanelRightClose, PanelRightOpen, ShieldAlert, X } from "lucide-react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getUiCopy } from "../i18n.js";
 import { Composer, type ComposerMode, type ComposerPermissionMode, type PermissionPreset } from "./Composer.js";
 import type { EngineStatus } from "./TaskList.js";
-import { Timeline } from "./Timeline.js";
-import type { ConversationSummary, PromptCacheStats, TaskRollbackPreview, TaskRollbackRequest, TaskRollbackResult } from "@agent-workbench/shared";
+import type { ConversationSummary, TaskRollbackPreview, TaskRollbackRequest, TaskRollbackResult } from "@agent-workbench/shared";
 import { describeSkillSource, describeSkillStatus, summarizeTaskSkills } from "./skillUx.js";
 
 const PLAN_PANEL_COLLAPSED_KEY = "agent-workbench.planPanel.collapsed";
 const LEGACY_PLAN_PANEL_COLLAPSED_KEY = "scc.planPanel.collapsed";
+const Timeline = lazy(() => import("./Timeline.js").then((module) => ({ default: module.Timeline })));
 
 export function TaskThread({
   task,
+  parentTask,
+  delegatedChildren = [],
   transcriptEvents,
   busy,
   busySince,
@@ -46,15 +48,20 @@ export function TaskThread({
   onCancelBusy,
   onPreviewRollback,
   onRollback,
+  onLoadStreamText,
   onRevertTurn,
+  onAnswerUserInput,
   onLoadContextSummaries,
-  onLoadPromptCacheStats,
   titleIssue,
   onRetryTitle,
   onUseLocalTitle,
-  onApprovalDecision
+  onApprovalDecision,
+  onOpenDelegatedTask,
+  onReturnToParent
 }: {
   task: TaskDetail | null;
+  parentTask?: TaskDetail | null | undefined;
+  delegatedChildren?: TaskChildSummary[] | undefined;
   transcriptEvents?: TaskTranscriptItem[] | undefined;
   busy: boolean;
   busySince?: number | null;
@@ -88,22 +95,34 @@ export function TaskThread({
   onCancelBusy?: () => void;
   onPreviewRollback?: ((input?: TaskRollbackRequest) => Promise<TaskRollbackPreview>) | undefined;
   onRollback?: ((input?: TaskRollbackRequest) => Promise<TaskRollbackResult>) | undefined;
+  onLoadStreamText?: ((taskId: string, streamId: string, type: "assistant_delta" | "thinking_delta") => Promise<string>) | undefined;
   onRevertTurn?: ((turnId: string) => Promise<string>) | undefined;
+  onAnswerUserInput?: ((answer: string) => Promise<void> | void) | undefined;
   onLoadContextSummaries?: (() => Promise<ConversationSummary[]>) | undefined;
-  onLoadPromptCacheStats?: (() => Promise<PromptCacheStats[]>) | undefined;
   titleIssue?: { goal: string; error: string } | null;
   onRetryTitle: () => void;
   onUseLocalTitle: () => void;
   onApprovalDecision: (approvalId: string, decision: ApprovalDecision) => void;
+  onOpenDelegatedTask?: ((taskId: string) => void) | undefined;
+  onReturnToParent?: (() => void) | undefined;
 }) {
   const running = task?.status === "running" || task?.status === "waiting_approval" || task?.status === "waiting_for_user";
   const mode = getComposerMode(task);
   const text = getUiCopy(language);
   const [draft, setDraft] = useState("");
+  const [focusedTimelineEventId, setFocusedTimelineEventId] = useState<string | null>(null);
+  const threadMainRef = useRef<HTMLDivElement | null>(null);
   const timelineTask = useMemo(() => {
     if (!task) return null;
     return transcriptEvents ? { ...task, events: transcriptEvents } : task;
   }, [task, transcriptEvents]);
+  const revertTurnWithConfirmation = useCallback(async (turnId: string) => {
+    if (!onRevertTurn) return;
+    const confirmed = window.confirm(language === "zh-CN" ? "撤回这一轮，并同时回退该轮之后的文件变更？" : "Revert this turn and roll back file changes made after it?");
+    if (!confirmed) return;
+    const revertedDraft = await onRevertTurn(turnId);
+    if (revertedDraft) setDraft(revertedDraft);
+  }, [language, onRevertTurn]);
 
   useEffect(() => {
     setDraft("");
@@ -117,6 +136,13 @@ export function TaskThread({
           {text.shell.tasks}
         </button>
         <div className="threadTitleBlock">
+          {task?.kind === "subagent" && parentTask ? (
+            <button className="threadBreadcrumb" type="button" onClick={onReturnToParent}>
+              <span>{parentTask.title}</span>
+              <span>/</span>
+              <strong>{task.title}</strong>
+            </button>
+          ) : null}
           <h1>{task?.title ?? text.thread.newTask}</h1>
           <span>{getThreadMeta(task, mode, language)}</span>
         </div>
@@ -150,23 +176,64 @@ export function TaskThread({
           ) : null}
         </div>
       ) : null}
+      {task?.runMode === "target" ? (
+        <GoalModeStatusBar
+          language={language ?? null}
+          onPause={onStop}
+          permissionScopeLabel={permissionScopeLabel}
+          preferences={preferences}
+          running={running}
+          task={task}
+        />
+      ) : null}
       <div className={task ? "threadWorkspace" : "threadWorkspace newTaskWorkspace"}>
         <div className="threadContentRail">
           {task ? (
-            <div className="threadMain">
-              <Timeline
-                language={language ?? null}
-                showThinking={preferences?.showThinking ?? true}
-                task={timelineTask}
-                onApprovalDecision={onApprovalDecision}
-                onRevertTurn={async (turnId) => {
-                  if (!onRevertTurn) return;
-                  const confirmed = window.confirm(language === "zh-CN" ? "是否同时回退该轮之后的文件变更？默认会回退。" : "Also roll back file changes after this turn? The default is yes.");
-                  if (!confirmed) return;
-                  const revertedDraft = await onRevertTurn(turnId);
-                  if (revertedDraft) setDraft(revertedDraft);
-                }}
-              />
+            <div className="threadMain" ref={threadMainRef}>
+              {task.kind !== "subagent" && delegatedChildren.length > 0 ? (
+                <section className="delegatedWorkPanel" aria-label={language === "zh-CN" ? "委派工作" : "Delegated work"}>
+                  <div className="delegatedWorkHeader">
+                    <h2>{language === "zh-CN" ? "委派工作" : "Delegated Work"}</h2>
+                    <span>{delegatedChildren.length}</span>
+                  </div>
+                  <div className="delegatedWorkList">
+                    {delegatedChildren.map((child) => (
+                      <button
+                        className={`delegatedWorkCard status_${child.status}`}
+                        key={child.id}
+                        type="button"
+                        onClick={() => onOpenDelegatedTask?.(child.id)}
+                      >
+                        <div className="delegatedWorkCardTop">
+                          <strong>{child.title}</strong>
+                          <span>{formatDelegatedStatus(child.status, language)}</span>
+                        </div>
+                        <p>{child.statusText || child.goal}</p>
+                        <div className="delegatedWorkMeta">
+                          <span>{child.activeToolName || child.goal}</span>
+                          <time dateTime={child.updatedAt}>{formatDelegatedUpdatedAt(child.updatedAt, language)}</time>
+                        </div>
+                        {child.lastAssistantSummary ? <small>{child.lastAssistantSummary}</small> : null}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+              <Suspense fallback={<TimelineFallback language={language ?? null} />}>
+                <Timeline
+                  language={language ?? null}
+                  showThinking={preferences?.showThinking ?? true}
+                  task={timelineTask}
+                  scrollContainerRef={threadMainRef}
+                  focusEventId={focusedTimelineEventId}
+                  onLoadStreamText={onLoadStreamText}
+                  onPreviewRollback={onPreviewRollback}
+                  onRollback={onRollback}
+                  onApprovalDecision={onApprovalDecision}
+                  onAnswerUserInput={onAnswerUserInput}
+                  onRevertTurn={revertTurnWithConfirmation}
+                />
+              </Suspense>
             </div>
           ) : (
             <NewTaskHero language={language ?? null} />
@@ -205,16 +272,113 @@ export function TaskThread({
         {task ? (
           <TaskPlanPanel
             language={language ?? null}
-            task={task}
-            onPreviewRollback={onPreviewRollback}
-            onRollback={onRollback}
+            task={timelineTask ?? task}
             onLoadContextSummaries={onLoadContextSummaries}
-            onLoadPromptCacheStats={onLoadPromptCacheStats}
+            onFocusTimelineEvent={setFocusedTimelineEventId}
           />
         ) : null}
       </div>
     </section>
   );
+}
+
+function TimelineFallback({ language }: { language?: string | null }) {
+  return (
+    <div className="timelineLoading" role="status">
+      {language === "zh-CN" ? "正在加载时间线..." : "Loading timeline..."}
+    </div>
+  );
+}
+
+function GoalModeStatusBar({
+  language,
+  onPause,
+  permissionScopeLabel,
+  preferences,
+  running,
+  task
+}: {
+  language?: string | null;
+  onPause: () => void;
+  permissionScopeLabel: string;
+  preferences: UserPreferences | null;
+  running: boolean;
+  task: TaskDetail;
+}) {
+  const zh = language === "zh-CN";
+  const limits = task.targetLimits;
+  const toolResults = task.events.filter((event) => event.type === "tool_result" && !event.reverted).length;
+  const permissionLabel = goalPermissionLabel(preferences, permissionScopeLabel, language);
+  const timeLimitMinutes = limits ? Math.round(limits.maxWallTimeMs / 60000) : null;
+  return (
+    <section className="goalModeStatusBar" aria-label={zh ? "目标完成模式状态" : "Goal mode status"}>
+      <div className="goalModeBadge">
+        <Flag size={15} aria-hidden="true" />
+        <span>{zh ? "目标完成模式" : "Goal mode"}</span>
+      </div>
+      <div className="goalModeMeta">
+        <span>{zh ? "状态" : "Status"}: {formatDelegatedStatus(task.status, language)}</span>
+        <span>{zh ? "权限" : "Permission"}: {permissionLabel}</span>
+        {limits ? <span>{zh ? "工具" : "Tools"}: {toolResults}/{limits.maxToolCalls}</span> : null}
+        {limits ? <span>{zh ? "模型轮次上限" : "Turn cap"}: {limits.maxModelTurns}</span> : null}
+        {timeLimitMinutes ? <span>{zh ? "时间上限" : "Time cap"}: {timeLimitMinutes} min</span> : null}
+      </div>
+      <div className="goalModeActions">
+        <ShieldAlert size={15} aria-hidden="true" />
+        <span>{zh ? "该模式会持续推进直到完成、暂停或达到上限。" : "This mode keeps pushing until completion, pause, or limits."}</span>
+        {running ? (
+          <button type="button" onClick={onPause}>
+            {zh ? "暂停" : "Pause"}
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function goalPermissionLabel(preferences: UserPreferences | null, fallback: string, language?: string | null): string {
+  const zh = language === "zh-CN";
+  if (preferences?.permissionMode === "full_access") return zh ? "Full risk" : "Full risk";
+  if (preferences?.permissionMode === "auto_approval") {
+    const selected = new Set(preferences.autoApproveRiskCategories ?? []);
+    const allSafe = ["host_observation", "workspace_read", "workspace_write", "shell", "network"].every((risk) => selected.has(risk as UserPreferences["autoApproveRiskCategories"][number]));
+    if (allSafe) return "Non-destructive max";
+    return zh ? "自动审批" : "Auto approval";
+  }
+  return fallback;
+}
+
+function formatDelegatedStatus(status: TaskDetail["status"], language?: string | null): string {
+  const zh = language === "zh-CN";
+  switch (status) {
+    case "running":
+      return zh ? "运行中" : "Running";
+    case "paused":
+      return zh ? "已暂停" : "Paused";
+    case "waiting_approval":
+      return zh ? "等待审批" : "Waiting approval";
+    case "waiting_for_user":
+      return zh ? "等待用户" : "Waiting for user";
+    case "completed":
+      return zh ? "已完成" : "Completed";
+    case "failed":
+      return zh ? "失败" : "Failed";
+    case "cancelled":
+      return zh ? "已取消" : "Cancelled";
+    default:
+      return status;
+  }
+}
+
+function formatDelegatedUpdatedAt(value: string, language?: string | null): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(language === "zh-CN" ? "zh-CN" : "en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }
 
 const BusyCancelButton = memo(function BusyCancelButton({
@@ -251,32 +415,23 @@ const BusyCancelButton = memo(function BusyCancelButton({
 function TaskPlanPanel({
   language,
   task,
-  onPreviewRollback,
-  onRollback,
   onLoadContextSummaries,
-  onLoadPromptCacheStats
+  onFocusTimelineEvent
 }: {
   language?: string | null;
   task: TaskDetail;
-  onPreviewRollback?: ((input?: TaskRollbackRequest) => Promise<TaskRollbackPreview>) | undefined;
-  onRollback?: ((input?: TaskRollbackRequest) => Promise<TaskRollbackResult>) | undefined;
   onLoadContextSummaries?: (() => Promise<ConversationSummary[]>) | undefined;
-  onLoadPromptCacheStats?: (() => Promise<PromptCacheStats[]>) | undefined;
+  onFocusTimelineEvent?: ((eventId: string) => void) | undefined;
 }) {
   const zh = language === "zh-CN";
-  const taskEvents = Array.isArray(task.events) ? task.events : [];
+  const taskEvents = useMemo(() => (Array.isArray(task.events) ? task.events : []), [task.events]);
   const steps = derivePlanSteps(task);
-  const checkpointCount = taskEvents.filter((event) => event.type === "task_checkpoint_created").length;
-  const hasAudit = taskEvents.some((event) => event.type === "conversation_summary_created" || event.type === "context_overflow_recovered" || event.type === "token_usage_recorded" || event.type === "prompt_cache_stats" || event.type === "provider_fallback");
+  const rollbackPoints = useMemo(() => deriveRollbackTimelinePoints(taskEvents, language), [language, taskEvents]);
+  const hasAudit = taskEvents.some((event) => event.type === "conversation_summary_created" || event.type === "context_overflow_recovered" || event.type === "provider_fallback");
   const skillAudit = summarizeTaskSkills(task);
-  const [rollbackPreview, setRollbackPreview] = useState<TaskRollbackPreview | null>(null);
-  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
-  const [rollbackResult, setRollbackResult] = useState<TaskRollbackResult | null>(null);
-  const [rollbackBusy, setRollbackBusy] = useState(false);
-  const [rollbackError, setRollbackError] = useState<string | null>(null);
+  const [activeCheckpointId, setActiveCheckpointId] = useState<string | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
   const [summaries, setSummaries] = useState<ConversationSummary[]>([]);
-  const [cacheStats, setCacheStats] = useState<PromptCacheStats[]>([]);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       const storage = safeBrowserLocalStorage();
@@ -295,7 +450,7 @@ function TaskPlanPanel({
       // Ignore storage failures; the panel remains usable for the current session.
     }
   }, [collapsed]);
-  if (steps.length === 0 && checkpointCount === 0 && !hasAudit && skillAudit.loaded.length === 0 && skillAudit.skipped.length === 0) return null;
+  if (steps.length === 0 && rollbackPoints.length === 0 && !hasAudit && skillAudit.loaded.length === 0 && skillAudit.skipped.length === 0) return null;
 
   return (
     <>
@@ -330,124 +485,92 @@ function TaskPlanPanel({
               ))}
             </ol>
           ) : null}
+          {rollbackPoints.length > 0 ? (
+            <RollbackTimelineView
+              activeCheckpointId={activeCheckpointId}
+              language={language ?? null}
+              points={rollbackPoints}
+              onSelect={(point) => {
+                setActiveCheckpointId(point.checkpointId);
+                onFocusTimelineEvent?.(point.eventId);
+                setCollapsed(true);
+              }}
+            />
+          ) : null}
           <div className="planPanelActions">
-            {checkpointCount > 0 && onPreviewRollback && onRollback ? (
-              <button className="rollbackButton" type="button" onClick={() => void openRollbackPreview()}>
-                {zh ? "检查回滚点" : "Review checkpoints"}
-              </button>
-            ) : null}
-            {hasAudit || onLoadContextSummaries || onLoadPromptCacheStats ? (
+            {hasAudit || onLoadContextSummaries ? (
               <button className="rollbackButton" type="button" onClick={() => void toggleAudit()}>
                 {auditOpen ? (zh ? "收起上下文审计" : "Hide context audit") : (zh ? "上下文审计" : "Context audit")}
               </button>
             ) : null}
           </div>
-          {rollbackError && !rollbackPreview ? <p className="formError">{rollbackError}</p> : null}
           {skillAudit.loaded.length > 0 || skillAudit.skipped.length > 0 ? <TaskSkillAuditView language={language ?? null} task={task} /> : null}
-          {auditOpen ? <ContextAuditView language={language ?? null} summaries={summaries} cacheStats={cacheStats} task={task} /> : null}
-          {rollbackPreview ? (
-            <div className="rollbackModalBackdrop" role="presentation" onClick={(event) => { if (event.currentTarget === event.target) closeRollback(); }}>
-              <section className="rollbackModal" aria-label={zh ? "回滚预览" : "Rollback preview"}>
-                <header>
-                  <div>
-                    <h3>{zh ? "回滚预览" : "Rollback preview"}</h3>
-                    <p>{rollbackPreview.workRoot}</p>
-                  </div>
-                  <button type="button" onClick={closeRollback}>×</button>
-                </header>
-                <div className="rollbackSummary">
-                  <span>{zh ? "可恢复" : "Restorable"}: {rollbackPreview.restorableFiles}</span>
-                  <span>{zh ? "新增文件" : "New files"}: {rollbackPreview.deletableFiles}</span>
-                  <span>{zh ? "跳过" : "Skipped"}: {rollbackPreview.skippedFiles}</span>
-                </div>
-                <div className="rollbackFileList">
-                  {rollbackPreview.files.map((file) => (
-                    <label className={file.canRollback ? "rollbackFileRow" : "rollbackFileRow disabled"} key={file.path}>
-                      <input
-                        checked={selectedFiles.has(file.path)}
-                        disabled={!file.canRollback}
-                        type="checkbox"
-                        onChange={() => {
-                          setSelectedFiles((current) => {
-                            const next = new Set(current);
-                            if (next.has(file.path)) next.delete(file.path);
-                            else next.add(file.path);
-                            return next;
-                          });
-                        }}
-                      />
-                      <span>
-                        <strong>{file.relativePath}</strong>
-                        <small>{file.status}{file.reason ? ` · ${file.reason}` : ""}</small>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-                {rollbackError ? <p className="formError">{rollbackError}</p> : null}
-                {rollbackResult ? (
-                  <div className="rollbackResult">
-                    {zh ? "已完成" : "Completed"}: {rollbackResult.restoredFiles} restored, {rollbackResult.deletedFiles} deleted, {rollbackResult.skippedFiles} skipped.
-                  </div>
-                ) : null}
-                <footer>
-                  <button className="stdCancelBtn" type="button" onClick={closeRollback}>{zh ? "关闭" : "Close"}</button>
-                  <button className="primaryInlineButton" disabled={rollbackBusy || selectedFiles.size === 0} type="button" onClick={() => void runRollback()}>
-                    {rollbackBusy ? (zh ? "回滚中..." : "Rolling back...") : (zh ? "回滚所选文件" : "Rollback selected")}
-                  </button>
-                </footer>
-              </section>
-            </div>
-          ) : null}
+          {auditOpen ? <ContextAuditView language={language ?? null} summaries={summaries} task={task} /> : null}
         </>
       ) : null}
     </aside>
     </>
   );
 
-  async function openRollbackPreview() {
-    if (!onPreviewRollback) return;
-    setRollbackBusy(true);
-    setRollbackError(null);
-    setRollbackResult(null);
-    try {
-      const preview = await onPreviewRollback();
-      setRollbackPreview(preview);
-      setSelectedFiles(new Set(preview.files.filter((file) => file.canRollback).map((file) => file.path)));
-    } catch (error) {
-      setRollbackError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setRollbackBusy(false);
-    }
-  }
-
-  async function runRollback() {
-    if (!onRollback || !rollbackPreview) return;
-    setRollbackBusy(true);
-    setRollbackError(null);
-    try {
-      const result = await onRollback({ checkpointId: rollbackPreview.checkpointId, filePaths: [...selectedFiles] });
-      setRollbackResult(result);
-    } catch (error) {
-      setRollbackError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setRollbackBusy(false);
-    }
-  }
-
   async function toggleAudit() {
     const nextOpen = !auditOpen;
     setAuditOpen(nextOpen);
     if (!nextOpen) return;
-    const [nextSummaries, nextStats] = await Promise.all([onLoadContextSummaries?.() ?? [], onLoadPromptCacheStats?.() ?? []]);
+    const nextSummaries = await (onLoadContextSummaries?.() ?? Promise.resolve([]));
     setSummaries(nextSummaries);
-    setCacheStats(nextStats);
   }
+}
 
-  function closeRollback() {
-    setRollbackPreview(null);
-    setRollbackError(null);
-    setRollbackResult(null);
-  }
+type RollbackTimelinePoint = {
+  checkpointId: string;
+  eventId: string;
+  toolName: string;
+  fileLabel: string;
+  fileCount: number;
+  createdAt: string;
+  sequence: number;
+  rolledBack: boolean;
+};
+
+function RollbackTimelineView({
+  activeCheckpointId,
+  language,
+  points,
+  onSelect
+}: {
+  activeCheckpointId: string | null;
+  language?: string | null;
+  points: RollbackTimelinePoint[];
+  onSelect: (point: RollbackTimelinePoint) => void;
+}) {
+  const zh = language === "zh-CN";
+  return (
+    <section className="rollbackTimelinePanel" aria-label={zh ? "文件回滚时间线" : "File rollback timeline"}>
+      <div className="rollbackTimelineHeader">
+        <div>
+          <strong>{zh ? "文件回滚时间线" : "File rollback timeline"}</strong>
+          <small>{zh ? "点击任一回滚点，跳到聊天流中的检查位置。" : "Click a rollback point to inspect it in the chat timeline."}</small>
+        </div>
+        <FileClock size={16} aria-hidden="true" />
+      </div>
+      <div className="rollbackCheckpointList">
+        {points.map((point) => {
+          const active = activeCheckpointId === point.checkpointId;
+          return (
+            <article className={active ? "rollbackCheckpointCard active" : "rollbackCheckpointCard"} key={point.checkpointId}>
+              <button className="rollbackCheckpointMain" type="button" onClick={() => onSelect(point)}>
+                <span className={point.rolledBack ? "rollbackCheckpointDot rolledBack" : "rollbackCheckpointDot"} />
+                <span>
+                  <strong>{point.fileLabel}</strong>
+                  <small>{formatRollbackPointMeta(point, language)}</small>
+                </span>
+              </button>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function TaskSkillAuditView({ language, task }: { language?: string | null; task: TaskDetail }) {
@@ -508,26 +631,13 @@ function safeBrowserLocalStorage(): Storage | null {
   }
 }
 
-function ContextAuditView({ language, summaries, cacheStats, task }: { language?: string | null; summaries: ConversationSummary[]; cacheStats: PromptCacheStats[]; task: TaskDetail }) {
+function ContextAuditView({ language, summaries, task }: { language?: string | null; summaries: ConversationSummary[]; task: TaskDetail }) {
   const zh = language === "zh-CN";
   const safeSummaries = Array.isArray(summaries) ? summaries : [];
-  const safeCacheStats = Array.isArray(cacheStats) ? cacheStats : [];
   const safeEvents = Array.isArray(task?.events) ? task.events : [];
   const latestSummary = [...safeSummaries].sort((a, b) => {
     try { return b.createdAt.localeCompare(a.createdAt); } catch { return 0; }
   })[0];
-  const latestCache = [...safeCacheStats].sort((a, b) => {
-    try { return b.createdAt.localeCompare(a.createdAt); } catch { return 0; }
-  })[0];
-  const tokenTotals = safeCacheStats.reduce(
-    (total, item) => ({
-      input: total.input + Math.max(0, Number(item.inputTokens ?? 0)),
-      output: total.output + Math.max(0, Number(item.outputTokens ?? 0)),
-      total: total.total + Math.max(0, Number(item.totalTokens ?? ((item.inputTokens ?? 0) + (item.outputTokens ?? 0)))),
-      cached: total.cached + Math.max(0, Number(item.cachedTokens ?? 0))
-    }),
-    { input: 0, output: 0, total: 0, cached: 0 }
-  );
   const fallbackEvents = safeEvents.filter((event) => event?.type === "provider_fallback");
   return (
     <section className="contextAuditPanel" aria-label={zh ? "上下文审计" : "Context audit"}>
@@ -544,27 +654,6 @@ function ContextAuditView({ language, summaries, cacheStats, task }: { language?
       ) : (
         <p className="muted">{zh ? "暂无压缩记录。" : "No compaction records yet."}</p>
       )}
-      {latestCache ? (
-        <details>
-          <summary>{zh ? "Token usage" : "Token usage"}</summary>
-          <div className="auditMeta">
-            <span>{zh ? "请求轮次" : "Requests"}: {safeCacheStats.length}</span>
-            <span>{zh ? "累计输入" : "Total input"}: {tokenTotals.input}</span>
-            <span>{zh ? "累计输出" : "Total output"}: {tokenTotals.output}</span>
-            <span>{zh ? "累计总计" : "Task total"}: {tokenTotals.total}</span>
-            {tokenTotals.cached > 0 ? <span>{zh ? "Provider cached total" : "Provider cached total"}: {tokenTotals.cached}</span> : null}
-          </div>
-          <div className="auditMeta">
-            <span>{zh ? "最近一轮" : "Latest"}: {latestCache.model ?? ""}</span>
-            <span>{zh ? "输入" : "Input"}: {latestCache.inputTokens ?? 0}</span>
-            <span>{zh ? "输出" : "Output"}: {latestCache.outputTokens ?? 0}</span>
-            <span>{zh ? "总计" : "Total"}: {latestCache.totalTokens ?? ((latestCache.inputTokens ?? 0) + (latestCache.outputTokens ?? 0))}</span>
-            {latestCache.cachedTokens ? <span>{zh ? "Provider cached" : "Provider cached"}: {latestCache.cachedTokens}</span> : null}
-          </div>
-        </details>
-      ) : (
-        <p className="muted">{zh ? "当前 provider 暂未返回精确 token 用量。" : "The current provider has not returned exact token usage yet."}</p>
-      )}
       {fallbackEvents.length > 0 ? (
         <details>
           <summary>{zh ? "模型故障转移" : "Provider fallback"}</summary>
@@ -575,6 +664,68 @@ function ContextAuditView({ language, summaries, cacheStats, task }: { language?
       ) : null}
     </section>
   );
+}
+
+function deriveRollbackTimelinePoints(events: TaskEvent[], language?: string | null): RollbackTimelinePoint[] {
+  const points: RollbackTimelinePoint[] = [];
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    if (!event || event.type !== "task_checkpoint_created") continue;
+    const checkpointId = String(event.payload["checkpointId"] ?? "").trim();
+    if (!checkpointId) continue;
+    const toolCallId = String(event.payload["toolCallId"] ?? "").trim();
+    const toolRequest = toolCallId ? findToolRequest(events, toolCallId) : undefined;
+    const fileLabel = rollbackFileLabel(event, toolRequest, language);
+    points.push({
+      checkpointId,
+      eventId: event.id,
+      toolName: String(event.payload["toolName"] ?? toolRequest?.payload["toolName"] ?? "tool"),
+      fileLabel,
+      fileCount: Math.max(0, Number(event.payload["fileCount"] ?? 0)),
+      createdAt: event.createdAt,
+      sequence: points.length + 1,
+      rolledBack: events.some((candidate) => candidate.type === "task_rollback_completed" && String(candidate.payload["checkpointId"] ?? "") === checkpointId && !candidate.reverted)
+    });
+  }
+  return points;
+}
+
+function findToolRequest(events: TaskEvent[], toolCallId: string): TaskEvent | undefined {
+  return events.find((event) => event.type === "tool_requested" && String(event.payload["toolCallId"] ?? "") === toolCallId);
+}
+
+function rollbackFileLabel(checkpointEvent: TaskEvent, toolRequest: TaskEvent | undefined, language?: string | null): string {
+  const args = toolRequest?.payload["args"] && typeof toolRequest.payload["args"] === "object"
+    ? (toolRequest.payload["args"] as Record<string, unknown>)
+    : {};
+  const directPath = String(args["path"] ?? args["file"] ?? "").trim();
+  if (directPath) return compactPath(directPath);
+  const count = Math.max(0, Number(checkpointEvent.payload["fileCount"] ?? 0));
+  if (count > 0) return language === "zh-CN" ? `${count} 个文件快照` : `${count} file snapshots`;
+  return String(checkpointEvent.payload["toolName"] ?? toolRequest?.payload["toolName"] ?? "workspace change");
+}
+
+function formatRollbackPointMeta(point: RollbackTimelinePoint, language?: string | null): string {
+  const zh = language === "zh-CN";
+  const parts = [
+    `${zh ? "回滚点" : "Checkpoint"} ${point.sequence}`,
+    formatClock(point.createdAt, language),
+    point.toolName,
+    point.rolledBack ? (zh ? "已回滚过" : "rolled back") : ""
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function compactPath(path: string): string {
+  const normalized = path.replaceAll("\\", "/");
+  const parts = normalized.split("/").filter(Boolean);
+  return parts.length > 3 ? `.../${parts.slice(-3).join("/")}` : normalized;
+}
+
+function formatClock(value: string, language?: string | null): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString(language === "zh-CN" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit" });
 }
 
 function derivePlanSteps(task: TaskDetail): Array<{ id: string; title: string; status: "pending" | "running" | "completed" | "blocked"; detail?: string }> {

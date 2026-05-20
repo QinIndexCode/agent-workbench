@@ -1,6 +1,6 @@
 # Curator
 
-Curator 用来解释 Agent Workbench 为什么推荐、拦截或判重某个 Skill 候选。
+Curator 用来解释 Agent Workbench 为什么推荐、拦截或判重某个 Skill 候选。它也承载运行记录，让晋升证据和审计轨迹留在同一个页面。
 
 ## 优先看什么
 
@@ -14,6 +14,7 @@ Curator 用来解释 Agent Workbench 为什么推荐、拦截或判重某个 Ski
 - **Activate**：只有在候选明显可复用时才启用
 - **Suspend**：当已启用 Skill 开始漂移或误命中时暂停
 - **Merge duplicates**：只有它们确实描述同一工作流时才合并
+- **查看运行记录**：当你想知道为什么还没有 Skill，或为什么某个候选一直被拦截时使用
 
 ## 强候选通常满足
 

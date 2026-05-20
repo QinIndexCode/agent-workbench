@@ -152,7 +152,11 @@ export const TaskEventSchema = z.object({
     "reflection_completed",
     "skill_loaded",
     "skill_load_skipped",
-    "skill_promoted"
+    "skill_promoted",
+    "subagent_spawned",
+    "subagent_status_changed",
+    "subagent_completed",
+    "subagent_failed"
   ]),
   createdAt: z.string(),
   summary: z.string(),
@@ -331,18 +335,46 @@ export const TaskPlanSchema = z.object({
   updatedAt: z.string()
 });
 
+export const TaskKindSchema = z.enum(["primary", "subagent"]);
+export const TaskDelegationExpectedOutputSchema = z.enum(["summary", "checklist", "comparison"]);
+
+export const TaskDelegationMetaSchema = z.object({
+  sourceTaskId: z.string(),
+  sourceToolCallId: z.string(),
+  goal: z.string().min(1),
+  contextSummary: z.string().default(""),
+  networkEnabled: z.boolean().default(true),
+  expectedOutput: TaskDelegationExpectedOutputSchema
+});
+
+export const TaskChildSummarySchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: TaskStatusSchema,
+  updatedAt: z.string(),
+  parentTaskId: z.string(),
+  sourceToolCallId: z.string(),
+  goal: z.string(),
+  statusText: z.string(),
+  lastAssistantSummary: z.string().optional(),
+  activeToolName: z.string().optional()
+});
+
 export const TaskDetailSchema = z.object({
   id: z.string(),
   title: z.string(),
+  kind: TaskKindSchema.default("primary"),
+  parentTaskId: z.string().optional(),
+  delegation: TaskDelegationMetaSchema.optional(),
   folderId: z.string().default("default"),
   workRoot: z.string().default(""),
   status: TaskStatusSchema,
   runMode: z.enum(["normal", "target"]).optional(),
   targetLimits: z
     .object({
-      maxModelTurns: z.number().int().positive().default(80),
-      maxToolCalls: z.number().int().positive().default(240),
-      maxWallTimeMs: z.number().int().positive().default(7_200_000)
+      maxModelTurns: z.number().int().positive().default(160),
+      maxToolCalls: z.number().int().positive().default(500),
+      maxWallTimeMs: z.number().int().positive().default(14_400_000)
     })
     .optional(),
   createdAt: z.string(),

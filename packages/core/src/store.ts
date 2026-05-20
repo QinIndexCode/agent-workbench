@@ -40,6 +40,7 @@ export interface WorkbenchStore {
   saveTask(task: TaskDetail): Promise<void>;
   getTask(taskId: string): Promise<TaskDetail | undefined>;
   listTasks(): Promise<TaskDetail[]>;
+  listChildTasks(parentTaskId: string): Promise<TaskDetail[]>;
   deleteTask(taskId: string): Promise<void>;
   saveTaskTurn(record: TaskTurn): Promise<void>;
   getTaskTurn(turnId: string): Promise<TaskTurn | undefined>;
@@ -188,6 +189,13 @@ export class InMemoryWorkbenchStore implements WorkbenchStore {
   async listTasks(): Promise<TaskDetail[]> {
     return [...this.tasks.values()]
       .map((task) => normalizeTaskDetail(clone(task)))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async listChildTasks(parentTaskId: string): Promise<TaskDetail[]> {
+    return [...this.tasks.values()]
+      .map((task) => normalizeTaskDetail(clone(task)))
+      .filter((task) => task.parentTaskId === parentTaskId)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
@@ -636,6 +644,7 @@ export function pendingApprovals(task: TaskDetail): ToolApproval[] {
 export function normalizeTaskDetail(task: TaskDetail): TaskDetail {
   return {
     ...task,
+    kind: task.kind ?? "primary",
     folderId: task.folderId || "default",
     workRoot: task.workRoot || defaultTaskWorkRoot(),
     runMode: task.runMode ?? "normal"

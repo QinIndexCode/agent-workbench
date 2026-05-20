@@ -11,7 +11,6 @@ export type DocsSection =
   | "curator"
   | "knowledge"
   | "memory"
-  | "reflections"
   | "providers"
   | "permissions"
   | "mcp"
@@ -111,15 +110,6 @@ export const docMetas: DocMeta[] = [
     icon: Database
   },
   {
-    id: "reflections",
-    title: { en: "Reflections", zh: "反思" },
-    summary: {
-      en: "Read reflection sessions, understand promotion stages, and spot why a pattern still needs more evidence.",
-      zh: "查看反思会话、理解晋升阶段，并识别为什么某个模式还需要更多证据。"
-    },
-    icon: BrainCircuit
-  },
-  {
     id: "providers",
     title: { en: "Model Providers", zh: "模型配置" },
     summary: {
@@ -159,8 +149,8 @@ export const docMetas: DocMeta[] = [
     id: "scheduled",
     title: { en: "Scheduled Tasks", zh: "定时任务" },
     summary: {
-      en: "Set repeat tasks, understand when they run, and manage the built-in reflection automation.",
-      zh: "设置重复任务、理解它们何时运行，并管理内置的 reflection 自动任务。"
+      en: "Set repeat tasks, understand when they run, and manage the built-in Curator automation.",
+      zh: "设置重复任务、理解它们何时运行，并管理内置的 Curator 自动任务。"
     },
     icon: Zap
   },
@@ -199,9 +189,31 @@ export function getDocTitle(meta: DocMeta, language: string | null | undefined):
 }
 
 const docModules = import.meta.glob<string>("./**/*.md", { query: "?raw", import: "default" });
+const docContentCache = new Map<string, Promise<string>>();
 
 export async function loadDocContent(id: DocsSection, language: string | null | undefined): Promise<string> {
-  const lang = language === "zh" || language === "zh-CN" ? "zh" : "en";
+  const lang = normalizeDocLanguage(language);
+  const cacheKey = `${lang}:${id}`;
+  const cached = docContentCache.get(cacheKey);
+  if (cached) return cached;
+  const loading = loadDocContentUncached(id, lang);
+  docContentCache.set(cacheKey, loading);
+  return loading;
+}
+
+export async function preloadDocContents(language: string | null | undefined): Promise<void> {
+  const preferred = normalizeDocLanguage(language);
+  const languages = preferred === "zh" ? ["zh", "en"] : ["en", "zh"];
+  for (const lang of languages) {
+    await Promise.all(docMetas.map((meta) => loadDocContent(meta.id, lang).catch(() => "")));
+  }
+}
+
+function normalizeDocLanguage(language: string | null | undefined): "zh" | "en" {
+  return language === "zh" || language === "zh-CN" ? "zh" : "en";
+}
+
+async function loadDocContentUncached(id: DocsSection, lang: "zh" | "en"): Promise<string> {
   const path = `./${lang}/${id}.md`;
   const loader = docModules[path];
   if (!loader) {

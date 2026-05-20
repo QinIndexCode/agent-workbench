@@ -133,7 +133,7 @@ export function Composer({
   const canSubmit = text.trim().length > 0;
   const trimmedText = text.trimStart();
   const slashOpen = trimmedText.startsWith("/") && !trimmedText.includes("\n");
-  const targetActive = trimmedText.startsWith("/target");
+  const goalActive = trimmedText.startsWith("/goal");
   const canStop = running && !canSubmit;
   const labels = getUiCopy(language).composer;
   const modeCopy = labels.modes[mode];
@@ -141,13 +141,19 @@ export function Composer({
   const currentPermission = permissionOptions.find((option) => option.value === permissionPreset) ?? permissionOptions[0]!;
   const currentFolder = folderOptions.find((option) => option.value === folderValue) ?? folderOptions[0];
   const currentModel = modelOptions.find((option) => option.value === modelValue) ?? modelOptions[0];
+  const currentFolderTitle = currentFolder ? `${currentFolder.label}${currentFolder.description ? `\n${currentFolder.description}` : ""}` : "";
   const icon = canSubmit ? <ArrowUp size={18} /> : canStop ? <Square size={14} /> : <ArrowUp size={18} />;
   const label = canSubmit ? labels.send : canStop ? labels.stop : labels.idle;
   const primaryDisabled = busy || (!canSubmit && !running);
+  const composerClassName = [
+    "composer",
+    mode === "new_task" ? "composerLarge" : "",
+    running ? "composerRunning" : ""
+  ].filter(Boolean).join(" ");
 
   return (
     <form
-      className={mode === "new_task" ? "composer composerLarge" : "composer"}
+      className={composerClassName}
       onSubmit={(event) => {
         event.preventDefault();
         submit();
@@ -174,16 +180,16 @@ export function Composer({
             <button
               type="button"
               role="option"
-              aria-selected={targetActive}
-              onClick={() => updateText("/target ")}
+              aria-selected={goalActive}
+              onClick={() => updateText("/goal ")}
             >
-              <strong>/target</strong>
-              <span>{language === "zh-CN" ? "目标运行模式" : "Target run mode"}</span>
+              <strong>/goal</strong>
+              <span>{language === "zh-CN" ? "目标完成模式" : "Goal mode"}</span>
             </button>
             <p>
               {language === "zh-CN"
-                ? "实验功能：/target 会消耗更多 token，运行更久，且可能不可控。启动前请明确选择权限范围，可随时暂停。"
-                : "Experimental: /target may use more tokens, run longer, and be less predictable. Choose permissions explicitly before starting. You can pause anytime."}
+                ? "/goal 会更主动地持续执行和验证，可能消耗更多模型额度、运行更久、读写文件、运行命令或访问网络。启动前会要求确认权限和后果。"
+                : "/goal pushes harder toward verified completion. It may use more quota, run longer, read/write files, run commands, or access the network. Confirmation is required."}
             </p>
           </div>
         ) : null}
@@ -233,12 +239,14 @@ export function Composer({
           </button>
           <span className="composerDivider" aria-hidden="true" />
           {folderOptions.length > 0 && currentFolder ? (
-            <div ref={folderAccordionRef} className={folderOpen ? "composerModelAccordion composerFolderAccordion open" : "composerModelAccordion composerFolderAccordion"} title={`${labels.folder}: ${currentFolder.description ?? currentFolder.label}`}>
+            <div ref={folderAccordionRef} className={folderOpen ? "composerModelAccordion composerFolderAccordion open" : "composerModelAccordion composerFolderAccordion"}>
               <button
                 aria-expanded={folderOpen}
                 aria-label={labels.folderToggle}
                 className="modelAccordionTrigger folderAccordionTrigger"
+                data-full-label={`${labels.folder}: ${currentFolderTitle}`}
                 disabled={busy}
+                title={`${labels.folder}: ${currentFolderTitle}`}
                 type="button"
                 onClick={() => {
                   setFolderOpen((open) => !open);
@@ -249,6 +257,7 @@ export function Composer({
                 <Folder size={13} aria-hidden="true" />
                 <span className="modelTriggerText">
                   <strong>{currentFolder.label}</strong>
+                  {currentFolder.description ? <small>{currentFolder.description}</small> : null}
                 </span>
                 <ChevronDown className="accordionChevron" size={13} />
               </button>
@@ -260,7 +269,7 @@ export function Composer({
                     className={(folderValue || currentFolder.value) === option.value ? "modelOption folderOption selected" : "modelOption folderOption"}
                     disabled={busy}
                     tabIndex={folderOpen ? 0 : -1}
-                    title={option.description ?? option.label}
+                    title={`${option.label}${option.description ? `\n${option.description}` : ""}`}
                     type="button"
                     onClick={() => {
                       onFolderChange?.(option.value);

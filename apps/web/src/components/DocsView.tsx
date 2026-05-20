@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Languages } from "lucide-react";
 import "../styles/settings.css";
 import { MarkdownText } from "./MarkdownText.js";
@@ -14,16 +14,33 @@ import { docMetas, getDocTitle, loadDocContent, type DocsSection } from "../docs
  * 4. 文档作为独立的信息展示页面，与主应用的深色工作区形成明确的场景区分。
  */
 
-const DOCS_LANG_KEY = "scc-docs-language";
+const DOCS_LANG_KEY = "agent-workbench.docs.language";
+const LEGACY_DOCS_LANG_KEY = "scc-docs-language";
 
 function getDocsLanguage(globalLanguage: string | null | undefined): string {
+  const stored = readStoredDocsLanguage();
+  if (stored) return stored;
+  return normalizeDocsLanguage(globalLanguage);
+}
+
+function hasStoredDocsLanguage(): boolean {
   try {
-    const saved = localStorage.getItem(DOCS_LANG_KEY);
-    if (saved) return saved;
+    return Boolean(localStorage.getItem(DOCS_LANG_KEY) ?? localStorage.getItem(LEGACY_DOCS_LANG_KEY));
   } catch {
-    // localStorage 不可用则忽略
+    return false;
   }
-  return globalLanguage ?? "zh-CN";
+}
+
+function readStoredDocsLanguage(): string | null {
+  try {
+    return localStorage.getItem(DOCS_LANG_KEY) ?? localStorage.getItem(LEGACY_DOCS_LANG_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeDocsLanguage(language: string | null | undefined): string {
+  return language === "zh" || language === "zh-CN" ? "zh-CN" : "en";
 }
 
 function setDocsLanguage(lang: string): void {
@@ -33,6 +50,7 @@ function setDocsLanguage(lang: string): void {
     // localStorage 不可用则忽略
   }
 }
+
 
 export function DocsView({
   activeSection,
@@ -45,6 +63,7 @@ export function DocsView({
   onBack: () => void;
   onSection: (section: DocsSection) => void;
 }) {
+  const hasStoredLanguageRef = useRef(hasStoredDocsLanguage());
   const [docsLang, setDocsLang] = useState<string>(() => getDocsLanguage(language));
   const [content, setContent] = useState<string>("");
   const [loading, setLoading] = useState(true);
@@ -73,8 +92,13 @@ export function DocsView({
     };
   }, [activeSection, docsLang, activeMeta]);
 
+  useEffect(() => {
+    if (!hasStoredLanguageRef.current) setDocsLang(normalizeDocsLanguage(language));
+  }, [language]);
+
   function toggleLanguage() {
     const next = zh ? "en" : "zh-CN";
+    hasStoredLanguageRef.current = true;
     setDocsLang(next);
     setDocsLanguage(next);
   }

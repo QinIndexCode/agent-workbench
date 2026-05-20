@@ -18,9 +18,9 @@ Use this for daily, weekly, or monthly work.
 
 Use this for repeated work while the app remains open.
 
-## The built-in reflection task
+## The built-in Curator task
 
-Agent Workbench keeps one default reflection task to maintain recent task memory, reusable patterns, and candidate skills.
+Agent Workbench keeps one default Curator maintenance task to maintain recent task memory, reusable patterns, and candidate skills.
 
 That default task:
 

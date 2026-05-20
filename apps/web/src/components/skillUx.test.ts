@@ -1,22 +1,22 @@
-import { describeReflectionNextStep, describeReflectionStatus, summarizeReflectionSession } from "./skillUx.js";
+import { describeCuratorRunNextStep, describeCuratorRunStatus, summarizeCuratorRun } from "./skillUx.js";
 import { describe, expect, it } from "vitest";
 
 describe("skillUx helpers", () => {
-  it("maps internal reflection next-step codes to user-facing copy", () => {
-    expect(describeReflectionNextStep("skills_promoted", "zh-CN")).not.toContain("skills_promoted");
-    expect(describeReflectionNextStep("wait_for_more_task_memories", "en")).not.toContain("wait_for_more_task_memories");
+  it("maps internal Curator run next-step codes to user-facing copy", () => {
+    expect(describeCuratorRunNextStep("skills_promoted", "zh-CN")).not.toContain("skills_promoted");
+    expect(describeCuratorRunNextStep("wait_for_more_task_memories", "en")).not.toContain("wait_for_more_task_memories");
   });
 
-  it("maps reflection statuses to friendly labels", () => {
-    expect(describeReflectionStatus("completed", "zh-CN")).toBe("已完成");
-    expect(describeReflectionStatus("running", "en")).toBe("Running");
+  it("maps Curator run statuses to friendly labels", () => {
+    expect(describeCuratorRunStatus("completed", "zh-CN")).toBe("已完成");
+    expect(describeCuratorRunStatus("running", "en")).toBe("Running");
   });
 
-  it("keeps reflection summaries free of internal phase codes", () => {
+  it("keeps Curator run summaries free of internal phase codes", () => {
     expect(
-      summarizeReflectionSession(
+      summarizeCuratorRun(
         {
-          id: "reflection_1",
+          id: "curator_run_1",
           createdAt: new Date().toISOString(),
           status: "completed",
           tokenUsed: 12,

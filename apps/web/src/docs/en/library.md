@@ -8,14 +8,14 @@ The Library is where Agent Workbench keeps reusable background material. It is n
 2. Open **Curator** if you want to understand why something was promoted, blocked, or grouped as duplicate.
 3. Open **Knowledge** if you need stored notes, imported files, or retrieval tuning.
 4. Open **Memory** for durable user and project memory.
-5. Open **Reflections** to audit promotion stages and repeated-pattern evidence.
+5. Use the Curator run history to audit promotion stages and repeated-pattern evidence.
 
 ## What belongs here
 
 - reusable methods and constraints
 - durable project facts
 - imported references worth searching later
-- reflection records that explain promotion decisions
+- Curator run records that explain promotion decisions
 
 Do not use Library as a dump for one-off task output. That makes matching and retrieval worse.
 

@@ -79,6 +79,9 @@ import type {
   TaskAttachmentSchema,
   TaskAttachmentUploadRequestSchema,
   TaskCheckpointSchema,
+  TaskChildSummarySchema,
+  TaskDelegationExpectedOutputSchema,
+  TaskDelegationMetaSchema,
   TaskRollbackFileChangeSchema,
   TaskRollbackPreviewSchema,
   TaskRollbackRequestSchema,
@@ -93,6 +96,7 @@ import type {
   TaskFolderCreateRequestSchema,
   TaskFolderPatchRequestSchema,
   TaskFolderRecordSchema,
+  TaskKindSchema,
   TaskPatchRequestSchema,
   TaskTitleRequestSchema,
   TaskTitleResponseSchema,
@@ -137,6 +141,10 @@ export type TaskAttachmentKind = z.infer<typeof TaskAttachmentKindSchema>;
 export type TaskAttachment = z.infer<typeof TaskAttachmentSchema>;
 export type TaskAttachmentUploadRequest = z.infer<typeof TaskAttachmentUploadRequestSchema>;
 export type TaskCheckpoint = z.infer<typeof TaskCheckpointSchema>;
+export type TaskKind = z.infer<typeof TaskKindSchema>;
+export type TaskDelegationExpectedOutput = z.infer<typeof TaskDelegationExpectedOutputSchema>;
+export type TaskDelegationMeta = z.infer<typeof TaskDelegationMetaSchema>;
+export type TaskChildSummary = z.infer<typeof TaskChildSummarySchema>;
 export type TaskRollbackFileChange = z.infer<typeof TaskRollbackFileChangeSchema>;
 export type TaskRollbackPreview = z.infer<typeof TaskRollbackPreviewSchema>;
 export type TaskRollbackRequest = z.infer<typeof TaskRollbackRequestSchema>;
@@ -220,6 +228,7 @@ export type SkillMergeRequest = z.infer<typeof SkillMergeRequestSchema>;
 export type SkillDuplicateGroup = z.infer<typeof SkillDuplicateGroupSchema>;
 export type SkillCorrectionRequest = z.infer<typeof SkillCorrectionRequestSchema>;
 export type ReflectionSession = z.infer<typeof ReflectionSessionSchema>;
+export type CuratorRun = ReflectionSession;
 export type ProjectMemory = z.infer<typeof ProjectMemorySchema>;
 export type ProjectMemoryCreateRequest = z.infer<typeof ProjectMemoryCreateRequestSchema>;
 export type ProjectMemoryPatchRequest = z.infer<typeof ProjectMemoryPatchRequestSchema>;

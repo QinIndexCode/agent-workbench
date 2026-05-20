@@ -51,9 +51,9 @@
 .brandCopy strong {
   overflow: hidden;
   color: var(--text);
-  font-size: 23px;
+  font-size: 20px;
   font-weight: 760;
-  line-height: 1;
+  line-height: 1.05;
   letter-spacing: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -64,7 +64,7 @@
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
   line-height: 1.2;
   text-overflow: ellipsis;
   text-transform: uppercase;
@@ -1149,7 +1149,7 @@
   .sidebar {
     position: fixed;
     inset: 0 auto 0 0;
-    z-index: 20;
+    z-index: 100;
     width: min(86vw, 330px);
     padding: 18px;
     background: var(--sidebar-bg);
@@ -1172,7 +1172,7 @@
     display: block;
     position: fixed;
     inset: 0;
-    z-index: 19;
+    z-index: 90;
     pointer-events: none;
     background: rgb(0 0 0 / 0);
     border: 0;

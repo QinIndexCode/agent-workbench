@@ -335,22 +335,40 @@ export class ContextAssembler {
 
   private async buildSkillMetaLayer(preferences: UserPreferences): Promise<string> {
     if (!preferences.skillAutoInject) return "";
-    const skills = (await this.store.listSkills())
+    const catalog = (await this.store.listSkills()).sort(compareSkillCatalogEntries);
+    const activeSkills = catalog
       .filter((skill) => skill.status === "active")
-      .sort(compareSkillCatalogEntries)
       .slice(0, preferences.maxInjectedSkills);
-    if (skills.length === 0) return "";
+    const candidateSkills = catalog
+      .filter((skill) => skill.status === "candidate")
+      .slice(0, Math.max(2, Math.min(8, preferences.maxInjectedSkills)));
+    if (activeSkills.length === 0 && candidateSkills.length === 0) return "";
+    const activeLayer = activeSkills.length > 0
+      ? activeSkills.map((skill) => {
+          const success = Math.round(skill.stats.successRate * 100);
+          return [
+            `- ${skill.id}: ${skill.title} (${skill.status}, ${success}% success)`,
+            `  applicability: ${skill.applicability.description}`,
+            skill.applicability.requiredTools.length > 0 ? `  tools: ${skill.applicability.requiredTools.join(", ")}` : ""
+          ].filter(Boolean).join("\n");
+        })
+      : ["- No active skills are currently available for use_skill."];
+    const candidateLayer = candidateSkills.length > 0
+      ? [
+          "",
+          "Candidate skills below are shown for awareness only. Do not call use_skill for them until the user or Curator activates them.",
+          ...candidateSkills.map((skill) => [
+            `- ${skill.title} (${skill.status})`,
+            `  applicability: ${skill.applicability.description}`,
+            skill.applicability.requiredTools.length > 0 ? `  tools: ${skill.applicability.requiredTools.join(", ")}` : ""
+          ].filter(Boolean).join("\n"))
+        ]
+      : [];
     return [
       "## Available Skills",
       "This is a bounded catalog of active skills. It is not selected from the latest user text. Call use_skill with name set to the skill ID or exact title only when you decide the full guidance is needed.",
-      ...skills.map((skill) => {
-        const success = Math.round(skill.stats.successRate * 100);
-        return [
-          `- ${skill.id}: ${skill.title} (${skill.status}, ${success}% success)`,
-          `  applicability: ${skill.applicability.description}`,
-          skill.applicability.requiredTools.length > 0 ? `  tools: ${skill.applicability.requiredTools.join(", ")}` : ""
-        ].filter(Boolean).join("\n");
-      })
+      ...activeLayer,
+      ...candidateLayer
     ].join("\n");
   }
 
@@ -370,13 +388,16 @@ export class ContextAssembler {
       "Use skill_create or skill_delete only when the user explicitly asks or when a reviewed reusable pattern is ready; normal task completion should create memory, not a skill.",
       "When using side-effect-free state tools such as plan_update or use_skill, do not narrate the tool mechanics, tool JSON, or success status to the user; continue with the actual task.",
       "Role-ordered assistant/tool history is Agent Workbench's own execution record. Treat prior tool results as the agent's evidence, not as user-provided examples.",
+      "Internal continuity notes and retained thinking are private execution context. Never quote them verbatim, and never answer with a note that says you will continue instead of actually taking the next required action.",
       "For greetings, thanks, simple chat, and capability questions, answer directly without calling tools or loading more context.",
       "When asked to test or list tools, treat it as a safe capability check; do not create files, edit memory, edit skills, or run persistent side-effect tools unless the user explicitly authorizes that scope.",
       "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
       "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
       "If you need a file but are unsure it exists, list or search first instead of guessing paths such as README.md.",
+      "When the user gives exact allowed tools, paths, commands, or counts, obey that scope literally; do not call tools with blank arguments, extra paths, or exploratory follow-up calls after the requested evidence is collected.",
       "Tool distinction: search_files searches the live workspace and returns path/line snippets only; read_file returns live file content; knowledge_search searches the saved Knowledge library and is not proof of current files.",
       "Do not use run_command for workspace file-body reads or code search when list_files, search_files, or read_file can answer the question more directly and with less context cost.",
+      "When you quote or report source code, command output, JSON values, hashes, paths, or return expressions from tool evidence, copy the observed text exactly; do not rewrite it into an equivalent expression.",
       "When reporting a debug fix, base the root cause and final summary only on observed tool output and source code; do not speculate about code you did not see.",
       "After debugging or editing code, the final answer should include the observed failure, exact root cause expression or file location when known, changed files, and verification result.",
       "Keep normal answers concise, calm, and product-like.",
@@ -397,10 +418,12 @@ export class ContextAssembler {
     const verificationCommands = extractExplicitVerificationCommands(task);
     const verificationStatus = describeTargetVerificationStatus(task, verificationCommands);
     return [
-      "## Target Mode",
-      "The user explicitly started /target. Work toward complete verified goal satisfaction, not a merely plausible answer.",
-      "First establish acceptance criteria if they are not already clear. Continue with evidence-driven exploration, implementation, and verification until the criteria are met or the system pauses on limits or user interruption.",
-      "If verification fails, use the failure as evidence for the next step. If blocked by permissions or ambiguity, ask the user with ask_user.",
+      "## Goal Mode",
+      "The user explicitly started /goal. Work aggressively toward complete verified goal satisfaction, not a merely plausible answer.",
+      "First establish visible acceptance criteria if they are not already clear. Keep the plan current with plan_update so the UI shows the active step, evidence gathered, implementation work, and verification status.",
+      "Continue with evidence-driven exploration, implementation, and verification until the criteria are met or the system pauses on limits, permissions, provider failure, no-progress recovery, or user interruption.",
+      "If verification fails, treat the failure as evidence for the next repair step. Do not complete with a promise to continue, a retained-thinking note, or a progress-only summary.",
+      "If blocked by permissions or ambiguity, ask the user with ask_user and make the blocker explicit.",
       verificationCommands.length > 0
         ? `Explicit user-named verification commands: ${verificationCommands.map((command) => `\`${command}\``).join(", ")}.`
         : "",
@@ -701,6 +724,13 @@ export class FileStateTracker {
     return lines.join("\n");
   }
 
+  markFilesStale(paths: string[], reason: string, timestamp: string): void {
+    for (const path of paths) {
+      if (!path) continue;
+      this.set(path, reason, timestamp, true, { mode: "stale" });
+    }
+  }
+
   private set(path: string, content: string, lastModified: string, isPartial: boolean, metadata: Partial<Pick<FileState, "totalChars" | "totalLines" | "mode">> = {}): void {
     this.states.set(path, {
       path,
@@ -798,6 +828,13 @@ function buildCanonicalHistoryMessages(
     if (pendingToolCalls.length === 0) return;
     const eventId = pendingToolCalls[0]?.eventId;
     const reasoningContent = pendingToolCalls.find((pending) => pending.reasoningContent)?.reasoningContent;
+    if (reasoningContent) {
+      messages.push({
+        role: "assistant",
+        content: formatReasoningHistoryText(reasoningContent),
+        ...(eventId ? { eventId: `${eventId}:reasoning` } : {})
+      });
+    }
     messages.push({
       role: "assistant",
       toolCalls: pendingToolCalls.map((pending) => pending.call),
@@ -825,12 +862,19 @@ function buildCanonicalHistoryMessages(
         discardPendingToolCalls();
         {
           const reasoningContent = reasoningContentFromEvent(event);
-        messages.push({
-          role: "assistant",
-          content: event.summary,
-          ...(reasoningContent ? { reasoningContent } : {}),
-          eventId: event.id
-        });
+          if (reasoningContent) {
+            messages.push({
+              role: "assistant",
+              content: formatReasoningHistoryText(reasoningContent),
+              eventId: `${event.id}:reasoning`
+            });
+          }
+          messages.push({
+            role: "assistant",
+            content: event.summary,
+            ...(reasoningContent ? { reasoningContent } : {}),
+            eventId: event.id
+          });
         }
         break;
       case "tool_requested": {
@@ -846,6 +890,13 @@ function buildCanonicalHistoryMessages(
           const hasPendingCall = pendingToolCalls.some((pending) => pending.call.id === call.id);
           if (hasPendingCall) flushToolCalls();
           else {
+            if (reasoningContent) {
+              messages.push({
+                role: "assistant",
+                content: formatReasoningHistoryText(reasoningContent),
+                eventId: `${event.id}:reasoning`
+              });
+            }
             messages.push({
               role: "assistant",
               toolCalls: [call],
@@ -871,7 +922,12 @@ function buildCanonicalHistoryMessages(
         break;
       case "web_search_result":
         discardPendingToolCalls();
-        messages.push({ role: "assistant", content: `Web search result: ${event.summary}`, eventId: event.id });
+        break;
+      case "task_rollback_completed":
+      case "task_rollback_failed":
+      case "rollback_partial":
+        discardPendingToolCalls();
+        messages.push({ role: "user", content: formatOperationalEventForContext(event), eventId: event.id });
         break;
       default:
         break;
@@ -879,6 +935,26 @@ function buildCanonicalHistoryMessages(
   }
 
   return trimCanonicalHistoryMessages(messages, options.maxTokens);
+}
+
+function formatOperationalEventForContext(event: TaskEvent): string {
+  const payload = event.payload ?? {};
+  const details = Object.entries(payload)
+    .filter(([key, value]) =>
+      ["checkpointId", "workRoot", "restoredFiles", "deletedFiles", "skippedFiles", "filePaths"].includes(key) &&
+      value !== undefined &&
+      value !== null
+    )
+    .map(([key, value]) => `${key}=${formatCompactContextValue(value)}`)
+    .join(", ");
+  return details ? `Workbench event: ${event.summary} (${details})` : `Workbench event: ${event.summary}`;
+}
+
+function formatCompactContextValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => formatCompactContextValue(item)).join(", ")}]`;
+  if (typeof value === "string") return value.length > 220 ? `${value.slice(0, 217)}...` : value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
 }
 
 function toolCallFromRequestedEvent(event: TaskEvent): ToolCall | null {
@@ -897,6 +973,10 @@ function toolCallFromResultEvent(event: TaskEvent): ToolCall {
 function reasoningContentFromEvent(event: TaskEvent): string | undefined {
   const value = event.payload["reasoningContent"];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function formatReasoningHistoryText(value: string): string {
+  return `Internal continuity note. Do not quote this note verbatim or use it as the final answer:\n${truncate(value, 1600)}`;
 }
 
 function toolResultContentForRole(event: TaskEvent, tracker?: FileStateTracker): string {
@@ -984,6 +1064,11 @@ function stableJson(value: Record<string, unknown>): string {
 }
 
 export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): string {
+  const withReasoning = (body: string): string => {
+    const reasoning = reasoningContentFromEvent(event);
+    if (!reasoning) return body;
+    return `**Prior Thinking**: ${truncate(reasoning, 1600)}\n${body}`;
+  };
   switch (event.type) {
     case "user_message":
       return `**User**: ${event.summary}`;
@@ -993,14 +1078,14 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
     case "thinking_delta":
       return "";
     case "assistant_message":
-      return `**Agent**: ${event.summary}`;
+      return withReasoning(`**Agent**: ${event.summary}`);
     case "tool_requested":
-      return `**Tool Call**: ${event.payload["toolName"]}(${formatToolArgsForContext(event.payload["args"] ?? {})})`;
+      return withReasoning(`**Tool Call**: ${event.payload["toolName"]}(${formatToolArgsForContext(event.payload["args"] ?? {})})`);
     case "tool_result": {
       if (tracker && isFileContentInTracker(event, tracker)) return formatTrackedReadFileResult(event);
       const fileResult = formatFileToolResult(event);
-      if (fileResult) return fileResult;
-      return `${formatToolResultHeading(event)}:\n${formatToolOutput(String(event.payload["output"] ?? ""))}`;
+      if (fileResult) return withReasoning(fileResult);
+      return withReasoning(`${formatToolResultHeading(event)}:\n${formatToolOutput(String(event.payload["output"] ?? ""))}`);
     }
     case "approval_pending":
       return `**Approval Required**: ${event.payload["toolName"]} [${event.payload["riskCategory"]}]`;
@@ -1033,6 +1118,7 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
 
 function isModelHistoryEvent(event: TaskEvent): boolean {
   if (["status_changed", "task_created", "task_memory_created", "task_title_updated", "task_graph_created", "task_graph_node_started", "pattern_discovered", "reflection_completed", "tool_started", "tool_progress", "model_empty_response"].includes(event.type)) return false;
+  if (event.type === "web_search_result") return false;
   if (event.type.startsWith("plan_")) return false;
   if (["prompt_cache_stats", "token_usage_recorded", "conversation_summary_created", "context_overflow_recovered", "project_memory_version_created", "project_memory_rollback_completed"].includes(event.type)) return false;
   if (event.payload["uiHidden"] === true && event.type !== "tool_result") return false;
@@ -1041,6 +1127,7 @@ function isModelHistoryEvent(event: TaskEvent): boolean {
 
 function isSummarizableContextEvent(event: TaskEvent): boolean {
   if (["assistant_delta", "thinking_delta", "conversation_summary_created", "context_overflow_recovered", "prompt_cache_stats", "token_usage_recorded", "project_memory_version_created", "task_title_updated", "task_graph_created", "task_graph_node_started", "tool_started", "tool_progress", "model_empty_response"].includes(event.type)) return false;
+  if (event.type === "web_search_result") return false;
   if (event.type.startsWith("plan_")) return false;
   if (event.payload["uiHidden"] === true && event.type !== "tool_result") return false;
   return true;

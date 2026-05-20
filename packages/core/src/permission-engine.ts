@@ -54,6 +54,9 @@ export class PermissionEngine {
     if (toolName === "plan_update") {
       return { category: "workspace_read", reason: "plan_update changes visible task planning state without touching external resources." };
     }
+    if (toolName === "spawn_subagent") {
+      return { category: "network", reason: "spawn_subagent delegates a bounded research run that may use local reads and network access." };
+    }
     if (toolName === "web_search") {
       return { category: "network", reason: "web_search reaches external search providers and web pages." };
     }
