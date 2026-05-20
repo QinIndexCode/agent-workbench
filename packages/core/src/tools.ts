@@ -35,6 +35,7 @@ export interface ToolProgressUpdate {
 export interface ToolExecutionOptions {
   signal?: AbortSignal;
   workRoot?: string;
+  projectId?: string;
   timeoutMs?: number;
   onProgress?: (progress: ToolProgressUpdate) => void | Promise<void>;
 }

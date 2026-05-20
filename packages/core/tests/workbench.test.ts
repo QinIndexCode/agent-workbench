@@ -3279,6 +3279,39 @@ describe("AgentWorkbench", () => {
     expect(search[0]?.citation?.excerpt).toContain("ask before risky tools");
   });
 
+  it("defaults knowledge_search to the active task folder scope", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({
+      store,
+      tools: new CompositeToolExecutor(new StubToolExecutor(), [new KnowledgeSearchToolExecutor(store)]),
+      model: new SingleToolModel("knowledge_search", { query: "folder scoped deploy note", limit: 2 })
+    });
+    const folder = await workbench.createTaskFolder({ name: "Project A", rootPath: defaultTaskWorkRoot() });
+    await workbench.createKnowledgeItem({
+      projectId: folder.id,
+      kind: "memory",
+      title: "Project A deploy note",
+      content: "folder scoped deploy note requires reviewing release flags first.",
+      tags: ["deploy"]
+    });
+    await workbench.createKnowledgeItem({
+      projectId: "default",
+      kind: "memory",
+      title: "Default deploy note",
+      content: "default scoped deploy note should not satisfy this project lookup.",
+      tags: ["deploy"]
+    });
+    await workbench.grantGlobalPermission("workspace_read", "knowledge project scope smoke");
+
+    const completed = await workbench.createTask("search folder scoped deploy note", undefined, folder.id);
+    const output = String(completed.events.find((event) => event.type === "tool_result")?.payload["output"] ?? "");
+
+    expect(completed.status).toBe("completed");
+    expect(output).toContain(`"projectId": "${folder.id}"`);
+    expect(output).toContain("Project A deploy note");
+    expect(output).not.toContain("Default deploy note");
+  });
+
   it("searches knowledge by title, tags, Chinese text, code, and file name without embeddings", async () => {
     const store = new InMemoryWorkbenchStore();
     const workbench = new AgentWorkbench({ store });
@@ -3304,6 +3337,30 @@ describe("AgentWorkbench", () => {
     const chinese = await workbench.searchKnowledge({ query: "中文检索", projectId: "default", limit: 3 });
     expect(chinese[0]?.item.id).toBe(chineseItem.id);
     expect(chinese[0]?.highlights?.some((highlight) => highlight.text.includes("中文检索"))).toBe(true);
+  });
+
+  it("reindexes knowledge when a direct core patch clears indexed content", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    const item = await workbench.createKnowledgeItem({
+      kind: "memory",
+      title: "Temporary runbook",
+      content: "stale rollback instructions should disappear from search",
+      tags: ["stale"],
+      sourceUri: "memory://runbook"
+    });
+
+    expect(await workbench.searchKnowledge({ query: "rollback instructions", projectId: "default", limit: 3 })).toHaveLength(1);
+
+    const updated = await workbench.updateKnowledgeItem(item.id, { content: "", tags: [], sourceUri: "" });
+
+    expect(updated.indexStatus).toBe("metadata_only");
+    expect(updated.chunkCount).toBe(0);
+    expect(updated.tags).toEqual([]);
+    expect(updated.sourceUri).toBe("");
+    expect(await store.listKnowledgeChunks(item.id)).toHaveLength(0);
+    expect(await store.listKnowledgeSearchIndexEntries()).toHaveLength(0);
+    expect(await workbench.searchKnowledge({ query: "rollback instructions", projectId: "default", limit: 3 })).toHaveLength(0);
   });
 
   it("uses configured fastText vectors for semantic recall without requiring lexical overlap", async () => {
@@ -5244,6 +5301,85 @@ describe("McpRegistry", () => {
       [second]
     );
     expect(conflicts[0]?.status).toBe("open");
+  });
+
+  it("reconciles stale skill conflicts after deleting a conflicting skill", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    await workbench.createSkill({
+      title: "Release deploy file review",
+      body: "# Release deploy file review\nRead release files before deployment review.",
+      status: "candidate",
+      applicability: {
+        description: "Release deployment review",
+        keywords: ["release", "deploy", "review"],
+        requiredTools: ["read_file"]
+      }
+    });
+    const conflicting = await workbench.createSkill({
+      title: "Release deploy shell review",
+      body: "# Release deploy shell review\nRun release commands before deployment review.",
+      status: "candidate",
+      applicability: {
+        description: "Release deployment review",
+        keywords: ["release", "deploy", "review"],
+        requiredTools: ["run_command"]
+      }
+    });
+
+    expect(await workbench.listSkillConflicts()).toHaveLength(1);
+
+    await workbench.deleteSkill(conflicting.id);
+
+    expect(await workbench.listSkillConflicts()).toHaveLength(0);
+    expect((await store.listSkillConflicts())[0]?.status).toBe("resolved");
+    expect((await workbench.listSkillCuratorItems()).some((item) => item.kind === "conflict")).toBe(false);
+  });
+
+  it("detects conflicts introduced by skill edits without duplicating open conflict rows", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore() });
+    await workbench.createSkill({
+      title: "Release note file review",
+      body: "# Release note file review\nRead release notes and summarize the risky change.",
+      status: "candidate",
+      applicability: {
+        description: "Release note review",
+        keywords: ["release", "notes", "review"],
+        requiredTools: ["read_file"]
+      }
+    });
+    const edited = await workbench.createSkill({
+      title: "Draft note review",
+      body: "# Draft note review\nReview a draft note.",
+      status: "candidate",
+      applicability: {
+        description: "Draft note review",
+        keywords: ["draft"],
+        requiredTools: ["read_file"]
+      }
+    });
+
+    expect(await workbench.listSkillConflicts()).toHaveLength(0);
+
+    await workbench.updateSkill(edited.id, {
+      applicability: {
+        keywords: ["release", "notes", "review"],
+        requiredTools: ["run_command"]
+      }
+    });
+    await workbench.updateSkill(edited.id, { title: "Release note command review" });
+
+    const conflicts = await workbench.listSkillConflicts();
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]?.skillIds).toContain(edited.id);
+
+    await workbench.updateSkill(edited.id, {
+      applicability: {
+        requiredTools: ["read_file"]
+      }
+    });
+
+    expect(await workbench.listSkillConflicts()).toHaveLength(0);
   });
 });
 

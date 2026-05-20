@@ -64,6 +64,7 @@ import type {
   TaskAttachmentKind,
   TaskAttachmentUploadRequest,
   SkillCreateRequest,
+  SkillConflict,
   SkillCuratorItem,
   SkillDuplicateGroup,
   SkillMergeRequest,
@@ -1078,8 +1079,8 @@ export class AgentWorkbench {
     return (await this.store.listSkills()).map(normalizeSkillRecord);
   }
 
-  async listSkillConflicts() {
-    return this.store.listSkillConflicts();
+  async listSkillConflicts(): Promise<SkillConflict[]> {
+    return (await this.reconcileSkillConflicts()).filter((conflict) => conflict.status !== "resolved");
   }
 
   async listSkillDuplicates(): Promise<SkillDuplicateGroup[]> {
@@ -1288,6 +1289,8 @@ export class AgentWorkbench {
       updatedAt: nowIso()
     });
     await this.store.saveSkill(updated);
+    await this.saveDetectedSkillConflicts(updated);
+    await this.reconcileSkillConflicts();
     return updated;
   }
 
@@ -1333,11 +1336,13 @@ export class AgentWorkbench {
 
   async deleteSkill(skillId: string): Promise<void> {
     await this.store.deleteSkill(skillId);
+    await this.reconcileSkillConflicts();
   }
 
   async bulkDeleteSkills(skillIds: string[]): Promise<{ deleted: number }> {
     const uniqueIds = [...new Set(skillIds)];
     for (const skillId of uniqueIds) await this.store.deleteSkill(skillId);
+    await this.reconcileSkillConflicts();
     return { deleted: uniqueIds.length };
   }
 
@@ -1356,6 +1361,8 @@ export class AgentWorkbench {
         if (skill.id !== merged.id) await this.store.deleteSkill(skill.id);
       }
     }
+    await this.saveDetectedSkillConflicts(merged);
+    await this.reconcileSkillConflicts();
     return merged;
   }
 
@@ -2169,9 +2176,9 @@ export class AgentWorkbench {
     if (!current) throw new Error(`Knowledge item not found: ${id}`);
     const updated: KnowledgeItem = {
       ...current,
-      ...(input.title ? { title: input.title } : {}),
-      ...(input.content ? { content: input.content } : {}),
-      ...(input.tags ? { tags: cleanTags(input.tags) } : {}),
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.content !== undefined ? { content: input.content } : {}),
+      ...(input.tags !== undefined ? { tags: cleanTags(input.tags) } : {}),
       ...(input.sourceUri !== undefined ? { sourceUri: input.sourceUri } : {}),
       indexStatus: "pending",
       updatedAt: nowIso()
@@ -2904,10 +2911,64 @@ export class AgentWorkbench {
     const duplicate = findDuplicateSkill(normalized, existing);
     const saved = duplicate ? mergeSkillRecords(duplicate, normalized) : normalized;
     await this.store.saveSkill(saved);
-    for (const conflict of detectSkillConflicts(saved, existing)) {
+    await this.saveDetectedSkillConflicts(saved, existing);
+    await this.reconcileSkillConflicts();
+    return saved;
+  }
+
+  private async saveDetectedSkillConflicts(skill: SkillRecord, existingSkills?: SkillRecord[]): Promise<void> {
+    const normalized = normalizeSkillRecord(skill);
+    const existing = existingSkills ?? (await this.store.listSkills());
+    const activeConflictKeys = new Set(
+      (await this.store.listSkillConflicts())
+        .filter((conflict) => conflict.status !== "resolved")
+        .map((conflict) => skillConflictKey(conflict.skillIds))
+    );
+    for (const conflict of detectSkillConflicts(normalized, existing)) {
+      const key = skillConflictKey(conflict.skillIds);
+      if (activeConflictKeys.has(key)) continue;
+      activeConflictKeys.add(key);
       await this.store.saveSkillConflict(conflict);
     }
-    return saved;
+  }
+
+  private async reconcileSkillConflicts(): Promise<SkillConflict[]> {
+    const [rawConflicts, rawSkills] = await Promise.all([this.store.listSkillConflicts(), this.store.listSkills()]);
+    const skills = new Map(rawSkills.map((skill) => {
+      const normalized = normalizeSkillRecord(skill);
+      return [normalized.id, normalized] as const;
+    }));
+    const openConflictKeys = new Set<string>();
+    const reconciled: SkillConflict[] = [];
+    const conflicts = rawConflicts
+      .slice()
+      .sort((a, b) => (b.updatedAt || b.createdAt).localeCompare(a.updatedAt || a.createdAt));
+
+    for (const conflict of conflicts) {
+      const key = skillConflictKey(conflict.skillIds);
+      const referencesLiveSkills =
+        conflict.skillIds.length >= 2 &&
+        conflict.skillIds.every((skillId) => {
+          const skill = skills.get(skillId);
+          return Boolean(skill && skill.status !== "retired");
+        });
+      const stillConflicts = referencesLiveSkills && skillConflictStillApplies(key, conflict.skillIds, skills);
+      const duplicateOpenConflict = conflict.status !== "resolved" && openConflictKeys.has(key);
+      let current = conflict;
+      if (conflict.status !== "resolved" && (!referencesLiveSkills || !stillConflicts || duplicateOpenConflict)) {
+        current = {
+          ...conflict,
+          status: "resolved",
+          reason: `${conflict.reason} Resolved automatically because the referenced skills no longer conflict or another open conflict already tracks this pair.`,
+          updatedAt: nowIso()
+        };
+        await this.store.saveSkillConflict(current);
+      }
+      if (current.status !== "resolved") openConflictKeys.add(key);
+      reconciled.push(current);
+    }
+
+    return reconciled;
   }
 
   private safeBackgroundCatch(taskId: string, error: unknown): void {
@@ -3017,7 +3078,7 @@ export class AgentWorkbench {
         await this.store.saveTask(task);
         return managed;
       }
-      return await this.tools.execute(call, { signal: controller.signal, workRoot: task.workRoot, onProgress: progress });
+      return await this.tools.execute(call, { signal: controller.signal, workRoot: task.workRoot, projectId: task.folderId || "default", onProgress: progress });
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : String(error);
       const prefix = controller.signal.aborted ? "Tool execution cancelled" : "Tool execution failed";
@@ -4283,6 +4344,19 @@ function lowValueMemoryKey(memory: TaskMemory): string {
     memory.meta.complexity,
     toolKey
   ].join("|");
+}
+
+function skillConflictKey(skillIds: string[]): string {
+  return [...new Set(skillIds)].sort().join("::");
+}
+
+function skillConflictStillApplies(conflictKey: string, skillIds: string[], skills: Map<string, SkillRecord>): boolean {
+  const linkedSkills = skillIds.map((skillId) => skills.get(skillId)).filter((skill): skill is SkillRecord => Boolean(skill));
+  for (const skill of linkedSkills) {
+    const currentConflicts = detectSkillConflicts(skill, linkedSkills.filter((candidate) => candidate.id !== skill.id));
+    if (currentConflicts.some((conflict) => skillConflictKey(conflict.skillIds) === conflictKey)) return true;
+  }
+  return false;
 }
 
 type RuleAutoApproveRisk = UserPreferences["autoApproveRiskCategories"][number];

@@ -42,7 +42,7 @@ export class KnowledgeSearchToolExecutor implements ToolExecutorDelegate {
     const query = String(call.args["query"] ?? "").trim();
     if (!query) return result(call, false, "Missing knowledge search query.");
     if (options.signal?.aborted) return result(call, false, "Knowledge search cancelled before it started.");
-    const projectId = String(call.args["projectId"] ?? "default");
+    const projectId = String(call.args["projectId"] ?? options.projectId ?? "default");
     const limit = clamp(Number(call.args["limit"] ?? 5), 1, 12);
     try {
       await options.onProgress?.({ status: "running", operation: "knowledge_search", message: `Searching knowledge for "${query}".`, progress: { processed: 0, total: limit, unit: "items" } });
