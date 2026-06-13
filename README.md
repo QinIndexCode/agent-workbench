@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="apps/web/src/assets/logo/logo-whiteTheme.png">
     <source media="(prefers-color-scheme: light)" srcset="apps/web/src/assets/logo/logo-blackTheme.png">
-    <img src="apps/web/src/assets/logo/logo-blackTheme.png" alt="Agent Workbench logo" width="152">
+    <img src="./apps/web/src/assets/logo/logo-blackTheme.png" alt="Agent Workbench logo" width="152">
   </picture>
 </p>
 
