@@ -1,0 +1,77 @@
+{
+  "name": "agent-workbench",
+  "version": "0.1.0",
+  "description": "A local-first agent workbench with permissioned tools, durable task state, Web UI, and CLI.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "npm@11.10.1",
+  "engines": {
+    "node": ">=22 <26",
+    "npm": ">=10"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/QinIndexCode/agent-workbench.git"
+  },
+  "bugs": {
+    "url": "https://github.com/QinIndexCode/agent-workbench/issues"
+  },
+  "homepage": "https://github.com/QinIndexCode/agent-workbench#readme",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @agent-workbench/shared && npm run build -w @agent-workbench/core && npm run build -w @agent-workbench/server && npm run build -w @agent-workbench/web && npm run build -w @agent-workbench/cli",
+    "cli": "npm.cmd run start -w @agent-workbench/cli --",
+    "dev": "npm run dev -w @agent-workbench/server",
+    "dev:all": "node scripts/start-dev.js",
+    "dev:server": "npm run dev -w @agent-workbench/server",
+    "dev:web": "npm run dev -w @agent-workbench/web",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run",
+    "test:docs": "node scripts/check-docs.mjs",
+    "test:matrix": "vitest run tests/real-task-matrix/matrix.test.ts",
+    "test:stress": "vitest run tests/stress/stress.test.ts",
+    "test:web-budgets": "node scripts/check-web-budgets.mjs",
+    "test:api-route-coverage": "node scripts/check-api-route-coverage.mjs",
+    "test:agent-workflow": "node scripts/check-agent-workflow-guidance.mjs",
+    "test:sensitive-artifacts": "node scripts/check-sensitive-artifacts.mjs",
+    "test:temp-hygiene": "node scripts/check-temp-hygiene.mjs",
+    "check:release-source": "node scripts/check-release-source.mjs",
+    "audit:prod": "npm audit --omit=dev --audit-level=moderate",
+    "clean:model-artifacts": "node scripts/clean-model-artifacts.mjs",
+    "clean:release-artifacts": "node scripts/clean-release-artifacts.mjs",
+    "smoke:live-model": "npm.cmd run build && node scripts/live-model-smoke.mjs",
+    "smoke:live-http-agent": "npm.cmd run build && node scripts/live-agent-http-resume-verifier.mjs",
+    "test:e2e": "npm.cmd run build && node scripts/run-e2e.mjs && node scripts/check-playwright-results.mjs",
+    "test:a11y": "npm.cmd run build && node scripts/run-e2e.mjs tests/e2e/accessibility.spec.ts",
+    "typecheck": "tsc -b packages/shared packages/core apps/server apps/web apps/cli --force",
+    "check:no-old-control": "node scripts/check-no-old-control.mjs",
+    "quality:full": "node scripts/run-quality-suite.mjs",
+    "quality:flagship": "node scripts/run-quality-suite.mjs --flagship",
+    "ci:local": "npm run quality:full"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.11.0",
+    "@eslint/js": "^9.28.0",
+    "@playwright/test": "^1.59.1",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.3.0",
+    "@types/node": "^22.15.3",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "@vitest/coverage-v8": "^4.1.8",
+    "eslint": "^9.28.0",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^16.0.0",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.33.0",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.8"
+  }
+}
