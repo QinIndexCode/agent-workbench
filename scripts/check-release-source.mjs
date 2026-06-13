@@ -7,6 +7,7 @@ const failures = [
   ...checkDocsReports(),
   ...checkForbiddenFiles(),
   ...checkForbiddenText(),
+  ...checkForbiddenSourcePaths(),
   ...checkPackageMetadata(),
   ...checkGitignore()
 ];
@@ -53,6 +54,22 @@ function checkForbiddenText() {
     ["literal_api_key_assignment", /\b(?:apiKey|tokenPlanApiKey)\s*:\s*(?:sk-|tp-)[A-Za-z0-9_-]+/i]
   ];
   const files = collectFiles(root, shouldScanTextFile);
+  const failures = [];
+  for (const file of files) {
+    const text = readFileSync(file, "utf8");
+    for (const [label, pattern] of patterns) {
+      if (pattern.test(text)) failures.push(`${label} in ${toRelative(file)}`);
+    }
+  }
+  return failures;
+}
+
+function checkForbiddenSourcePaths() {
+  const patterns = [
+    ["old_workspace_name", new RegExp(["Scc", "batch", "web"].join("_"), "i")],
+    ["local_windows_workspace_path", /[A-Za-z]:[\\/](?:Users|MyCode)[\\/]/i]
+  ];
+  const files = collectFiles(root, shouldScanSourceTextFile);
   const failures = [];
   for (const file of files) {
     const text = readFileSync(file, "utf8");
@@ -110,6 +127,13 @@ function shouldScanTextFile(file) {
   const extension = extname(file).toLowerCase();
   if ([".md", ".mdx", ".txt", ".json", ".yaml", ".yml"].includes(extension)) return true;
   return basename(file) === ".gitignore";
+}
+
+function shouldScanSourceTextFile(file) {
+  const relativePath = toRelative(file);
+  if (isIgnoredScanPath(relativePath)) return false;
+  const extension = extname(file).toLowerCase();
+  return [".css", ".html", ".js", ".json", ".md", ".mdx", ".mjs", ".py", ".ts", ".tsx", ".txt", ".yaml", ".yml"].includes(extension);
 }
 
 function isIgnoredScanPath(relativePath) {
