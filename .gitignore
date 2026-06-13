@@ -1,0 +1,16 @@
+node_modules
+dist
+dist-types
+.env
+.env.*
+dont_touch_(APIKEY).md
+data
+workspace
+coverage
+output
+playwright-report
+test-results
+docs/reports/*.md
+!docs/reports/README.md
+*.tsbuildinfo
+*.d.ts.map

@@ -1,0 +1,50 @@
+name: live-quality
+
+on:
+  workflow_dispatch:
+
+jobs:
+  live-model-quality:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      AGENT_WORKBENCH_LIVE_MODEL_SMOKE: "1"
+      AGENT_WORKBENCH_LIVE_MODEL_REQUIRED: "1"
+      AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED: "1"
+      AGENT_WORKBENCH_STRESS_LEVEL: "5"
+      AGENT_WORKBENCH_OPENAI_API_KEY: ${{ secrets.AGENT_WORKBENCH_OPENAI_API_KEY }}
+      AGENT_WORKBENCH_OPENAI_BASE_URL: ${{ secrets.AGENT_WORKBENCH_OPENAI_BASE_URL }}
+      AGENT_WORKBENCH_MODEL: ${{ secrets.AGENT_WORKBENCH_OPENAI_MODEL }}
+      OPENAI_PROVIDER: ${{ secrets.AGENT_WORKBENCH_OPENAI_PROVIDER }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Verify live smoke secrets
+        shell: pwsh
+        run: |
+          if (-not $env:AGENT_WORKBENCH_OPENAI_API_KEY) { throw "Missing secret AGENT_WORKBENCH_OPENAI_API_KEY" }
+          if (-not $env:AGENT_WORKBENCH_OPENAI_BASE_URL) { throw "Missing secret AGENT_WORKBENCH_OPENAI_BASE_URL" }
+
+      - name: Install dependencies
+        run: npm.cmd ci
+
+      - name: Run flagship quality suite with live model evidence
+        run: npm.cmd run quality:full
+
+      - name: Upload live quality artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-quality-artifacts
+          path: |
+            data/test-reports/live-model-smoke/**
+            docs/reports/*flagship-revalidation.md
+          if-no-files-found: warn

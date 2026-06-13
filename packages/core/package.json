@@ -1,0 +1,22 @@
+{
+  "name": "@agent-workbench/core",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b tsconfig.json --force",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@agent-workbench/shared": "0.1.0",
+    "onnxruntime-node": "^1.26.0",
+    "openai": "^5.0.1"
+  }
+}

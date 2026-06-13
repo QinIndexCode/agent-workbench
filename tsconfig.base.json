@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@agent-workbench/cli": ["apps/cli/src/index.ts"],
+      "@agent-workbench/core": ["packages/core/src/index.ts"],
+      "@agent-workbench/server": ["apps/server/src/index.ts"],
+      "@agent-workbench/shared": ["packages/shared/src/index.ts"]
+    }
+  }
+}

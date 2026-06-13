@@ -1,0 +1,1192 @@
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  min-height: 0;
+  padding: 20px;
+  position: relative;
+  overflow: hidden;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+  transition: width 350ms ease-in-out, min-width 350ms ease-in-out, padding 350ms ease-in-out;
+}
+
+.brand {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-height: 46px;
+  color: var(--text);
+}
+
+.brandIcon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 39px;
+  height: 39px;
+  overflow: hidden;
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+
+.brandLogo {
+  display: block;
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+}
+
+.brandCopy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.brandCopy strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 760;
+  line-height: 1.05;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brandCopy small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sidebarNav {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-top: 32px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebarNavButton {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 12px;
+  align-items: center;
+  justify-content: start;
+  width: 100%;
+  min-height: 52px;
+  padding: 0 18px;
+  color: var(--muted-strong);
+  font-size: 15px;
+  font-weight: 640;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebarNavButton:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.sidebarNavButton.selected {
+  color: var(--text);
+  background: var(--surface-selected);
+  border-color: var(--accent-border);
+}
+
+.sidebarNavButton.primary {
+  min-height: 52px;
+  color: var(--muted-strong);
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.sidebarNavButton.primary:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.sidebarNavButton.primary.selected {
+  color: var(--text);
+  background: var(--surface-selected);
+  border-color: var(--accent-border);
+}
+
+.folderPanel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 18px;
+  min-height: 0;
+  position: relative;
+  z-index: 0;
+}
+
+.folderPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: 28px;
+  position: relative;
+  overflow: visible;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.folderPanelTitle {
+  overflow: hidden;
+  opacity: 1;
+  transition: opacity 160ms ease, width 160ms ease;
+  white-space: pre-wrap;
+}
+
+.folderPanelTitle.hidden {
+  opacity: 0;
+  width: 0;
+}
+
+.folderPanelActions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: auto;
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+}
+
+.folderPanelActions > .folderIconButton {
+  transition: width 160ms ease, opacity 120ms ease, padding 160ms ease;
+}
+
+.folderSearchWrap {
+  position: absolute;
+  right: 35px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  height: 28px;
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--muted);
+  background: var(--surface-container-low);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 0;
+  transition: width 200ms ease, opacity 160ms ease, padding 160ms ease, border-color 160ms ease;
+}
+
+.folderSearchWrap.open {
+  min-width: 100px;
+  width: calc(100% - 40px);
+  padding: 0 6px;
+  border-color: var(--border);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.folderSearchWrap input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 26px;
+  background: transparent;
+  border: 0;
+  outline: 0;
+}
+
+.folderSearchWrap input::placeholder {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.folderSearchClose {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.folderSearchClose:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.folderIconButton.searchHidden {
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.folderTree {
+  display: grid;
+  gap: 2px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.folderTreeItem {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+
+:root[data-theme="dark"] .folderTreeItem.expanded {
+  background: rgba(31, 31, 35, 0.4);
+  border-color: rgba(63, 63, 70, 0.3);
+}
+
+:root[data-theme="light"] .folderTreeItem.expanded {
+  background: rgba(228, 228, 231, 0.4);
+  border-color: rgba(212, 212, 216, 0.3);
+}
+
+.folderTreeRow {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 27px;
+  gap: 2px;
+  align-items: center;
+  min-height: 36px;
+  position: relative;
+}
+
+.folderTreeToggle {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  outline: none;
+}
+
+.folderTreeToggle:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.folderTreeToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.folderTreeToggle:active {
+  outline: none;
+}
+
+.folderTreeChevron {
+  transition: transform 150ms ease;
+}
+
+.folderTreeChevron.open {
+  transform: rotate(90deg);
+}
+
+.folderTreeMain {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 4px;
+  color: var(--muted-strong);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  outline: none;
+}
+
+.folderTreeMain:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.folderTreeMain:active {
+  outline: none;
+}
+
+.folderTreeMain span {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folderTooltip {
+  position: fixed;
+  z-index: 9999;
+  display: none;
+  max-width: 320px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-control);
+  pointer-events: none;
+}
+
+.folderTreeMain small {
+  color: var(--muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.folderIconButton {
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.folderIconButton:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.folderIconButton:disabled {
+  cursor: default;
+  opacity: 0.28;
+}
+
+.folderIconButton.dangerIcon:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+.folderTaskCount {
+  transition: opacity 120ms ease;
+}
+
+.folderTreeRow:hover .folderTaskCount {
+  opacity: 0;
+}
+
+.folderAddTaskButton {
+  position: absolute;
+  right: 58px;
+  top: 4px;
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  z-index: 3;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.folderEditButton {
+  position: absolute;
+  right: 30px;
+  top: 4px;
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  z-index: 3;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.folderTreeRow:hover .folderAddTaskButton,
+.folderTreeRow:hover .folderEditButton {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+:root[data-theme="dark"] .folderAddTaskButton:hover {
+  color: var(--accent);
+  background: rgba(244, 244, 245, 0.1);
+}
+
+:root[data-theme="light"] .folderAddTaskButton:hover {
+  color: var(--accent);
+  background: rgba(24, 24, 27, 0.1);
+}
+
+.folderEditButton:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.folderDeleteButton {
+  position: absolute;
+  right: 2px;
+  top: 4px;
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  opacity: 0.52;
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 3;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.folderTreeRow:hover .folderDeleteButton {
+  opacity: 1;
+}
+
+.folderDeleteButton:hover {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.folderTaskList {
+  display: grid;
+  gap: 2px;
+  padding: 2px 2px 4px 28px;
+  animation: folderExpand 160ms ease;
+}
+
+@keyframes folderExpand {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.folderTaskItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px 26px;
+  gap: 4px;
+  align-items: center;
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 8px 6px 10px;
+  color: var(--muted-strong);
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.folderTaskItem:hover,
+.folderTaskItem.selected {
+  background: var(--surface-selected);
+  border-color: var(--accent-border);
+}
+
+.folderTaskItem:hover:not(.selected) {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.folderTaskItemMain {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  min-height: 26px;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.folderTaskItemMain:hover {
+  background: transparent;
+  border-color: transparent;
+}
+
+.folderTaskItemMain span {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folderTaskItemMain small,
+.folderEmpty {
+  color: var(--muted);
+}
+
+.folderTaskItemMain small {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.folderEmpty {
+  margin: 8px 6px;
+  font-size: 12px;
+}
+
+.taskEditButton,
+.taskDeleteButton {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.folderTaskItem:hover .taskEditButton,
+.folderTaskItem:hover .taskDeleteButton,
+.taskEditButton:focus-visible,
+.taskDeleteButton:focus-visible,
+.folderTaskItem.selected .taskEditButton,
+.folderTaskItem.selected .taskDeleteButton {
+  opacity: 1;
+}
+
+.taskEditButton:hover {
+  color: var(--accent-strong);
+  background: var(--surface-hover);
+  border-color: var(--accent-border);
+}
+
+.taskDeleteButton:hover {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+.folderPickerDialog {
+  width: min(90vw, 420px);
+}
+
+.folderPickerField {
+  display: grid;
+  gap: 10px;
+}
+
+.folderPickerField label,
+.folderPickerField .fieldLabel {
+  color: var(--muted-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.folderPickerInputWrap {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.folderPickerInputWrap input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 12px;
+  color: var(--text);
+  font-size: 13px;
+  background: var(--surface-container-low);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: 0;
+}
+
+.folderPickerField > input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  color: var(--text);
+  font-size: 13px;
+  background: var(--surface-container-low);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: 0;
+}
+
+.folderPickerField > input:focus {
+  border-color: var(--accent-border);
+}
+
+.folderChoiceList {
+  display: grid;
+  max-height: 190px;
+  gap: 6px;
+  overflow: auto;
+}
+
+.folderChoice {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 9px 10px;
+  color: var(--muted-strong);
+  text-align: left;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.folderChoice:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.folderChoice.selected {
+  color: var(--text);
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.folderChoice small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folderPickerInputWrap input:focus {
+  border-color: var(--accent-border);
+}
+
+.folderPickerBrowse {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  color: var(--muted-strong);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.folderPickerBrowse:hover {
+  color: var(--text);
+  background: var(--surface-selected);
+  border-color: var(--accent-border);
+}
+
+.folderPickerBrowse:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.primaryButton {
+  min-height: 36px;
+  padding: 0 16px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--accent);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.primaryButton:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.primaryButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.taskDeleteConfirm {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+  margin-top: 7px;
+  padding: 10px;
+  color: var(--muted-strong);
+  background: var(--surface-container-low);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm);
+  cursor: default;
+}
+
+.taskDeleteConfirmHeader,
+.taskDeleteActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.taskDeleteConfirmHeader strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.taskDeleteConfirmHeader button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.taskDeleteConfirm p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.taskDeleteConfirm label {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.taskDeleteConfirm input {
+  margin: 2px 0 0;
+}
+
+.taskDeleteConfirm .disabledOption {
+  color: var(--muted);
+  opacity: 0.55;
+}
+
+.deleteOptions {
+  display: grid;
+  gap: 10px;
+}
+
+.deleteOptions p {
+  margin: 0;
+  color: var(--muted-strong);
+  line-height: 1.45;
+}
+
+.deleteOptions label {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: var(--muted-strong);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.deleteOptions input {
+  margin: 2px 0 0;
+}
+
+.deleteOptions .disabledOption {
+  color: var(--muted);
+  opacity: 0.55;
+}
+
+.taskDeleteActions {
+  justify-content: end;
+}
+
+.taskDeleteActions button {
+  min-height: 28px;
+  padding: 0 9px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.taskDeleteActions .dangerButton {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+.sidebarEmpty {
+  margin: 14px 6px;
+  font-size: 13px;
+}
+
+.sidebarUtility {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 14px;
+  flex-shrink: 0;
+  z-index: 20;
+}
+
+.sidebarUtilityToggle {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin: 0 0 0 4px;
+  padding: 0;
+  color: var(--muted-strong);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.sidebarUtilityToggle:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.sidebarUtilityToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sidebarUtilityToggle.open {
+  color: var(--text);
+  background: var(--surface-selected);
+  border-color: var(--accent-border);
+}
+
+.sidebarUtilityMenu {
+  position: absolute;
+  right: 1px;
+  bottom: calc(100% + 6px);
+  left: 1px;
+  z-index: 21;
+  display: grid;
+  gap: 4px;
+  overflow: hidden;
+  max-height: 0;
+  padding: 0 4px;
+  opacity: 0;
+  background: var(--sidebar-bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 1px var(--border);
+  pointer-events: none;
+  transition: max-height 200ms ease, opacity 160ms ease, padding 160ms ease;
+}
+
+.sidebarUtilityMenu.open {
+  max-height: 160px;
+  padding: 4px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sidebarUtilityItem {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 10px;
+  align-items: center;
+  justify-content: start;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 14px;
+  color: var(--muted-strong);
+  font-size: 13px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebarUtilityItem:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.sidebarUtilityItem.selected {
+  color: var(--text);
+  background: var(--surface-selected);
+  border-color: var(--accent-border);
+}
+
+.sidebarResizeHandle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+  opacity: 1;
+  transition: opacity 160ms ease;
+}
+
+.sidebarResizeHandle:hover {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.sidebarExpandedContent {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  visibility: visible;
+  transition: opacity 150ms ease, transform 150ms ease, visibility 0ms;
+}
+
+.sidebarExpandedContent.contentHidden {
+  opacity: 0;
+  transform: translateX(-20px);
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity 150ms ease, transform 150ms ease, visibility 0ms 150ms;
+}
+
+.sidebar.collapsed .sidebarExpandedContent {
+  display: none;
+}
+
+.sidebar.collapsed .sidebarResizeHandle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sidebarToggleButton {
+  position: fixed;
+  top: 10px;
+  left: calc(var(--sidebar-width) - 40px);
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  box-shadow: var(--shadow-control);
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease, left 350ms ease-in-out;
+}
+
+.sidebarToggleButton:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+}
+
+.sidebarToggleButton.collapsed {
+  left: 12px;
+}
+
+.sidebarCollapsedRail {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 68px 0 0;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  z-index: 2;
+  transition: opacity 180ms ease, visibility 0ms 180ms;
+}
+
+.sidebar.collapsed .sidebarCollapsedRail {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+  transition: opacity 180ms ease 150ms, visibility 0ms 150ms;
+}
+
+.sidebarCollapsedIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.sidebarCollapsedIcon:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+
+
+.sidebar.collapsed {
+  width: 52px;
+  min-width: 52px;
+  padding: 10px 0;
+}
+
+@media (max-width: 760px) {
+  .sidebarToggleButton {
+    display: none;
+  }
+
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 100;
+    width: min(86vw, 330px);
+    padding: 18px;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    transform: translateX(-105%);
+    transition: transform 0.18s ease;
+  }
+
+  .folderTree {
+    max-height: 50vh;
+    overflow: auto;
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .taskDrawerBackdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    pointer-events: none;
+    background: rgb(0 0 0 / 0);
+    border: 0;
+  }
+
+  .taskDrawerBackdrop.open {
+    pointer-events: auto;
+    background: rgb(0 0 0 / 0.36);
+  }
+
+  .closeDrawerButton {
+    display: inline-grid;
+    place-items: center;
+    margin-left: auto;
+    white-space: nowrap;
+  }
+}

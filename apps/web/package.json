@@ -1,0 +1,25 @@
+{
+  "name": "@agent-workbench/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "preview": "vite preview --host 127.0.0.1 --port 5173",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@lobehub/icons-static-svg": "^1.88.0",
+    "@agent-workbench/shared": "0.1.0",
+    "lucide-react": "^0.508.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-file-icon": "^1.6.0"
+  },
+  "devDependencies": {
+    "@types/react-file-icon": "^1.0.5",
+    "@vitejs/plugin-react": "^6.0.2",
+    "vite": "^8.0.16"
+  }
+}
