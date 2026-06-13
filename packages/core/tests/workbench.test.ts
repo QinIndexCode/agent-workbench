@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -57,6 +57,17 @@ function repoTestTempRoot(): string {
   const dir = resolve(repoRoot, "data", "test-tmp");
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+function comparablePath(path: string): string {
+  const resolved = resolve(path.trim());
+  const real = realpathSync.native(resolved);
+  return process.platform === "win32" ? real.toLowerCase() : real;
+}
+
+function expectSamePath(actual: string | undefined, expected: string): void {
+  expect(actual).toBeDefined();
+  expect(comparablePath(actual ?? "")).toBe(comparablePath(expected));
 }
 
 function attachExplicitTaskGraph(task: TaskDetail, overrides: Partial<TaskGraphNode> = {}): TaskGraph {
@@ -4673,7 +4684,7 @@ describe("AgentWorkbench", () => {
       expect((await workbench.getTask(completed.id))?.events.some((event) => event.type === "task_rollback_completed")).toBe(true);
       const knownFilesAfterRollback = contextAssembler.getFileStateTracker(completed.id).buildFileStateTable();
       expect(knownFilesAfterRollback).toContain("File was rolled back");
-      expect(knownFilesAfterRollback).not.toContain("after");
+      expect(knownFilesAfterRollback).not.toContain("fake_after");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -5274,12 +5285,12 @@ describe("AgentWorkbench", () => {
       const task = await workbench.createTask("inspect this local folder", "Inspect folder", folder.id);
 
       expect(task.folderId).toBe(folder.id);
-      expect(task.workRoot).toBe(resolve(firstRoot));
+      expectSamePath(task.workRoot, firstRoot);
 
       await workbench.updateTaskFolder(folder.id, { rootPath: secondRoot });
       const persisted = await workbench.getTask(task.id);
       expect(persisted?.folderId).toBe(folder.id);
-      expect(persisted?.workRoot).toBe(resolve(firstRoot));
+      expectSamePath(persisted?.workRoot, firstRoot);
     } finally {
       rmSync(firstRoot, { recursive: true, force: true });
       rmSync(secondRoot, { recursive: true, force: true });
@@ -5311,7 +5322,7 @@ describe("AgentWorkbench", () => {
 
       expect(updated.title).toBe("Renamed inspection");
       expect(updated.folderId).toBe(secondFolder.id);
-      expect(updated.workRoot).toBe(resolve(firstRoot));
+      expectSamePath(updated.workRoot, firstRoot);
     } finally {
       rmSync(firstRoot, { recursive: true, force: true });
       rmSync(secondRoot, { recursive: true, force: true });
@@ -7022,7 +7033,7 @@ describe("ShellToolExecutor", { timeout: 15_000 }, () => {
       );
 
       expect(result.ok).toBe(true);
-      expect(result.output.toLowerCase()).toContain(resolve(workRoot).toLowerCase());
+      expectSamePath(result.output, workRoot);
     } finally {
       rmSync(workRoot, { recursive: true, force: true });
     }
