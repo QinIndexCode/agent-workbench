@@ -67,6 +67,20 @@ describe("api client", () => {
       })
     );
 
+    await api.uploadTaskAttachment({
+      fileName: "notes.md",
+      mimeType: "text/markdown",
+      size: 12,
+      dataBase64: "IyBOb3Rlcwo="
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/task-attachments",
+      expect.objectContaining({ method: "POST", body: expect.stringContaining("notes.md") })
+    );
+
+    await api.deleteTaskAttachment("attachment_1");
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/task-attachments/attachment_1", expect.objectContaining({ method: "DELETE" }));
+
     await api.grantGlobalPermission("host_observation", "ok");
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/permissions/global",
@@ -112,16 +126,28 @@ describe("api client", () => {
       expect.objectContaining({ method: "PATCH", body: JSON.stringify({ enabled: false }) })
     );
 
+    await api.testModelProvider("provider_1");
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/model-providers/provider_1/test", expect.objectContaining({ method: "POST" }));
+
     await api.createKnowledgeItem({ projectId: "default", kind: "memory", title: "Note", content: "Body", tags: ["runtime"] });
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/knowledge",
       expect.objectContaining({ method: "POST", body: expect.stringContaining("runtime") })
     );
 
+    await api.listKnowledgeItems("folder_ops");
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/knowledge?projectId=folder_ops", expect.objectContaining({ headers: expect.any(Headers) }));
+
     await api.uploadKnowledgeFile({ projectId: "default", title: "notes.md", fileName: "notes.md", mimeType: "text/markdown", size: 4, content: "Body", tags: [] });
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/knowledge/upload",
       expect.objectContaining({ method: "POST", body: expect.stringContaining("notes.md") })
+    );
+
+    await api.searchKnowledge({ query: "runtime approvals", projectId: "default", limit: 3 });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/knowledge/search",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ query: "runtime approvals", projectId: "default", limit: 3 }) })
     );
 
     await api.revokeGlobalPermission("host_observation");
@@ -136,6 +162,9 @@ describe("api client", () => {
 
     await api.deleteCuratorRun("curator_run_1");
     expect(fetchMock).toHaveBeenLastCalledWith("/api/curator/runs/curator_run_1", expect.objectContaining({ method: "DELETE" }));
+
+    await api.cleanupSkillDuplicates();
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/skills/cleanup-duplicates", expect.objectContaining({ method: "POST" }));
   });
 
   it("raises failed responses", async () => {

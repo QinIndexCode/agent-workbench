@@ -67,7 +67,8 @@ export class PermissionEngine {
         return { category: "destructive", reason: "Command can stop processes, remove data, or alter the host." };
       }
       const reachesNetwork = networkPattern.test(command) || networkMutationPattern.test(command);
-      const mutatesWorkspace = writePattern.test(command) || networkMutationPattern.test(command);
+      const commandWithoutDescriptorDuplication = command.replace(/\b\d*>\s*&\s*\d+\b/g, "");
+      const mutatesWorkspace = writePattern.test(commandWithoutDescriptorDuplication) || networkMutationPattern.test(command);
       if (reachesNetwork && mutatesWorkspace) {
         return { category: "shell", reason: "Command combines external access with local or remote mutation and needs explicit shell review." };
       }

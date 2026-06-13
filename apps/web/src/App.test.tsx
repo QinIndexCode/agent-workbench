@@ -2,10 +2,11 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GlobalPermissionGrant, IntegrationProviderConfig, KnowledgeItem, MemoryDocument, MemoryDocumentCompactResult, ModelProviderRecord, ProjectMemory, RiskCategory, ScheduledTask, SkillRecord, TaskDetail, TaskEvent, TaskFolderRecord, ToolApproval, UserPreferences, WebSearchProviderConfig } from "@agent-workbench/shared";
+import type { GlobalPermissionGrant, IntegrationProviderConfig, KnowledgeItem, MemoryDocument, MemoryDocumentCompactResult, ModelProviderRecord, ModelProviderTestResult, ProjectMemory, RiskCategory, ScheduledTask, SkillRecord, TaskDetail, TaskEvent, TaskFolderRecord, ToolApproval, UserPreferences, WebSearchProviderConfig } from "@agent-workbench/shared";
 import { App } from "./App.js";
 import { ApprovalCard } from "./components/ApprovalCard.js";
 import { Composer } from "./components/Composer.js";
+import { DocsView } from "./components/DocsView.js";
 import { McpPanel } from "./components/McpPanel.js";
 import { KnowledgePanel } from "./components/KnowledgePanel.js";
 import { IntegrationsPanel } from "./components/IntegrationsPanel.js";
@@ -115,6 +116,31 @@ describe("Composer", () => {
   it("does not expose stop semantics when the task is not running", () => {
     render(<Composer busy={false} running={false} mode="new_task" onSubmit={vi.fn()} onStop={vi.fn()} />);
     expect(screen.getByLabelText("Idle")).toBeDisabled();
+  });
+});
+
+describe("DocsView", () => {
+  it("filters docs from the left navigation without hiding the active article", async () => {
+    const onSection = vi.fn();
+    render(<DocsView activeSection="overview" language="en-US" onBack={vi.fn()} onSection={onSection} />);
+
+    expect(await screen.findByRole("heading", { name: "Docs" })).toBeInTheDocument();
+    const menuButton = screen.getByRole("button", { name: "Open docs navigation" });
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(menuButton);
+    expect(menuButton).toHaveAttribute("aria-expanded", "true");
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search docs" }), { target: { value: "search provider" } });
+
+    expect(await screen.findByText("Web Search")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Model Providers" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Web Search/ }));
+    expect(onSection).toHaveBeenCalledWith("search");
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect(screen.getByText("Settings and operations")).toBeInTheDocument();
   });
 });
 
@@ -2471,6 +2497,66 @@ describe("Workbench components", () => {
     expect(onDelete).toHaveBeenCalledWith("provider_1");
   });
 
+  it("tests model provider connectivity from the provider row", async () => {
+    const failedResult: ModelProviderTestResult = {
+      providerId: "provider_1",
+      label: "Mimo",
+      ok: false,
+      status: "failed",
+      baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+      model: "mimo-v2.5",
+      durationMs: 42,
+      statusCode: 401,
+      failureClass: "provider_configuration",
+      error: "Provider preflight failed with HTTP 401: Invalid API Key"
+    };
+    const passedResult: ModelProviderTestResult = {
+      providerId: "provider_1",
+      label: "Mimo",
+      ok: true,
+      status: "passed",
+      baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+      model: "mimo-v2.5",
+      durationMs: 37
+    };
+    const onTest = vi.fn().mockResolvedValueOnce(failedResult).mockResolvedValueOnce(passedResult);
+    const provider: ModelProviderRecord = {
+      id: "provider_1",
+      vendor: "mimo",
+      label: "Mimo",
+      protocol: "openai_compatible",
+      baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+      models: [{ id: "mimo-v2.5", label: "mimo-v2.5", contextWindow: 128000, supportsTools: true, supportsThinking: true }],
+      defaultModelId: "mimo-v2.5",
+      enabled: true,
+      apiKeyRef: { secretId: "model_provider_provider_1", last4: "1234", updatedAt: new Date().toISOString() },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    render(
+      <ModelProvidersPanel
+        activeProviderId="provider_1"
+        language="en-US"
+        providers={[provider]}
+        onCreate={vi.fn()}
+        onDelete={vi.fn()}
+        onTest={onTest}
+        onUpdate={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Test mimo-v2.5 connection" }));
+    await screen.findByText("Connection test failed");
+    expect(screen.getByText(/Configuration or API key needs attention · HTTP 401/)).toBeInTheDocument();
+    expect(onTest).toHaveBeenCalledWith("provider_1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Test mimo-v2.5 connection" }));
+    await screen.findByText("Connection test passed");
+    expect(screen.getByText("mimo-v2.5 responded in 37ms.")).toBeInTheDocument();
+    expect(onTest).toHaveBeenCalledTimes(2);
+  });
+
   it("manages knowledge notes with markdown preview", async () => {
     const onCreate = vi.fn().mockResolvedValue(undefined);
     const onUpdate = vi.fn().mockResolvedValue(undefined);
@@ -2518,6 +2604,7 @@ describe("Workbench components", () => {
     render(
       <KnowledgePanel
         items={[item]}
+        projectId="folder_ops"
         language="en-US"
         onCreate={onCreate}
         onDelete={onDelete}
@@ -2532,7 +2619,7 @@ describe("Workbench components", () => {
     expect(screen.getByRole("heading", { name: "Runtime" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Search test"), { target: { value: "approval" } });
     fireEvent.click(screen.getByRole("button", { name: /Search/ }));
-    await waitFor(() => expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({ query: "approval" })));
+    await waitFor(() => expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({ query: "approval", projectId: "folder_ops" })));
     await waitFor(() => expect(screen.getAllByText("content").length).toBeGreaterThan(0));
     expect(screen.getByText(/Local structured|lexical score/i)).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Select item Runtime notes"));
@@ -2551,7 +2638,7 @@ describe("Workbench components", () => {
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Fresh note" } });
     fireEvent.change(screen.getByLabelText("Content"), { target: { value: "New body" } });
     fireEvent.click(screen.getByText("Save"));
-    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ title: "Fresh note", kind: "memory" })));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ title: "Fresh note", kind: "memory", projectId: "folder_ops" })));
   });
 
   it("downloads local knowledge model assets and updates model preferences", async () => {
@@ -3160,7 +3247,7 @@ describe("Workbench components", () => {
       onerror: ((event: Event) => void) | null;
       onclose: ((event: CloseEvent) => void) | null;
     }> = [];
-    const webSocketConstructor = vi.fn((url: string) => {
+    const webSocketConstructor = vi.fn(function MockWebSocket(url: string) {
       const socket = {
         url,
         readyState: 1,
@@ -3239,7 +3326,7 @@ describe("Workbench components", () => {
       onerror: ((event: Event) => void) | null;
       onclose: ((event: CloseEvent) => void) | null;
     }> = [];
-    const webSocketConstructor = vi.fn((url: string) => {
+    const webSocketConstructor = vi.fn(function MockWebSocket(url: string) {
       const socket = {
         url,
         readyState: 1,
@@ -3476,12 +3563,13 @@ describe("Workbench components", () => {
     const dialog = await screen.findByRole("dialog", { name: "Start /goal" });
     expect(createBodies).toHaveLength(0);
     expect(within(dialog).getByText(/spend more model quota|more quota/i)).toBeInTheDocument();
-    const startButton = within(dialog).getByRole("button", { name: "Start goal mode" });
-    expect(startButton).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Start goal mode" })).toBeDisabled();
 
-    fireEvent.click(within(dialog).getByRole("radio", { name: /Non-destructive max/ }));
-    await waitFor(() => expect(startButton).not.toBeDisabled());
-    fireEvent.click(startButton);
+    const nonDestructivePreset = within(dialog).getByRole("radio", { name: /Non-destructive max/ });
+    fireEvent.click(nonDestructivePreset);
+    await waitFor(() => expect(within(dialog).getByRole("radio", { name: /Non-destructive max/ })).toHaveAttribute("aria-checked", "true"), { timeout: 3000 });
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Start goal mode" })).not.toBeDisabled(), { timeout: 3000 });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start goal mode" }));
 
     await waitFor(() => expect(preferencePatches).toEqual([
       expect.objectContaining({
@@ -3565,12 +3653,11 @@ describe("Workbench components", () => {
     fireEvent.click(getSendButton());
 
     const dialog = await screen.findByRole("dialog", { name: "Start /goal" });
-    const startButton = within(dialog).getByRole("button", { name: "Start goal mode" });
     fireEvent.click(within(dialog).getByRole("radio", { name: /Full risk/ }));
-    expect(startButton).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Start goal mode" })).toBeDisabled();
     fireEvent.click(within(dialog).getByRole("checkbox", { name: /globally allows destructive/i }));
-    await waitFor(() => expect(startButton).not.toBeDisabled());
-    fireEvent.click(startButton);
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Start goal mode" })).not.toBeDisabled());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start goal mode" }));
 
     await waitFor(() => expect(grantCalls).toEqual(["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"]));
     await waitFor(() => expect(createBodies).toEqual([expect.objectContaining({ goal: "repair with full access", runMode: "target" })]));

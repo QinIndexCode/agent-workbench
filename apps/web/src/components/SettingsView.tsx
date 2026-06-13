@@ -21,12 +21,14 @@ const sectionIcons: Record<SettingsSection, ReactNode> = {
 export function SettingsView({
   activeSection,
   children,
+  error,
   language,
   onOpenTasks,
   onSection
 }: {
   activeSection: SettingsSection;
   children: Record<SettingsSection, ReactNode>;
+  error?: string | null;
   language?: string | null;
   onOpenTasks: () => void;
   onSection: (section: SettingsSection) => void;
@@ -63,6 +65,7 @@ export function SettingsView({
           ))}
         </nav>
         <div className="settingsPanel">
+          {error ? <p className="panelError" role="alert">{error}</p> : null}
           <PanelBoundary name={sections.find((s) => s.id === activeSection)?.label ?? sections[0]!.label}>
             {children[activeSection]}
           </PanelBoundary>

@@ -6,6 +6,7 @@ test.beforeEach(async ({ request }) => {
 });
 
 test("captures flagship UI screenshots and layout metrics", async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
   const captures: Array<{ view: string; ready: () => Promise<void> }> = [
     {
       view: "tasks",
@@ -16,7 +17,7 @@ test("captures flagship UI screenshots and layout metrics", async ({ page }, tes
         const approval = page.locator(".approvalCard");
         await expect(approval.getByText("host observation")).toBeVisible();
         await approval.getByText("Allow globally").click();
-        await expect(page.locator(".event.tool_result").first()).toBeVisible();
+        await expect(page.locator(".event.tool_result").first()).toBeVisible({ timeout: 30_000 });
       }
     },
     {

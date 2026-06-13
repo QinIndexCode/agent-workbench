@@ -10,5 +10,7 @@ coverage
 output
 playwright-report
 test-results
+docs/reports/*.md
+!docs/reports/README.md
 *.tsbuildinfo
 *.d.ts.map

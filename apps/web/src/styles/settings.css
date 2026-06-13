@@ -1629,6 +1629,11 @@
   grid-template-columns: 38px minmax(0, 1fr) auto auto;
 }
 
+.providerRowShell {
+  display: grid;
+  gap: 6px;
+}
+
 .providerIcon {
   display: grid;
   place-items: center;
@@ -1992,6 +1997,42 @@
 
 .providerRow.active {
   background: color-mix(in srgb, var(--surface-container) 84%, var(--accent-soft) 16%);
+  border-color: var(--accent-border);
+}
+
+.providerDiagnostic {
+  display: grid;
+  gap: 2px;
+  margin-left: 50px;
+  padding: 8px 10px;
+  color: var(--muted);
+  background: var(--surface-container);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.providerDiagnostic strong {
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.providerDiagnostic.passed {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, var(--surface-container));
+  border-color: color-mix(in srgb, var(--success) 34%, var(--border));
+}
+
+.providerDiagnostic.failed {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+.providerDiagnostic.running {
+  color: var(--accent);
+  background: var(--accent-soft);
   border-color: var(--accent-border);
 }
 
@@ -2683,6 +2724,12 @@
   margin-left: auto;
 }
 
+.docsMenuButton,
+.docsTocClose,
+.docsTocBackdrop {
+  display: none;
+}
+
 .docsTopbar h1 {
   margin: 0;
   color: #111827;
@@ -2698,8 +2745,8 @@
 
 .docsLayout {
   display: grid;
-  grid-template-columns: minmax(200px, 260px) minmax(0, 800px);
-  gap: 48px;
+  grid-template-columns: minmax(250px, 310px) minmax(0, 820px);
+  gap: 40px;
   justify-content: center;
   min-height: 0;
   padding: 40px max(24px, calc((100vw - 1180px) / 2)) 80px;
@@ -2711,16 +2758,122 @@
   top: 32px;
   display: grid;
   align-content: start;
-  gap: 2px;
+  gap: 12px;
   height: max-content;
+  max-height: calc(100vh - 128px);
+  padding-right: 18px;
+  overflow: auto;
+  border-right: 1px solid #e5e7eb;
+  scrollbar-width: thin;
+}
+
+.docsTocHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.docsTocClose {
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: #4b5563;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.docsTocClose:hover {
+  color: #111827;
+  background: #e5e7eb;
+}
+
+.docsTocHeader small {
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.docsSearchField {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 10px;
+  color: #6b7280;
+  background: #f9fafb;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+}
+
+.docsSearchField:focus-within {
+  color: #2563eb;
+  background: #ffffff;
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.docsSearchField input {
+  min-width: 0;
+  height: 36px;
+  color: #111827;
+  font: inherit;
+  font-size: 13px;
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+
+.docsSearchField input::placeholder {
+  color: #9ca3af;
+}
+
+.docsSearchClear {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: #6b7280;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.docsSearchClear:hover {
+  color: #111827;
+  background: #e5e7eb;
+}
+
+.docsTocGroup,
+.docsTocResults {
+  display: grid;
+  gap: 3px;
+}
+
+.docsTocGroupTitle {
+  margin: 10px 0 4px;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
 }
 
 .docsTocItem {
   display: grid;
-  gap: 2px;
+  gap: 4px;
   width: 100%;
   min-height: 40px;
-  padding: 8px 12px;
+  padding: 9px 10px;
   color: #4b5563;
   font-size: 13.5px;
   font-weight: 500;
@@ -2748,6 +2901,36 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+
+.docsTocItemLabel svg {
+  flex: 0 0 auto;
+}
+
+.docsTocItem small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.docsTocItem.selected small {
+  color: #1d4ed8;
+}
+
+.docsNoResults {
+  margin: 4px 0 0;
+  padding: 12px 10px;
+  color: #6b7280;
+  font-size: 13px;
+  background: #f9fafb;
+  border: 1px dashed #d1d5db;
+  border-radius: 8px;
 }
 
 .docsArticle {
@@ -2933,6 +3116,100 @@
 
 .docBody .markdownText td {
   border-bottom: 1px solid #e5e7eb;
+}
+
+@media (max-width: 1180px) {
+  .docsTopbar {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding-inline: 20px;
+  }
+
+  .docsMenuButton {
+    display: inline-grid;
+    place-items: center;
+  }
+
+  .docsLangSwitch {
+    justify-self: end;
+  }
+
+  .docsLayout {
+    display: block;
+    padding: 24px 20px 56px;
+  }
+
+  .docsToc {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 55;
+    display: grid;
+    align-content: start;
+    width: min(88vw, 360px);
+    height: 100dvh;
+    max-height: none;
+    padding: 18px 16px 28px;
+    overflow: auto;
+    background: #ffffff;
+    border-right: 1px solid #d1d5db;
+    box-shadow: 24px 0 48px rgba(15, 23, 42, 0.18);
+    transform: translateX(-105%);
+    transition: transform 180ms ease;
+  }
+
+  .docsTocOpen .docsToc {
+    transform: translateX(0);
+  }
+
+  .docsTocBackdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: block;
+    pointer-events: none;
+    background: rgba(15, 23, 42, 0);
+    border: 0;
+    opacity: 0;
+    transition: opacity 180ms ease, background 180ms ease;
+  }
+
+  .docsTocOpen .docsTocBackdrop {
+    pointer-events: auto;
+    background: rgba(15, 23, 42, 0.36);
+    opacity: 1;
+  }
+
+  .docsTocClose {
+    display: grid;
+    margin-left: auto;
+  }
+
+  .docsTocHeader {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 10px;
+  }
+
+  .docsTocGroup,
+  .docsTocResults {
+    display: grid;
+    gap: 4px;
+    overflow: visible;
+    padding-bottom: 0;
+    scroll-snap-type: none;
+  }
+
+  .docsTocGroupTitle {
+    margin-top: 8px;
+  }
+
+  .docsTocItem {
+    min-width: 0;
+    min-height: 42px;
+    scroll-snap-align: none;
+  }
 }
 
 .libraryView {
@@ -4159,6 +4436,10 @@ p.knowledgeHighlights span {
     grid-template-columns: 1fr;
   }
 
+  .providerDiagnostic {
+    margin-left: 0;
+  }
+
   .docsTopbar,
   .libraryView {
     padding-inline: 14px;
@@ -4166,40 +4447,104 @@ p.knowledgeHighlights span {
 
   .docsTopbar {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 12px;
-    align-items: start;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
     padding-top: 14px;
     padding-bottom: 14px;
   }
 
+  .docsMenuButton {
+    display: inline-grid;
+    place-items: center;
+  }
+
+  .docsLangSwitch {
+    justify-self: end;
+  }
+
   .docsTopbar h1 {
     font-size: 20px;
+    white-space: nowrap;
   }
 
   .docsTopbar p {
-    font-size: 13px;
-    line-height: 1.45;
+    display: none;
   }
 
   .docsLayout {
-    gap: 16px;
+    display: block;
     padding: 18px 14px 32px;
   }
 
   .docsToc {
-    position: static;
-    display: flex;
-    overflow-x: auto;
-    gap: 8px;
-    padding-bottom: 6px;
-    scroll-snap-type: x proximity;
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 55;
+    display: grid;
+    align-content: start;
+    width: min(86vw, 340px);
+    height: 100vh;
+    max-height: none;
+    padding: 18px 16px 28px;
+    overflow: auto;
+    background: #ffffff;
+    border-right: 1px solid #d1d5db;
+    box-shadow: 24px 0 48px rgba(15, 23, 42, 0.18);
+    transform: translateX(-105%);
+    transition: transform 180ms ease;
+  }
+
+  .docsTocOpen .docsToc {
+    transform: translateX(0);
+  }
+
+  .docsTocBackdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: block;
+    pointer-events: none;
+    background: rgba(15, 23, 42, 0);
+    border: 0;
+    opacity: 0;
+    transition: opacity 180ms ease, background 180ms ease;
+  }
+
+  .docsTocOpen .docsTocBackdrop {
+    pointer-events: auto;
+    background: rgba(15, 23, 42, 0.36);
+    opacity: 1;
+  }
+
+  .docsTocClose {
+    display: grid;
+    margin-left: auto;
+  }
+
+  .docsTocHeader {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 10px;
+  }
+
+  .docsTocGroup,
+  .docsTocResults {
+    display: grid;
+    gap: 4px;
+    overflow: visible;
+    padding-bottom: 0;
+    scroll-snap-type: none;
+  }
+
+  .docsTocGroupTitle {
+    margin-top: 8px;
   }
 
   .docsTocItem {
-    min-width: 168px;
-    min-height: 54px;
-    scroll-snap-align: start;
+    min-width: 0;
+    min-height: 42px;
+    scroll-snap-align: none;
   }
 
   .docsArticle {

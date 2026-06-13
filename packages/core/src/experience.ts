@@ -1,5 +1,6 @@
 import { SkillRecordSchema, type ExperienceRecord, type PatternRecord, type ReflectionSession, type SkillConflict, type SkillDuplicateGroup, type SkillRecord, type TaskDetail, type TaskMemory } from "@agent-workbench/shared";
 import { createId, nowIso } from "./ids.js";
+import { sanitizeSensitiveText as sanitizeSecretText, sanitizeSensitiveValue } from "./secrets.js";
 
 const GENERIC_WORKFLOW_TOOLS = new Set(["edit_file", "list_files", "read_file", "run_command", "search_files", "write_file"]);
 const GENERIC_PATTERN_TOKENS = new Set([
@@ -37,8 +38,8 @@ export function createTaskMemory(task: TaskDetail): TaskMemory {
     const result = resultEvents.find((item) => item.payload["toolCallId"] === toolCallId);
     return {
       toolName: String(event.payload["toolName"] ?? event.summary),
-      args: asRecord(event.payload["args"]),
-      result: String(result?.payload["output"] ?? ""),
+      args: asRecord(sanitizeMemoryValue(sanitizeSensitiveValue(event.payload["args"] ?? {}))),
+      result: sanitizeSensitiveText(String(result?.payload["output"] ?? "")),
       riskCategory: riskOf(event)
     };
   });
@@ -662,8 +663,16 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 }
 
+function sanitizeMemoryValue(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") return sanitizeSensitiveText(value);
+  if (value === null || typeof value !== "object") return value;
+  if (depth > 8) return "[redacted-deep-value]";
+  if (Array.isArray(value)) return value.map((item) => sanitizeMemoryValue(item, depth + 1));
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, sanitizeMemoryValue(entry, depth + 1)]));
+}
+
 function sanitizeSensitiveText(input: string): string {
-  return input
+  return sanitizeSecretText(input)
     .replace(/(password|pwd|secret|token|key)\s*[=:]\s*\S+/gi, "$1=***")
     .replace(/\b(sk|ak)-[a-zA-Z0-9_-]{10,}\b/g, "***")
     .replace(/C:\\Users\\[^\\\s]+/g, "C:\\Users\\$USER")

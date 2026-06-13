@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Languages } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, Languages, Menu, Search, X } from "lucide-react";
 import "../styles/settings.css";
 import { MarkdownText } from "./MarkdownText.js";
 import { docMetas, getDocTitle, loadDocContent, type DocsSection } from "../docs/index.js";
@@ -16,6 +16,12 @@ import { docMetas, getDocTitle, loadDocContent, type DocsSection } from "../docs
 
 const DOCS_LANG_KEY = "agent-workbench.docs.language";
 const LEGACY_DOCS_LANG_KEY = "scc-docs-language";
+
+const docGroups: Array<{ id: string; label: Record<"en" | "zh", string>; docs: DocsSection[] }> = [
+  { id: "start", label: { en: "Start here", zh: "入门" }, docs: ["overview", "input", "task-management"] },
+  { id: "library", label: { en: "Library and learning", zh: "资料与学习" }, docs: ["library", "skills", "curator", "knowledge", "memory"] },
+  { id: "settings", label: { en: "Settings and operations", zh: "设置与运维" }, docs: ["settings", "providers", "permissions", "mcp", "integrations", "scheduled", "search", "preferences", "troubleshooting"] }
+];
 
 function getDocsLanguage(globalLanguage: string | null | undefined): string {
   const stored = readStoredDocsLanguage();
@@ -66,10 +72,26 @@ export function DocsView({
   const hasStoredLanguageRef = useRef(hasStoredDocsLanguage());
   const [docsLang, setDocsLang] = useState<string>(() => getDocsLanguage(language));
   const [content, setContent] = useState<string>("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [docSearchText, setDocSearchText] = useState<Record<string, string>>({});
+  const [tocOpen, setTocOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const zh = docsLang === "zh" || docsLang === "zh-CN";
 
   const activeMeta = docMetas.find((doc) => doc.id === activeSection) ?? docMetas[0]!;
+  const normalizedQuery = normalizeSearchText(searchQuery);
+  const searchTerms = normalizedQuery.split(" ").filter(Boolean);
+  const filteredDocs = useMemo(() => {
+    if (searchTerms.length === 0) return docMetas;
+    return docMetas.filter((doc) => {
+      const haystack = [
+        getDocTitle(doc, docsLang),
+        doc.summary[zh ? "zh" : "en"] ?? doc.summary.en,
+        docSearchText[doc.id] ?? ""
+      ].map((value) => normalizeSearchText(value ?? "")).join(" ");
+      return searchTerms.every((term) => haystack.includes(term));
+    });
+  }, [docSearchText, docsLang, searchTerms, zh]);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,6 +118,30 @@ export function DocsView({
     if (!hasStoredLanguageRef.current) setDocsLang(normalizeDocsLanguage(language));
   }, [language]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all(
+      docMetas.map(async (doc) => {
+        const text = await loadDocContent(doc.id, docsLang).catch(() => "");
+        return [doc.id, text] as const;
+      })
+    ).then((entries) => {
+      if (!cancelled) setDocSearchText(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [docsLang]);
+
+  useEffect(() => {
+    if (!tocOpen) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setTocOpen(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [tocOpen]);
+
   function toggleLanguage() {
     const next = zh ? "en" : "zh-CN";
     hasStoredLanguageRef.current = true;
@@ -104,11 +150,21 @@ export function DocsView({
   }
 
   return (
-    <section className="docsView" aria-label={zh ? "文档" : "Docs"}>
+    <section className={tocOpen ? "docsView docsTocOpen" : "docsView"} aria-label={zh ? "文档" : "Docs"}>
       <header className="docsTopbar">
         <button className="subtleButton iconText" type="button" onClick={onBack}>
           <ArrowLeft size={16} />
           {zh ? "返回" : "Back"}
+        </button>
+        <button
+          className="subtleButton iconButton docsMenuButton"
+          type="button"
+          aria-controls="docs-toc"
+          aria-expanded={tocOpen}
+          aria-label={zh ? "打开文档目录" : "Open docs navigation"}
+          onClick={() => setTocOpen(true)}
+        >
+          <Menu size={17} />
         </button>
         <div>
           <h1>{zh ? "文档" : "Docs"}</h1>
@@ -124,24 +180,48 @@ export function DocsView({
           {zh ? "English" : "中文"}
         </button>
       </header>
+      <button className="docsTocBackdrop" type="button" aria-label={zh ? "关闭文档目录" : "Close docs navigation"} onClick={() => setTocOpen(false)} />
       <div className="docsLayout">
-        <nav className="docsToc" aria-label="Docs">
-          {docMetas.map((doc) => {
-            const Icon = doc.icon;
-            return (
-              <button
-                className={doc.id === activeSection ? "docsTocItem selected" : "docsTocItem"}
-                type="button"
-                key={doc.id}
-                onClick={() => onSection(doc.id)}
-              >
-                <span className="docsTocItemLabel">
-                  <Icon size={15} aria-hidden="true" />
-                  {getDocTitle(doc, docsLang)}
-                </span>
+        <nav id="docs-toc" className="docsToc" aria-label="Docs">
+          <div className="docsTocHeader">
+            <span>{zh ? "目录" : "Contents"}</span>
+            <small>{searchTerms.length > 0 ? `${filteredDocs.length}/${docMetas.length}` : `${docMetas.length}`}</small>
+            <button className="docsTocClose" type="button" aria-label={zh ? "关闭目录" : "Close navigation"} onClick={() => setTocOpen(false)}>
+              <X size={15} aria-hidden="true" />
+            </button>
+          </div>
+          <label className="docsSearchField">
+            <Search size={15} aria-hidden="true" />
+            <input
+              aria-label={zh ? "搜索文档" : "Search docs"}
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder={zh ? "搜索配置、权限、CLI..." : "Search setup, permissions, CLI..."}
+            />
+            {searchQuery ? (
+              <button className="docsSearchClear" type="button" aria-label={zh ? "清空搜索" : "Clear search"} onClick={() => setSearchQuery("")}>
+                <X size={14} aria-hidden="true" />
               </button>
-            );
-          })}
+            ) : null}
+          </label>
+          {searchTerms.length > 0 ? (
+            <div className="docsTocResults" role="list" aria-label={zh ? "文档搜索结果" : "Docs search results"}>
+              {filteredDocs.length > 0 ? filteredDocs.map((doc) => renderTocItem(doc, true)) : (
+                <p className="docsNoResults">{zh ? "没有匹配的文档" : "No matching docs"}</p>
+              )}
+            </div>
+          ) : (
+            docGroups.map((group) => (
+              <div className="docsTocGroup" key={group.id}>
+                <p className="docsTocGroupTitle">{group.label[zh ? "zh" : "en"]}</p>
+                {group.docs.map((id) => {
+                  const doc = docMetas.find((item) => item.id === id);
+                  return doc ? renderTocItem(doc, false) : null;
+                })}
+              </div>
+            ))
+          )}
         </nav>
         <article className="docsArticle">
           <div className="docsArticleHeader">
@@ -161,4 +241,33 @@ export function DocsView({
       </div>
     </section>
   );
+
+  function renderTocItem(doc: typeof docMetas[number], withSummary: boolean) {
+    const Icon = doc.icon;
+    return (
+      <button
+        className={doc.id === activeSection ? "docsTocItem selected" : "docsTocItem"}
+        type="button"
+        key={doc.id}
+        onClick={() => {
+          onSection(doc.id);
+          setTocOpen(false);
+        }}
+      >
+        <span className="docsTocItemLabel">
+          <Icon size={15} aria-hidden="true" />
+          {getDocTitle(doc, docsLang)}
+        </span>
+        {withSummary ? <small>{doc.summary[zh ? "zh" : "en"] ?? doc.summary.en}</small> : null}
+      </button>
+    );
+  }
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[`*_#[\](){}:;,.!?/\\|-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }

@@ -26,4 +26,18 @@ describe("llm presets", () => {
     expect(MODEL_PROVIDER_PRESETS.at(-2)?.vendor).toBe("openrouter");
     expect(MODEL_PROVIDER_PRESETS.at(-1)?.vendor).toBe("custom");
   });
+
+  it("keeps the Xiaomi MiMo preset aligned with the OpenAI-compatible public endpoint", () => {
+    const mimo = MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor === "mimo");
+    expect(mimo).toMatchObject({
+      protocol: "openai_compatible",
+      baseUrl: "https://api.xiaomimimo.com/v1"
+    });
+    expect(mimo?.models.map((model) => model.id)).toEqual(["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-flash"]);
+    expect(mimo?.models.find((model) => model.id === "mimo-v2.5-pro")).toMatchObject({
+      contextWindow: 1_048_576,
+      supportsTools: true,
+      supportsThinking: true
+    });
+  });
 });

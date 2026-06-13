@@ -290,17 +290,17 @@ function CuratorActionRow({
       </div>
       <div className="rowIconActions">
         {item.kind === "candidate" && item.skillIds[0] ? (
-          <button className="iconButton" title={text.activate} type="button" onClick={() => void onActivateSkill(item.skillIds[0]!)}>
+          <button aria-label={text.activate} className="iconButton" title={text.activate} type="button" onClick={() => void onActivateSkill(item.skillIds[0]!)}>
             <CheckCircle2 size={15} />
           </button>
         ) : null}
         {item.kind === "active" && item.skillIds[0] ? (
-          <button className="iconButton" title={text.suspend} type="button" onClick={() => void onSuspendSkill(item.skillIds[0]!)}>
+          <button aria-label={text.suspend} className="iconButton" title={text.suspend} type="button" onClick={() => void onSuspendSkill(item.skillIds[0]!)}>
             <PauseCircle size={15} />
           </button>
         ) : null}
         {item.kind === "duplicate" && item.skillIds.length > 1 ? (
-          <button className="iconButton" title={text.merge} type="button" onClick={() => void onMergeDuplicate(item.skillIds)}>
+          <button aria-label={text.merge} className="iconButton" title={text.merge} type="button" onClick={() => void onMergeDuplicate(item.skillIds)}>
             <GitMerge size={15} />
           </button>
         ) : null}

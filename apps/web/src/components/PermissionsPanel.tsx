@@ -321,7 +321,7 @@ export function PermissionsPanel({
             </div>
             <div className="prefBehaviorList">
               <PreferenceToggle label={text.sanitizeSensitiveData} value={preferences?.sanitizeSensitiveData ?? true} onChange={(value) => emitPreference({ sanitizeSensitiveData: value })} />
-              <PreferenceToggle label={text.encryptStorage} value={preferences?.encryptStorage ?? false} onChange={(value) => emitPreference({ encryptStorage: value })} />
+              <PreferenceToggle label={text.encryptStorage} value={preferences?.encryptStorage ?? true} onChange={(value) => emitPreference({ encryptStorage: value })} />
             </div>
           </div>
         </>

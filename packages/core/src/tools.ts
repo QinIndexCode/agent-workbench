@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { mkdir, open, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
 import type { ToolCall, ToolResult } from "@agent-workbench/shared";
 import { createId, nowIso } from "./ids.js";
 import { resolveWorkspacePathStrict } from "./path-guards.js";
+import { sanitizeSensitiveText } from "./secrets.js";
 import { defaultTaskWorkRoot } from "./workspace-root.js";
 
 const DEFAULT_READ_RANGE_LINES = 200;
@@ -369,6 +370,20 @@ export class ShellToolExecutor implements ToolExecutor {
         if (edit.startLine > lines.length + 1 || edit.endLine > lines.length) {
           return this.conflictResult(call, path, String(call.args["expectedHash"] ?? ""), hash(current), `Edit range ${edit.startLine}-${edit.endLine} no longer matches the file. The file may have been modified by another user or agent; read it again before editing.`);
         }
+      }
+
+      const spans = normalized
+        .map((edit) => ({ start: edit.startLine, end: Math.max(edit.endLine, edit.startLine) }))
+        .sort((a, b) => a.start - b.start || a.end - b.end);
+      for (let index = 1; index < spans.length; index += 1) {
+        const previous = spans[index - 1];
+        const current = spans[index];
+        if (previous && current && previous.end >= current.start) {
+          throw new Error("Edit ranges must not overlap; split the request into non-overlapping edits.");
+        }
+      }
+
+      for (const edit of normalized) {
         const existingText = lines.slice(edit.startLine - 1, edit.endLine).join("\n");
         if (edit.expectedText !== undefined) {
           if (normalizeNewlines(existingText) !== normalizeNewlines(edit.expectedText)) {
@@ -910,27 +925,54 @@ async function writeTextFileInChunks(
     displayMode: "inline" | "summary_only";
   }
 ): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const handle = await open(path, "w");
+  const directory = dirname(path);
+  await mkdir(directory, { recursive: true });
+  const tempPath = resolve(directory, `.${basename(path)}.${createId("write")}.tmp`);
+  const existingMode = await stat(path).then((stats) => stats.mode, () => undefined);
   let processed = 0;
+  let committed = false;
   try {
-    for (let index = 0; index < content.length; index += WRITE_CHUNK_CHARS) {
-      const chunk = content.slice(index, index + WRITE_CHUNK_CHARS);
-      await handle.write(chunk, undefined, "utf8");
-      processed += Buffer.byteLength(chunk, "utf8");
-      if (progress) {
-        await emitToolProgress(options, {
-          status: "running",
-          targetPath: progress.path,
-          operation: progress.operation,
-          changes: progress.changes,
-          progress: { processed, total: progress.totalBytes, unit: "bytes" },
-          displayMode: progress.displayMode
-        });
+    const handle = await open(tempPath, "wx");
+    try {
+      for (let index = 0; index < content.length; index += WRITE_CHUNK_CHARS) {
+        const chunk = content.slice(index, index + WRITE_CHUNK_CHARS);
+        await handle.write(chunk, undefined, "utf8");
+        processed += Buffer.byteLength(chunk, "utf8");
+        if (progress) {
+          await emitToolProgress(options, {
+            status: "running",
+            targetPath: progress.path,
+            operation: progress.operation,
+            changes: progress.changes,
+            progress: { processed, total: progress.totalBytes, unit: "bytes" },
+            displayMode: progress.displayMode
+          });
+        }
       }
+      if (existingMode !== undefined) await handle.chmod(existingMode);
+      await handle.sync();
+    } finally {
+      await handle.close();
     }
+    const tempVerification = await verifyWrittenFile(tempPath, content);
+    if (!tempVerification.ok) throw new Error(tempVerification.message);
+    await rename(tempPath, path);
+    await syncDirectoryBestEffort(directory);
+    committed = true;
   } finally {
-    await handle.close();
+    if (!committed) await unlink(tempPath).catch(() => undefined);
+  }
+}
+
+async function syncDirectoryBestEffort(path: string): Promise<void> {
+  const handle = await open(path, "r").catch(() => undefined);
+  if (!handle) return;
+  try {
+    await handle.sync();
+  } catch {
+    // Directory fsync is not supported on every platform/filesystem.
+  } finally {
+    await handle.close().catch(() => undefined);
   }
 }
 
@@ -953,15 +995,17 @@ async function emitToolProgress(options: ToolExecutionOptions, progress: ToolPro
 
 async function materializeOutput(workspaceRoot: string, resultId: string, output: string, maxInlineChars = 12000): Promise<string> {
   if (output.length <= maxInlineChars) return output;
+  const sanitizedOutput = sanitizeSensitiveText(output);
   const rawOutputRef = resolve(workspaceRoot, "data", "tool-output", `${resultId}.txt`);
   await mkdir(dirname(rawOutputRef), { recursive: true });
-  await writeFile(rawOutputRef, output, "utf8");
+  await writeFile(rawOutputRef, sanitizedOutput, "utf8");
   return JSON.stringify(
     {
       truncated: true,
       totalChars: output.length,
+      sanitized: sanitizedOutput !== output,
       rawOutputRef,
-      summary: `${output.slice(0, 4000)}\n\n... output truncated; raw output is stored on disk ...\n\n${output.slice(-3000)}`
+      summary: `${sanitizedOutput.slice(0, 4000)}\n\n... output truncated; sanitized raw output is stored on disk ...\n\n${sanitizedOutput.slice(-3000)}`
     },
     null,
     2

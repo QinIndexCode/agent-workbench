@@ -14,6 +14,7 @@ import {
   createModelClientFromEnvironment,
   loadOpenAiProviderConfig,
   parseWecomCallbackXml,
+  sanitizeSensitiveText,
   sanitizeSensitiveValue,
   type OpenAIProviderConfigWithName,
   type ResolvedModelProviderConfig
@@ -522,7 +523,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
       return reply.code(400).send({ error: "Invalid request", issues: error.issues });
     }
     const requestId = generateRequestId();
-    request.log.error({ err: error, requestId }, "Unhandled server error");
+    request.log.error({ err: errorForLogs(error), requestId }, "Unhandled server error");
     return reply.code(500).send({
       error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
       requestId
@@ -848,7 +849,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id, approvalId } = z.object({ id: z.string(), approvalId: z.string() }).parse(request.params);
     const input = ApprovalRequestSchema.parse(request.body);
     try {
-      return await workbench.decideApprovalInBackground(id, approvalId, input.decision);
+      return await workbench.decideApprovalInBackground(id, approvalId, input.decision, input.reason);
     } catch (error) {
       return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -942,7 +943,11 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.post("/api/mcp/servers", async (request, reply) => {
     const input = McpServerCreateRequestSchema.parse(request.body);
-    return reply.code(201).send(await requireMcp(mcpRegistry).createServer(input));
+    try {
+      return reply.code(201).send(await requireMcp(mcpRegistry).createServer(input));
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.patch("/api/mcp/servers/:id", async (request, reply) => {
@@ -951,7 +956,8 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     try {
       return await requireMcp(mcpRegistry).patchServer(id, input);
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") ? 404 : 400).send({ error: message });
     }
   });
 
@@ -1037,7 +1043,11 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.post("/api/model-providers", async (request, reply) => {
     const input = ModelProviderCreateRequestSchema.parse(request.body);
-    return reply.code(201).send(await workbench.createModelProvider(input));
+    try {
+      return reply.code(201).send(await workbench.createModelProvider(input));
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.patch("/api/model-providers/:id", async (request, reply) => {
@@ -1046,7 +1056,18 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     try {
       return await workbench.updateModelProvider(id, input);
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") ? 404 : 400).send({ error: message });
+    }
+  });
+
+  app.post("/api/model-providers/:id/test", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    try {
+      return await workbench.testModelProvider(id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") ? 404 : 400).send({ error: message });
     }
   });
 
@@ -1092,7 +1113,11 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
 
   app.post("/api/web-search/providers", async (request, reply) => {
     const input = WebSearchProviderCreateRequestSchema.parse(request.body);
-    return reply.code(201).send(await workbench.createWebSearchProvider(input));
+    try {
+      return reply.code(201).send(await workbench.createWebSearchProvider(input));
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.patch("/api/web-search/providers/:id", async (request, reply) => {
@@ -1101,7 +1126,8 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     try {
       return await workbench.updateWebSearchProvider(id, input);
     } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") ? 404 : 400).send({ error: message });
     }
   });
 
@@ -1495,9 +1521,22 @@ async function resolveRuntimeModelProvider(
 }
 
 function redactSensitiveText(input: string): string {
-  return input
-    .replace(/\bsk-[A-Za-z0-9_\-*]{8,}/g, "[redacted-api-key]")
-    .replace(/(OPENAI_API_KEY\s*=\s*)\S+/gi, "$1[redacted]");
+  return sanitizeSensitiveText(input).replace(/((?:OPENAI_API_KEY|AGENT_WORKBENCH_OPENAI_API_KEY|SCC_OPENAI_API_KEY)\s*=\s*)\S+/gi, "$1[redacted]");
+}
+
+function errorForLogs(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    const record = error as Error & { code?: unknown; status?: unknown; statusCode?: unknown };
+    return {
+      type: error.name || "Error",
+      message: redactSensitiveText(error.message),
+      ...(error.stack ? { stack: redactSensitiveText(error.stack) } : {}),
+      ...(record.code !== undefined ? { code: redactSensitiveText(String(record.code)) } : {}),
+      ...(record.status !== undefined ? { status: record.status } : {}),
+      ...(record.statusCode !== undefined ? { statusCode: record.statusCode } : {})
+    };
+  }
+  return { type: typeof error, message: redactSensitiveText(String(error)) };
 }
 
 function createSessionToken(): string {

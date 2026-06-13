@@ -23,8 +23,10 @@ import type {
   KnowledgeSearchResult,
   KnowledgeUploadRequest,
   ModelProviderCreateRequest,
+  ModelProviderFailureClass,
   ModelProviderPatchRequest,
   ModelProviderRecord,
+  ModelProviderTestResult,
   PatternRecord,
   PreferencesPatch,
   PromptCacheStats,
@@ -88,7 +90,7 @@ import type {
   WebSearchProviderPatchRequest
 } from "@agent-workbench/shared";
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readdir, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, relative, resolve } from "node:path";
 import { ContextAssembler } from "./context-assembler.js";
 import {
@@ -134,7 +136,7 @@ import { PermissionEngine, type PermissionState, type RiskAssessment } from "./p
 import { canonicalizeExistingDirectory, resolveWorkspacePathStrict } from "./path-guards.js";
 import { LocalSecretBox, maskSecret, sanitizeSensitiveText, sanitizeSensitiveValue } from "./secrets.js";
 import { InMemoryWorkbenchStore, type WorkbenchStore } from "./store.js";
-import { completionBlocker, taskGraphFromEvents, verificationResultFromToolEvent } from "./task-graph.js";
+import { compileTaskGraph, completionBlocker, taskGraphFromEvents, verificationResultFromToolEvent } from "./task-graph.js";
 import { hasUserTurn, latestUserText } from "./task-events.js";
 import { ShellToolExecutor, type ToolExecutor, type ToolProgressUpdate } from "./tools.js";
 import { compactToolProgressUpdate, summarizeEventForTrace, summarizeToolProgressForTrace, TaskTraceRecorder } from "./trace-recorder.js";
@@ -156,6 +158,7 @@ export interface AgentWorkbenchOptions {
   traceRoot?: string;
 }
 
+type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 interface PreparedToolCall {
   call: ToolCall;
   assessment: RiskAssessment;
@@ -164,6 +167,7 @@ interface PreparedToolCall {
 const MAX_MODEL_TURNS_PER_TASK = 24;
 const MAX_TOOL_CALLS_PER_TURN = 8;
 const MAX_STATE_ONLY_TOOL_TURNS = 2;
+const CLAIMED_TOOL_EVIDENCE_MAX_RETRIES = 2;
 const MAX_PARALLEL_READ_ONLY_TOOLS = 4;
 const AUTO_RENAME_ASSISTANT_CHARS = 240;
 const TRACE_PROGRESS_MIN_INTERVAL_MS = 1_500;
@@ -229,6 +233,26 @@ export class AgentWorkbench {
     this.traceRecorder = new TaskTraceRecorder(options.traceRoot);
   }
 
+  async dispose(): Promise<void> {
+    for (const controller of this.runningModelControllers.values()) {
+      controller.abort("AgentWorkbench disposed");
+    }
+    this.runningModelControllers.clear();
+
+    for (const controllers of this.runningToolControllers.values()) {
+      for (const controller of controllers) controller.abort("AgentWorkbench disposed");
+    }
+    this.runningToolControllers.clear();
+
+    this.taskQueues.clear();
+    this.deltaLocks.clear();
+    await Promise.allSettled([
+      disposeResource(this.model),
+      disposeResource(this.tools),
+      disposeResource(this.store)
+    ]);
+  }
+
   async createTask(goal: string, title?: string, folderId = "default", attachmentIds: string[] = [], options: TaskRunOptions = {}): Promise<TaskDetail> {
     const task = await this.initializeTask(goal, await this.resolveTaskTitle(goal, title), folderId, attachmentIds, options);
     return this.runTaskExclusive(task.id, () => this.step(task.id));
@@ -280,7 +304,11 @@ export class AgentWorkbench {
       ...(task.targetLimits ? { targetLimits: task.targetLimits } : {})
     });
     await this.beginTaskTurn(task, goal, "user_message");
-    if (task.kind === "subagent") this.attachSubagentTaskGraph(task, goal);
+    if (task.kind === "subagent") {
+      this.attachSubagentTaskGraph(task, goal);
+    } else {
+      this.attachCompiledTaskGraph(task);
+    }
     await this.attachUploadedFiles(task, attachmentIds);
     this.setStatus(task, "running");
     await this.store.saveTask(task);
@@ -510,6 +538,7 @@ export class AgentWorkbench {
       this.runningModelControllers.delete(taskId);
       this.runningToolControllers.delete(taskId);
       this.cleanupToolOutputs(task);
+      await this.traceRecorder.deleteTaskTrace(taskId).catch(() => undefined);
 
       const result: TaskDeleteResult = {
         taskId,
@@ -627,8 +656,8 @@ export class AgentWorkbench {
     const kind = classifyAttachment(input.fileName, input.mimeType);
     const storagePath = resolve(findWorkspaceRoot(), "data", "attachments", `${id}-${sanitizeFileName(input.fileName)}`);
     await mkdir(dirname(storagePath), { recursive: true });
-    await writeFile(storagePath, bytes);
-    const textPreview = await buildAttachmentTextPreview(storagePath, kind, input.mimeType);
+    const textPreview = buildAttachmentTextPreview(bytes, kind, input.mimeType);
+    await writeFile(storagePath, encryptedAttachmentPayload(this.secretBox, bytes), "utf8");
     const attachment: TaskAttachment = {
       id,
       fileName: input.fileName,
@@ -637,7 +666,7 @@ export class AgentWorkbench {
       kind,
       storagePath,
       contentHash,
-      ...(textPreview ? { textPreview } : {}),
+      ...(textPreview ? { textPreview: sanitizeSensitiveText(textPreview) } : {}),
       createdAt: now,
       updatedAt: now
     };
@@ -986,19 +1015,20 @@ export class AgentWorkbench {
     return task;
   }
 
-  async decideApproval(taskId: string, approvalId: string, decision: ApprovalDecision): Promise<TaskDetail> {
-    return this.decideApprovalInternal(taskId, approvalId, decision, "inline");
+  async decideApproval(taskId: string, approvalId: string, decision: ApprovalDecision, decisionReason?: string): Promise<TaskDetail> {
+    return this.decideApprovalInternal(taskId, approvalId, decision, "inline", decisionReason);
   }
 
-  async decideApprovalInBackground(taskId: string, approvalId: string, decision: ApprovalDecision): Promise<TaskDetail> {
-    return this.decideApprovalInternal(taskId, approvalId, decision, "background");
+  async decideApprovalInBackground(taskId: string, approvalId: string, decision: ApprovalDecision, decisionReason?: string): Promise<TaskDetail> {
+    return this.decideApprovalInternal(taskId, approvalId, decision, "background", decisionReason);
   }
 
   private async decideApprovalInternal(
     taskId: string,
     approvalId: string,
     decision: ApprovalDecision,
-    continuation: "inline" | "background"
+    continuation: "inline" | "background",
+    decisionReason?: string
   ): Promise<TaskDetail> {
     return this.runTaskExclusive(taskId, async () => {
       const task = await this.requiredTask(taskId);
@@ -1008,16 +1038,18 @@ export class AgentWorkbench {
 
       approval.status = decision === "deny" ? "denied" : "approved";
       approval.decision = decision;
+      if (decisionReason) approval.decisionReason = decisionReason;
       approval.decidedAt = nowIso();
       if (decision === "allow_for_task") {
         this.stateFor(task.id, task).allowedForTask.add(approval.riskCategory);
       }
       if (decision === "allow_globally") {
-        await this.store.saveGlobalPermission(this.createGlobalGrant(approval.riskCategory, approval.reason));
+        await this.store.saveGlobalPermission(this.createGlobalGrant(approval.riskCategory, decisionReason ?? approval.reason));
       }
       this.addEvent(task, "approval_resolved", `${approval.toolCall.toolName}: ${decision}`, {
         approvalId,
         decision,
+        ...(decisionReason ? { decisionReason } : {}),
         riskCategory: approval.riskCategory,
         ...(approval.metadata ?? {})
       });
@@ -1450,6 +1482,7 @@ export class AgentWorkbench {
   async createModelProvider(input: ModelProviderCreateRequest): Promise<ModelProviderRecord> {
     const now = nowIso();
     const id = createId("provider");
+    assertDefaultModelConfigured(input.models, input.defaultModelId);
     const secret = input.apiKey ? this.secretBox.encrypt(input.apiKey) : undefined;
     if (secret) await this.store.saveModelProviderSecret(id, secret);
     const provider: ModelProviderRecord = {
@@ -1466,7 +1499,7 @@ export class AgentWorkbench {
       updatedAt: now
     };
     await this.store.saveModelProvider(provider);
-    if (input.makeActive) await this.setActiveProvider(provider);
+    if (input.makeActive && provider.enabled) await this.setActiveProvider(provider);
     return provider;
   }
 
@@ -1475,7 +1508,7 @@ export class AgentWorkbench {
     if (!current) throw new Error(`Model provider not found: ${providerId}`);
     const models = input.models ?? current.models;
     const defaultModelId = input.defaultModelId ?? current.defaultModelId;
-    if (!models.some((model) => model.id === defaultModelId)) throw new Error("defaultModelId must match a configured model.");
+    assertDefaultModelConfigured(models, defaultModelId);
     let apiKeyRef = current.apiKeyRef;
     if (input.clearApiKey) {
       await this.store.deleteModelProviderSecret(providerId);
@@ -1501,7 +1534,11 @@ export class AgentWorkbench {
     if (!apiKeyRef) delete updated.apiKeyRef;
     await this.store.saveModelProvider(updated);
     const preferences = await this.store.getPreferences();
-    if (input.makeActive || preferences.activeModelProviderId === providerId) await this.setActiveProvider(updated);
+    if (!updated.enabled && preferences.activeModelProviderId === providerId) {
+      await this.updatePreferences({ activeModelProviderId: "" });
+    } else if (updated.enabled && (input.makeActive || preferences.activeModelProviderId === providerId)) {
+      await this.setActiveProvider(updated);
+    }
     return updated;
   }
 
@@ -1511,6 +1548,75 @@ export class AgentWorkbench {
     const preferences = await this.store.getPreferences();
     if (preferences.activeModelProviderId === providerId) {
       await this.updatePreferences({ activeModelProviderId: "" });
+    }
+  }
+
+  async testModelProvider(providerId: string, fetchImpl: FetchLike = fetch): Promise<ModelProviderTestResult> {
+    const provider = await this.store.getModelProvider(providerId);
+    if (!provider) throw new Error(`Model provider not found: ${providerId}`);
+    const started = Date.now();
+    const resolved = await this.resolveStoredProvider(provider);
+    const model = provider.defaultModelId ?? "mimo-v2.5";
+    const baseUrl = provider.baseUrl ?? "";
+    const common = {
+      providerId: provider.id,
+      label: provider.label,
+      baseUrl,
+      model
+    };
+    if (!resolved?.apiKey || !resolved.baseURL) {
+      return {
+        ...common,
+        ok: false,
+        status: "failed",
+        durationMs: Date.now() - started,
+        failureClass: "provider_configuration",
+        error: "Provider is missing a decryptable API key or base URL."
+      };
+    }
+    try {
+      const response = await fetchImpl(modelProviderEndpoint(resolved.baseURL, "chat/completions"), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${resolved.apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: resolved.model ?? model,
+          messages: [{ role: "user", content: "ping" }],
+          max_tokens: 1,
+          temperature: 0
+        }),
+        signal: AbortSignal.timeout(30_000)
+      });
+      if (response.ok) {
+        return {
+          ...common,
+          ok: true,
+          status: "passed",
+          statusCode: response.status,
+          durationMs: Date.now() - started
+        };
+      }
+      const body = await response.text();
+      return {
+        ...common,
+        ok: false,
+        status: "failed",
+        statusCode: response.status,
+        durationMs: Date.now() - started,
+        failureClass: classifyModelProviderStatus(response.status, body),
+        error: modelProviderPreflightError(response.status, body)
+      };
+    } catch (error) {
+      return {
+        ...common,
+        ok: false,
+        status: "failed",
+        durationMs: Date.now() - started,
+        failureClass: "provider_transient",
+        error: `Provider preflight request failed: ${sanitizeSensitiveText(error instanceof Error ? error.message : String(error))}`
+      };
     }
   }
 
@@ -1652,11 +1758,12 @@ export class AgentWorkbench {
     const id = createId("web_search_provider");
     const secret = input.apiKey ? this.secretBox.encrypt(input.apiKey) : undefined;
     if (secret) await this.store.saveWebSearchProviderSecret(id, secret);
+    const endpoint = normalizeWebSearchEndpoint(input.kind, input.endpoint);
     const provider: WebSearchProviderConfig = {
       id,
       label: input.label,
       kind: input.kind,
-      ...(input.endpoint ? { endpoint: input.endpoint } : {}),
+      ...(endpoint ? { endpoint } : {}),
       ...(secret ? { apiKeyRef: createWebSearchApiKeyRef(id, input.apiKey!, secret) } : {}),
       enabled: input.enabled,
       createdAt: now,
@@ -1669,8 +1776,10 @@ export class AgentWorkbench {
   async updateWebSearchProvider(providerId: string, input: WebSearchProviderPatchRequest): Promise<WebSearchProviderConfig> {
     const current = await this.store.getWebSearchProvider(providerId);
     if (!current) throw new Error(`Web search provider not found: ${providerId}`);
-    let apiKeyRef = current.apiKeyRef;
-    if (input.clearApiKey) {
+    const kind = input.kind ?? current.kind;
+    const kindChanged = kind !== current.kind;
+    let apiKeyRef = kindChanged ? undefined : current.apiKeyRef;
+    if (kindChanged || input.clearApiKey) {
       await this.store.deleteWebSearchProviderSecret(providerId);
       apiKeyRef = undefined;
     }
@@ -1679,16 +1788,18 @@ export class AgentWorkbench {
       await this.store.saveWebSearchProviderSecret(providerId, secret);
       apiKeyRef = createWebSearchApiKeyRef(providerId, input.apiKey, secret);
     }
+    const endpoint = normalizeWebSearchEndpoint(kind, input.endpoint !== undefined ? input.endpoint : kindChanged ? undefined : current.endpoint);
     const updated: WebSearchProviderConfig = {
       ...current,
       ...(input.label ? { label: input.label } : {}),
-      ...(input.kind ? { kind: input.kind } : {}),
-      ...(input.endpoint !== undefined ? { endpoint: input.endpoint } : {}),
+      ...(input.kind ? { kind } : {}),
+      ...(input.kind !== undefined || input.endpoint !== undefined ? (endpoint ? { endpoint } : { endpoint: undefined }) : {}),
       ...(apiKeyRef ? { apiKeyRef } : {}),
       ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
       updatedAt: nowIso()
     };
     if (!apiKeyRef) delete updated.apiKeyRef;
+    if (!endpoint) delete updated.endpoint;
     await this.store.saveWebSearchProvider(updated);
     return updated;
   }
@@ -1706,13 +1817,14 @@ export class AgentWorkbench {
     await this.resolveTaskFolder(input.defaultFolderId);
     const now = nowIso();
     const id = createId("integration");
+    const callbackUrl = normalizeHttpUrl(input.callbackUrl, "Integration callback URL");
     const provider: IntegrationProviderConfig = {
       id,
       kind: input.kind,
       label: input.label,
       status: input.enabled ? initialIntegrationStatus(buildIntegrationStatusSnapshot({
         kind: input.kind,
-        callbackUrl: input.callbackUrl,
+        callbackUrl,
         publicKey: input.publicKey,
         botTokenConfigured: Boolean(input.botToken),
         verificationTokenConfigured: Boolean(input.verificationToken),
@@ -1732,7 +1844,7 @@ export class AgentWorkbench {
       ...(input.secretToken ? { secretTokenRef: await this.saveIntegrationSecretRef(id, "secretToken", input.secretToken) } : {}),
       ...(input.wecomToken ? { wecomTokenRef: await this.saveIntegrationSecretRef(id, "wecomToken", input.wecomToken) } : {}),
       ...(input.wecomEncodingAesKey ? { wecomEncodingAesKeyRef: await this.saveIntegrationSecretRef(id, "wecomEncodingAesKey", input.wecomEncodingAesKey) } : {}),
-      ...(input.callbackUrl ? { callbackUrl: input.callbackUrl } : {}),
+      ...(callbackUrl ? { callbackUrl } : {}),
       defaultFolderId: input.defaultFolderId,
       defaultPermissionPreset: input.defaultPermissionPreset,
       createdAt: now,
@@ -1746,14 +1858,21 @@ export class AgentWorkbench {
     const current = await this.store.getIntegrationProvider(integrationId);
     if (!current) throw new Error(`Integration provider not found: ${integrationId}`);
     if (input.defaultFolderId) await this.resolveTaskFolder(input.defaultFolderId);
-    let botTokenRef = current.botTokenRef;
-    let appSecretRef = current.appSecretRef;
-    let verificationTokenRef = current.verificationTokenRef;
-    let encryptKeyRef = current.encryptKeyRef;
-    let signingSecretRef = current.signingSecretRef;
-    let secretTokenRef = current.secretTokenRef;
-    let wecomTokenRef = current.wecomTokenRef;
-    let wecomEncodingAesKeyRef = current.wecomEncodingAesKeyRef;
+    const kind = input.kind ?? current.kind;
+    const kindChanged = kind !== current.kind;
+    if (kindChanged) {
+      for (const secretName of ["botToken", "appSecret", "verificationToken", "encryptKey", "signingSecret", "secretToken", "wecomToken", "wecomEncodingAesKey"] as const) {
+        await this.store.deleteIntegrationSecret(integrationId, secretName);
+      }
+    }
+    let botTokenRef = kindChanged ? undefined : current.botTokenRef;
+    let appSecretRef = kindChanged ? undefined : current.appSecretRef;
+    let verificationTokenRef = kindChanged ? undefined : current.verificationTokenRef;
+    let encryptKeyRef = kindChanged ? undefined : current.encryptKeyRef;
+    let signingSecretRef = kindChanged ? undefined : current.signingSecretRef;
+    let secretTokenRef = kindChanged ? undefined : current.secretTokenRef;
+    let wecomTokenRef = kindChanged ? undefined : current.wecomTokenRef;
+    let wecomEncodingAesKeyRef = kindChanged ? undefined : current.wecomEncodingAesKeyRef;
     if (input.clearBotToken) {
       await this.store.deleteIntegrationSecret(integrationId, "botToken");
       botTokenRef = undefined;
@@ -1795,16 +1914,17 @@ export class AgentWorkbench {
     if (input.wecomToken) wecomTokenRef = await this.saveIntegrationSecretRef(integrationId, "wecomToken", input.wecomToken);
     if (input.wecomEncodingAesKey) wecomEncodingAesKeyRef = await this.saveIntegrationSecretRef(integrationId, "wecomEncodingAesKey", input.wecomEncodingAesKey);
     const enabled = input.enabled ?? current.enabled;
-    const callbackUrl = input.callbackUrl !== undefined ? input.callbackUrl : current.callbackUrl;
-    const kind = input.kind ?? current.kind;
+    const callbackUrl = input.callbackUrl !== undefined ? normalizeHttpUrl(input.callbackUrl, "Integration callback URL") : current.callbackUrl;
+    const appId = input.appId !== undefined ? normalizeOptionalText(input.appId) : kindChanged ? undefined : current.appId;
+    const publicKey = input.publicKey !== undefined ? normalizeOptionalText(input.publicKey) : kindChanged ? undefined : current.publicKey;
     const updated: IntegrationProviderConfig = {
       ...current,
       ...(input.kind ? { kind: input.kind } : {}),
       ...(input.label ? { label: input.label } : {}),
       ...(botTokenRef ? { botTokenRef } : {}),
-      ...(input.appId !== undefined ? { appId: input.appId } : {}),
+      ...(appId ? { appId } : {}),
       ...(appSecretRef ? { appSecretRef } : {}),
-      ...(input.publicKey !== undefined ? { publicKey: input.publicKey.trim() || undefined } : {}),
+      ...(publicKey ? { publicKey } : {}),
       ...(verificationTokenRef ? { verificationTokenRef } : {}),
       ...(encryptKeyRef ? { encryptKeyRef } : {}),
       ...(signingSecretRef ? { signingSecretRef } : {}),
@@ -1818,7 +1938,7 @@ export class AgentWorkbench {
       status: enabled ? initialIntegrationStatus(buildIntegrationStatusSnapshot({
         kind,
         callbackUrl,
-        publicKey: input.publicKey !== undefined ? input.publicKey.trim() : current.publicKey,
+        publicKey,
         botTokenConfigured: Boolean(botTokenRef),
         verificationTokenConfigured: Boolean(verificationTokenRef),
         signingSecretConfigured: Boolean(signingSecretRef),
@@ -1836,8 +1956,11 @@ export class AgentWorkbench {
     if (!secretTokenRef) delete updated.secretTokenRef;
     if (!wecomTokenRef) delete updated.wecomTokenRef;
     if (!wecomEncodingAesKeyRef) delete updated.wecomEncodingAesKeyRef;
-    if (!updated.publicKey) delete updated.publicKey;
+    if (!publicKey) delete updated.publicKey;
+    if (!appId) delete updated.appId;
     if (!callbackUrl) delete updated.callbackUrl;
+    if (kindChanged || updated.status !== "error") delete updated.lastError;
+    if (kindChanged || updated.status !== "connected") delete updated.connectedAt;
     await this.store.saveIntegrationProvider(updated);
     return updated;
   }
@@ -1852,12 +1975,14 @@ export class AgentWorkbench {
   async connectIntegrationProvider(integrationId: string): Promise<IntegrationProviderConfig> {
     const current = await this.store.getIntegrationProvider(integrationId);
     if (!current) throw new Error(`Integration provider not found: ${integrationId}`);
+    const callbackUrl = normalizeHttpUrl(current.callbackUrl, "Integration callback URL");
     const updated: IntegrationProviderConfig = {
       ...current,
+      ...(callbackUrl ? { callbackUrl } : {}),
       enabled: true,
       status: initialIntegrationStatus(buildIntegrationStatusSnapshot({
         kind: current.kind,
-        callbackUrl: current.callbackUrl,
+        callbackUrl,
         publicKey: current.publicKey,
         botTokenConfigured: Boolean(current.botTokenRef),
         verificationTokenConfigured: Boolean(current.verificationTokenRef),
@@ -2028,7 +2153,8 @@ export class AgentWorkbench {
       createdAt: now
     };
     await this.store.saveIntegrationMessage(message);
-    const task = await this.initializeTask(text, await this.resolveTaskTitle(text), provider.defaultFolderId || "default");
+    const taskText = sanitizeSensitiveText(text);
+    const task = await this.initializeTask(taskText, await this.resolveTaskTitle(taskText), provider.defaultFolderId || "default");
     const linkedMessage: IntegrationMessage = { ...message, taskId: task.id };
     await this.store.saveIntegrationMessage(linkedMessage);
     const link: IntegrationTaskLink = {
@@ -2250,6 +2376,7 @@ export class AgentWorkbench {
     let stateOnlyTurns = 0;
     let emptyResponseRetries = 0;
     let internalContinuationRetries = 0;
+    let claimedToolEvidenceRetries = 0;
     const startedAt = Date.now();
 
     while (task.status === "running") {
@@ -2296,6 +2423,7 @@ export class AgentWorkbench {
               : "Model returned an internal continuation note twice; paused for retry or narrower guidance.",
             {
               status: shouldRetry ? "retrying" : "paused",
+              reason: "internal_continuation_final",
               ...(turn.streamId ? { streamId: turn.streamId } : {}),
               ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
             }
@@ -2319,8 +2447,29 @@ export class AgentWorkbench {
         }
         internalContinuationRetries = 0;
         await this.maybeAutoRenameTask(task, { reason: "assistant_output", text: turn.message });
-        const blocker = completionBlocker(task);
+        const blocker = completionBlocker(task, turn.message);
         if (blocker) {
+          if (isClaimedToolEvidenceBlocker(blocker) && claimedToolEvidenceRetries < CLAIMED_TOOL_EVIDENCE_MAX_RETRIES) {
+            claimedToolEvidenceRetries += 1;
+            if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId, true);
+            this.addEvent(task, "model_no_progress", `${blocker} Retrying with a stricter evidence requirement: only claim a tool if a matching tool result exists; if the tool was denied or unavailable, answer without claiming tool evidence.`, {
+              status: "retrying",
+              reason: "claimed_tool_evidence_without_result",
+              blockedFinalMessage: turn.message,
+              ...(turn.streamId ? { streamId: turn.streamId } : {}),
+              ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
+            });
+            await this.safeAppendTaskTrace(task, {
+              kind: "model_no_progress",
+              timestamp: nowIso(),
+              reason: "claimed_tool_evidence_without_result",
+              status: "retrying",
+              message: turn.message,
+              ...(turn.streamId ? { streamId: turn.streamId } : {})
+            });
+            await this.store.saveTask(task);
+            continue;
+          }
           this.addEvent(task, "assistant_message", blocker, {
             ...(turn.streamId ? { streamId: turn.streamId } : {}),
             completionBlocked: true,
@@ -2343,6 +2492,8 @@ export class AgentWorkbench {
         return task;
       }
       if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId);
+      internalContinuationRetries = 0;
+      claimedToolEvidenceRetries = 0;
 
       const { executable, skipped } = limitToolCallsPerTurn(turn.calls);
       for (const skippedCall of skipped) {
@@ -2443,6 +2594,29 @@ export class AgentWorkbench {
           });
         }
         const eventArgs = this.sanitizeForPreferences(call.args, preferences);
+        const nonBlockingResolution = nonBlockingAskUserResolution(task, call.args);
+        if (nonBlockingResolution) {
+          this.addEvent(task, "tool_requested", call.toolName, {
+            toolCallId: call.id,
+            toolName: call.toolName,
+            args: eventArgs,
+            riskCategory: "none",
+            autoResolved: true,
+            ...(reasoningContent ? { reasoningContent } : {})
+          });
+          await this.safeAppendTaskTrace(task, {
+            kind: "tool_requested",
+            timestamp: nowIso(),
+            toolCallId: call.id,
+            toolName: call.toolName,
+            args: call.args,
+            riskCategory: "none",
+            autoResolved: true
+          });
+          await this.addToolResultEvent(task, call, managedToolResult(call, true, nonBlockingResolution));
+          await this.store.saveTask(task);
+          continue;
+        }
         this.addEvent(task, "tool_requested", call.toolName, {
           toolCallId: call.id,
           toolName: call.toolName,
@@ -3489,6 +3663,22 @@ export class AgentWorkbench {
     });
   }
 
+  private attachCompiledTaskGraph(task: TaskDetail): void {
+    const graph = compileTaskGraph(task);
+    if (!graph) return;
+    const activeNode = graph.nodes.find((node) => node.id === graph.activeNodeId);
+    this.addEvent(task, "task_graph_created", "Task graph created", { graph, uiHidden: true, source: "compiled" });
+    if (activeNode) {
+      this.addEvent(task, "task_graph_node_started", `${activeNode.role}: ${activeNode.objective}`, {
+        nodeId: activeNode.id,
+        role: activeNode.role,
+        objective: activeNode.objective,
+        uiHidden: true,
+        source: "compiled"
+      });
+    }
+  }
+
   private buildSubagentContextSummary(
     task: TaskDetail,
     explicitContext: string,
@@ -3687,7 +3877,7 @@ export class AgentWorkbench {
     const before = await readFile(normalized);
     const snapshotPath = resolve(findWorkspaceRoot(), "data", "checkpoints", checkpointId, `${String(index).padStart(3, "0")}-${sanitizeFileName(relativePath)}`);
     await mkdir(dirname(snapshotPath), { recursive: true });
-    await writeFile(snapshotPath, before);
+    await writeFile(snapshotPath, encryptedLocalFilePayload(this.secretBox, before, "checkpoint"), "utf8");
     return {
       path: normalized,
       relativePath,
@@ -3708,7 +3898,7 @@ export class AgentWorkbench {
       const target = await resolveTaskPath(checkpoint.workRoot || task.workRoot || defaultTaskWorkRoot(), file.path);
       if (file.existed && file.snapshotPath) {
         await mkdir(dirname(target), { recursive: true });
-        await copyFile(file.snapshotPath, target);
+        await writeFile(target, await readLocalFilePayload(this.secretBox, file.snapshotPath));
         restoredFiles += 1;
       } else if (!file.existed) {
         const exists = await stat(target).catch(() => null);
@@ -4359,6 +4549,24 @@ function skillConflictStillApplies(conflictKey: string, skillIds: string[], skil
   return false;
 }
 
+function modelProviderEndpoint(baseURL: string, route: string): string {
+  return `${baseURL.replace(/\/+$/, "")}/${route}`;
+}
+
+function classifyModelProviderStatus(status: number, body: string): ModelProviderFailureClass {
+  const text = body.toLowerCase();
+  if (status === 429 || /rate.?limit|too many requests/u.test(text)) return "rate_limit";
+  if (status === 401 || status === 403 || /invalid api key|unauthorized|forbidden/u.test(text)) return "provider_configuration";
+  if (status >= 500) return "provider_transient";
+  return "provider_configuration";
+}
+
+function modelProviderPreflightError(status: number, body: string): string {
+  const text = sanitizeSensitiveText(body).replace(/\s+/g, " ").trim();
+  const suffix = text ? `: ${text.slice(0, 500)}` : "";
+  return `Provider preflight failed with HTTP ${status}${suffix}`;
+}
+
 type RuleAutoApproveRisk = UserPreferences["autoApproveRiskCategories"][number];
 type PermissionMode = UserPreferences["permissionMode"];
 
@@ -4417,6 +4625,16 @@ function normalizeAutoApprovePreferences(preferences: PreferencesPatch & Record<
 
 function normalizePermissionMode(value: unknown): PermissionMode {
   return value === "read_only" || value === "full_access" || value === "custom" || value === "auto_approval" ? value : "ask";
+}
+
+function assertDefaultModelConfigured(models: ModelProviderRecord["models"], defaultModelId: string): void {
+  if (!models.some((model) => model.id === defaultModelId)) {
+    throw new Error("defaultModelId must match a configured model.");
+  }
+}
+
+function isClaimedToolEvidenceBlocker(message: string): boolean {
+  return message.startsWith("The final answer claimed ") && message.includes("no matching tool result exists");
 }
 
 function autoApproveCategoriesForStrategy(strategy: UserPreferences["autoApproveStrategy"], current: unknown): RuleAutoApproveRisk[] {
@@ -4988,9 +5206,48 @@ function isCheckpointTextFile(path: string): boolean {
   return /\.(cjs|css|html|js|json|jsx|md|mjs|ts|tsx|txt|yml|yaml|xml|csv)$/i.test(path);
 }
 
-async function buildAttachmentTextPreview(storagePath: string, kind: TaskAttachmentKind, mimeType: string): Promise<string | undefined> {
+async function readLocalFilePayload(secretBox: LocalSecretBox, path: string): Promise<Buffer> {
+  const raw = await readFile(path);
+  const text = raw.toString("utf8");
+  const decrypted = decryptLocalFilePayload(secretBox, text);
+  return decrypted ?? raw;
+}
+
+function encryptedAttachmentPayload(secretBox: LocalSecretBox, bytes: Buffer): string {
+  return encryptedLocalFilePayload(secretBox, bytes, "attachment");
+}
+
+function encryptedLocalFilePayload(secretBox: LocalSecretBox, bytes: Buffer, kind: "attachment" | "checkpoint"): string {
+  return JSON.stringify(
+    {
+      __agentWorkbenchEncryptedFile: true,
+      kind,
+      algorithm: "local-secret-box-v1",
+      payload: secretBox.encrypt(bytes.toString("base64"))
+    },
+    null,
+    2
+  );
+}
+
+function decryptLocalFilePayload(secretBox: LocalSecretBox, text: string): Buffer | undefined {
+  try {
+    const parsed = JSON.parse(text) as {
+      __agentWorkbenchEncryptedFile?: unknown;
+      __agentWorkbenchEncryptedAttachment?: unknown;
+      payload?: unknown;
+    };
+    if (parsed.__agentWorkbenchEncryptedFile !== true && parsed.__agentWorkbenchEncryptedAttachment !== true) return undefined;
+    const payload = parsed.payload as Parameters<LocalSecretBox["decrypt"]>[0];
+    return Buffer.from(secretBox.decrypt(payload), "base64");
+  } catch {
+    return undefined;
+  }
+}
+
+function buildAttachmentTextPreview(bytes: Buffer, kind: TaskAttachmentKind, mimeType: string): string | undefined {
   if (!["text", "markdown", "code", "data"].includes(kind) && !mimeType.startsWith("text/")) return undefined;
-  const content = await readFile(storagePath, "utf8").catch(() => "");
+  const content = bytes.toString("utf8");
   if (!content) return undefined;
   return content.slice(0, 6000);
 }
@@ -5011,9 +5268,12 @@ function createScheduleFromInput(
       input.intervalMinutes !== undefined || input.intervalHours !== undefined
         ? (input.intervalHours ?? 0) * 60 + (input.intervalMinutes ?? 0)
         : fallback?.intervalMinutes ?? 60;
+    if (intervalMinutes <= 0 || intervalMinutes > 720) {
+      throw new Error("Interval must be greater than 0 and no more than 12 hours.");
+    }
     return {
       kind: "interval",
-      intervalMinutes: Math.min(720, Math.max(1, intervalMinutes))
+      intervalMinutes
     };
   }
   return {
@@ -5083,6 +5343,41 @@ function advanceScheduledTask(task: ScheduledTask, lastTaskId: string | undefine
 
 function isDefaultReflectionSchedule(task: ScheduledTask): boolean {
   return task.id === "schedule_agent_reflection" || task.type === "reflection";
+}
+
+function normalizeWebSearchEndpoint(kind: WebSearchProviderConfig["kind"], value: string | undefined): string | undefined {
+  const endpoint = normalizeOptionalText(value);
+  if (kind === "custom" && !endpoint) throw new Error("Custom web search provider requires an endpoint.");
+  if (!endpoint) return undefined;
+  if (kind === "custom" && !endpoint.includes("{query}")) throw new Error("Custom web search endpoint must include a {query} template.");
+  if (kind === "custom" && hasEmbeddedUrlSecret(endpoint)) {
+    throw new Error("Custom web search endpoint must use the API key field and {apiKey} placeholder instead of embedding secrets.");
+  }
+  return normalizeHttpUrl(endpoint, "Web search endpoint");
+}
+
+function hasEmbeddedUrlSecret(value: string): boolean {
+  return /[?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|authorization)=([^&#{}][^&#]*)/i.test(value);
+}
+
+function normalizeHttpUrl(value: string | undefined, fieldName: string): string | undefined {
+  const trimmed = normalizeOptionalText(value);
+  if (!trimmed) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`${fieldName} must be a valid HTTP(S) URL.`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`${fieldName} must use http or https.`);
+  }
+  return trimmed;
+}
+
+function normalizeOptionalText(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function isIrreversibleTurnEvent(event: TaskEvent): boolean {
@@ -5385,7 +5680,7 @@ async function runWithConcurrency<T, R>(
 }
 
 function extractInlineToolCallsFromMessage(message: string): ToolCall[] {
-  if (!/<function_calls\b|<invoke\b/i.test(message)) return [];
+  if (!/<function_calls\b|<invoke\b|<tool_invocation\b/i.test(message)) return [];
   const calls: ToolCall[] = [];
   const invokePattern = /<invoke\s+name=(["'])(?<name>[^"']+)\1\s*>(?<body>[\s\S]*?)<\/invoke>/gi;
   for (const match of message.matchAll(invokePattern)) {
@@ -5405,7 +5700,75 @@ function extractInlineToolCallsFromMessage(message: string): ToolCall[] {
       args
     });
   }
+  const toolInvocationPattern = /<tool_invocation\b(?<attributes>[\s\S]*?)(?:\/>|>\s*<\/tool_invocation>)/gi;
+  for (const match of message.matchAll(toolInvocationPattern)) {
+    const attributes = match.groups?.["attributes"] ?? "";
+    const toolName = readInlineMarkupAttribute(attributes, "name");
+    if (!toolName) continue;
+    calls.push({
+      id: createId("tool_call"),
+      toolName,
+      args: parseInlineToolArguments(readInlineToolArguments(attributes))
+    });
+  }
   return calls;
+}
+
+function readInlineMarkupAttribute(attributes: string, name: string): string | undefined {
+  const pattern = new RegExp(`\\b${name}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, "i");
+  const match = attributes.match(pattern);
+  const value = match?.[2];
+  return value ? decodeXmlText(value).trim() : undefined;
+}
+
+function readInlineToolArguments(attributes: string): string | undefined {
+  const match = /\barguments\s*=\s*/i.exec(attributes);
+  if (!match) return undefined;
+  const rest = attributes.slice(match.index + match[0].length).trimStart();
+  const quote = rest[0];
+  if (quote === "\"" || quote === "'") {
+    const end = rest.indexOf(quote, 1);
+    return end > 0 ? rest.slice(1, end) : undefined;
+  }
+  return rest[0] === "{" ? readBalancedJsonObject(rest) : undefined;
+}
+
+function readBalancedJsonObject(input: string): string | undefined {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < input.length; index++) {
+    const char = input[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") depth++;
+    if (char === "}") {
+      depth--;
+      if (depth === 0) return input.slice(0, index + 1);
+    }
+  }
+  return undefined;
+}
+
+function parseInlineToolArguments(raw: string | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    return recordFromUnknown(JSON.parse(decodeXmlText(raw)));
+  } catch {
+    return {};
+  }
 }
 
 function decodeXmlText(value: string): string {
@@ -5415,6 +5778,86 @@ function decodeXmlText(value: string): string {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&amp;/g, "&");
+}
+
+function nonBlockingAskUserResolution(task: TaskDetail, args: Record<string, unknown>): string | null {
+  if (isOptionalFollowUpAsk(args) && hasRecentSuccessfulVerificationEvidence(task)) {
+    return JSON.stringify({
+      status: "not_required",
+      reason: "optional_follow_up_after_verified_progress",
+      instruction: "Continue with the final answer based on the completed tool evidence."
+    });
+  }
+  if (isEvidenceInterpretationAsk(args) && hasRecentDirectToolEvidence(task)) {
+    return JSON.stringify({
+      status: "not_required",
+      reason: "answer_from_current_tool_evidence",
+      instruction: "Continue with the final answer based on the current tool evidence; do not ask the user how to interpret or phrase it."
+    });
+  }
+  return null;
+}
+
+function isOptionalFollowUpAsk(args: Record<string, unknown>): boolean {
+  if (args["required"] === false) return true;
+  const question = String(args["question"] ?? args["prompt"] ?? args["message"] ?? "").trim();
+  if (!question) return false;
+  return /(?:还需要|是否需要|需要我|要我|继续帮|继续处理|下一步|anything else|need me to|would you like|do you want|should i continue|continue with)/iu.test(question);
+}
+
+function isEvidenceInterpretationAsk(args: Record<string, unknown>): boolean {
+  const question = String(args["question"] ?? args["prompt"] ?? args["message"] ?? "").trim();
+  const details = String(args["details"] ?? "").trim();
+  const text = `${question}\n${details}`;
+  if (!question) return false;
+  return /(?:如何解释|怎么解释|怎样解释|是否直接说明|应该如何说明|我应该如何|how should i explain|how should i describe|should i explain|should i say)/iu.test(text);
+}
+
+function hasRecentDirectToolEvidence(task: TaskDetail): boolean {
+  const events = task.events.filter((event) => !event.reverted);
+  const latestUserIndex = latestIndex(events, (event) => event.type === "user_message" || event.type === "guidance_consumed");
+  const relevant = events.slice(latestUserIndex + 1).filter((event) =>
+    event.type === "tool_result" &&
+    event.payload["toolName"] !== "ask_user" &&
+    String(event.payload["output"] ?? "").trim().length > 0
+  );
+  return relevant.length > 0;
+}
+
+function hasRecentSuccessfulVerificationEvidence(task: TaskDetail): boolean {
+  const events = task.events.filter((event) => !event.reverted);
+  const latestUserIndex = latestIndex(events, (event) => event.type === "user_message" || event.type === "guidance_consumed");
+  const latestWriteIndex = latestIndex(events, (event) =>
+    event.type === "tool_result" &&
+    (event.payload["toolName"] === "edit_file" || event.payload["toolName"] === "write_file")
+  );
+  const startIndex = Math.max(latestUserIndex, latestWriteIndex);
+  const verificationResults = events.slice(startIndex + 1).filter((event) =>
+    event.type === "tool_result" &&
+    event.payload["toolName"] === "run_command" &&
+    event.payload["ok"] !== false
+  );
+  const latestPassingIndex = latestIndex(verificationResults, (event) => {
+    const output = String(event.payload["output"] ?? "");
+    return looksLikeSuccessfulVerification(output) && !looksLikeFailedVerification(output);
+  });
+  if (latestPassingIndex < 0) return false;
+  return !verificationResults.slice(latestPassingIndex + 1).some((event) => looksLikeFailedVerification(String(event.payload["output"] ?? "")));
+}
+
+function latestIndex<T>(items: T[], predicate: (item: T) => boolean): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (predicate(items[index]!)) return index;
+  }
+  return -1;
+}
+
+function looksLikeSuccessfulVerification(output: string): boolean {
+  return /\b(?:tests?\s+(?:now\s+)?passed|all\s+tests\s+passed|\d+\s+passed|success(?:ful)?|build\s+passed)\b/iu.test(output);
+}
+
+function looksLikeFailedVerification(output: string): boolean {
+  return /\b(?:assertionerror|err_assertion|npm\s+err!|tests?\s+failed|failed\s+tests?|build\s+failed)\b/iu.test(output);
 }
 
 function managedToolResult(call: ToolCall, ok: boolean, output: string): ToolResult {
@@ -5527,8 +5970,18 @@ function isInternalContinuationFinal(message: string): boolean {
   return (
     /^Internal continuity note\b/i.test(text) ||
     /^Prior\s+(?:thinking|reasoning)\s+retained\s+for\s+continuity\b/i.test(text) ||
-    /Do not quote this note verbatim/i.test(text)
+    /Do not quote this note verbatim/i.test(text) ||
+    isToolIntentOnlyFinal(text)
   );
+}
+
+function isToolIntentOnlyFinal(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length > 600) return false;
+  if (/\b(?:completed|done|passed|created|wrote|finished|已完成|完成|通过|已创建|已写入)\b/iu.test(normalized)) return false;
+  if (!/\b(?:read_file|write_file|edit_file|run_command|list_files|search_files|web_search|knowledge_search|use_skill)\b/iu.test(normalized)) return false;
+  if (!/^(?:now\b|next\b|step\s*\d+\b|i(?:'m| am| will|'ll| need to| should| must)\b|let me\b|接下来|现在|下一步)/iu.test(normalized)) return false;
+  return /\b(?:call|use|run|execute|create|write|read|edit|search|调用|运行|读取|写入|创建|编辑|搜索)\b/iu.test(normalized);
 }
 
 function planStepsFromUnknown(value: unknown): Array<{ id: string; title: string; status: "pending" | "running" | "completed" | "blocked"; detail?: string }> {
@@ -5558,4 +6011,17 @@ function parseStepStatus(value: unknown): "pending" | "running" | "completed" | 
 
 function cleanTags(tags: string[]): string[] {
   return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 32);
+}
+
+async function disposeResource(resource: unknown): Promise<void> {
+  if (!resource || typeof resource !== "object") return;
+  const disposable = resource as {
+    dispose?: () => void | Promise<void>;
+    close?: () => void | Promise<void>;
+  };
+  if (typeof disposable.dispose === "function") {
+    await disposable.dispose();
+    return;
+  }
+  if (typeof disposable.close === "function") await disposable.close();
 }

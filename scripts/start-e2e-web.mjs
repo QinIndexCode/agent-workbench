@@ -12,4 +12,33 @@ const server = await createServer({
 
 await server.listen();
 server.printUrls();
+
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const forceExit = setTimeout(() => {
+    console.error("Timed out closing E2E web server; forcing exit.");
+    process.exit(0);
+  }, 3_000);
+  forceExit.unref();
+  try {
+    await server.close();
+    clearTimeout(forceExit);
+    process.exit(0);
+  } catch (error) {
+    clearTimeout(forceExit);
+    console.error(error);
+    process.exit(1);
+  }
+}
+
+process.on("SIGINT", () => {
+  void shutdown();
+});
+
+process.on("SIGTERM", () => {
+  void shutdown();
+});
+
 await new Promise(() => {});

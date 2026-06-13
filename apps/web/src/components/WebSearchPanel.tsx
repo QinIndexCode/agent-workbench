@@ -201,7 +201,7 @@ function SearchProviderDialog({
             {kind !== "duckduckgo" ? (
               <div className="stdField wide">
                 <span className="stdFieldLabel">{zh ? "API Key" : "API key"}</span>
-                <input aria-label={zh ? "API Key" : "API key"} className="stdInput" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={provider?.apiKeyRef?.last4 ? `••••${provider.apiKeyRef.last4}` : ""} />
+                <input aria-label={zh ? "API Key" : "API key"} autoComplete="off" className="stdInput" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={provider?.apiKeyRef?.last4 ? `••••${provider.apiKeyRef.last4}` : ""} />
               </div>
             ) : null}
           </div>

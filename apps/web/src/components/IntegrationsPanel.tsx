@@ -417,7 +417,9 @@ function FieldInput({
       <span className="stdFieldLabel">{label}</span>
       <input
         aria-label={label}
+        autoComplete="off"
         className="stdInput"
+        type={clearFlag ? "password" : "text"}
         value={currentValue}
         placeholder={placeholder}
         onChange={(event) => {

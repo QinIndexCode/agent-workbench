@@ -17,6 +17,7 @@ import type {
 import type { ModelToolDefinition, ModelToolProvider } from "./openai-model.js";
 import { createId, nowIso } from "./ids.js";
 import type { RiskAssessment } from "./permission-engine.js";
+import { sanitizeSensitiveText, sanitizeSensitiveValue } from "./secrets.js";
 import type { WorkbenchStore } from "./store.js";
 import type { ToolExecutionOptions, ToolExecutorDelegate } from "./tools.js";
 
@@ -38,14 +39,15 @@ export class McpRegistry implements ModelToolProvider, ToolExecutorDelegate {
 
   async listServers(): Promise<Array<McpServerConfig & { status: McpServerStatus }>> {
     const servers = await this.store.listMcpServers();
-    return servers.map((server) => ({ ...server, status: this.statusFor(server.id) }));
+    return servers.map((server) => sanitizePublicMcpServer({ ...server, status: this.statusFor(server.id) }));
   }
 
   async createServer(input: McpServerCreateRequest): Promise<McpServerConfig> {
     const now = nowIso();
+    const endpoint = normalizeMcpEndpoint(input.transport, input.command, input.url);
     const server: McpServerConfig = {
       id: input.id ? sanitizeIdentifier(input.id) : createId("mcp_server"),
-      label: input.label ?? input.command ?? input.url ?? "MCP server",
+      label: input.label ?? endpoint.command ?? endpoint.url ?? "MCP server",
       transport: input.transport,
       args: input.args,
       env: input.env,
@@ -53,39 +55,41 @@ export class McpRegistry implements ModelToolProvider, ToolExecutorDelegate {
       toolRiskOverrides: input.toolRiskOverrides,
       createdAt: now,
       updatedAt: now,
-      ...(input.command ? { command: input.command } : {}),
-      ...(input.cwd ? { cwd: input.cwd } : {}),
-      ...(input.url ? { url: input.url } : {})
+      ...(endpoint.command ? { command: endpoint.command } : {}),
+      ...(input.transport === "stdio" && input.cwd ? { cwd: input.cwd } : {}),
+      ...(endpoint.url ? { url: endpoint.url } : {})
     };
     await this.store.saveMcpServer(server);
     this.setStatus(server.id, { serverId: server.id, connected: false, state: "disconnected", toolCount: 0 });
-    return server;
+    return sanitizePublicMcpServer(server);
   }
 
   async patchServer(serverId: string, patch: McpServerPatchRequest): Promise<McpServerConfig> {
     const current = await this.requiredServer(serverId);
-    const command = patch.command ?? current.command;
-    const cwd = patch.cwd ?? current.cwd;
-    const url = patch.url ?? current.url;
+    const transport = patch.transport ?? current.transport;
+    const command = patch.command ?? (transport === current.transport ? current.command : undefined);
+    const cwd = patch.cwd ?? (transport === current.transport ? current.cwd : undefined);
+    const url = patch.url ?? (transport === current.transport ? current.url : undefined);
+    const endpoint = normalizeMcpEndpoint(transport, command, url);
     const next: McpServerConfig = {
       id: current.id,
       label: patch.label ?? current.label,
-      transport: patch.transport ?? current.transport,
+      transport,
       args: patch.args ?? current.args,
       env: patch.env ?? current.env,
       enabled: patch.enabled ?? current.enabled,
       toolRiskOverrides: patch.toolRiskOverrides ?? current.toolRiskOverrides,
       createdAt: current.createdAt,
       updatedAt: nowIso(),
-      ...(command ? { command } : {}),
-      ...(cwd ? { cwd } : {}),
-      ...(url ? { url } : {})
+      ...(endpoint.command ? { command: endpoint.command } : {}),
+      ...(transport === "stdio" && cwd ? { cwd } : {}),
+      ...(endpoint.url ? { url: endpoint.url } : {})
     };
     if (current.transport !== next.transport || current.command !== next.command || current.url !== next.url) {
       await this.disconnectServer(serverId);
     }
     await this.store.saveMcpServer(next);
-    return next;
+    return sanitizePublicMcpServer(next);
   }
 
   async deleteServer(serverId: string): Promise<void> {
@@ -360,11 +364,39 @@ function isMcpError(response: unknown): boolean {
 
 function sanitizeError(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
-  return text.replace(/\b(sk|ak)-[a-zA-Z0-9_-]{10,}\b/g, "[redacted-key]");
+  return sanitizeSensitiveText(text).replace(/\b(sk|ak)-[a-zA-Z0-9_-]{10,}\b/g, "[redacted-key]");
+}
+
+function sanitizePublicMcpServer<T extends McpServerConfig | (McpServerConfig & { status: McpServerStatus })>(server: T): T {
+  return sanitizeSensitiveValue(server);
+}
+
+function normalizeMcpEndpoint(
+  transport: McpServerConfig["transport"],
+  command: string | undefined,
+  url: string | undefined
+): { command?: string; url?: string } {
+  if (transport === "stdio") {
+    const normalizedCommand = command?.trim();
+    if (!normalizedCommand) throw new Error("stdio MCP servers require command.");
+    return { command: normalizedCommand };
+  }
+  const normalizedUrl = url?.trim();
+  if (!normalizedUrl) throw new Error("streamable_http MCP servers require url.");
+  let parsed: URL;
+  try {
+    parsed = new URL(normalizedUrl);
+  } catch {
+    throw new Error("streamable_http MCP server url must be a valid HTTP(S) URL.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("streamable_http MCP server url must use http or https.");
+  }
+  return { url: normalizedUrl };
 }
 
 function previewArgs(args: Record<string, unknown>): string {
-  const raw = JSON.stringify(args, null, 2);
+  const raw = JSON.stringify(sanitizeSensitiveValue(args), null, 2);
   if (raw.length <= 1600) return raw;
   return `${raw.slice(0, 1600)}\n... args truncated ...`;
 }
@@ -390,15 +422,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 async function materializeMcpOutput(resultId: string, output: string): Promise<string> {
   if (output.length <= 12000) return output;
+  const sanitizedOutput = sanitizeSensitiveText(output);
   const rawOutputRef = resolve(process.cwd(), "data", "tool-output", `${resultId}.mcp.txt`);
   await mkdir(dirname(rawOutputRef), { recursive: true });
-  await writeFile(rawOutputRef, output, "utf8");
+  await writeFile(rawOutputRef, sanitizedOutput, "utf8");
   return JSON.stringify(
     {
       truncated: true,
       totalChars: output.length,
+      sanitized: sanitizedOutput !== output,
       rawOutputRef,
-      summary: `${output.slice(0, 4000)}\n\n... MCP output truncated; raw output is stored on disk ...\n\n${output.slice(-3000)}`
+      summary: `${sanitizedOutput.slice(0, 4000)}\n\n... MCP output truncated; sanitized raw output is stored on disk ...\n\n${sanitizedOutput.slice(-3000)}`
     },
     null,
     2

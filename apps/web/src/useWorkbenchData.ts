@@ -7,7 +7,6 @@ import type {
   McpServerStatus,
   McpToolSummary,
   ModelProviderRecord,
-  PatternRecord,
   ProjectMemory,
   CuratorRun,
   ScheduledTask,
@@ -24,11 +23,9 @@ import type {
   TaskFolderDeleteRequest,
   TaskFolderRecord,
   TaskEvent,
-  TaskMemory,
   TaskPatchRequest,
   TaskTranscriptItem,
   UserPreferences,
-  PromptCacheStats,
   WebSearchProviderConfig
 } from "@agent-workbench/shared";
 import { api } from "./api.js";
@@ -40,8 +37,6 @@ export interface WorkbenchData {
   selectedChildren: TaskChildSummary[];
   selectedTranscript: TaskTranscriptItem[];
   selectedId: string | null;
-  memories: TaskMemory[];
-  patterns: PatternRecord[];
   skills: SkillRecord[];
   skillConflicts: SkillConflict[];
   skillCurator: SkillCuratorItem[];
@@ -51,7 +46,6 @@ export interface WorkbenchData {
   curatorRuns: CuratorRun[];
   projectMemories: ProjectMemory[];
   knowledgeItems: KnowledgeItem[];
-  promptCacheStats: PromptCacheStats[];
   integrations: IntegrationProviderConfig[];
   modelProviders: ModelProviderRecord[];
   mcpServers: Array<McpServerConfig & { status: McpServerStatus }>;
@@ -107,8 +101,6 @@ export function useWorkbenchData(loadProfile: WorkbenchLoadProfile = defaultLoad
   const [selected, setSelected] = useState<TaskDetail | null>(null);
   const [selectedChildren, setSelectedChildren] = useState<TaskChildSummary[]>([]);
   const [selectedTranscript, setSelectedTranscript] = useState<TaskTranscriptItem[]>([]);
-  const [memories] = useState<TaskMemory[]>([]);
-  const [patterns] = useState<PatternRecord[]>([]);
   const [skills, setSkills] = useState<SkillRecord[]>([]);
   const [skillConflicts, setSkillConflicts] = useState<SkillConflict[]>([]);
   const [skillCurator, setSkillCurator] = useState<SkillCuratorItem[]>([]);
@@ -118,7 +110,6 @@ export function useWorkbenchData(loadProfile: WorkbenchLoadProfile = defaultLoad
   const [curatorRuns, setCuratorRuns] = useState<CuratorRun[]>([]);
   const [projectMemories, setProjectMemories] = useState<ProjectMemory[]>([]);
   const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeItem[]>([]);
-  const [promptCacheStats] = useState<PromptCacheStats[]>([]);
   const [integrations, setIntegrations] = useState<IntegrationProviderConfig[]>([]);
   const [modelProviders, setModelProviders] = useState<ModelProviderRecord[]>([]);
   const [mcpServers, setMcpServers] = useState<Array<McpServerConfig & { status: McpServerStatus }>>([]);
@@ -834,7 +825,11 @@ export function useWorkbenchData(loadProfile: WorkbenchLoadProfile = defaultLoad
       socket.onmessage = null;
       socket.onerror = null;
       socket.onclose = null;
-      if (socket.readyState === 0 || socket.readyState === 1) socket.close();
+      if (socket.readyState === 0) {
+        socket.onopen = () => socket.close();
+      } else if (socket.readyState === 1) {
+        socket.close();
+      }
     }
     setRealtimeConnected(false);
     if (markStale) setRealtimeStale(true);
@@ -921,8 +916,6 @@ export function useWorkbenchData(loadProfile: WorkbenchLoadProfile = defaultLoad
     selectedChildren,
     selectedTranscript,
     selectedId,
-    memories,
-    patterns,
     skills,
     skillConflicts,
     skillCurator,
@@ -932,7 +925,6 @@ export function useWorkbenchData(loadProfile: WorkbenchLoadProfile = defaultLoad
     curatorRuns,
     projectMemories,
     knowledgeItems,
-    promptCacheStats,
     integrations,
     modelProviders,
     mcpServers,

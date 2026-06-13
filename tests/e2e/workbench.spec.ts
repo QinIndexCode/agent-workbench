@@ -80,6 +80,48 @@ test("creates a host observation task and shows approval", async ({ page }, test
   await expect(page.getByText("Approval strategy")).toBeVisible();
 });
 
+test("uploads, attaches, lists, and deletes task attachments through public HTTP APIs", async ({ request }, testInfo) => {
+  const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
+  const fileName = `e2e-note-${suffix}.md`;
+  const content = `# E2E attachment ${suffix}\nsecret=sk-e2e-attachment-${suffix}`;
+  const upload = await request.post(`${apiBase}/api/task-attachments`, {
+    headers: sessionHeaders,
+    data: {
+      fileName,
+      mimeType: "text/markdown",
+      size: Buffer.byteLength(content, "utf8"),
+      dataBase64: Buffer.from(content, "utf8").toString("base64")
+    }
+  });
+  expect(upload.status()).toBe(201);
+  const attachment = await upload.json() as { id: string; fileName: string; textPreview?: string };
+  expect(attachment.fileName).toBe(fileName);
+  expect(attachment.textPreview ?? "").toContain("[redacted-secret]");
+  expect(attachment.textPreview ?? "").not.toContain("sk-e2e-attachment");
+
+  const taskResponse = await request.post(`${apiBase}/api/tasks`, {
+    headers: sessionHeaders,
+    data: {
+      goal: `Use the uploaded attachment ${suffix}`,
+      title: `Attachment ${suffix}`,
+      attachmentIds: [attachment.id]
+    }
+  });
+  expect(taskResponse.status()).toBe(201);
+  const task = await taskResponse.json() as { id: string };
+
+  const listResponse = await request.get(`${apiBase}/api/tasks/${task.id}/attachments`, { headers: sessionHeaders });
+  expect(listResponse.status()).toBe(200);
+  const attached = await listResponse.json() as Array<{ id: string; fileName: string }>;
+  expect(attached).toEqual(expect.arrayContaining([expect.objectContaining({ id: attachment.id, fileName })]));
+
+  const deleteResponse = await request.delete(`${apiBase}/api/task-attachments/${attachment.id}`, { headers: sessionHeaders });
+  expect(deleteResponse.status()).toBe(204);
+  const afterDelete = await request.get(`${apiBase}/api/tasks/${task.id}/attachments`, { headers: sessionHeaders });
+  expect(afterDelete.status()).toBe(200);
+  expect(await afterDelete.json()).toEqual([]);
+});
+
 test("covers support, docs, settings subpages, and visual overflow probes", async ({ page }, testInfo) => {
   await page.goto("/");
   await openUtilityItem(page, "Support");

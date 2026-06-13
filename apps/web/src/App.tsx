@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentProps, type ComponentType } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ComponentType } from "react";
 import type { ApprovalDecision, PreferencesPatch, RiskCategory, SkillDuplicateGroup, TaskAttachment, UserPreferences } from "@agent-workbench/shared";
 import { type AppRoute, useAppRoute } from "./app-router.js";
 import { api } from "./api.js";
@@ -193,6 +193,12 @@ export function App() {
 
   useEffect(() => preloadAppPagesDuringIdle(language), [language]);
 
+  useEffect(() => {
+    if (!supportOpen) return;
+    void DocsView.preload();
+    void import("./docs/index.js").then((module) => module.preloadDocContents(language)).catch(() => undefined);
+  }, [language, supportOpen]);
+
   const routeSyncRef = useRef({
     clearSelection: data.clearSelection,
     selectTask: data.selectTask,
@@ -380,6 +386,7 @@ export function App() {
       ) : activeView === "library" ? (
         <LibraryView
           activeSection={librarySection}
+          error={data.error}
           language={language}
           query={libraryQuery}
           onQuery={setLibraryQuery}
@@ -396,8 +403,12 @@ export function App() {
                 conflicts={data.skillConflicts}
                 onOpenDocs={() => openDocs(libraryDocsSections.skills)}
                 onRunCuratorExtraction={() => void data.runSideAction(() => api.runCuratorExtraction())}
-                onCreate={(input) => data.runSideAction(() => api.createSkill(input))}
-                onUpdate={(skillId, input) => data.runSideAction(() => api.patchSkill(skillId, input))}
+                onCreate={async (input) => {
+                  await data.runSideActionResult(() => api.createSkill(input), { rethrow: true });
+                }}
+                onUpdate={async (skillId, input) => {
+                  await data.runSideActionResult(() => api.patchSkill(skillId, input), { rethrow: true });
+                }}
                 onDelete={(skillId) => data.runSideAction(() => api.deleteSkill(skillId))}
                 onBulkDelete={(skillIds) => data.runSideAction(() => api.bulkDeleteSkills({ skillIds }))}
                 onMergeDuplicate={(group) => mergeDuplicate(group)}
@@ -424,13 +435,20 @@ export function App() {
             knowledge: (
               <KnowledgePanel
                 query={libraryQuery}
+                projectId={activeTaskFolderId}
                 language={language}
-                items={data.knowledgeItems}
+                items={data.knowledgeItems.filter((item) => item.projectId === activeTaskFolderId)}
                 onOpenDocs={() => openDocs(libraryDocsSections.knowledge)}
-                onCreate={(input) => data.runSideAction(() => api.createKnowledgeItem(input))}
+                onCreate={async (input) => {
+                  await data.runSideActionResult(() => api.createKnowledgeItem(input), { rethrow: true });
+                }}
                 onDelete={(id) => data.runSideAction(() => api.deleteKnowledgeItem(id))}
-                onUpdate={(id, input) => data.runSideAction(() => api.patchKnowledgeItem(id, input))}
-                onUpload={(input) => data.runSideAction(() => api.uploadKnowledgeFile(input))}
+                onUpdate={async (id, input) => {
+                  await data.runSideActionResult(() => api.patchKnowledgeItem(id, input), { rethrow: true });
+                }}
+                onUpload={async (input) => {
+                  await data.runSideActionResult(() => api.uploadKnowledgeFile(input), { rethrow: true });
+                }}
                 onReindex={(id) => data.runSideAction(() => api.reindexKnowledgeItem(id))}
                 onSearch={(input) => api.searchKnowledge(input)}
                 preferences={data.preferences}
@@ -473,6 +491,7 @@ export function App() {
       ) : (
         <SettingsView
           activeSection={settingsSection}
+          error={data.error}
           language={language}
           onOpenTasks={() => setTaskDrawerOpen(true)}
           onSection={(section) => navigateRoute({ view: "settings", section })}
@@ -489,6 +508,7 @@ export function App() {
                 onCreate={(input) => data.runSideActionResult(() => api.createModelProvider(input), { rethrow: true })}
                 onDelete={(providerId) => data.runSideAction(() => api.deleteModelProvider(providerId))}
                 onPreference={(patch) => data.runSideAction(() => api.updatePreferences(patch))}
+                onTest={(providerId) => data.runSideActionResult(() => api.testModelProvider(providerId), { rethrow: true })}
                 onUpdate={(providerId, input) => data.runSideActionResult(() => api.patchModelProvider(providerId, input), { rethrow: true })}
               />
             ),
@@ -882,7 +902,7 @@ function GoalModeDialog({
   const [selected, setSelected] = useState<GoalPermissionPreset | null>(null);
   const [fullRiskAcknowledged, setFullRiskAcknowledged] = useState(false);
   const zh = language === "zh-CN";
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (open) {
       setSelected(null);
       setFullRiskAcknowledged(false);

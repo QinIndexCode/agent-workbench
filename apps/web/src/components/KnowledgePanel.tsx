@@ -14,6 +14,7 @@ const pageSize = 8;
 
 export function KnowledgePanel({
   items,
+  projectId = "default",
   language,
   query = "",
   onOpenDocs,
@@ -29,6 +30,7 @@ export function KnowledgePanel({
   onDownloadModel
 }: {
   items: KnowledgeItem[];
+  projectId?: string;
   language?: string | null;
   query?: string;
   onOpenDocs?: (() => void) | undefined;
@@ -458,7 +460,7 @@ export function KnowledgePanel({
     const payload = { title: draft.title.trim(), content: draft.content.trim(), tags: splitList(draft.tags) };
     if (!payload.title || !payload.content) return;
     if (modalMode === "edit" && selected) await onUpdate(selected.id, payload);
-    else await onCreate({ projectId: "default", kind: "memory", ...payload });
+    else await onCreate({ projectId, kind: "memory", ...payload });
     setModalMode(null);
   }
 
@@ -467,7 +469,7 @@ export function KnowledgePanel({
     for (const file of [...files].slice(0, 8)) {
       const content = await readUploadContent(file);
       await onUpload({
-        projectId: "default",
+        projectId,
         title: file.name,
         fileName: file.name,
         mimeType: file.type || "application/octet-stream",
@@ -483,7 +485,7 @@ export function KnowledgePanel({
     if (!onSearch || !localQuery.trim()) return;
     setSearchBusy(true);
     try {
-      setSearchResults(await onSearch({ query: localQuery.trim(), projectId: "default", limit: 5 }));
+      setSearchResults(await onSearch({ query: localQuery.trim(), projectId, limit: 5 }));
     } finally {
       setSearchBusy(false);
     }

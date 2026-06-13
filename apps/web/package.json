@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@types/react-file-icon": "^1.0.5",
-    "@vitejs/plugin-react": "^4.4.1",
-    "vite": "^6.3.4"
+    "@vitejs/plugin-react": "^6.0.2",
+    "vite": "^8.0.16"
   }
 }

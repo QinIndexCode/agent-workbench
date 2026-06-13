@@ -45,8 +45,10 @@ import type {
   McpTransportKindSchema,
   ModelPresetSchema,
   ModelProviderCreateRequestSchema,
+  ModelProviderFailureClassSchema,
   ModelProviderPatchRequestSchema,
   ModelProviderRecordSchema,
+  ModelProviderTestResultSchema,
   MemoryDocumentCompactResultSchema,
   MemoryDocumentPatchSchema,
   MemoryDocumentSchema,
@@ -180,6 +182,8 @@ export type EncryptedSecretRef = z.infer<typeof EncryptedSecretRefSchema>;
 export type ModelProviderRecord = z.infer<typeof ModelProviderRecordSchema>;
 export type ModelProviderCreateRequest = z.infer<typeof ModelProviderCreateRequestSchema>;
 export type ModelProviderPatchRequest = z.infer<typeof ModelProviderPatchRequestSchema>;
+export type ModelProviderFailureClass = z.infer<typeof ModelProviderFailureClassSchema>;
+export type ModelProviderTestResult = z.infer<typeof ModelProviderTestResultSchema>;
 export type MemoryDocument = z.infer<typeof MemoryDocumentSchema>;
 export type MemoryDocumentPatch = z.infer<typeof MemoryDocumentPatchSchema>;
 export type MemoryDocumentCompactResult = z.infer<typeof MemoryDocumentCompactResultSchema>;

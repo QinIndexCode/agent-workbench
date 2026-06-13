@@ -11,7 +11,7 @@ export class PanelBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error(`Settings panel failed: ${this.props.name}`, error, info.componentStack);
+    console.error(`Side panel failed: ${this.props.name}`, error, info.componentStack);
   }
 
   componentDidUpdate(previousProps: { name: string }) {

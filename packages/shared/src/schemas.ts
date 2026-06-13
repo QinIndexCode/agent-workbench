@@ -89,6 +89,7 @@ export const ToolApprovalSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
   status: z.enum(["pending", "approved", "denied"]),
   decision: ApprovalDecisionSchema.optional(),
+  decisionReason: z.string().optional(),
   createdAt: z.string(),
   decidedAt: z.string().optional()
 });
@@ -527,7 +528,8 @@ export const ControlRequestSchema = z
 
 export const ApprovalRequestSchema = z
   .object({
-    decision: ApprovalDecisionSchema
+    decision: ApprovalDecisionSchema,
+    reason: z.string().trim().min(1).optional()
   })
   .strict();
 
@@ -571,7 +573,7 @@ export const UserPreferencesSchema = z.object({
   knowledgeTinyRerankerVocabPath: z.string().optional(),
   mcpApprovalMode: z.enum(["confirm_each", "confirm_dangerous", "auto"]).default("confirm_dangerous"),
   sanitizeSensitiveData: z.boolean().default(true),
-  encryptStorage: z.boolean().default(false),
+  encryptStorage: z.boolean().default(true),
   customPermissionSnapshot: z.array(z.enum(["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"])).optional(),
   modelRoute: z
     .object({
@@ -783,6 +785,21 @@ export const ModelProviderPatchRequestSchema = z
     makeActive: z.boolean().optional()
   })
   .strict();
+
+export const ModelProviderFailureClassSchema = z.enum(["provider_configuration", "rate_limit", "provider_transient"]);
+
+export const ModelProviderTestResultSchema = z.object({
+  providerId: z.string(),
+  label: z.string(),
+  ok: z.boolean(),
+  status: z.enum(["passed", "failed"]),
+  baseUrl: z.string(),
+  model: z.string(),
+  durationMs: z.number().int().nonnegative(),
+  statusCode: z.number().int().positive().optional(),
+  failureClass: ModelProviderFailureClassSchema.optional(),
+  error: z.string().optional()
+});
 
 export const KnowledgeKindSchema = z.enum(["memory", "file"]);
 

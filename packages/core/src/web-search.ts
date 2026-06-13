@@ -137,7 +137,13 @@ async function searchWithProvider(
 
   const endpoint = provider.endpoint?.trim();
   if (!endpoint) throw new Error("Custom web search provider requires an endpoint.");
-  const url = endpoint.replaceAll("{query}", encodeURIComponent(query)).replaceAll("{limit}", String(limit));
+  if (endpoint.includes("{apiKey}") && !apiKey) throw new Error("Custom web search endpoint requires an API key.");
+  const url = endpoint.includes("{query}")
+    ? endpoint
+        .replaceAll("{query}", encodeURIComponent(query))
+        .replaceAll("{limit}", String(limit))
+        .replaceAll("{apiKey}", encodeURIComponent(apiKey))
+    : appendSearchParams(endpoint, query, limit);
   const payload = await fetchJson(url, requestInit(signal, apiKey ? { authorization: `Bearer ${apiKey}` } : undefined));
   const items = (Array.isArray(payload) ? payload.filter(isRecord) : readArray(payload, ["results"]));
   return items.slice(0, limit).map((item) => ({
@@ -146,6 +152,13 @@ async function searchWithProvider(
     snippet: stringOf(item["snippet"] ?? item["description"] ?? item["summary"]),
     source: "custom"
   }));
+}
+
+function appendSearchParams(endpoint: string, query: string, limit: number): string {
+  const url = new URL(endpoint);
+  if (!url.searchParams.has("q") && !url.searchParams.has("query")) url.searchParams.set("q", query);
+  if (!url.searchParams.has("limit") && !url.searchParams.has("count") && !url.searchParams.has("num")) url.searchParams.set("limit", String(limit));
+  return url.toString();
 }
 
 async function searchDuckDuckGoHtml(query: string, limit: number, signal?: AbortSignal): Promise<WebSearchResult[]> {

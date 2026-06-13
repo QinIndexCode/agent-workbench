@@ -8,7 +8,7 @@
     "module": "NodeNext",
     "outDir": "dist-types",
     "rootDir": "src",
-    "types": ["vite/client"]
+    "types": ["vite/client", "node"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
   "references": [{ "path": "../../packages/shared" }]

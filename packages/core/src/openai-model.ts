@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import OpenAI from "openai";
@@ -8,6 +9,12 @@ import type { ModelClient, ModelStreamHandlers, ModelTraceEvent, ModelTurn, Mode
 import { ConfiguredToolModelClient, FallbackModelClient } from "./fallback-model.js";
 import { toolAllowedByTaskGraph } from "./task-graph.js";
 
+const DEFAULT_PROVIDER_OUTPUT_TOKENS = 4096;
+const MAX_PROVIDER_OUTPUT_TOKENS = 64000;
+const DEFAULT_PROMPT_CACHE_MODE = "auto";
+
+export type PromptCacheMode = "auto" | "always" | "off";
+
 export interface OpenAIModelClientOptions {
   apiKey?: string;
   baseURL?: string;
@@ -16,6 +23,7 @@ export interface OpenAIModelClientOptions {
   toolProvider?: ModelToolProvider | undefined;
   preferenceProvider?: (() => Promise<UserPreferences>) | undefined;
   providerResolver?: (() => Promise<ResolvedModelProviderConfig | null>) | undefined;
+  promptCacheMode?: PromptCacheMode;
 }
 
 export interface ResolvedModelProviderConfig {
@@ -50,6 +58,7 @@ export class OpenAIModelClient implements ModelClient {
   private readonly toolProvider: ModelToolProvider | undefined;
   private readonly preferenceProvider: (() => Promise<UserPreferences>) | undefined;
   private readonly providerResolver: (() => Promise<ResolvedModelProviderConfig | null>) | undefined;
+  private readonly promptCacheMode: PromptCacheMode;
 
   constructor(options: OpenAIModelClientOptions) {
     this.apiKey = options.apiKey ?? "";
@@ -60,6 +69,7 @@ export class OpenAIModelClient implements ModelClient {
     this.toolProvider = options.toolProvider;
     this.preferenceProvider = options.preferenceProvider;
     this.providerResolver = options.providerResolver;
+    this.promptCacheMode = options.promptCacheMode ?? promptCacheModeFromEnvironment();
   }
 
   async next(task: TaskDetail, stream?: ModelStreamHandlers): Promise<ModelTurn> {
@@ -146,6 +156,9 @@ export class OpenAIModelClient implements ModelClient {
       stream: true,
       stream_options: { include_usage: true }
     };
+    if (shouldSendOpenAIPromptCacheKey(this.promptCacheMode, baseURL)) {
+      request.prompt_cache_key = buildPromptCacheKey(task, provider?.providerId, model, baseURL, modelTools);
+    }
     if (modelTools.length > 0) {
       request.tool_choice = "auto";
       request.tools = modelTools as OpenAI.Chat.Completions.ChatCompletionTool[];
@@ -256,9 +269,10 @@ export class OpenAIModelClient implements ModelClient {
     const canonicalMessages = contextMessages(context, task);
     const requestBody = {
       model: provider.model,
-      max_tokens: 4096,
+      max_tokens: responseTokenBudget(context),
       system: systemTextFromMessages(canonicalMessages),
       messages: toAnthropicMessages(canonicalMessages),
+      ...(this.promptCacheMode !== "off" ? { cache_control: { type: "ephemeral" } } : {}),
       ...(modelTools.length > 0 ? { tools: modelTools.map(toAnthropicTool) } : {})
     };
     await emitModelTrace(stream, {
@@ -764,7 +778,7 @@ function serializeTraceError(error: unknown): Record<string, unknown> {
 export function selectModelToolsForTask(task: TaskDetail, dynamicTools: ModelToolDefinition[] = []): ModelToolDefinition[] {
   const builtIns = toolDefinitions();
   const stableDynamicTools = [...dynamicTools].sort((left, right) => left.function.name.localeCompare(right.function.name));
-  return filterToolsForTaskGraph(task, [...builtIns, ...stableDynamicTools]);
+  return filterToolsForTaskGraph(task, [...builtIns, ...stableDynamicTools]).map(stabilizeModelTool);
 }
 
 function filterToolsForTaskGraph(task: TaskDetail, tools: ModelToolDefinition[]): ModelToolDefinition[] {
@@ -788,6 +802,76 @@ function attentionTraceMeta(context: Awaited<ReturnType<ContextAssembler["assemb
   };
 }
 
+function responseTokenBudget(context: Awaited<ReturnType<ContextAssembler["assemble"]>> | null): number {
+  const explicit = Number(envValue("AGENT_WORKBENCH_MAX_OUTPUT_TOKENS", "SCC_MAX_OUTPUT_TOKENS") ?? "");
+  const reserved = Number(context?.attentionPacket.tokenBudget.reservedForResponse ?? 0);
+  const candidate = Number.isFinite(explicit) && explicit > 0 ? explicit : reserved;
+  if (!Number.isFinite(candidate) || candidate <= 0) return DEFAULT_PROVIDER_OUTPUT_TOKENS;
+  return Math.max(1, Math.min(MAX_PROVIDER_OUTPUT_TOKENS, Math.round(candidate)));
+}
+
+function promptCacheModeFromEnvironment(): PromptCacheMode {
+  const value = envValue("AGENT_WORKBENCH_PROMPT_CACHE_MODE", "SCC_PROMPT_CACHE_MODE")?.trim().toLowerCase();
+  return value === "always" || value === "off" || value === "auto" ? value : DEFAULT_PROMPT_CACHE_MODE;
+}
+
+function shouldSendOpenAIPromptCacheKey(mode: PromptCacheMode, baseURL: string | undefined): boolean {
+  if (mode === "off") return false;
+  if (mode === "always") return true;
+  if (!baseURL) return true;
+  try {
+    return new URL(baseURL).hostname.toLowerCase() === "api.openai.com";
+  } catch {
+    return false;
+  }
+}
+
+function buildPromptCacheKey(
+  task: TaskDetail,
+  providerId: string | undefined,
+  model: string,
+  baseURL: string | undefined,
+  tools: ModelToolDefinition[]
+): string {
+  const fingerprint = stableJson({
+    protocol: "openai_compatible",
+    providerId: providerId ?? "default",
+    model,
+    endpoint: promptCacheEndpointScope(baseURL),
+    folderId: task.folderId ?? "default",
+    tools
+  });
+  return `aw-${createHash("sha256").update(fingerprint).digest("hex").slice(0, 40)}`;
+}
+
+function promptCacheEndpointScope(baseURL: string | undefined): string {
+  if (!baseURL) return "api.openai.com";
+  try {
+    const url = new URL(baseURL);
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return baseURL.replace(/\/+$/, "");
+  }
+}
+
+function stabilizeModelTool(tool: ModelToolDefinition): ModelToolDefinition {
+  return stableValue(tool) as ModelToolDefinition;
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(stableValue(value));
+}
+
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort((left, right) => left.localeCompare(right))
+      .map((key) => [key, stableValue(value[key])])
+  );
+}
+
 export interface OpenAIProviderConfig {
   apiKey?: string;
   baseURL?: string;
@@ -805,7 +889,7 @@ interface OpenAIProviderSection {
 
 export function loadOpenAiConfig(filePath = normalizeApiKeyFilePath(envValue("AGENT_WORKBENCH_API_KEY_FILE", "SCC_API_KEY_FILE"))): OpenAIProviderConfig {
   const fileConfig = loadOpenAiProviderConfig(filePath);
-  const apiKey = process.env["OPENAI_API_KEY"] ?? fileConfig.apiKey;
+  const apiKey = process.env["OPENAI_API_KEY"] ?? envValue("AGENT_WORKBENCH_OPENAI_API_KEY", "SCC_OPENAI_API_KEY") ?? fileConfig.apiKey;
   const baseURL = process.env["OPENAI_BASE_URL"] ?? process.env["OPENAI_BASEURL"] ?? envValue("AGENT_WORKBENCH_OPENAI_BASE_URL", "SCC_OPENAI_BASE_URL") ?? fileConfig.baseURL;
   const model = envValue("AGENT_WORKBENCH_MODEL", "SCC_MODEL") ?? process.env["OPENAI_MODEL"] ?? fileConfig.model;
   return {
@@ -1007,11 +1091,13 @@ function extractOpenAIUsage(chunk: unknown): ModelUsage | undefined {
 function anthropicUsage(payload: Record<string, unknown>): ModelUsage | undefined {
   if (!isRecord(payload["usage"])) return undefined;
   const usage = payload["usage"];
-  const cachedTokens = Number(usage["cache_read_input_tokens"] ?? 0) + Number(usage["cache_creation_input_tokens"] ?? 0);
+  const uncachedInputTokens = finiteNonNegativeNumber(usage["input_tokens"]);
+  const cachedTokens = finiteNonNegativeNumber(usage["cache_read_input_tokens"]);
+  const cacheCreationTokens = finiteNonNegativeNumber(usage["cache_creation_input_tokens"]);
   return {
-    ...optionalNumber("inputTokens", usage["input_tokens"]),
+    inputTokens: uncachedInputTokens + cachedTokens + cacheCreationTokens,
     ...optionalNumber("outputTokens", usage["output_tokens"]),
-    ...(Number.isFinite(cachedTokens) && cachedTokens > 0 ? { cachedTokens } : {}),
+    ...(cachedTokens > 0 ? { cachedTokens } : {}),
     raw: usage
   };
 }
@@ -1030,6 +1116,11 @@ function geminiUsage(payload: Record<string, unknown>): ModelUsage | undefined {
 function optionalNumber(key: "inputTokens" | "outputTokens" | "cachedTokens", value: unknown): Partial<ModelUsage> {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? { [key]: number } : {};
+}
+
+function finiteNonNegativeNumber(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
 }
 
 function extractReasoningDelta(delta: Record<string, unknown>): string {

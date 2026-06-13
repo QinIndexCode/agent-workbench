@@ -697,7 +697,7 @@ export function defaultPreferences(): UserPreferences {
     knowledgeTinyRerankerVocabPath: undefined,
     mcpApprovalMode: "confirm_dangerous",
     sanitizeSensitiveData: true,
-    encryptStorage: false,
+    encryptStorage: true,
     modelRoute: { fallbackProviderIds: [] },
     updatedAt: new Date().toISOString()
   };

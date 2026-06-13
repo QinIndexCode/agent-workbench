@@ -204,12 +204,12 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     vendor: "mimo",
     label: "Xiaomi MiMo",
     protocol: "openai_compatible",
-    baseUrl: "https://api.xiaomi.com/v1",
+    baseUrl: "https://api.xiaomimimo.com/v1",
     docsUrl: "https://dev.mi.com/platform/doc?p=/doc/m/mimo",
     models: [
-      preset("MiMo-V2.5-Pro", 131_072, true, true, "https://dev.mi.com/platform/doc?p=/doc/m/mimo"),
-      preset("MiMo-V2.5", 131_072, true, true, "https://dev.mi.com/platform/doc?p=/doc/m/mimo"),
-      preset("MiMo-V2-Flash", 131_072, true, false, "https://dev.mi.com/platform/doc?p=/doc/m/mimo")
+      preset("mimo-v2.5-pro", 1_048_576, true, true, "https://dev.mi.com/platform/doc?p=/doc/m/mimo"),
+      preset("mimo-v2.5", 1_048_576, true, true, "https://dev.mi.com/platform/doc?p=/doc/m/mimo"),
+      preset("mimo-v2-flash", 131_072, true, false, "https://dev.mi.com/platform/doc?p=/doc/m/mimo")
     ]
   },
   {

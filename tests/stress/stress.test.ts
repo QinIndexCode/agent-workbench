@@ -109,6 +109,56 @@ describe("stress matrix", () => {
     }
   });
 
+  it("runs concurrent file-writing tasks without cross-task marker leakage", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-stress-concurrent-"));
+    const taskCount = 24;
+    const markers = Array.from({ length: taskCount }, (_, index) => `SOAK_MARKER_${String(index).padStart(3, "0")}`);
+    const startedAt = Date.now();
+    try {
+      const store = new InMemoryWorkbenchStore();
+      const workbench = new AgentWorkbench({ store, model: new ConcurrentFileSoakModel(), tools: new ShellToolExecutor(root) });
+      const folder = await workbench.createTaskFolder({ name: "Concurrent soak root", rootPath: root });
+      await workbench.grantGlobalPermission("workspace_write", "concurrent soak file writes");
+
+      const tasks = await Promise.all(
+        markers.map((marker) =>
+          workbench.createTask(`Create an isolated concurrent soak note for ${marker}.`, `Concurrent ${marker}`, folder.id)
+        )
+      );
+
+      const listed = await workbench.listTasks();
+      expect(new Set(tasks.map((task) => task.id)).size).toBe(taskCount);
+      expect(listed).toHaveLength(taskCount);
+      expect(tasks.every((task) => task.status === "completed")).toBe(true);
+
+      for (const marker of markers) {
+        const task = tasks.find((item) => item.title.includes(marker));
+        expect(task, `missing task for ${marker}`).toBeDefined();
+        const notePath = join(root, "notes", `${marker}.md`);
+        const note = readFileSync(notePath, "utf8");
+        expect(note).toContain(marker);
+        for (const other of markers.filter((item) => item !== marker)) {
+          expect(note).not.toContain(other);
+        }
+
+        const finalMessages = task!.events.filter((event) => event.type === "assistant_message").map((event) => event.summary).join("\n");
+        expect(finalMessages).toContain(marker);
+        const toolResults = task!.events.filter((event) => event.type === "tool_result");
+        expect(toolResults.length).toBeGreaterThanOrEqual(1);
+        expect(toolResults.some((event) => String(event.payload["ok"]) === "true" || event.payload["ok"] === true)).toBe(true);
+      }
+
+      recordPass("concurrent file write isolation", null, {
+        durationMs: Date.now() - startedAt,
+        markerCount: markers.length,
+        listedTaskCount: listed.length,
+        sampleMarker: markers[0]
+      });
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  }, 30_000);
+
   it("compacts long task context without dropping the active task identity", async () => {
     const store = new InMemoryWorkbenchStore();
     const assembler = new ContextAssembler(store);
@@ -182,6 +232,39 @@ class TurnFileEditModel implements ModelClient {
 class FinalOnlyModel implements ModelClient {
   async next(_task: TaskDetail): Promise<ModelTurn> {
     return { kind: "final", message: "ok" };
+  }
+}
+
+class ConcurrentFileSoakModel implements ModelClient {
+  async next(task: TaskDetail, handlers?: ModelStreamHandlers): Promise<ModelTurn> {
+    const latestUser = [...task.events].reverse().find((event) => event.type === "user_message" && !event.reverted)?.summary ?? "";
+    const marker = latestUser.match(/\bSOAK_MARKER_\d{3}\b/u)?.[0] ?? "SOAK_MARKER_UNKNOWN";
+    const activeToolResult = task.events.find((event) => event.type === "tool_result" && !event.reverted);
+    if (activeToolResult) {
+      handlers?.onThinkingDelta?.(`Verified isolated write for ${marker}.`);
+      return { kind: "final", message: `Completed isolated concurrent write for ${marker}.` };
+    }
+
+    return {
+      kind: "tool_calls",
+      calls: [
+        {
+          id: createId("tool_call"),
+          toolName: "edit_file",
+          args: {
+            path: `notes/${marker}.md`,
+            expectedHash: "__new__",
+            edits: [
+              {
+                startLine: 1,
+                endLine: 1,
+                newText: `# ${marker}\n\nisolated concurrent write\n`
+              }
+            ]
+          }
+        }
+      ]
+    };
   }
 }
 

@@ -6,6 +6,16 @@ export const apiBase = "http://127.0.0.1:5181";
 export const SESSION_HEADER = "x-agent-workbench-session";
 export const riskCategories = ["host_observation", "workspace_read", "workspace_write", "shell", "network", "destructive"] as const;
 
+export interface SourceFingerprintSnapshot {
+  algorithm: string;
+  head: string;
+  hash: string;
+  dirty: boolean;
+  dirtyFileCount: number;
+  untrackedFileCount: number;
+  excludedPrefixes: string[];
+}
+
 export async function bootstrapSession(request: APIRequestContext): Promise<Record<string, string>> {
   const bootstrap = await request.get(`${apiBase}/api/session/bootstrap`);
   const { sessionToken } = await bootstrap.json();
@@ -66,8 +76,14 @@ export async function persistFlagshipMetric(metric: {
   views.push(metric);
   views.sort((left: typeof metric, right: typeof metric) => `${left.project}/${left.view}`.localeCompare(`${right.project}/${right.view}`));
   existing.generatedAt = new Date().toISOString();
+  existing.sourceFingerprint = await currentSourceFingerprint();
   existing.views = views;
   writeFileSync(metricsPath, JSON.stringify(existing, null, 2), "utf8");
+}
+
+export async function currentSourceFingerprint(): Promise<SourceFingerprintSnapshot> {
+  const module = await import("../../scripts/source-fingerprint.mjs") as { sourceFingerprint(root?: string): SourceFingerprintSnapshot };
+  return module.sourceFingerprint(process.cwd());
 }
 
 export function screenshotPath(project: string, view: string): string {
@@ -76,7 +92,7 @@ export function screenshotPath(project: string, view: string): string {
   return resolve(dir, `${project}-${view}.png`);
 }
 
-function readJson(filePath: string): { generatedAt: string; views: Array<{ project: string; view: string; horizontalOverflow: number; route: string; screenshotPath: string }> } | null {
+function readJson(filePath: string): { generatedAt: string; sourceFingerprint?: SourceFingerprintSnapshot; views: Array<{ project: string; view: string; horizontalOverflow: number; route: string; screenshotPath: string }> } | null {
   try {
     return JSON.parse(readFileSync(filePath, "utf8"));
   } catch {

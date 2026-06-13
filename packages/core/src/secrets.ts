@@ -25,9 +25,13 @@ export class LocalSecretBox {
   }
 
   decrypt(secret: EncryptedSecretValue): string {
-    const decipher = createDecipheriv("aes-256-gcm", this.key, Buffer.from(secret.iv, "base64"));
-    decipher.setAuthTag(Buffer.from(secret.authTag, "base64"));
-    return Buffer.concat([decipher.update(Buffer.from(secret.value, "base64")), decipher.final()]).toString("utf8");
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", this.key, Buffer.from(secret.iv, "base64"));
+      decipher.setAuthTag(Buffer.from(secret.authTag, "base64"));
+      return Buffer.concat([decipher.update(Buffer.from(secret.value, "base64")), decipher.final()]).toString("utf8");
+    } catch {
+      throw new Error("Unable to decrypt local encrypted data. The local secret key file may be missing, changed, or corrupted.");
+    }
   }
 }
 
@@ -37,6 +41,7 @@ function loadOrCreateKey(filePath: string): Buffer {
     const stored = readFileSync(resolved, "utf8").trim();
     const key = Buffer.from(stored, "base64");
     if (key.length === 32) return key;
+    throw new Error(`Invalid local secret key file at ${resolved}. Expected a base64-encoded 32-byte key.`);
   }
   mkdirSync(dirname(resolved), { recursive: true });
   const created = randomBytes(32);

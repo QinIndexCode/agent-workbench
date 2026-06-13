@@ -1,5 +1,5 @@
 import type { TaskDetail, TaskEvent } from "@agent-workbench/shared";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { ModelTraceEvent } from "./fallback-model.js";
 import { sanitizeSensitiveValue } from "./secrets.js";
@@ -41,6 +41,12 @@ export class TaskTraceRecorder {
       ...(event.provider ? { provider: event.provider } : {}),
       payload: summarizeModelTracePayload(event.kind, event.payload)
     });
+  }
+
+  async deleteTaskTrace(taskId: string): Promise<void> {
+    const previous = this.locks.get(taskId);
+    await previous?.catch(() => undefined);
+    await rm(resolve(this.root, taskId), { recursive: true, force: true });
   }
 
   private async appendTask(task: TaskDetail, entry: Record<string, unknown>): Promise<void> {

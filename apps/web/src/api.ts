@@ -22,10 +22,10 @@ import type {
   ModelProviderCreateRequest,
   ModelProviderPatchRequest,
   ModelProviderRecord,
+  ModelProviderTestResult,
   MemoryDocument,
   MemoryDocumentCompactResult,
   MemoryDocumentPatch,
-  PatternRecord,
   PreferencesPatch,
   ProjectMemory,
   ProjectMemoryCreateRequest,
@@ -68,10 +68,8 @@ import type {
   TaskRollbackResult,
   TaskTitleResponse,
   TaskTranscriptItem,
-  TaskMemory,
   UserPreferences,
   ConversationSummary,
-  PromptCacheStats,
   WebSearchProviderConfig,
   WebSearchProviderCreateRequest,
   WebSearchProviderPatchRequest
@@ -301,14 +299,8 @@ export const api = {
   decideApproval(taskId: string, approvalId: string, decision: ApprovalDecision): Promise<TaskDetail> {
     return request(`/api/tasks/${taskId}/approvals/${approvalId}`, { method: "POST", body: JSON.stringify({ decision }) });
   },
-  listTaskMemories(): Promise<TaskMemory[]> {
-    return request("/api/task-memories");
-  },
   deleteTaskMemory(id: string): Promise<void> {
     return request(`/api/task-memories/${id}`, { method: "DELETE" });
-  },
-  listPatterns(): Promise<PatternRecord[]> {
-    return request("/api/patterns");
   },
   listSkills(): Promise<SkillRecord[]> {
     return request("/api/skills");
@@ -451,6 +443,9 @@ export const api = {
   deleteModelProvider(providerId: string): Promise<void> {
     return request(`/api/model-providers/${providerId}`, { method: "DELETE" });
   },
+  testModelProvider(providerId: string): Promise<ModelProviderTestResult> {
+    return request(`/api/model-providers/${providerId}/test`, { method: "POST" });
+  },
   listScheduledTasks(): Promise<ScheduledTask[]> {
     return request("/api/scheduled-tasks");
   },
@@ -475,8 +470,8 @@ export const api = {
   deleteWebSearchProvider(providerId: string): Promise<void> {
     return request(`/api/web-search/providers/${providerId}`, { method: "DELETE" });
   },
-  listKnowledgeItems(): Promise<KnowledgeItem[]> {
-    return request("/api/knowledge");
+  listKnowledgeItems(projectId?: string): Promise<KnowledgeItem[]> {
+    return request(`/api/knowledge${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`);
   },
   createKnowledgeItem(input: KnowledgeCreateRequest): Promise<KnowledgeItem> {
     return request("/api/knowledge", { method: "POST", body: JSON.stringify(input) });
@@ -501,10 +496,6 @@ export const api = {
   },
   downloadKnowledgeModel(input: KnowledgeModelDownloadRequest): Promise<KnowledgeModelDownloadResult> {
     return request("/api/knowledge/models/download", { method: "POST", body: JSON.stringify(input) });
-  },
-  listPromptCacheStats(taskId?: string): Promise<PromptCacheStats[]> {
-    const suffix = taskId ? `?taskId=${encodeURIComponent(taskId)}` : "";
-    return request(`/api/prompt-cache-stats${suffix}`);
   },
   listIntegrations(): Promise<IntegrationProviderConfig[]> {
     return request("/api/integrations");

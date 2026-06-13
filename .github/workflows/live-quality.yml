@@ -13,14 +13,14 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 120
     env:
-      SCC_LIVE_MODEL_SMOKE: "1"
-      SCC_LIVE_MODEL_REQUIRED: "1"
-      SCC_FLAGSHIP_REPORT_REQUIRED: "1"
-      SCC_STRESS_LEVEL: "5"
-      OPENAI_API_KEY: ${{ secrets.SCC_OPENAI_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.SCC_OPENAI_BASE_URL }}
-      SCC_MODEL: ${{ secrets.SCC_OPENAI_MODEL }}
-      OPENAI_PROVIDER: ${{ secrets.SCC_OPENAI_PROVIDER }}
+      AGENT_WORKBENCH_LIVE_MODEL_SMOKE: "1"
+      AGENT_WORKBENCH_LIVE_MODEL_REQUIRED: "1"
+      AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED: "1"
+      AGENT_WORKBENCH_STRESS_LEVEL: "5"
+      AGENT_WORKBENCH_OPENAI_API_KEY: ${{ secrets.AGENT_WORKBENCH_OPENAI_API_KEY }}
+      AGENT_WORKBENCH_OPENAI_BASE_URL: ${{ secrets.AGENT_WORKBENCH_OPENAI_BASE_URL }}
+      AGENT_WORKBENCH_MODEL: ${{ secrets.AGENT_WORKBENCH_OPENAI_MODEL }}
+      OPENAI_PROVIDER: ${{ secrets.AGENT_WORKBENCH_OPENAI_PROVIDER }}
 
     steps:
       - name: Checkout
@@ -35,8 +35,8 @@ jobs:
       - name: Verify live smoke secrets
         shell: pwsh
         run: |
-          if (-not $env:OPENAI_API_KEY) { throw "Missing secret SCC_OPENAI_API_KEY" }
-          if (-not $env:OPENAI_BASE_URL) { throw "Missing secret SCC_OPENAI_BASE_URL" }
+          if (-not $env:AGENT_WORKBENCH_OPENAI_API_KEY) { throw "Missing secret AGENT_WORKBENCH_OPENAI_API_KEY" }
+          if (-not $env:AGENT_WORKBENCH_OPENAI_BASE_URL) { throw "Missing secret AGENT_WORKBENCH_OPENAI_BASE_URL" }
 
       - name: Install dependencies
         run: npm.cmd ci

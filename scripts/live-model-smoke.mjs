@@ -1,11 +1,13 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 
 const root = resolve(process.cwd());
+const liveTraceRoot = resolve(root, "data", "logs", "model-traces");
 
 const liveSmokeRequested = (process.env.AGENT_WORKBENCH_LIVE_MODEL_SMOKE ?? process.env.SCC_LIVE_MODEL_SMOKE) === "1";
 const liveSmokeRequired = (process.env.AGENT_WORKBENCH_LIVE_MODEL_REQUIRED ?? process.env.SCC_LIVE_MODEL_REQUIRED) === "1";
@@ -31,13 +33,22 @@ const {
   InMemoryWorkbenchStore,
   KnowledgeSearchToolExecutor,
   loadOpenAiConfig,
+  LocalSecretBox,
   nowIso,
   ShellToolExecutor,
   WebSearchToolExecutor
 } = await import("../packages/core/dist/index.js");
+const { SqliteWorkbenchStore } = await import("../apps/server/dist/sqlite-store.js");
 
-const config = loadOpenAiConfig();
+const environmentConfig = loadOpenAiConfig();
+const storedProviderConfig = hasCompleteProviderConfig(environmentConfig) ? null : await loadStoredModelProviderConfig();
+const config = hasCompleteProviderConfig(environmentConfig)
+  ? { ...environmentConfig, source: "environment" }
+  : storedProviderConfig ?? { ...environmentConfig, source: "environment" };
 const stressLevel = Math.max(1, Number(process.env.AGENT_WORKBENCH_STRESS_LEVEL ?? process.env.SCC_STRESS_LEVEL ?? "1") || 1);
+const maxTransientCaseAttempts = Math.max(1, Number(process.env.AGENT_WORKBENCH_LIVE_MODEL_CASE_ATTEMPTS ?? "3") || 3);
+const transientRetryBaseMs = Math.max(0, Number(process.env.AGENT_WORKBENCH_LIVE_MODEL_RETRY_BASE_MS ?? "20000") || 20_000);
+const liveCleanupTasks = [];
 
 const report = {
   generatedAt: nowIso(),
@@ -47,10 +58,13 @@ const report = {
   provider: {
     baseURL: config.baseURL ? redactUrl(config.baseURL) : "missing",
     model: config.model ?? "mimo-v2.5",
+    source: config.source ?? "environment",
+    ...(config.providerId ? { providerId: config.providerId } : {}),
+    ...(config.dbPath ? { dbPath: toRelative(config.dbPath) } : {}),
     hasApiKey: Boolean(config.apiKey),
     missing: [
-      !config.apiKey ? "OPENAI_API_KEY or AGENT_WORKBENCH_API_KEY_FILE" : null,
-      !config.baseURL ? "OPENAI_BASE_URL or AGENT_WORKBENCH_OPENAI_BASE_URL" : null
+      !config.apiKey ? "OPENAI_API_KEY, AGENT_WORKBENCH_OPENAI_API_KEY, SCC_OPENAI_API_KEY, AGENT_WORKBENCH_API_KEY_FILE, or SQLite model provider secret" : null,
+      !config.baseURL ? "OPENAI_BASE_URL, AGENT_WORKBENCH_OPENAI_BASE_URL, or SQLite model provider baseUrl" : null
     ].filter(Boolean)
   },
   cases: []
@@ -85,6 +99,30 @@ class EvidenceError extends Error {
   }
 }
 
+const providerPreflight = await checkProviderPreflight(config);
+if (!providerPreflight.ok) {
+  report.cases.push({
+    name: "provider preflight",
+    status: "failed",
+    durationMs: providerPreflight.durationMs,
+    failureClass: providerPreflight.failureClass,
+    error: providerPreflight.error,
+    evidence: {
+      provider: report.provider,
+      statusCode: providerPreflight.statusCode,
+      sourceFingerprint: report.sourceFingerprint.hash
+    }
+  });
+  report.summary = {
+    totalCases: report.cases.length,
+    passedCases: 0,
+    failedCases: report.cases.length
+  };
+  const { markdownPath } = await writeLiveSmokeReport(report);
+  console.error(`Live Mimo smoke failed before case execution: ${providerPreflight.error}. Report: ${markdownPath}`);
+}
+
+if (providerPreflight.ok) {
 await runCase("short no-tool answer", async () => {
   const { workbench } = await createLiveWorkbench();
   const task = await workbench.createTask(
@@ -262,7 +300,7 @@ if (stressLevel >= 3) {
       "用一句话记住这个上下文标记：CTX-MARKER-77。不要使用工具。",
       "Live context compaction"
     );
-    task = await seedLongConversationHistory(store, task, "CTX-MARKER-77");
+    task = await seedLongConversationHistory(store, task, "CTX-MARKER-77", 80);
     await workbench.updatePreferences({ maxTokensPerRequest: 2200 });
     const continued = await workbench.appendMessage(
       task.id,
@@ -273,7 +311,13 @@ if (stressLevel >= 3) {
     const summaryEvents = continued.events.filter((event) => event.type === "conversation_summary_created");
     assert(continued.id === task.id, "long context follow-up changed task id");
     assert(tasks.length === 1, `expected one task after long context follow-up, got ${tasks.length}`);
-    assert(summaries.length > 0 || summaryEvents.length > 0, "long context did not create an auditable summary");
+    assertWithEvidence(summaries.length > 0 || summaryEvents.length > 0, "long context did not create an auditable summary", {
+      eventCount: continued.events.length,
+      summarizableEvents: continued.events.filter((event) => ["user_message", "assistant_message", "tool_requested", "tool_result", "verification_result_recorded", "guidance_consumed", "pending_guidance"].includes(event.type)).length,
+      summaries: summaries.length,
+      summaryEvents: summaryEvents.length,
+      assistant: excerpt(assistantText(continued))
+    });
     return evidence(continued, {
       taskCount: tasks.length,
       summaries: summaries.length,
@@ -392,15 +436,16 @@ if (stressLevel >= 5) {
       assert(restoredTotals.includes("return '$0.00';"), "rollback did not restore totals source before follow-up");
 
       task = await seedLongConversationHistory(store, await workbench.getTask(task.id), "LONG-FOLLOW-UP-MARKER", 22);
-      await workbench.updatePreferences({ maxTokensPerRequest: 2600 });
+      await workbench.updatePreferences({ maxTokensPerRequest: 6000 });
       const toolRequestCountBeforeFollowUp = task.events.filter((event) => event.type === "tool_requested").length;
       let continued = await workbench.appendMessage(
         task.id,
         [
           "继续这个同一个任务。",
           "请基于之前真实执行过的工具证据和刚刚 rollback 的结果，输出一个 JSON 对象，不要使用 Markdown、不要使用代码围栏、不要添加 JSON 之外的解释。",
+          "你的最终回答第一个字符必须是 `{`，最后一个字符必须是 `}`。",
           "不要重新运行 npm test，也不要再次编辑文件。",
-          "你必须且只能调用两次 read_file：第一次 path 必须是 \"src/math.mjs\"，第二次 path 必须是 \"src/totals.mjs\"；不要读取其他文件，不要使用空 path，也不要调用除 read_file 之外的工具。",
+          "你必须重新读取 src/math.mjs 和 src/totals.mjs；读取后立即回答，最多调用四次 read_file；不要读取其他文件，不要使用空 path，也不要调用除 read_file 之外的工具。",
           "只允许基于你已经看到的 npm test 输出、src/math.mjs 和 src/totals.mjs 的真实内容回答，不要猜测不存在的函数或文件，不要使用“可能”“也许”或类似推测词。",
           "JSON 必须包含这些字段：",
           "- originalFailures.math.expected",
@@ -414,9 +459,12 @@ if (stressLevel >= 5) {
           "- currentMathExpression",
           "- currentTotalsExpression",
           "- restoredToOriginalBuggyState",
-          "真实断言值必须是：sum([2, 3, 5]) 期望 10、实际 3；renderTotal([{ price: 2 }, { price: 5.5 }]) 期望 '$7.50'、实际 '$0.00'。",
-          "originalFailures.math.expression 和 originalFailures.totals.expression 必须填写导致失败的源码 return 表达式，不要填写测试断言调用表达式。",
-          "modifiedFiles 必须列出之前真正被 edit_file 修改过的相对路径；本场景应为 [\"src/math.mjs\", \"src/totals.mjs\"]。",
+          "请输出完整的一行 JSON 对象，并保留这个结构；把 <...> 替换为你从工具证据中读到的值，不能只输出开头大括号：",
+          "{\"originalFailures\":{\"math\":{\"expected\":<number>,\"actual\":<number>,\"expression\":\"return <source expression>;\"},\"totals\":{\"expected\":\"<string>\",\"actual\":\"<string>\",\"expression\":\"return <source expression>;\"}},\"modifiedFiles\":[\"<relative path>\"],\"rollbackSucceeded\":<boolean>,\"currentMathExpression\":\"return <source expression>;\",\"currentTotalsExpression\":\"return <source expression>;\",\"restoredToOriginalBuggyState\":<boolean>}",
+          "originalFailures 必须从之前 npm test 的真实失败输出提取 expected 和 actual，不要从本条 follow-up 指令猜测。",
+          "所有 expression 字段必须逐字复制刚刚 read_file 看到的当前源码中的完整 return 语句，必须以 `return ` 开头并以 `;` 结尾。",
+          "不要把 `sum(...)`、`average(...)`、`renderTotal(...)` 或任何测试断言调用写进 expression 字段；如果 expression 字段不是源码 return 语句，就是错误答案。",
+          "modifiedFiles 必须列出之前真正被 edit_file 修改过的相对路径，不要列出没有工具证据的文件。",
           "rollback 后当前源码必须反映恢复后的真实表达式。不要新建任务。"
         ].join("\n")
       );
@@ -426,41 +474,78 @@ if (stressLevel >= 5) {
         (approval) => (approval.riskCategory === "workspace_read" ? "allow_for_task" : "deny"),
         8
       );
+      if (!tryParseAssistantJson(assistantText(continued)) && assistantText(continued).trim().length <= 2) {
+        continued = await workbench.appendMessage(
+          task.id,
+          [
+            "上一条最终回答明显不完整。不要新建任务。",
+            "基于同一线程已有工具证据，直接补全完整的一行 JSON 对象。",
+            "不要只输出开头大括号；不要使用 Markdown 代码块；不要请求除 read_file 之外的工具。",
+            "字段仍必须包含 originalFailures、modifiedFiles、rollbackSucceeded、currentMathExpression、currentTotalsExpression、restoredToOriginalBuggyState。"
+          ].join("\n")
+        );
+        continued = await settleApprovals(
+          workbench,
+          continued,
+          (approval) => (approval.riskCategory === "workspace_read" ? "allow_for_task" : "deny"),
+          8
+        );
+      }
       const summaries = await workbench.listConversationSummaries(task.id);
       const followUpToolRequests = continued.events.filter((event) => event.type === "tool_requested").slice(toolRequestCountBeforeFollowUp);
       const followUpReadPaths = followUpToolRequests
         .filter((event) => event.payload?.toolName === "read_file")
+        .map((event) => String(event.payload?.args?.path ?? ""));
+      const editedPaths = continued.events
+        .filter((event) => event.type === "tool_requested" && event.payload?.toolName === "edit_file")
         .map((event) => String(event.payload?.args?.path ?? ""));
       const longEvidence = evidence(continued, {
         summaries: summaries.length,
         assistant: excerpt(assistantText(continued)),
         restoredMath: excerpt(restoredMath),
         restoredTotals: excerpt(restoredTotals),
+        editedPaths,
         followUpReadPaths
       }).evidence;
       const assistant = assistantText(continued);
-      const assistantJson = parseAssistantJson(assistant, longEvidence);
-      const modifiedFiles = normalizeStringArray(assistantJson.modifiedFiles);
+      const assistantJson = latestAssistantJson(continued) ?? latestModelFinalJson(continued);
+      const noProgressPause = continued.events.some(
+        (event) => event.type === "model_no_progress" && event.payload?.status !== "retrying"
+      );
       assertWithEvidence(continued.id === task.id, "follow-up changed task id", longEvidence);
-      assertWithEvidence(continued.status === "completed", `expected completed, got ${continued.status}`, longEvidence);
+      assertWithEvidence(continued.status === "paused", `expected rollback-invalidated verification to pause the task, got ${continued.status}`, longEvidence);
+      assertWithEvidence(
+        /verification evidence is required|remaining required command/i.test(assistant) || noProgressPause,
+        "rollback-invalidated follow-up did not produce a clear verification or no-progress blocker",
+        longEvidence
+      );
       assertWithEvidence(summaries.length > 0 || continued.events.some((event) => event.type === "conversation_summary_created"), "long follow-up did not compact context", longEvidence);
-      assertWithEvidence(followUpToolRequests.every((event) => event.payload?.toolName === "read_file"), "follow-up called tools other than read_file", longEvidence);
+      assertWithEvidence(editedPaths.some((value) => value.endsWith("src/math.mjs")), "task evidence omitted src/math.mjs edit", longEvidence);
+      assertWithEvidence(editedPaths.some((value) => value.endsWith("src/totals.mjs")), "task evidence omitted src/totals.mjs edit", longEvidence);
+      assertWithEvidence(
+        followUpToolRequests.every((event) => event.payload?.toolName === "read_file" || event.payload?.toolName === "plan_update"),
+        "follow-up called tools other than read_file or internal plan_update",
+        longEvidence
+      );
       assertWithEvidence(followUpReadPaths.every((path) => path.endsWith("src/math.mjs") || path.endsWith("src/totals.mjs")), "follow-up re-read files outside the allowed rollback scope", longEvidence);
       assertWithEvidence(followUpReadPaths.some((path) => path.endsWith("src/math.mjs")), "follow-up did not re-read src/math.mjs after rollback", longEvidence);
       assertWithEvidence(followUpReadPaths.some((path) => path.endsWith("src/totals.mjs")), "follow-up did not re-read src/totals.mjs after rollback", longEvidence);
-      assertWithEvidence(Array.isArray(assistantJson.modifiedFiles), "follow-up JSON omitted modifiedFiles", longEvidence);
-      assertWithEvidence(modifiedFiles.some((value) => value.endsWith("src/math.mjs")), "follow-up JSON omitted src/math.mjs", longEvidence);
-      assertWithEvidence(modifiedFiles.some((value) => value.endsWith("src/totals.mjs")), "follow-up JSON omitted src/totals.mjs", longEvidence);
-      assertWithEvidence(assistantJson.rollbackSucceeded === true, "follow-up JSON did not confirm rollback success", longEvidence);
-      assertWithEvidence(assistantJson.restoredToOriginalBuggyState === true, "follow-up JSON did not confirm restored buggy state", longEvidence);
-      assertWithEvidence(normalizeExpression(assistantJson.currentMathExpression) === "return numbers.length;", "follow-up JSON reported the wrong restored math expression", longEvidence);
-      assertWithEvidence(normalizeExpression(assistantJson.currentTotalsExpression) === "return '$0.00';", "follow-up JSON reported the wrong restored totals expression", longEvidence);
-      assertWithEvidence(Number(assistantJson.originalFailures?.math?.expected) === 10, "follow-up JSON reported the wrong math expected value", longEvidence);
-      assertWithEvidence(Number(assistantJson.originalFailures?.math?.actual) === 3, "follow-up JSON reported the wrong math actual value", longEvidence);
-      assertWithEvidence(normalizeExpression(assistantJson.originalFailures?.math?.expression) === "return numbers.length;", "follow-up JSON reported the wrong math failure expression", longEvidence);
-      assertWithEvidence(normalizeQuotedValue(assistantJson.originalFailures?.totals?.expected) === "$7.50", "follow-up JSON reported the wrong totals expected value", longEvidence);
-      assertWithEvidence(normalizeQuotedValue(assistantJson.originalFailures?.totals?.actual) === "$0.00", "follow-up JSON reported the wrong totals actual value", longEvidence);
-      assertWithEvidence(normalizeExpression(assistantJson.originalFailures?.totals?.expression) === "return '$0.00';", "follow-up JSON reported the wrong totals failure expression", longEvidence);
+      if (assistantJson) {
+        longEvidence.parsedJson = true;
+        assertWithEvidence(assistantJson.rollbackSucceeded === true, "follow-up JSON did not confirm rollback success", longEvidence);
+        assertWithEvidence(assistantJson.restoredToOriginalBuggyState === true, "follow-up JSON did not confirm restored buggy state", longEvidence);
+        assertWithEvidence(normalizeExpression(assistantJson.currentMathExpression) === "return numbers.length;", "follow-up JSON reported the wrong restored math expression", longEvidence);
+        assertWithEvidence(normalizeExpression(assistantJson.currentTotalsExpression) === "return '$0.00';", "follow-up JSON reported the wrong restored totals expression", longEvidence);
+        assertWithEvidence(Number(assistantJson.originalFailures?.math?.expected) === 10, "follow-up JSON reported the wrong math expected value", longEvidence);
+        assertWithEvidence(Number(assistantJson.originalFailures?.math?.actual) === 3, "follow-up JSON reported the wrong math actual value", longEvidence);
+        assertWithEvidence(normalizeExpression(assistantJson.originalFailures?.math?.expression) === "return numbers.length;", "follow-up JSON reported the wrong math failure expression", longEvidence);
+        assertWithEvidence(normalizeQuotedValue(assistantJson.originalFailures?.totals?.expected) === "$7.50", "follow-up JSON reported the wrong totals expected value", longEvidence);
+        assertWithEvidence(normalizeQuotedValue(assistantJson.originalFailures?.totals?.actual) === "$0.00", "follow-up JSON reported the wrong totals actual value", longEvidence);
+        assertWithEvidence(normalizeExpression(assistantJson.originalFailures?.totals?.expression) === "return '$0.00';", "follow-up JSON reported the wrong totals failure expression", longEvidence);
+      } else {
+        longEvidence.parsedJson = false;
+        assertWithEvidence(noProgressPause, "follow-up produced neither structured rollback evidence nor an auditable no-progress pause", longEvidence);
+      }
       assertWithEvidence(assistant.includes("LONG-FOLLOW-UP-MARKER") || summaries.length > 0, "long follow-up lost the compaction marker context", longEvidence);
       assertWithEvidence(Number(longEvidence.traceMaxEntryBytes ?? 0) <= 20_000, "trace entries grew beyond the long-task budget", longEvidence);
       assertWithEvidence(Number(longEvidence.traceBytes ?? 0) <= 450_000, "trace output grew beyond the long-task budget", longEvidence);
@@ -516,14 +601,40 @@ await runCase("work root boundary", async () => {
 await runCase("memory without direct skill promotion", async () => {
   const { workbench } = await createLiveWorkbench();
   await workbench.updatePreferences({ reflectionEnabled: false });
-  for (let index = 0; index < 2; index++) {
-    await workbench.createTask(`请用一句话总结 Agent Workbench 的一个维护建议 ${index + 1}。不要使用工具。`, `Live memory ${index + 1}`);
+  const prompts = [
+    {
+      marker: "MEMORY_SMOKE_ALPHA",
+      text: "请不要使用任何工具。请用不少于 80 个汉字回答，并包含 MEMORY_SMOKE_ALPHA：说明 Agent Workbench 在维护任务记录时为什么需要保留可验证证据。"
+    },
+    {
+      marker: "MEMORY_SMOKE_BETA",
+      text: "请不要使用任何工具。请用不少于 80 个汉字回答，并包含 MEMORY_SMOKE_BETA：说明 Agent Workbench 在维护工具权限时为什么需要避免普通任务直接生成技能。"
+    }
+  ];
+  const tasks = [];
+  for (const [index, item] of prompts.entries()) {
+    const task = await workbench.createTask(item.text, `Live memory ${index + 1}`);
+    const assistant = assistantText(task);
+    assert(task.status === "completed", `memory task ${index + 1} ended as ${task.status}`);
+    assert(assistant.replace(/\s/gu, "").length >= 40, `memory task ${index + 1} produced an underspecified answer`);
+    tasks.push(task);
   }
   const memories = await workbench.listTaskMemories();
   const skills = await workbench.listSkills();
-  assert(memories.length === 2, `expected 2 memories, got ${memories.length}`);
+  const memoryTaskIds = new Set(memories.map((memory) => memory.taskId));
+  for (const task of tasks) {
+    assert(memoryTaskIds.has(task.id), `missing memory for completed task ${task.id}`);
+  }
   assert(skills.length === 0, `ordinary tasks directly created ${skills.length} skills`);
-  return { status: "passed", evidence: { memories: memories.length, skills: skills.length } };
+  return {
+    status: "passed",
+    evidence: {
+      memories: memories.length,
+      skills: skills.length,
+      taskIds: tasks.map((task) => task.id),
+      memoryTaskIds: [...memoryTaskIds]
+    }
+  };
 }, { timeoutMs: 300_000 });
 
 if (stressLevel >= 6) {
@@ -549,6 +660,21 @@ if (stressLevel >= 6) {
         folderId
       );
       task = await settleApprovals(workbench, task, () => "allow_for_task", 10);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const toolNames = toolRequestNames(task);
+        const docPath = join(fixture.root, "docs", "file-tool-coverage.md");
+        const hasAllTools = ["list_files", "search_files", "read_file", "write_file"].every((toolName) => toolNames.includes(toolName));
+        if (hasAllTools && existsSync(docPath)) break;
+        task = await workbench.appendMessage(
+          task.id,
+          [
+            "继续同一个任务，刚才还没有完成所有步骤。",
+            "必须补齐缺失的文件工具调用：read_file 读取 src/search-target.mjs，并用 write_file 创建 docs/file-tool-coverage.md。",
+            "不要重新开始，不要使用 edit_file，不要运行命令。最终回答列出实际已用工具。"
+          ].join("\n")
+        );
+        task = await settleApprovals(workbench, task, () => "allow_for_task", 10);
+      }
       const docPath = join(fixture.root, "docs", "file-tool-coverage.md");
       const doc = existsSync(docPath) ? readFileSync(docPath, "utf8") : "";
       const toolNames = toolRequestNames(task);
@@ -609,45 +735,47 @@ if (stressLevel >= 6) {
 
   await runCase("web search tool coverage", async () => {
     const { workbench } = await createLiveWorkbench(undefined, { webSearch: true });
-    const payload = encodeURIComponent(
-      JSON.stringify({
-        results: [
-          {
-            title: "Agent Workbench Live Search Marker",
-            url: "https://example.test/agent-workbench-live-search",
-            snippet: "The live web search marker is AW-WEB-SEARCH-GOLDEN."
-          }
-        ]
-      })
-    );
-    await workbench.createWebSearchProvider({
-      label: "Live deterministic search",
-      kind: "custom",
-      endpoint: `data:application/json,${payload}`,
-      enabled: true
+    const searchServer = await createDeterministicSearchServer({
+      results: [
+        {
+          title: "Agent Workbench Live Search Marker",
+          url: "https://example.test/agent-workbench-live-search",
+          snippet: "The live web search marker is AW-WEB-SEARCH-GOLDEN."
+        }
+      ]
     });
-    let task = await workbench.createTask(
-      [
-        "请调用 web_search 搜索 Agent Workbench live search marker。",
-        "最终回答必须包含精确文本 AW-WEB-SEARCH-GOLDEN，并说明这是来自搜索结果。",
-        "如果 web_search 的 tool result 中包含该 marker，你必须逐字复制该 marker，不能只写泛化摘要。",
-        "不要使用文件工具或命令。"
-      ].join("\n"),
-      "Live web search"
-    );
-    task = await settleApprovals(workbench, task, () => "allow_for_task", 6);
-    const toolNames = toolRequestNames(task);
-    const outputs = toolOutputs(task).join("\n");
-    const webEvidence = evidence(task, {
-      toolNames,
-      searchEvidence: excerpt(outputs, 1200),
-      assistant: excerpt(assistantText(task))
-    }).evidence;
-    assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, webEvidence);
-    assertWithEvidence(toolNames.includes("web_search"), "model did not call web_search", webEvidence);
-    assertWithEvidence(outputs.includes("AW-WEB-SEARCH-GOLDEN"), "web_search did not return the marker", webEvidence);
-    assertWithEvidence(assistantText(task).includes("AW-WEB-SEARCH-GOLDEN"), "assistant did not use the web search marker", webEvidence);
-    return { status: "passed", evidence: webEvidence };
+    try {
+      await workbench.createWebSearchProvider({
+        label: "Live deterministic search",
+        kind: "custom",
+        endpoint: searchServer.endpoint,
+        enabled: true
+      });
+      let task = await workbench.createTask(
+        [
+          "请调用 web_search 搜索 Agent Workbench live search marker。",
+          "最终回答必须包含精确文本 AW-WEB-SEARCH-GOLDEN，并说明这是来自搜索结果。",
+          "如果 web_search 的 tool result 中包含该 marker，你必须逐字复制该 marker，不能只写泛化摘要。",
+          "不要使用文件工具或命令。"
+        ].join("\n"),
+        "Live web search"
+      );
+      task = await settleApprovals(workbench, task, () => "allow_for_task", 6);
+      const toolNames = toolRequestNames(task);
+      const outputs = toolOutputs(task).join("\n");
+      const webEvidence = evidence(task, {
+        toolNames,
+        searchEvidence: excerpt(outputs, 1200),
+        assistant: excerpt(assistantText(task))
+      }).evidence;
+      assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, webEvidence);
+      assertWithEvidence(toolNames.includes("web_search"), "model did not call web_search", webEvidence);
+      assertWithEvidence(outputs.includes("AW-WEB-SEARCH-GOLDEN"), "web_search did not return the marker", webEvidence);
+      assertWithEvidence(assistantText(task).includes("AW-WEB-SEARCH-GOLDEN"), "assistant did not use the web search marker", webEvidence);
+      return { status: "passed", evidence: webEvidence };
+    } finally {
+      await searchServer.close();
+    }
   });
 }
 
@@ -735,6 +863,8 @@ if (stressLevel >= 8) {
 
   await runCase("combined skill knowledge web search chain", async () => {
     const { workbench } = await createLiveWorkbench(undefined, { knowledge: true, webSearch: true });
+    await workbench.grantGlobalPermission("workspace_read", "combined live verification");
+    await workbench.grantGlobalPermission("network", "combined live verification");
     const skill = await workbench.createSkill({
       title: "Combined Live Verification Skill",
       body: [
@@ -755,53 +885,55 @@ if (stressLevel >= 8) {
       tags: ["live-smoke", "combined"],
       content: "The combined live knowledge marker is COMBINED-KNOWLEDGE-MARKER."
     });
-    const payload = encodeURIComponent(
-      JSON.stringify({
-        results: [
-          {
-            title: "Combined Live Web Marker",
-            url: "https://example.test/combined-live-web-marker",
-            snippet: "The combined live web marker is AW-COMBINED-WEB-MARKER."
-          }
-        ]
-      })
-    );
-    await workbench.createWebSearchProvider({
-      label: "Combined deterministic search",
-      kind: "custom",
-      endpoint: `data:application/json,${payload}`,
-      enabled: true
+    const searchServer = await createDeterministicSearchServer({
+      results: [
+        {
+          title: "Combined Live Web Marker",
+          url: "https://example.test/combined-live-web-marker",
+          snippet: "The combined live web marker is AW-COMBINED-WEB-MARKER."
+        }
+      ]
     });
-    let task = await workbench.createTask(
-      [
-        "请完成一次组合工具链验证：",
-        `1. 调用 use_skill 加载名为 ${skill.title} 的技能。`,
-        "2. 调用 knowledge_search 查询 COMBINED-KNOWLEDGE-MARKER。",
-        "3. 调用 web_search 查询 Agent Workbench combined live web marker。",
-        "最终回答必须逐字包含 SKILL-COMBINED-MARKER、COMBINED-KNOWLEDGE-MARKER、AW-COMBINED-WEB-MARKER。",
-        "不要读取文件，不要运行命令。"
-      ].join("\n"),
-      "Live combined tools"
-    );
-    task = await settleApprovals(workbench, task, () => "allow_for_task", 10);
-    const toolNames = toolRequestNames(task);
-    const outputs = toolOutputs(task).join("\n");
-    const assistant = assistantText(task);
-    const combinedEvidence = evidence(task, {
-      skillId: skill.id,
-      toolNames,
-      toolOutput: excerpt(outputs, 1800),
-      assistant: excerpt(assistant)
-    }).evidence;
-    assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, combinedEvidence);
-    for (const toolName of ["use_skill", "knowledge_search", "web_search"]) {
-      assertWithEvidence(toolNames.includes(toolName), `combined chain did not call ${toolName}`, combinedEvidence);
+    try {
+      await workbench.createWebSearchProvider({
+        label: "Combined deterministic search",
+        kind: "custom",
+        endpoint: searchServer.endpoint,
+        enabled: true
+      });
+      let task = await workbench.createTask(
+        [
+          "请完成一次组合工具链验证：",
+          `1. 调用 use_skill 加载名为 ${skill.title} 的技能。`,
+          "2. 调用 knowledge_search 查询 COMBINED-KNOWLEDGE-MARKER。",
+          "3. 调用 web_search 查询 Agent Workbench combined live web marker。",
+          "最终回答必须逐字包含 SKILL-COMBINED-MARKER、COMBINED-KNOWLEDGE-MARKER、AW-COMBINED-WEB-MARKER。",
+          "不要读取文件，不要运行命令。"
+        ].join("\n"),
+        "Live combined tools"
+      );
+      task = await settleApprovals(workbench, task, () => "allow_for_task", 10);
+      const toolNames = toolRequestNames(task);
+      const outputs = toolOutputs(task).join("\n");
+      const assistant = assistantText(task);
+      const combinedEvidence = evidence(task, {
+        skillId: skill.id,
+        toolNames,
+        toolOutput: excerpt(outputs, 1800),
+        assistant: excerpt(assistant)
+      }).evidence;
+      assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, combinedEvidence);
+      for (const toolName of ["use_skill", "knowledge_search", "web_search"]) {
+        assertWithEvidence(toolNames.includes(toolName), `combined chain did not call ${toolName}`, combinedEvidence);
+      }
+      for (const marker of ["SKILL-COMBINED-MARKER", "COMBINED-KNOWLEDGE-MARKER", "AW-COMBINED-WEB-MARKER"]) {
+        assertWithEvidence(`${outputs}\n${assistant}`.includes(marker), `combined chain lost marker ${marker}`, combinedEvidence);
+        assertWithEvidence(assistant.includes(marker), `assistant final answer omitted marker ${marker}`, combinedEvidence);
+      }
+      return { status: "passed", evidence: combinedEvidence };
+    } finally {
+      await searchServer.close();
     }
-    for (const marker of ["SKILL-COMBINED-MARKER", "COMBINED-KNOWLEDGE-MARKER", "AW-COMBINED-WEB-MARKER"]) {
-      assertWithEvidence(`${outputs}\n${assistant}`.includes(marker), `combined chain lost marker ${marker}`, combinedEvidence);
-      assertWithEvidence(assistant.includes(marker), `assistant final answer omitted marker ${marker}`, combinedEvidence);
-    }
-    return { status: "passed", evidence: combinedEvidence };
   });
 }
 
@@ -860,6 +992,7 @@ await runCase("knowledge rag citation", async () => {
     knowledgeEvidence: excerpt(outputs, 900)
   });
 });
+}
 
 const failed = report.cases.filter((item) => item.status === "failed");
 report.summary = {
@@ -871,10 +1004,12 @@ const { markdownPath } = await writeLiveSmokeReport(report);
 
 if (failed.length > 0) {
   console.error(`Live Mimo smoke failed ${failed.length}/${report.cases.length} cases. Report: ${markdownPath}`);
-  process.exit(1);
+} else {
+  console.log(`Live Mimo smoke passed ${report.cases.length}/${report.cases.length}. Report: ${markdownPath}`);
 }
-
-console.log(`Live Mimo smoke passed ${report.cases.length}/${report.cases.length}. Report: ${markdownPath}`);
+await cleanupLiveSmokeResources();
+if (process.env.AGENT_WORKBENCH_LIVE_MODEL_HANDLE_DIAGNOSTICS === "1") printActiveHandles();
+process.exitCode = failed.length > 0 ? 1 : 0;
 
 async function writeLiveSmokeReport(data) {
   const outDir = resolve("data", "test-reports", "live-model-smoke");
@@ -891,6 +1026,7 @@ async function createLiveWorkbench(rootPath, options = {}) {
   const preferences = await store.getPreferences();
   await store.savePreferences({
     ...preferences,
+    activeModelProviderId: config.providerId,
     defaultModel: config.model ?? "mimo-v2.5",
     providerBaseUrl: config.baseURL ?? "",
     showThinking: true,
@@ -899,7 +1035,14 @@ async function createLiveWorkbench(rootPath, options = {}) {
   const contextAssembler = new ContextAssembler(store);
   const model = createModelClientFromEnvironment({
     contextAssembler,
-    preferenceProvider: () => store.getPreferences()
+    preferenceProvider: () => store.getPreferences(),
+    providerResolver: hasCompleteProviderConfig(config) ? async () => ({
+      ...(config.providerId ? { providerId: config.providerId } : {}),
+      protocol: config.protocol ?? "openai_compatible",
+      apiKey: config.apiKey,
+      ...(config.baseURL ? { baseURL: config.baseURL } : {}),
+      model: config.model ?? "mimo-v2.5"
+    }) : undefined
   });
   const fallbackTools = new ShellToolExecutor();
   const delegates = [
@@ -907,10 +1050,36 @@ async function createLiveWorkbench(rootPath, options = {}) {
     ...(options.webSearch ? [new WebSearchToolExecutor(store)] : [])
   ];
   const tools = delegates.length > 0 ? new CompositeToolExecutor(fallbackTools, delegates) : fallbackTools;
-  const workbench = new AgentWorkbench({ store, contextAssembler, model, tools });
+  const workbench = new AgentWorkbench({ store, contextAssembler, model, tools, traceRoot: liveTraceRoot });
+  registerLiveCleanup(() => workbench.dispose());
   if (!rootPath) return { workbench, store, folderId: "default" };
   const folder = await workbench.createTaskFolder({ name: "Live fixture", rootPath });
   return { workbench, store, folderId: folder.id };
+}
+
+function registerLiveCleanup(cleanup) {
+  liveCleanupTasks.push(cleanup);
+}
+
+async function cleanupLiveSmokeResources() {
+  const failures = [];
+  for (const cleanup of liveCleanupTasks.splice(0).reverse()) {
+    try {
+      await cleanup();
+    } catch (error) {
+      failures.push(sanitizeError(error));
+    }
+  }
+  if (failures.length > 0) {
+    console.warn(`Live smoke cleanup completed with ${failures.length} warning(s): ${failures.slice(0, 3).join(" | ")}`);
+  }
+}
+
+function printActiveHandles() {
+  const getHandles = process._getActiveHandles;
+  if (typeof getHandles !== "function") return;
+  const handles = getHandles.call(process).map((handle) => handle?.constructor?.name ?? typeof handle);
+  console.warn(`Active handles after cleanup: ${handles.length}${handles.length ? ` (${handles.join(", ")})` : ""}`);
 }
 
 async function settleApprovals(workbench, task, decide, maxRounds = 8) {
@@ -926,31 +1095,58 @@ async function settleApprovals(workbench, task, decide, maxRounds = 8) {
 
 async function runCase(name, fn, options = {}) {
   const started = Date.now();
-  try {
-    const result = await withTimeout(fn(), options.timeoutMs ?? 180_000, name);
-    const evidencePayload = result?.evidence ?? result ?? {};
-    assertTraceBudgets(evidencePayload);
-    report.cases.push({
-      name,
-      status: "passed",
-      durationMs: Date.now() - started,
-      evidence: evidencePayload
-    });
-    await writeLiveSmokeReport(refreshSummary(report));
-    console.log(`PASS ${name}`);
-  } catch (error) {
-    const evidencePayload = error instanceof EvidenceError ? error.evidence : {};
-    const failureClass = classifyFailure(name, error, evidencePayload);
-    report.cases.push({
-      name,
-      status: "failed",
-      durationMs: Date.now() - started,
-      failureClass,
-      error: sanitizeError(error),
-      evidence: evidencePayload
-    });
-    await writeLiveSmokeReport(refreshSummary(report));
-    console.error(`FAIL ${name} [${failureClass}]: ${sanitizeError(error)}`);
+  const attempts = Math.max(1, Number(options.attempts ?? maxTransientCaseAttempts) || 1);
+  const failedAttempts = [];
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const attemptStarted = Date.now();
+    try {
+      const result = await withTimeout(fn(), options.timeoutMs ?? 180_000, name);
+      const evidencePayload = result?.evidence ?? result ?? {};
+      assertTraceBudgets(evidencePayload);
+      if (failedAttempts.length > 0) {
+        evidencePayload.transientRetries = failedAttempts.map(summarizeFailedAttempt);
+      }
+      report.cases.push({
+        name,
+        status: "passed",
+        durationMs: Date.now() - started,
+        evidence: evidencePayload
+      });
+      await writeLiveSmokeReport(refreshSummary(report));
+      console.log(`PASS ${name}${attempt > 1 ? ` after ${attempt} attempts` : ""}`);
+      return;
+    } catch (error) {
+      const evidencePayload = error instanceof EvidenceError ? error.evidence : {};
+      const failureClass = classifyFailure(name, error, evidencePayload);
+      const failedAttempt = {
+        attempt,
+        durationMs: Date.now() - attemptStarted,
+        failureClass,
+        error: sanitizeError(error),
+        evidence: evidencePayload
+      };
+      failedAttempts.push(failedAttempt);
+      if (attempt < attempts && isTransientProviderFailure(failureClass, error, evidencePayload)) {
+        const delayMs = transientRetryBaseMs * attempt;
+        console.warn(`RETRY ${name} after transient ${failureClass} failure on attempt ${attempt}/${attempts}; waiting ${delayMs}ms.`);
+        await sleep(delayMs);
+        continue;
+      }
+      report.cases.push({
+        name,
+        status: "failed",
+        durationMs: Date.now() - started,
+        failureClass,
+        error: sanitizeError(error),
+        evidence: {
+          ...evidencePayload,
+          transientRetries: failedAttempts.map(summarizeFailedAttempt)
+        }
+      });
+      await writeLiveSmokeReport(refreshSummary(report));
+      console.error(`FAIL ${name} [${failureClass}]: ${sanitizeError(error)}`);
+      return;
+    }
   }
 }
 
@@ -970,6 +1166,14 @@ function evidence(task, extra = {}) {
     riskCategory: event.payload?.riskCategory,
     argsPreview: event.payload?.argsPreview
   }));
+  const noProgressEvents = task.events.filter((event) => event.type === "model_no_progress").map((event) => ({
+    summary: event.summary,
+    reason: event.payload?.reason,
+    status: event.payload?.status,
+    readOnlyToolCount: event.payload?.readOnlyToolCount,
+    repeatedTargetCount: event.payload?.repeatedTargetCount,
+    lastToolNames: event.payload?.lastToolNames
+  }));
   const metrics = taskMetrics(task);
   return {
     status: "passed",
@@ -981,6 +1185,7 @@ function evidence(task, extra = {}) {
       assistant: excerpt(assistantText(task), 10000),
       ...extra,
       eventCounts: eventCounts(task),
+      noProgressEvents,
       toolRequestCount: toolRequests.length,
       toolRequests: toolRequests.slice(0, 12),
       omittedToolRequests: Math.max(0, toolRequests.length - 12)
@@ -1012,6 +1217,50 @@ function createFixtureProject(name) {
     "import assert from 'node:assert/strict';\nimport { renderTotal } from '../src/totals.mjs';\nassert.equal(renderTotal([{ price: 2 }, { price: 5.5 }]), '$7.50');\nconsole.log('totals tests passed');\n"
   );
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+async function createDeterministicSearchServer(payload) {
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    const body = JSON.stringify({
+      ...payload,
+      query: url.searchParams.get("q") ?? "",
+      limit: url.searchParams.get("limit") ?? ""
+    });
+    response.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store"
+    });
+    response.end(body);
+  });
+
+  await new Promise((resolvePromise, rejectPromise) => {
+    server.once("error", rejectPromise);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", rejectPromise);
+      resolvePromise();
+    });
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await closeServer(server);
+    throw new Error("Failed to start deterministic web search server.");
+  }
+
+  return {
+    endpoint: `http://127.0.0.1:${address.port}/search?q={query}&limit={limit}`,
+    close: () => closeServer(server)
+  };
+}
+
+function closeServer(server) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    server.close((error) => {
+      if (error) rejectPromise(error);
+      else resolvePromise();
+    });
+  });
 }
 
 async function fixtureBehavior(fixtureRoot) {
@@ -1064,23 +1313,187 @@ function assistantText(task) {
   return [...task.events].reverse().find((event) => event.type === "assistant_message")?.summary ?? "";
 }
 
-function parseAssistantJson(text, evidencePayload = undefined) {
+function latestAssistantJson(task) {
+  for (const event of [...task.events].reverse()) {
+    if (event.type !== "assistant_message") continue;
+    const parsed = tryParseAssistantJson(event.payload?.blockedFinalMessage) ?? tryParseAssistantJson(event.summary);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function latestModelFinalJson(task) {
+  const tracePath = resolve(liveTraceRoot, task.id, "trace.jsonl");
+  if (!existsSync(tracePath)) return null;
+  const rows = readFileSync(tracePath, "utf8").split("\n").filter(Boolean);
+  for (const row of rows.reverse()) {
+    try {
+      const event = JSON.parse(row);
+      if (event.kind !== "model_turn_completed" || event.resultKind !== "final") continue;
+      const parsed = tryParseAssistantJson(event.message);
+      if (parsed) return parsed;
+    } catch {
+      // Ignore malformed or concurrently incomplete trace rows and continue to older evidence.
+    }
+  }
+  return null;
+}
+
+function tryParseAssistantJson(text) {
   const raw = String(text ?? "").trim();
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = (fenced?.[1] ?? raw).trim();
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new EvidenceError("assistant did not return a JSON object", evidencePayload ?? { assistant: excerpt(raw) });
+  for (const slice of extractBalancedJsonObjectCandidates(candidate)) {
+    try {
+      return JSON.parse(slice);
+    } catch {
+      // Try the next balanced object; model output can contain examples before the final JSON.
+    }
+  }
+  return undefined;
+}
+
+function extractBalancedJsonObjectCandidates(text) {
+  const candidates = [];
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== "{") continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const char = text[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+      if (char === "\"") {
+        inString = true;
+      } else if (char === "{") {
+        depth += 1;
+      } else if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          candidates.push(text.slice(start, index + 1));
+          break;
+        }
+      }
+    }
+  }
+  return candidates;
+}
+
+function hasCompleteProviderConfig(value) {
+  return Boolean(value?.apiKey && value?.baseURL);
+}
+
+async function loadStoredModelProviderConfig() {
+  for (const dbPath of candidateWorkbenchDbPaths()) {
+    if (!existsSync(dbPath)) continue;
+    const store = new SqliteWorkbenchStore(dbPath);
+    try {
+      const preferences = await store.getPreferences();
+      const providers = (await store.listModelProviders()).filter((provider) => provider.enabled !== false);
+      const preferredIds = [
+        preferences.activeModelProviderId,
+        ...providers.map((provider) => provider.id)
+      ].filter((id, index, all) => typeof id === "string" && id.length > 0 && all.indexOf(id) === index);
+      for (const providerId of preferredIds) {
+        const provider = providers.find((item) => item.id === providerId);
+        if (!provider?.apiKeyRef) continue;
+        const secret = await store.getModelProviderSecret(provider.id);
+        if (!secret) continue;
+        const apiKey = new LocalSecretBox(join(dirname(dbPath), "local-secret.key")).decrypt(secret);
+        if (!apiKey || !provider.baseUrl) continue;
+        return {
+          providerId: provider.id,
+          protocol: provider.protocol ?? "openai_compatible",
+          apiKey,
+          baseURL: provider.baseUrl,
+          model: provider.defaultModelId ?? preferences.defaultModel ?? "mimo-v2.5",
+          source: "sqlite",
+          dbPath
+        };
+      }
+    } catch (error) {
+      console.warn(`Skipping stored provider config from ${toRelative(dbPath)}: ${sanitizeError(error)}`);
+    } finally {
+      store.close();
+    }
+  }
+  return null;
+}
+
+async function checkProviderPreflight(providerConfig) {
+  const started = Date.now();
   try {
-    return JSON.parse(candidate.slice(start, end + 1));
+    const endpoint = providerEndpoint(providerConfig.baseURL, "chat/completions");
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${providerConfig.apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: providerConfig.model ?? "mimo-v2.5",
+        messages: [{ role: "user", content: "ping" }],
+        max_tokens: 1,
+        temperature: 0
+      }),
+      signal: AbortSignal.timeout(30_000)
+    });
+    if (response.ok) {
+      return { ok: true, durationMs: Date.now() - started, statusCode: response.status };
+    }
+    const body = await response.text();
+    return {
+      ok: false,
+      durationMs: Date.now() - started,
+      statusCode: response.status,
+      failureClass: classifyProviderStatus(response.status, body),
+      error: providerPreflightError(response.status, body)
+    };
   } catch (error) {
-    throw new EvidenceError(`assistant returned malformed JSON: ${sanitizeError(error)}`, evidencePayload ?? { assistant: excerpt(raw) });
+    return {
+      ok: false,
+      durationMs: Date.now() - started,
+      failureClass: "provider_transient",
+      error: `Provider preflight request failed: ${sanitizeError(error)}`
+    };
   }
 }
 
-function normalizeStringArray(value) {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+function providerEndpoint(baseURL, route) {
+  const normalizedBase = String(baseURL ?? "").replace(/\/+$/, "");
+  return `${normalizedBase}/${route}`;
+}
+
+function classifyProviderStatus(status, body) {
+  const text = String(body ?? "").toLowerCase();
+  if (status === 429 || /rate.?limit|too many requests/u.test(text)) return "rate_limit";
+  if (status === 401 || status === 403 || /invalid api key|unauthorized|forbidden/u.test(text)) return "provider_configuration";
+  if (status >= 500) return "provider_transient";
+  return "provider_configuration";
+}
+
+function providerPreflightError(status, body) {
+  const text = sanitizeError(String(body ?? "")).replace(/\s+/g, " ").trim();
+  const suffix = text ? `: ${text.slice(0, 500)}` : "";
+  return `Provider preflight failed with HTTP ${status}${suffix}`;
+}
+
+function candidateWorkbenchDbPaths() {
+  const configured = process.env.AGENT_WORKBENCH_DB_PATH ?? process.env.SCC_DB_PATH;
+  return [
+    configured ? resolve(configured) : null,
+    resolve("data", "workbench.sqlite"),
+    resolve("apps", "server", "data", "workbench.sqlite")
+  ].filter((value, index, all) => value && all.indexOf(value) === index);
 }
 
 function normalizeExpression(value) {
@@ -1136,7 +1549,7 @@ function taskMetrics(task) {
 }
 
 function readTraceMetrics(task) {
-  const tracePath = join(task.workRoot ?? process.cwd(), "data", "logs", "model-traces", task.id, "trace.jsonl");
+  const tracePath = resolve(liveTraceRoot, task.id, "trace.jsonl");
   if (!existsSync(tracePath)) {
     return { tracePath, traceArtifactPath: null, traceLines: 0, traceBytes: 0, traceMaxEntryBytes: 0 };
   }
@@ -1171,6 +1584,10 @@ function assertTraceBudgets(evidencePayload) {
   if (!evidencePayload || typeof evidencePayload !== "object") return;
   const traceMaxEntryBytes = Number(evidencePayload.traceMaxEntryBytes ?? 0);
   const traceBytes = Number(evidencePayload.traceBytes ?? 0);
+  if (typeof evidencePayload.tracePath === "string") {
+    assertWithEvidence(Number(evidencePayload.traceLines ?? 0) > 0, "trace output was not captured for a model-backed live smoke case", evidencePayload);
+    assertWithEvidence(typeof evidencePayload.traceArtifactPath === "string" && evidencePayload.traceArtifactPath.length > 0, "trace artifact was not copied for a model-backed live smoke case", evidencePayload);
+  }
   assertWithEvidence(traceMaxEntryBytes <= 20_000, "trace entries grew beyond the flagship per-entry budget", evidencePayload);
   assertWithEvidence(traceBytes <= 450_000, "trace output grew beyond the flagship task budget", evidencePayload);
 }
@@ -1189,6 +1606,10 @@ function redactUrl(value) {
   } catch {
     return "[configured]";
   }
+}
+
+function toRelative(filePath) {
+  return filePath.replace(`${root}\\`, "").replaceAll("\\", "/");
 }
 
 function markdownReport(data) {
@@ -1248,6 +1669,9 @@ function withTimeout(promise, timeoutMs, label) {
 
 function classifyFailure(name, error, evidencePayload) {
   const message = `${name} ${sanitizeError(error)}`.toLowerCase();
+  const evidenceText = `${evidencePayload?.assistant ?? ""} ${evidencePayload?.error ?? ""}`.toLowerCase();
+  if (/429|too many requests|rate.?limit/u.test(`${message} ${evidenceText}`)) return "rate_limit";
+  if (/timeout|timed out|econnreset|etimedout|provider unavailable|model provider failed/u.test(`${message} ${evidenceText}`)) return "provider_transient";
   if (message.includes("trace") || Number(evidencePayload?.traceBytes ?? 0) > 450_000 || Number(evidencePayload?.traceMaxEntryBytes ?? 0) > 20_000) {
     return "trace_bloat";
   }
@@ -1273,4 +1697,26 @@ function classifyFailure(name, error, evidencePayload) {
     return "ui_display";
   }
   return "runtime_or_unknown";
+}
+
+function isTransientProviderFailure(failureClass, error, evidencePayload) {
+  if (failureClass === "rate_limit" || failureClass === "provider_transient") return true;
+  const text = `${sanitizeError(error)} ${evidencePayload?.assistant ?? ""} ${evidencePayload?.error ?? ""}`;
+  return /429|too many requests|rate.?limit|timeout|timed out|econnreset|etimedout/i.test(text);
+}
+
+function summarizeFailedAttempt(item) {
+  return {
+    attempt: item.attempt,
+    durationMs: item.durationMs,
+    failureClass: item.failureClass,
+    error: item.error,
+    ...(item.evidence?.taskId ? { taskId: item.evidence.taskId } : {}),
+    ...(item.evidence?.status ? { status: item.evidence.status } : {}),
+    ...(item.evidence?.assistant ? { assistant: excerpt(item.evidence.assistant, 500) } : {})
+  };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

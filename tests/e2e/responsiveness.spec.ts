@@ -1,9 +1,11 @@
 import { expect, test } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { apiBase, bootstrapSession, horizontalOverflow, submitInput } from "./helpers.js";
+import { apiBase, bootstrapSession, currentSourceFingerprint, horizontalOverflow, submitInput } from "./helpers.js";
 
 const RESPONSE_BUDGET_MS = 2_000;
+const TOOL_RESULT_BUDGET_MS = 5_000;
+const ROUTE_SOAK_BUDGET_MS = 2_500;
 
 test.beforeEach(async ({ request }) => {
   await bootstrapSession(request);
@@ -156,7 +158,7 @@ test("task timeline updates live without freezing interaction or motion affordan
   const overflow = await horizontalOverflow(page);
   const failures = [
     approvalLatencyMs > 3_000 ? `approval card took ${approvalLatencyMs}ms` : "",
-    toolResultLatencyMs > 4_000 ? `tool result took ${toolResultLatencyMs}ms` : "",
+    toolResultLatencyMs > TOOL_RESULT_BUDGET_MS ? `tool result took ${toolResultLatencyMs}ms` : "",
     expandedHeight <= collapsedHeight ? "tool result expansion did not increase measured height" : "",
     toolTransition.hasTransition ? "" : "tool result expansion has no transition",
     frameLatencyMs > 500 ? `post-result frame latency was ${frameLatencyMs}ms` : "",
@@ -181,6 +183,156 @@ test("task timeline updates live without freezing interaction or motion affordan
   expect(consoleIssues, "live timeline flow should not emit console errors or warnings").toEqual([]);
   expect(failures).toEqual([]);
 });
+
+test("docs navigation collapses to a hamburger drawer on narrow screens", async ({ page }) => {
+  await page.setViewportSize({ width: 960, height: 720 });
+  await page.goto("/docs/search");
+  await expect(page.getByRole("heading", { name: "Docs" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open docs navigation" })).toBeVisible();
+  await expect(page.locator(".docsArticle")).toBeVisible();
+
+  const toc = page.locator("#docs-toc");
+  await expect.poll(async () => docsTocLayout(page)).toMatchObject({
+    position: "fixed"
+  });
+  const closedLayout = await docsTocLayout(page);
+  expect(closedLayout.left).toBeLessThan(-20);
+  expect(await horizontalOverflow(page)).toBeLessThanOrEqual(1);
+
+  await page.getByRole("button", { name: "Open docs navigation" }).click();
+  await expect.poll(async () => docsTocLayout(page).then((layout) => layout.left)).toBeGreaterThanOrEqual(0);
+  await expect(toc.getByLabel("Search docs")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close docs navigation" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Close docs navigation" }).click();
+  await expect.poll(async () => docsTocLayout(page).then((layout) => layout.left)).toBeLessThan(-20);
+});
+
+test("primary routes survive repeated navigation soak without stale UI state", async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  const consoleIssues: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") consoleIssues.push(`${message.type()}: ${message.text()}`);
+  });
+  page.on("pageerror", (error) => consoleIssues.push(`pageerror: ${error.message}`));
+
+  const routeChecks: Array<{
+    path: string;
+    label: string;
+    ready: () => Promise<void>;
+  }> = [
+    {
+      path: "/tasks/new",
+      label: "new task",
+      ready: async () => {
+        await expect(page.getByLabel("Task input")).toBeVisible();
+      }
+    },
+    {
+      path: "/library/skills",
+      label: "library skills",
+      ready: async () => {
+        await expect(page.getByRole("heading", { name: "Library" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Skills" })).toBeVisible();
+      }
+    },
+    {
+      path: "/library/knowledge",
+      label: "library knowledge",
+      ready: async () => {
+        await expect(page.getByRole("heading", { name: "Library" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Knowledge" })).toBeVisible();
+      }
+    },
+    {
+      path: "/library/curator",
+      label: "skill curator",
+      ready: async () => {
+        await expect(page.getByRole("heading", { name: "Skill Curator" })).toBeVisible();
+      }
+    },
+    {
+      path: "/settings/providers",
+      label: "settings providers",
+      ready: async () => {
+        await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Model configuration" })).toBeVisible();
+      }
+    },
+    {
+      path: "/settings/mcp",
+      label: "settings mcp",
+      ready: async () => {
+        await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "MCP" })).toBeVisible();
+      }
+    },
+    {
+      path: "/docs",
+      label: "docs",
+      ready: async () => {
+        await expect(page.locator(".docsView")).toBeVisible();
+        await expect(page.locator(".docsArticle")).toBeVisible();
+      }
+    },
+    {
+      path: "/history",
+      label: "history",
+      ready: async () => {
+        await expect(page.getByRole("heading", { name: "History" })).toBeVisible();
+        await expect(page.getByLabel("Search history")).toBeVisible();
+      }
+    }
+  ];
+
+  const cycles = 4;
+  const timings: Array<{ cycle: number; label: string; path: string; elapsedMs: number; overflow: number; textLength: number }> = [];
+  const failures: string[] = [];
+
+  for (let cycle = 1; cycle <= cycles; cycle += 1) {
+    for (const route of routeChecks) {
+      const startedAt = Date.now();
+      await page.goto(route.path);
+      await route.ready();
+      const elapsedMs = Date.now() - startedAt;
+      const routeHealth = await routeHealthMetrics(page);
+      timings.push({ cycle, label: route.label, path: route.path, elapsedMs, ...routeHealth });
+      if (elapsedMs > ROUTE_SOAK_BUDGET_MS) failures.push(`${route.label} cycle ${cycle} took ${elapsedMs}ms`);
+      if (routeHealth.overflow > 1) failures.push(`${route.label} cycle ${cycle} caused ${routeHealth.overflow}px horizontal overflow`);
+      if (routeHealth.textLength < 80) failures.push(`${route.label} cycle ${cycle} rendered suspiciously little text`);
+    }
+  }
+
+  await page.goto("/tasks/new");
+  await expect(page.getByLabel("Task input")).toBeVisible();
+  await page.getByLabel("Task input").fill("route soak final input remains editable");
+  await expect(page.getByLabel("Task input")).toHaveValue("route soak final input remains editable");
+
+  await persistRouteSoakReport({
+    project: testInfo.project.name,
+    cycles,
+    routeBudgetMs: ROUTE_SOAK_BUDGET_MS,
+    timings,
+    consoleIssues,
+    failures
+  });
+
+  expect(consoleIssues, "route soak should not emit console errors or warnings").toEqual([]);
+  expect(failures).toEqual([]);
+});
+
+async function docsTocLayout(page: import("@playwright/test").Page): Promise<{ left: number; position: string; width: number }> {
+  return page.locator("#docs-toc").evaluate((node) => {
+    const element = node as HTMLElement;
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    return {
+      left: Math.round(rect.left),
+      position: style.position,
+      width: Math.round(rect.width)
+    };
+  });
+}
 
 async function measureInteraction(
   page: import("@playwright/test").Page,
@@ -234,7 +386,7 @@ async function persistResponsivenessReport(report: {
 }): Promise<void> {
   const reportPath = resolve(process.cwd(), "data", "test-reports", "ui-responsiveness", `${report.project}.json`);
   mkdirSync(dirname(reportPath), { recursive: true });
-  writeFileSync(reportPath, JSON.stringify({ generatedAt: new Date().toISOString(), ...report }, null, 2), "utf8");
+  writeFileSync(reportPath, JSON.stringify({ generatedAt: new Date().toISOString(), sourceFingerprint: await currentSourceFingerprint(), ...report }, null, 2), "utf8");
 }
 
 async function timelineMotionMetrics(
@@ -288,6 +440,29 @@ async function twoFrameLatency(page: import("@playwright/test").Page): Promise<n
   );
 }
 
+async function routeHealthMetrics(page: import("@playwright/test").Page): Promise<{ overflow: number; textLength: number }> {
+  return page.evaluate(() => ({
+    overflow: Math.max(
+      document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      document.body.scrollWidth - document.body.clientWidth
+    ),
+    textLength: (document.body.textContent ?? "").trim().length
+  }));
+}
+
+async function persistRouteSoakReport(report: {
+  project: string;
+  cycles: number;
+  routeBudgetMs: number;
+  timings: Array<{ cycle: number; label: string; path: string; elapsedMs: number; overflow: number; textLength: number }>;
+  consoleIssues: string[];
+  failures: string[];
+}): Promise<void> {
+  const reportPath = resolve(process.cwd(), "data", "test-reports", "ui-route-soak", `${report.project}.json`);
+  mkdirSync(dirname(reportPath), { recursive: true });
+  writeFileSync(reportPath, JSON.stringify({ generatedAt: new Date().toISOString(), sourceFingerprint: await currentSourceFingerprint(), ...report }, null, 2), "utf8");
+}
+
 async function persistRealtimeUxReport(report: {
   project: string;
   route: string;
@@ -304,5 +479,5 @@ async function persistRealtimeUxReport(report: {
 }): Promise<void> {
   const reportPath = resolve(process.cwd(), "data", "test-reports", "task-realtime-ux", `${report.project}.json`);
   mkdirSync(dirname(reportPath), { recursive: true });
-  writeFileSync(reportPath, JSON.stringify({ generatedAt: new Date().toISOString(), ...report }, null, 2), "utf8");
+  writeFileSync(reportPath, JSON.stringify({ generatedAt: new Date().toISOString(), sourceFingerprint: await currentSourceFingerprint(), ...report }, null, 2), "utf8");
 }

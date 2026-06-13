@@ -19,6 +19,7 @@ export function LibraryView({
   activeSection,
   children,
   language,
+  error,
   query,
   onQuery,
   onSection,
@@ -27,6 +28,7 @@ export function LibraryView({
   activeSection: LibrarySection;
   children: Record<LibrarySection, ReactNode>;
   language?: string | null;
+  error?: string | null;
   query: string;
   onQuery: (query: string) => void;
   onSection: (section: LibrarySection) => void;
@@ -68,6 +70,7 @@ export function LibraryView({
           ))}
         </nav>
         <div className="libraryPanel">
+          {error ? <p className="panelError" role="alert">{error}</p> : null}
           <PanelBoundary name={sections.find((s) => s.id === activeSection)?.label ?? sections[0]!.label}>
             {children[activeSection]}
           </PanelBoundary>

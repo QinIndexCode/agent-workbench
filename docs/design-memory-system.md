@@ -1273,7 +1273,7 @@ interface MemorySystemConfig {
   // 隐私设置
   privacy: {
     sanitizeGoals: boolean;        // 默认 true（脱敏目标中的敏感信息）
-    encryptStorage: boolean;       // 默认 false
+    encryptStorage: boolean;       // 默认 true
   };
 }
 ```
@@ -1581,7 +1581,7 @@ export const UserPreferencesSchema = z.object({
   
   // 隐私设置
   sanitizeSensitiveData: z.boolean().default(true),
-  encryptStorage: z.boolean().default(false),
+  encryptStorage: z.boolean().default(true),
   
   updatedAt: z.string()
 });

@@ -13,7 +13,9 @@
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
+      "@agent-workbench/cli": ["apps/cli/src/index.ts"],
       "@agent-workbench/core": ["packages/core/src/index.ts"],
+      "@agent-workbench/server": ["apps/server/src/index.ts"],
       "@agent-workbench/shared": ["packages/shared/src/index.ts"]
     }
   }

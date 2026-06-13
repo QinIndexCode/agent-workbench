@@ -405,7 +405,7 @@ const BusyCancelButton = memo(function BusyCancelButton({
 
   if (!busySince || elapsedMs <= 5000) return null;
   return (
-    <button className="cancelBusyButton" type="button" onClick={onCancel} title={language === "zh-CN" ? "取消当前请求" : "Cancel current request"}>
+    <button className="cancelBusyButton" type="button" onClick={onCancel} title={language === "zh-CN" ? "隐藏等待状态" : "Hide waiting state"}>
       <X size={14} />
       {formatElapsed(elapsedMs)}
     </button>

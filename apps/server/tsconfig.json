@@ -8,5 +8,6 @@
     "rootDir": "src"
   },
   "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"],
   "references": [{ "path": "../../packages/shared" }, { "path": "../../packages/core" }]
 }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ModelPreset, ModelProviderCreateRequest, ModelProviderPatchRequest, ModelProviderRecord, PreferencesPatch, ProviderProtocol, UserPreferences } from "@agent-workbench/shared";
-import { CheckCircle2, Edit3, Plus, Trash2, X } from "lucide-react";
+import type { ModelPreset, ModelProviderCreateRequest, ModelProviderPatchRequest, ModelProviderRecord, ModelProviderTestResult, PreferencesPatch, ProviderProtocol, UserPreferences } from "@agent-workbench/shared";
+import { Activity, CheckCircle2, Edit3, Loader2, Plus, Trash2, X } from "lucide-react";
 import { CONTEXT_QUICK_PRESETS, MODEL_PROVIDER_PRESETS, formatTokenAmount, parseTokenAmount, type ModelProviderPreset } from "../llm-presets.js";
 import { AccordionSelect } from "./AccordionSelect.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -21,6 +21,12 @@ type ProviderDraft = {
   makeActive: boolean;
 };
 
+type ProviderTestState = {
+  status: "running" | "passed" | "failed";
+  result?: ModelProviderTestResult;
+  error?: string;
+};
+
 export function ModelProvidersPanel({
   activeProviderId,
   currentModelLabel,
@@ -31,6 +37,7 @@ export function ModelProvidersPanel({
   onCreate,
   onDelete,
   onPreference,
+  onTest,
   onUpdate
 }: {
   activeProviderId?: string | null;
@@ -42,6 +49,7 @@ export function ModelProvidersPanel({
   onCreate: (input: ModelProviderCreateRequest) => Promise<ModelProviderRecord | void> | ModelProviderRecord | void;
   onDelete: (providerId: string) => Promise<void> | void;
   onPreference?: (patch: PreferencesPatch) => Promise<void> | void;
+  onTest?: (providerId: string) => Promise<ModelProviderTestResult>;
   onUpdate: (providerId: string, input: ModelProviderPatchRequest) => Promise<ModelProviderRecord | void> | ModelProviderRecord | void;
 }) {
   const text = getProviderCopy(language);
@@ -50,6 +58,7 @@ export function ModelProvidersPanel({
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<ProviderDraft>(() => draftFromPreset(MODEL_PROVIDER_PRESETS[0]!));
   const [formError, setFormError] = useState<string | null>(null);
+  const [testStates, setTestStates] = useState<Record<string, ProviderTestState>>({});
   const activeProvider = providers.find((provider) => provider.id === activeProviderId) ?? providers.find((provider) => provider.enabled) ?? null;
   const selectedPreset = useMemo(() => MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor === draft.vendor) ?? MODEL_PROVIDER_PRESETS[0]!, [draft.vendor]);
   const modelPresets = selectedPreset.models;
@@ -147,47 +156,70 @@ export function ModelProvidersPanel({
             onAction={() => startCreate()}
           />
         ) : null}
-        {providers.map((provider) => (
-          <article className={provider.id === activeProviderId ? "providerRow active" : "providerRow"} key={provider.id}>
-            <ProviderBrandIcon modelId={provider.defaultModelId} vendor={provider.vendor} />
-            <div className="providerMain">
-              <strong>{provider.label}</strong>
-              <span>{provider.defaultModelId}</span>
-              <small>
-                {provider.protocol.replace("_", " ")} · {provider.apiKeyRef?.last4 ? `•••• ${provider.apiKeyRef.last4}` : text.noKey}
-              </small>
-            </div>
-            <div className="providerState">
-              {provider.id === activeProviderId ? (
-                <span className="activeProvider">
-                  <CheckCircle2 size={14} />
-                  {text.active}
-                </span>
-              ) : (
-                <span className={provider.enabled ? "statusPill" : "statusPill muted"}>{provider.enabled ? text.available : text.paused}</span>
-              )}
-            </div>
-            <div className="rowIconActions">
-              {provider.id !== activeProviderId ? (
-                <button
-                  aria-label={text.makeCurrent(provider.defaultModelId)}
-                  className="iconButton"
-                  title={text.makeCurrent(provider.defaultModelId)}
-                  type="button"
-                  onClick={() => void onUpdate(provider.id, { enabled: true, makeActive: true })}
-                >
-                  <CheckCircle2 size={15} />
-                </button>
+        {providers.map((provider) => {
+          const testState = testStates[provider.id];
+          return (
+            <div className="providerRowShell" key={provider.id}>
+              <article className={provider.id === activeProviderId ? "providerRow active" : "providerRow"}>
+                <ProviderBrandIcon modelId={provider.defaultModelId} vendor={provider.vendor} />
+                <div className="providerMain">
+                  <strong>{provider.label}</strong>
+                  <span>{provider.defaultModelId}</span>
+                  <small>
+                    {provider.protocol.replace("_", " ")} · {provider.apiKeyRef?.last4 ? `•••• ${provider.apiKeyRef.last4}` : text.noKey}
+                  </small>
+                </div>
+                <div className="providerState">
+                  {provider.id === activeProviderId ? (
+                    <span className="activeProvider">
+                      <CheckCircle2 size={14} />
+                      {text.active}
+                    </span>
+                  ) : (
+                    <span className={provider.enabled ? "statusPill" : "statusPill muted"}>{provider.enabled ? text.available : text.paused}</span>
+                  )}
+                </div>
+                <div className="rowIconActions">
+                  {onTest ? (
+                    <button
+                      aria-label={text.testProvider(provider.defaultModelId)}
+                      className="iconButton"
+                      disabled={testState?.status === "running"}
+                      title={text.testProvider(provider.defaultModelId)}
+                      type="button"
+                      onClick={() => void runProviderTest(provider)}
+                    >
+                      {testState?.status === "running" ? <Loader2 className="spin" size={15} /> : <Activity size={15} />}
+                    </button>
+                  ) : null}
+                  {provider.id !== activeProviderId ? (
+                    <button
+                      aria-label={text.makeCurrent(provider.defaultModelId)}
+                      className="iconButton"
+                      title={text.makeCurrent(provider.defaultModelId)}
+                      type="button"
+                      onClick={() => void onUpdate(provider.id, { enabled: true, makeActive: true })}
+                    >
+                      <CheckCircle2 size={15} />
+                    </button>
+                  ) : null}
+                  <button aria-label={text.edit} className="iconButton" type="button" onClick={() => startEdit(provider)}>
+                    <Edit3 size={15} />
+                  </button>
+                  <button aria-label={text.delete} className="iconButton dangerIcon" type="button" onClick={() => setDeleteTarget(provider)}>
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              </article>
+              {testState ? (
+                <div className={testState.status === "passed" ? "providerDiagnostic passed" : testState.status === "running" ? "providerDiagnostic running" : "providerDiagnostic failed"} role="status">
+                  <strong>{formatProviderTestTitle(testState, text)}</strong>
+                  <span>{formatProviderTestDetail(testState, text)}</span>
+                </div>
               ) : null}
-              <button aria-label={text.edit} className="iconButton" type="button" onClick={() => startEdit(provider)}>
-                <Edit3 size={15} />
-              </button>
-              <button aria-label={text.delete} className="iconButton dangerIcon" type="button" onClick={() => setDeleteTarget(provider)}>
-                <Trash2 size={15} />
-              </button>
             </div>
-          </article>
-        ))}
+          );
+        })}
       </div>
 
       {open ? (
@@ -417,6 +449,29 @@ export function ModelProvidersPanel({
     setDraft({ ...draft, modelMode: "preset", modelId: value });
   }
 
+  async function runProviderTest(provider: ModelProviderRecord) {
+    if (!onTest) return;
+    setTestStates((current) => ({ ...current, [provider.id]: { status: "running" } }));
+    try {
+      const result = await onTest(provider.id);
+      setTestStates((current) => ({
+        ...current,
+        [provider.id]: {
+          status: result.ok ? "passed" : "failed",
+          result
+        }
+      }));
+    } catch (error) {
+      setTestStates((current) => ({
+        ...current,
+        [provider.id]: {
+          status: "failed",
+          error: error instanceof Error ? error.message : String(error)
+        }
+      }));
+    }
+  }
+
   async function save() {
     let model: ModelPreset;
     try {
@@ -522,6 +577,27 @@ function buildModel(draft: ProviderDraft): ModelPreset {
   };
 }
 
+function formatProviderTestTitle(testState: ProviderTestState, text: ReturnType<typeof getProviderCopy>): string {
+  if (testState.status === "running") return text.testRunning;
+  if (testState.status === "passed") return text.testPassed;
+  return text.testFailed;
+}
+
+function formatProviderTestDetail(testState: ProviderTestState, text: ReturnType<typeof getProviderCopy>): string {
+  if (testState.status === "running") return text.testRunningHint;
+  const result = testState.result;
+  if (result?.ok) return text.testPassedDetail(result.model, result.durationMs);
+  const reason = result?.failureClass ? text.failureClass(result.failureClass) : text.failureClass("provider_configuration");
+  const status = result?.statusCode ? `HTTP ${result.statusCode}` : "";
+  const error = compactDiagnosticText(testState.error ?? result?.error ?? "");
+  return [reason, status, error].filter(Boolean).join(" · ");
+}
+
+function compactDiagnosticText(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > 220 ? `${normalized.slice(0, 217)}...` : normalized;
+}
+
 function getProviderCopy(language?: string | null) {
   const zh = language === "zh-CN";
   return {
@@ -570,6 +646,17 @@ function getProviderCopy(language?: string | null) {
     makeActive: zh ? "设为当前模型" : "Make active",
     makeActiveHint: zh ? "保存后立即切换到这个模型配置。" : "Use this model configuration immediately after saving.",
     makeCurrent: (modelId: string) => zh ? `切换到 ${modelId}` : `Switch to ${modelId}`,
+    testProvider: (modelId: string) => zh ? `测试 ${modelId} 连接` : `Test ${modelId} connection`,
+    testRunning: zh ? "正在测试模型连接" : "Testing model connection",
+    testRunningHint: zh ? "通过后端发送一次最小化预检请求。" : "Sending a minimal server-side preflight request.",
+    testPassed: zh ? "连接测试通过" : "Connection test passed",
+    testPassedDetail: (modelId: string, durationMs: number) => zh ? `${modelId} 在 ${durationMs}ms 内返回。` : `${modelId} responded in ${durationMs}ms.`,
+    testFailed: zh ? "连接测试失败" : "Connection test failed",
+    failureClass: (failureClass: ModelProviderTestResult["failureClass"]) => {
+      if (failureClass === "rate_limit") return zh ? "服务限流" : "Rate limited";
+      if (failureClass === "provider_transient") return zh ? "服务暂时不可用" : "Provider temporarily unavailable";
+      return zh ? "配置或密钥需要检查" : "Configuration or API key needs attention";
+    },
     availableForTasks: zh ? "允许任务使用" : "Available to tasks",
     availableForTasksHint: zh ? "关闭后保留配置和密钥，但不会被任务选择。" : "Keep this configuration and key, but exclude it from task selection.",
     cancel: zh ? "取消" : "Cancel",

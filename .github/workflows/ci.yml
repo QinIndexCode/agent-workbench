@@ -5,6 +5,33 @@ on:
   pull_request:
 
 jobs:
+  portable-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production dependencies
+        run: npm run audit:prod
+
+      - name: Verify portable source and build
+        run: |
+          npm run lint
+          npm run typecheck
+          npm run check:release-source
+          npm run build
+
   flagship-quality:
     runs-on: windows-latest
     timeout-minutes: 120
@@ -24,6 +51,9 @@ jobs:
 
       - name: Install Playwright browser
         run: npx playwright install chromium
+
+      - name: Audit production dependencies
+        run: npm.cmd run audit:prod
 
       - name: Run flagship quality suite
         run: npm.cmd run quality:full

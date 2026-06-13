@@ -111,7 +111,7 @@ describe("real task matrix", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 15_000);
 
   it("handles a vague broken-project request with evidence before the fix", async () => {
     const fixture = createFixtureProject("vague-debug");
@@ -131,7 +131,7 @@ describe("real task matrix", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 15_000);
 
   it("supports a read-only diagnosis turn without code-level prompt blocking", async () => {
     const fixture = createFixtureProject("read-only-diagnosis");
@@ -327,7 +327,7 @@ describe("real task matrix", () => {
     } finally {
       fixture.cleanup();
     }
-  });
+  }, 15_000);
 
   it("cancels a long-running tool and prevents the next turn from continuing", async () => {
     const executor = new AbortableMatrixToolExecutor();

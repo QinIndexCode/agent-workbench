@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { createCipheriv, createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore, McpRegistry, type ModelClient, type ModelTurn } from "@agent-workbench/core";
-import type { TaskDetail, TaskEvent, ToolApproval, ToolCall, ToolResult } from "@agent-workbench/shared";
+import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore, McpRegistry, defaultPreferences, normalizeSkillRecord, type ModelClient, type ModelTurn } from "@agent-workbench/core";
+import type { SkillRecord, TaskDetail, TaskEvent, ToolApproval, ToolCall, ToolResult } from "@agent-workbench/shared";
 import { createApp } from "../src/server.js";
 import { SqliteWorkbenchStore } from "../src/sqlite-store.js";
 
@@ -165,6 +165,34 @@ describe("server API", () => {
     expect(body.version).toBe("0.1.0");
     expect(Number.isNaN(Date.parse(body.timestamp))).toBe(false);
 
+    await app.close();
+  });
+
+  it("tests model provider configuration through the protected API without exposing secrets", async () => {
+    const app = await createTestApp({ workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore() }) });
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/model-providers",
+      payload: {
+        vendor: "mimo",
+        label: "Missing key provider",
+        protocol: "openai_compatible",
+        baseUrl: "https://mimo.example/v1",
+        models: [{ id: "mimo-v2.5", label: "Mimo v2.5", contextWindow: 128000, supportsTools: true, supportsThinking: false }],
+        defaultModelId: "mimo-v2.5",
+        enabled: true,
+        makeActive: true
+      }
+    });
+    const providerId = create.json<{ id: string }>().id;
+    const response = await app.inject({ method: "POST", url: `/api/model-providers/${providerId}/test` });
+    const body = response.json<{ ok: boolean; failureClass: string; error: string }>();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(false);
+    expect(body.failureClass).toBe("provider_configuration");
+    expect(body.error).toContain("missing a decryptable API key");
+    expect(JSON.stringify(body)).not.toContain("apiKey");
     await app.close();
   });
 
@@ -986,8 +1014,18 @@ describe("server API", () => {
       url: `/api/model-providers/${provider.id}`,
       payload: { label: "Mimo updated", enabled: false }
     });
+    expect(providerPatch.statusCode).toBe(200);
     expect(providerPatch.json().enabled).toBe(false);
     expect(providerPatch.json().label).toBe("Mimo updated");
+    expect((await app.inject("/api/preferences")).json().activeModelProviderId).toBe("");
+
+    const invalidProviderPatch = await app.inject({
+      method: "PATCH",
+      url: `/api/model-providers/${provider.id}`,
+      payload: { defaultModelId: "missing-model" }
+    });
+    expect(invalidProviderPatch.statusCode).toBe(400);
+    expect(invalidProviderPatch.json().error).toContain("defaultModelId");
 
     const grantResponse = await app.inject({
       method: "POST",
@@ -1043,6 +1081,112 @@ describe("server API", () => {
         })
       ).statusCode
     ).toBe(201);
+    const knowledgeSearchResponse = await app.inject({
+      method: "POST",
+      url: "/api/knowledge/search",
+      payload: { query: "approvals runtime", projectId: "default", limit: 2 }
+    });
+    expect(knowledgeSearchResponse.statusCode).toBe(200);
+    expect(knowledgeSearchResponse.json()[0]?.item.id).toBe(knowledge.id);
+    expect(knowledgeSearchResponse.json()[0]?.matchedFields).toContain("content");
+    await app.close();
+  });
+
+  it("serves task attachment upload and cleanup endpoints without leaking plaintext storage", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-attachments-api-"));
+    const previousWorkspaceRoot = process.env["SCC_WORKSPACE_ROOT"];
+    process.env["SCC_WORKSPACE_ROOT"] = root;
+    const app = await createTestApp({
+      workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StaticFinalModelClient() })
+    });
+    const content = "# Incident note\napi_key=sk-test-server-attachment-secret123456";
+
+    try {
+      const upload = await app.inject({
+        method: "POST",
+        url: "/api/task-attachments",
+        payload: {
+          fileName: "incident.md",
+          mimeType: "text/markdown",
+          size: Buffer.byteLength(content),
+          dataBase64: Buffer.from(content).toString("base64")
+        }
+      });
+      const attachment = upload.json();
+      const stored = readFileSync(attachment.storagePath, "utf8");
+
+      expect(upload.statusCode).toBe(201);
+      expect(attachment.fileName).toBe("incident.md");
+      expect(attachment.kind).toBe("markdown");
+      expect(attachment.textPreview).toContain("[redacted-secret]");
+      expect(attachment.textPreview).not.toContain("sk-test-server-attachment-secret");
+      expect(existsSync(attachment.storagePath)).toBe(true);
+      expect(stored).toContain("__agentWorkbenchEncryptedFile");
+      expect(stored).not.toContain("Incident note");
+
+      const badSize = await app.inject({
+        method: "POST",
+        url: "/api/task-attachments",
+        payload: {
+          fileName: "bad.txt",
+          mimeType: "text/plain",
+          size: 999,
+          dataBase64: Buffer.from("bad").toString("base64")
+        }
+      });
+      expect(badSize.statusCode).toBe(400);
+      expect(badSize.json().error).toContain("size");
+
+      const deleteResponse = await app.inject({ method: "DELETE", url: `/api/task-attachments/${attachment.id}` });
+      expect(deleteResponse.statusCode).toBe(204);
+      expect(existsSync(attachment.storagePath)).toBe(false);
+    } finally {
+      await app.close();
+      if (previousWorkspaceRoot === undefined) delete process.env["SCC_WORKSPACE_ROOT"];
+      else process.env["SCC_WORKSPACE_ROOT"] = previousWorkspaceRoot;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("serves duplicate skill cleanup through the API using canonical merge rules", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const app = await createTestApp({ workbench: new AgentWorkbench({ store }) });
+    const base = normalizeSkillRecord({
+      id: "skill_duplicate_canonical",
+      title: "Reusable review checklist",
+      body: "# Reusable review checklist\nVerify behavior, evidence, and regression coverage before closing.",
+      status: "candidate",
+      sourceMemoryIds: ["memory_canonical"],
+      applicability: {
+        keywords: ["review", "checklist"],
+        requiredTools: ["read_file"],
+        requiredContext: ["repo"]
+      }
+    }) as SkillRecord;
+    const duplicate = normalizeSkillRecord({
+      ...base,
+      id: "skill_duplicate_source",
+      createdAt: new Date(Date.parse(base.createdAt) + 1_000).toISOString(),
+      updatedAt: new Date(Date.parse(base.updatedAt) + 1_000).toISOString(),
+      lastUsedAt: new Date(Date.parse(base.lastUsedAt) + 1_000).toISOString(),
+      sourceMemoryIds: ["memory_duplicate"]
+    }) as SkillRecord;
+
+    await store.saveSkill(base);
+    await store.saveSkill(duplicate);
+
+    const before = await app.inject("/api/skills/duplicates");
+    const cleanup = await app.inject({ method: "POST", url: "/api/skills/cleanup-duplicates" });
+    const after = await app.inject("/api/skills/duplicates");
+    const skills = (await app.inject("/api/skills")).json() as SkillRecord[];
+
+    expect(before.json()).toHaveLength(1);
+    expect(cleanup.statusCode).toBe(200);
+    expect(cleanup.json()).toMatchObject({ merged: 1, deleted: 1 });
+    expect(after.json()).toHaveLength(0);
+    expect(skills).toHaveLength(1);
+    expect(skills[0]?.id).toBe("skill_duplicate_canonical");
+    expect(skills[0]?.sourceMemoryIds).toEqual(expect.arrayContaining(["memory_canonical", "memory_duplicate"]));
     await app.close();
   });
 
@@ -1138,13 +1282,40 @@ describe("server API", () => {
         transport: "stdio",
         command: process.execPath,
         args: ["--version"],
-        env: {},
+        env: { API_KEY: "sk-mcp-secret-1234567890" },
         enabled: false,
         toolRiskOverrides: {}
       }
     });
     expect(createResponse.statusCode).toBe(201);
-    expect((await app.inject("/api/mcp/servers")).json()[0].id).toBe("mock");
+    expect(createResponse.body).not.toContain("sk-mcp-secret");
+    const servers = (await app.inject("/api/mcp/servers")).json();
+    expect(servers[0].id).toBe("mock");
+    expect(JSON.stringify(servers)).not.toContain("sk-mcp-secret");
+    expect((await store.getMcpServer("mock"))?.env["API_KEY"]).toBe("sk-mcp-secret-1234567890");
+    const invalidMcp = await app.inject({
+      method: "POST",
+      url: "/api/mcp/servers",
+      payload: {
+        id: "bad_http",
+        label: "Bad HTTP MCP",
+        transport: "streamable_http",
+        url: "file:///tmp/mcp",
+        args: [],
+        env: {},
+        enabled: true,
+        toolRiskOverrides: {}
+      }
+    });
+    expect(invalidMcp.statusCode).toBe(400);
+    expect(invalidMcp.json().error).toContain("http or https");
+    const invalidPatch = await app.inject({
+      method: "PATCH",
+      url: "/api/mcp/servers/mock",
+      payload: { transport: "streamable_http" }
+    });
+    expect(invalidPatch.statusCode).toBe(400);
+    expect(invalidPatch.json().error).toContain("require url");
     expect((await app.inject("/api/mcp/tools")).statusCode).toBe(200);
     await app.close();
   });
@@ -1223,8 +1394,9 @@ describe("server API", () => {
   });
 
   it("serves scheduled, web search, and integration management endpoints", async () => {
+    const store = new InMemoryWorkbenchStore();
     const app = await createTestApp({
-      workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore() })
+      workbench: new AgentWorkbench({ store })
     });
 
     const scheduledResponse = await app.inject({
@@ -1241,6 +1413,13 @@ describe("server API", () => {
     expect(scheduledResponse.statusCode).toBe(201);
     const scheduled = scheduledResponse.json();
     expect((await app.inject({ method: "PATCH", url: `/api/scheduled-tasks/${scheduled.id}`, payload: { status: "paused" } })).json().status).toBe("paused");
+    const invalidIntervalPatch = await app.inject({
+      method: "PATCH",
+      url: `/api/scheduled-tasks/${scheduled.id}`,
+      payload: { scheduleKind: "interval", intervalHours: 0, intervalMinutes: 0 }
+    });
+    expect(invalidIntervalPatch.statusCode).toBe(400);
+    expect(invalidIntervalPatch.json().error).toMatch(/invalid request|greater than 0/i);
     expect((await app.inject({ method: "DELETE", url: `/api/scheduled-tasks/${scheduled.id}` })).statusCode).toBe(204);
 
     const webSearchResponse = await app.inject({
@@ -1259,7 +1438,37 @@ describe("server API", () => {
     });
     expect(webSearchPatch.json().enabled).toBe(false);
     expect(webSearchPatch.json().apiKeyRef).toBeUndefined();
+    const invalidCustomSearch = await app.inject({
+      method: "POST",
+      url: "/api/web-search/providers",
+      payload: { label: "Broken custom", kind: "custom", enabled: true }
+    });
+    expect(invalidCustomSearch.statusCode).toBe(400);
+    expect(invalidCustomSearch.json().error).toMatch(/requires an endpoint/i);
+    const invalidSearchPatch = await app.inject({
+      method: "PATCH",
+      url: `/api/web-search/providers/${webSearch.id}`,
+      payload: { kind: "custom", endpoint: "https://example.test/search" }
+    });
+    expect(invalidSearchPatch.statusCode).toBe(400);
+    expect(invalidSearchPatch.json().error).toMatch(/\{query\}/i);
     expect((await app.inject({ method: "DELETE", url: `/api/web-search/providers/${webSearch.id}` })).statusCode).toBe(204);
+
+    const invalidIntegration = await app.inject({
+      method: "POST",
+      url: "/api/integrations",
+      payload: {
+        kind: "discord",
+        label: "Discord Bad Callback",
+        publicKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        callbackUrl: "file:///tmp/callback",
+        defaultFolderId: "default",
+        defaultPermissionPreset: "ask",
+        enabled: false
+      }
+    });
+    expect(invalidIntegration.statusCode).toBe(400);
+    expect(invalidIntegration.json().error).toMatch(/http or https/i);
 
     const integrationResponse = await app.inject({
       method: "POST",
@@ -1287,6 +1496,23 @@ describe("server API", () => {
     });
     expect(integrationPatch.json().label).toBe("Discord Support");
     expect(integrationPatch.json().botTokenRef).toBeUndefined();
+    const integrationKindPatch = await app.inject({
+      method: "PATCH",
+      url: `/api/integrations/${integration.id}`,
+      payload: {
+        kind: "slack",
+        label: "Slack Support",
+        signingSecret: "slack-signing-secret",
+        callbackUrl: "https://slack.example.test/events",
+        enabled: true
+      }
+    });
+    expect(integrationKindPatch.statusCode).toBe(200);
+    expect(integrationKindPatch.json().kind).toBe("slack");
+    expect(integrationKindPatch.json().signingSecretRef.last4).toBe("cret");
+    expect(integrationKindPatch.json().publicKey).toBeUndefined();
+    expect(integrationKindPatch.json().botTokenRef).toBeUndefined();
+    expect(await store.getIntegrationSecret(integration.id, "botToken")).toBeUndefined();
     expect((await app.inject({ method: "POST", url: `/api/integrations/${integration.id}/disconnect` })).json().status).toBe("disabled");
     expect((await app.inject({ method: "DELETE", url: `/api/integrations/${integration.id}` })).statusCode).toBe(204);
 
@@ -1730,6 +1956,21 @@ async function waitForTask(app: TestApp, taskId: string, predicate: (task: TaskD
   throw new Error(`Timed out waiting for task ${taskId}`);
 }
 
+function readSqliteFileFamily(file: string): Buffer {
+  return Buffer.concat(
+    [file, `${file}-wal`, `${file}-shm`]
+      .filter((candidate) => existsSync(candidate))
+      .map((candidate) => readFileSync(candidate))
+  );
+}
+
+function expectSqliteFileFamilyNotToContain(file: string, needles: string[]): void {
+  const bytes = readSqliteFileFamily(file);
+  for (const needle of needles) {
+    expect(bytes.includes(Buffer.from(needle, "utf8")), `SQLite files should not contain ${needle}`).toBe(false);
+  }
+}
+
 describe("SqliteWorkbenchStore", () => {
   it("persists task records", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scc-store-"));
@@ -1749,6 +1990,883 @@ describe("SqliteWorkbenchStore", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("encrypts side capability secret-bearing records at rest even when full storage encryption is off", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-side-secrets-"));
+    try {
+      const file = join(dir, "state.sqlite");
+      const store = new SqliteWorkbenchStore(file);
+      const workbench = new AgentWorkbench({ store });
+      const mcp = new McpRegistry(store);
+
+      await workbench.createModelProvider({
+        vendor: "mimo",
+        label: "Mimo",
+        protocol: "openai_compatible",
+        baseUrl: "https://mimo.example.test/v1",
+        apiKey: "model-secret-123456",
+        models: [{ id: "mimo-v1", label: "Mimo v1" }],
+        defaultModelId: "mimo-v1",
+        enabled: true
+      });
+      const search = await workbench.createWebSearchProvider({
+        label: "Custom search",
+        kind: "custom",
+        endpoint: "https://search.example.test?q={query}&api_key={apiKey}",
+        apiKey: "search-secret-123456",
+        enabled: true
+      });
+      const integration = await workbench.createIntegrationProvider({
+        kind: "slack",
+        label: "Slack",
+        signingSecret: "slack-secret-123456",
+        callbackUrl: "https://slack.example.test/events",
+        defaultFolderId: "default",
+        defaultPermissionPreset: "ask",
+        enabled: true
+      });
+      await workbench.createScheduledTask({
+        title: "Secret scheduled task",
+        prompt: "Run a scheduled check with scheduled-prompt-secret-123456",
+        folderId: "default",
+        scheduleKind: "interval",
+        intervalHours: 0,
+        intervalMinutes: 30
+      });
+      await store.saveIntegrationMessage({
+        id: "integration_message_secret",
+        integrationId: integration.id,
+        externalMessageId: "external-secret-message",
+        externalChannelId: "channel-secret",
+        senderId: "sender-secret",
+        text: "Please debug with api_key=integration-message-secret-123456 and Bearer integration-bearer-secret",
+        createdAt: new Date().toISOString()
+      });
+      await mcp.createServer({
+        id: "secret_mcp",
+        label: "Secret MCP",
+        transport: "streamable_http",
+        url: "https://mcp.example.test/stream?api_key=mcp-secret-123456",
+        env: { API_KEY: "sk-mcp-secret-123456" },
+        enabled: true
+      });
+      store.close();
+
+      const raw = new Database(file, { readonly: true });
+      const rows = raw.prepare("SELECT namespace, value FROM records").all() as Array<{ namespace: string; value: string }>;
+      raw.close();
+      const joined = rows.map((row) => row.value).join("\n");
+      const mcpRow = rows.find((row) => row.namespace === "mcp_servers")?.value ?? "";
+      const webSearchProviderRow = rows.find((row) => row.namespace === "web_search_providers")?.value ?? "";
+      const integrationProviderRow = rows.find((row) => row.namespace === "integration_providers")?.value ?? "";
+      const scheduledTaskRow = rows.find((row) => row.namespace === "scheduled_tasks")?.value ?? "";
+
+      expect(joined).not.toContain("model-secret-123456");
+      expect(joined).not.toContain("search-secret-123456");
+      expect(joined).not.toContain("slack-secret-123456");
+      expect(joined).not.toContain("scheduled-prompt-secret-123456");
+      expect(joined).not.toContain("integration-message-secret-123456");
+      expect(joined).not.toContain("integration-bearer-secret");
+      expect(joined).not.toContain("sk-mcp-secret-123456");
+      expect(joined).not.toContain("mcp-secret-123456");
+      expect(mcpRow).toContain("__sccEncrypted");
+      expect(webSearchProviderRow).toContain("__sccEncrypted");
+      expect(integrationProviderRow).toContain("__sccEncrypted");
+      expect(scheduledTaskRow).toContain("__sccEncrypted");
+
+      const reloaded = new SqliteWorkbenchStore(file);
+      expect((await reloaded.getMcpServer("secret_mcp"))?.env?.["API_KEY"]).toBe("sk-mcp-secret-123456");
+      expect((await reloaded.getMcpServer("secret_mcp"))?.url).toContain("mcp-secret-123456");
+      expect((await reloaded.listIntegrationMessages(integration.id))[0]?.text).toContain("integration-message-secret-123456");
+      expect((await reloaded.getWebSearchProviderSecret(search.id))).toBeDefined();
+      const preferences = await reloaded.getPreferences();
+      await reloaded.savePreferences({ ...preferences, encryptStorage: true, updatedAt: new Date().toISOString() });
+      await reloaded.savePreferences({ ...preferences, encryptStorage: false, updatedAt: new Date().toISOString() });
+      reloaded.close();
+
+      const rewritten = new Database(file, { readonly: true });
+      const rewrittenRows = rewritten.prepare("SELECT namespace, value FROM records").all() as Array<{ namespace: string; value: string }>;
+      rewritten.close();
+      const rewrittenJoined = rewrittenRows.map((row) => row.value).join("\n");
+      const rewrittenMcpRow = rewrittenRows.find((row) => row.namespace === "mcp_servers")?.value ?? "";
+
+      expect(rewrittenJoined).not.toContain("sk-mcp-secret-123456");
+      expect(rewrittenJoined).not.toContain("mcp-secret-123456");
+      expect(rewrittenJoined).not.toContain("integration-message-secret-123456");
+      expect(rewrittenMcpRow).toContain("__sccEncrypted");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates legacy plaintext MCP server records to encrypted storage on open", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-mcp-migration-"));
+    try {
+      const file = join(dir, "state.sqlite");
+      const now = new Date().toISOString();
+      const raw = new Database(file);
+      raw.prepare("CREATE TABLE records (namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(namespace, key))").run();
+      raw.prepare("INSERT INTO records(namespace, key, value) VALUES (?, ?, ?)").run(
+        "mcp_servers",
+        "legacy_mcp",
+        JSON.stringify({
+          id: "legacy_mcp",
+          label: "Legacy MCP",
+          transport: "streamable_http",
+          url: "https://mcp.example.test/stream?api_key=legacy-mcp-secret-123456",
+          env: { API_KEY: "sk-legacy-mcp-secret-123456" },
+          enabled: true,
+          createdAt: now,
+          updatedAt: now
+        })
+      );
+      raw.close();
+
+      const store = new SqliteWorkbenchStore(file);
+      expect((await store.getMcpServer("legacy_mcp"))?.env?.["API_KEY"]).toBe("sk-legacy-mcp-secret-123456");
+      store.close();
+
+      const migrated = new Database(file, { readonly: true });
+      const row = migrated.prepare("SELECT value FROM records WHERE namespace = ? AND key = ?").get("mcp_servers", "legacy_mcp") as { value: string };
+      migrated.close();
+
+      expect(row.value).toContain("__sccEncrypted");
+      expect(row.value).not.toContain("sk-legacy-mcp-secret-123456");
+      expect(row.value).not.toContain("legacy-mcp-secret-123456");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates legacy plaintext integration messages to encrypted storage on open", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-integration-message-migration-"));
+    try {
+      const file = join(dir, "state.sqlite");
+      const now = new Date().toISOString();
+      const raw = new Database(file);
+      raw.prepare("CREATE TABLE records (namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(namespace, key))").run();
+      raw.prepare("INSERT INTO records(namespace, key, value) VALUES (?, ?, ?)").run(
+        "integration_messages",
+        "legacy_integration_message",
+        JSON.stringify({
+          id: "legacy_integration_message",
+          integrationId: "integration_legacy",
+          externalMessageId: "legacy_external",
+          externalChannelId: "legacy_channel",
+          senderId: "legacy_sender",
+          text: "Legacy inbound secret api_key=legacy-integration-message-secret-123456",
+          createdAt: now
+        })
+      );
+      raw.close();
+
+      const store = new SqliteWorkbenchStore(file);
+      expect((await store.listIntegrationMessages("integration_legacy"))[0]?.text).toContain("legacy-integration-message-secret-123456");
+      store.close();
+
+      const migrated = new Database(file, { readonly: true });
+      const row = migrated.prepare("SELECT value FROM records WHERE namespace = ? AND key = ?").get("integration_messages", "legacy_integration_message") as { value: string };
+      migrated.close();
+
+      expect(row.value).toContain("__sccEncrypted");
+      expect(row.value).not.toContain("legacy-integration-message-secret-123456");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps raw inbound integration text encrypted while redacting task copies", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-integration-task-redaction-"));
+    try {
+      const file = join(dir, "state.sqlite");
+      const store = new SqliteWorkbenchStore(file);
+      const workbench = new AgentWorkbench({ store, model: new StaticFinalModelClient() });
+      const slack = await workbench.createIntegrationProvider({
+        kind: "slack",
+        label: "Slack Secure",
+        signingSecret: "slack-secret-raw-task",
+        callbackUrl: "https://slack.example.test/events",
+        defaultFolderId: "default",
+        defaultPermissionPreset: "ask",
+        enabled: true
+      });
+      const app = await createTestApp({ workbench });
+      const payload = {
+        integrationId: slack.id,
+        type: "event_callback",
+        event_id: "slack_secret_event",
+        event: {
+          type: "message",
+          user: "user_1",
+          text: "Please debug with api_key=slack-inbound-task-secret-123456 and Bearer slack-inbound-bearer-secret",
+          channel: "channel_secret",
+          ts: "1711111111.200"
+        }
+      };
+      const body = JSON.stringify(payload);
+      const timestamp = String(Date.now());
+      const signature = slackSignature("slack-secret-raw-task", timestamp, body);
+
+      const response = await app.injectRaw({
+        method: "POST",
+        url: "/api/integrations/slack/events",
+        payload,
+        headers: {
+          "x-slack-signature": signature,
+          "x-slack-request-timestamp": timestamp
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      const task = (await store.listTasks())[0];
+      const messages = await store.listIntegrationMessages(slack.id);
+      expect(messages[0]?.text).toContain("slack-inbound-task-secret-123456");
+      expect(JSON.stringify(task)).not.toContain("slack-inbound-task-secret-123456");
+      expect(JSON.stringify(task)).not.toContain("slack-inbound-bearer-secret");
+      expect(JSON.stringify(task)).toContain("[redacted-secret]");
+
+      await app.close();
+      store.close();
+
+      const raw = new Database(file, { readonly: true });
+      const joined = (raw.prepare("SELECT value FROM records").all() as Array<{ value: string }>).map((row) => row.value).join("\n");
+      raw.close();
+
+      expect(joined).not.toContain("slack-inbound-task-secret-123456");
+      expect(joined).not.toContain("slack-inbound-bearer-secret");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("encrypts local task records by default even before preferences are initialized", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-default-encrypted-"));
+    const previousSecretFile = process.env["SCC_LOCAL_SECRET_FILE"];
+    process.env["SCC_LOCAL_SECRET_FILE"] = join(dir, "local-secret.key");
+    try {
+      const file = join(dir, "state.sqlite");
+      const store = new SqliteWorkbenchStore(file);
+      const now = new Date().toISOString();
+      await store.saveTask({
+        id: "task_default_secret",
+        title: "Default encrypted task",
+        status: "completed",
+        createdAt: now,
+        updatedAt: now,
+        approvals: [],
+        pendingGuidance: [],
+        events: [
+          {
+            id: "event_default_secret",
+            taskId: "task_default_secret",
+            type: "user_message",
+            createdAt: now,
+            summary: "DEFAULT_TASK_API_KEY_sk-default-secret-1234567890",
+            payload: {}
+          }
+        ]
+      });
+      store.close();
+
+      const raw = new Database(file, { readonly: true });
+      const row = raw.prepare("SELECT value FROM records WHERE namespace = ? AND key = ?").get("tasks", "task_default_secret") as { value: string };
+      raw.close();
+      expect(row.value).toContain("__sccEncrypted");
+      expect(row.value).not.toContain("sk-default-secret-1234567890");
+
+      const reloaded = new SqliteWorkbenchStore(file);
+      expect((await reloaded.getTask("task_default_secret"))?.events[0]?.summary).toContain("sk-default-secret-1234567890");
+      reloaded.close();
+    } finally {
+      if (previousSecretFile === undefined) delete process.env["SCC_LOCAL_SECRET_FILE"];
+      else process.env["SCC_LOCAL_SECRET_FILE"] = previousSecretFile;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates legacy plaintext user-content records even when full storage encryption is disabled", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-legacy-content-encrypted-"));
+    const previousSecretFile = process.env["SCC_LOCAL_SECRET_FILE"];
+    process.env["SCC_LOCAL_SECRET_FILE"] = join(dir, "local-secret.key");
+    try {
+      const file = join(dir, "state.sqlite");
+      const now = new Date().toISOString();
+      const raw = new Database(file);
+      raw.prepare("CREATE TABLE records (namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(namespace, key))").run();
+      raw.prepare("INSERT INTO records (namespace, key, value) VALUES (?, ?, ?)").run(
+        "preferences",
+        "default",
+        JSON.stringify({ encryptStorage: false, sanitizeSensitiveData: true, updatedAt: now })
+      );
+      raw.prepare("INSERT INTO records (namespace, key, value) VALUES (?, ?, ?)").run(
+        "tasks",
+        "task_legacy_secret",
+        JSON.stringify({
+          id: "task_legacy_secret",
+          title: "Legacy plaintext task",
+          status: "completed",
+          createdAt: now,
+          updatedAt: now,
+          approvals: [],
+          pendingGuidance: [],
+          events: [{
+            id: "event_legacy_secret",
+            taskId: "task_legacy_secret",
+            type: "user_message",
+            createdAt: now,
+            summary: "LEGACY_TASK_API_KEY_sk-legacy-task-secret-1234567890",
+            payload: {}
+          }]
+        })
+      );
+      raw.close();
+
+      const store = new SqliteWorkbenchStore(file);
+      expect((await store.getTask("task_legacy_secret"))?.events[0]?.summary).toContain("sk-legacy-task-secret-1234567890");
+      expect((await store.getPreferences()).encryptStorage).toBe(false);
+      store.close();
+
+      const migrated = new Database(file, { readonly: true });
+      const row = migrated.prepare("SELECT value FROM records WHERE namespace = ? AND key = ?").get("tasks", "task_legacy_secret") as { value: string };
+      const preferencesRow = migrated.prepare("SELECT value FROM records WHERE namespace = ? AND key = ?").get("preferences", "default") as { value: string };
+      migrated.close();
+      expect(row.value).toContain("__sccEncrypted");
+      expect(row.value).not.toContain("sk-legacy-task-secret-1234567890");
+      expect(preferencesRow.value).toContain("__sccEncrypted");
+      expect(preferencesRow.value).not.toContain("\"encryptStorage\":false");
+    } finally {
+      if (previousSecretFile === undefined) delete process.env["SCC_LOCAL_SECRET_FILE"];
+      else process.env["SCC_LOCAL_SECRET_FILE"] = previousSecretFile;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("bulk-migrates legacy plaintext records and removes raw SQLite byte remnants", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-bulk-migration-"));
+    const previousSecretFile = process.env["SCC_LOCAL_SECRET_FILE"];
+    process.env["SCC_LOCAL_SECRET_FILE"] = join(dir, "local-secret.key");
+    try {
+      const file = join(dir, "state.sqlite");
+      const now = new Date().toISOString();
+      const raw = new Database(file);
+      raw.prepare("CREATE TABLE records (namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(namespace, key))").run();
+      const insert = raw.prepare("INSERT INTO records (namespace, key, value) VALUES (?, ?, ?)");
+      const needles: string[] = [
+        "CHAOS_PREF_PROVIDER_BASE_URL_SECRET",
+        "CHAOS_MCP_URL_SECRET",
+        "CHAOS_WEB_SEARCH_SECRET",
+        "CHAOS_SCHEDULED_PROMPT_SECRET",
+        "CHAOS_INTEGRATION_MESSAGE_SECRET"
+      ];
+
+      insert.run("preferences", "default", JSON.stringify({
+        ...defaultPreferences(),
+        encryptStorage: false,
+        updatedAt: now,
+        providerBaseUrl: "https://CHAOS_PREF_PROVIDER_BASE_URL_SECRET.example.test/v1"
+      }));
+      insert.run("mcp_servers", "chaos_mcp", JSON.stringify({
+        id: "chaos_mcp",
+        label: "Chaos MCP",
+        transport: "streamable_http",
+        url: "https://mcp.example.test/stream?api_key=CHAOS_MCP_URL_SECRET",
+        env: { API_KEY: "CHAOS_MCP_ENV_SECRET" },
+        enabled: true,
+        createdAt: now,
+        updatedAt: now
+      }));
+      needles.push("CHAOS_MCP_ENV_SECRET");
+      insert.run("web_search_providers", "chaos_search", JSON.stringify({
+        id: "chaos_search",
+        label: "Chaos Search",
+        kind: "custom",
+        endpoint: "https://search.example.test?q={query}&api_key=CHAOS_WEB_SEARCH_SECRET",
+        enabled: true,
+        createdAt: now,
+        updatedAt: now
+      }));
+      insert.run("scheduled_tasks", "chaos_schedule", JSON.stringify({
+        id: "chaos_schedule",
+        title: "Chaos schedule",
+        prompt: "Run with CHAOS_SCHEDULED_PROMPT_SECRET",
+        folderId: "default",
+        scheduleKind: "interval",
+        intervalMinutes: 30,
+        nextRunAt: now,
+        enabled: true,
+        createdAt: now,
+        updatedAt: now
+      }));
+      insert.run("integration_messages", "chaos_integration_message", JSON.stringify({
+        id: "chaos_integration_message",
+        integrationId: "chaos_integration",
+        externalMessageId: "external-chaos",
+        externalChannelId: "channel-chaos",
+        senderId: "sender-chaos",
+        text: "Inbound message with CHAOS_INTEGRATION_MESSAGE_SECRET",
+        createdAt: now
+      }));
+      for (let index = 0; index < 30; index += 1) {
+        const taskSecret = `CHAOS_TASK_SECRET_${index.toString().padStart(2, "0")}`;
+        const knowledgeSecret = `CHAOS_KNOWLEDGE_SECRET_${index.toString().padStart(2, "0")}`;
+        needles.push(taskSecret, knowledgeSecret);
+        insert.run("tasks", `chaos_task_${index}`, JSON.stringify({
+          id: `chaos_task_${index}`,
+          title: `Chaos task ${index}`,
+          status: "completed",
+          createdAt: now,
+          updatedAt: now,
+          approvals: [],
+          pendingGuidance: [],
+          events: [{
+            id: `chaos_event_${index}`,
+            taskId: `chaos_task_${index}`,
+            type: "user_message",
+            createdAt: now,
+            summary: `Task transcript ${taskSecret}`,
+            payload: {}
+          }]
+        }));
+        insert.run("knowledge_items", `chaos_knowledge_${index}`, JSON.stringify({
+          id: `chaos_knowledge_${index}`,
+          projectId: "default",
+          kind: "memory",
+          title: `Chaos knowledge ${index}`,
+          content: `Knowledge content ${knowledgeSecret}`,
+          tags: [],
+          indexStatus: "pending",
+          chunkCount: 0,
+          createdAt: now,
+          updatedAt: now
+        }));
+      }
+      raw.close();
+
+      const store = new SqliteWorkbenchStore(file);
+      expect((await store.getPreferences()).providerBaseUrl).toContain("CHAOS_PREF_PROVIDER_BASE_URL_SECRET");
+      expect((await store.listTasks())).toHaveLength(30);
+      expect((await store.listKnowledgeItems("default"))).toHaveLength(30);
+      expect((await store.getMcpServer("chaos_mcp"))?.url).toContain("CHAOS_MCP_URL_SECRET");
+      expect((await store.getWebSearchProvider("chaos_search"))?.endpoint).toContain("CHAOS_WEB_SEARCH_SECRET");
+      expect((await store.getScheduledTask("chaos_schedule"))?.prompt).toContain("CHAOS_SCHEDULED_PROMPT_SECRET");
+      expect((await store.listIntegrationMessages("chaos_integration"))[0]?.text).toContain("CHAOS_INTEGRATION_MESSAGE_SECRET");
+      store.close();
+
+      const migrated = new Database(file, { readonly: true });
+      const rows = migrated.prepare("SELECT namespace, value FROM records").all() as Array<{ namespace: string; value: string }>;
+      migrated.close();
+
+      expect(rows).toHaveLength(65);
+      expect(rows.every((row) => row.value.includes("__sccEncrypted"))).toBe(true);
+      expectSqliteFileFamilyNotToContain(file, needles);
+    } finally {
+      if (previousSecretFile === undefined) delete process.env["SCC_LOCAL_SECRET_FILE"];
+      else process.env["SCC_LOCAL_SECRET_FILE"] = previousSecretFile;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("vacuums already-encrypted stores on open to remove stale plaintext page remnants", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-open-vacuum-"));
+    const previousSecretFile = process.env["SCC_LOCAL_SECRET_FILE"];
+    process.env["SCC_LOCAL_SECRET_FILE"] = join(dir, "local-secret.key");
+    try {
+      const file = join(dir, "state.sqlite");
+      const marker = "OPEN_VACUUM_RESIDUAL_SECRET";
+      const store = new SqliteWorkbenchStore(file);
+      const preferences = await store.getPreferences();
+      await store.savePreferences({
+        ...preferences,
+        providerBaseUrl: `https://${marker.toLowerCase()}.example.test/v1`,
+        updatedAt: new Date().toISOString()
+      });
+      store.close();
+
+      const db = new Database(file);
+      const encryptedRow = db.prepare("SELECT value FROM records WHERE namespace = ? AND key = ?").get("preferences", "default") as { value: string };
+      const oversizedPlaintext = JSON.stringify({
+        ...defaultPreferences(),
+        encryptStorage: true,
+        providerBaseUrl: `https://${marker}.example.test/v1`,
+        notes: marker.repeat(500)
+      });
+      db.pragma("secure_delete = OFF");
+      db.pragma("user_version = 0");
+      db.prepare("UPDATE records SET value = ? WHERE namespace = ? AND key = ?").run(oversizedPlaintext, "preferences", "default");
+      db.prepare("UPDATE records SET value = ? WHERE namespace = ? AND key = ?").run(encryptedRow.value, "preferences", "default");
+      db.close();
+      expect(readSqliteFileFamily(file).includes(Buffer.from(marker, "utf8")), "test setup should leave a stale plaintext page remnant").toBe(true);
+
+      const reopened = new SqliteWorkbenchStore(file);
+      expect((await reopened.getPreferences()).providerBaseUrl).toContain(marker.toLowerCase());
+      reopened.close();
+
+      const checked = new Database(file, { readonly: true });
+      const userVersion = checked.pragma("user_version", { simple: true }) as number;
+      checked.close();
+      expect(userVersion).toBeGreaterThanOrEqual(20260526);
+      expectSqliteFileFamilyNotToContain(file, [marker]);
+    } finally {
+      if (previousSecretFile === undefined) delete process.env["SCC_LOCAL_SECRET_FILE"];
+      else process.env["SCC_LOCAL_SECRET_FILE"] = previousSecretFile;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed with a clear error when the local storage key is lost", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-lost-key-"));
+    const previousSecretFile = process.env["SCC_LOCAL_SECRET_FILE"];
+    const keyFile = join(dir, "local-secret.key");
+    process.env["SCC_LOCAL_SECRET_FILE"] = keyFile;
+    let reloaded: SqliteWorkbenchStore | undefined;
+    try {
+      const file = join(dir, "state.sqlite");
+      const store = new SqliteWorkbenchStore(file);
+      const now = new Date().toISOString();
+      await store.saveTask({
+        id: "task_lost_key",
+        title: "Lost key task",
+        status: "completed",
+        createdAt: now,
+        updatedAt: now,
+        approvals: [],
+        pendingGuidance: [],
+        events: [{
+          id: "event_lost_key",
+          taskId: "task_lost_key",
+          type: "user_message",
+          createdAt: now,
+          summary: "LOST_KEY_SECRET_TRANSCRIPT",
+          payload: {}
+        }]
+      });
+      store.close();
+      rmSync(keyFile, { force: true });
+
+      reloaded = new SqliteWorkbenchStore(file);
+      await expect(reloaded.getTask("task_lost_key")).rejects.toThrow(/local secret key file may be missing, changed, or corrupted/i);
+    } finally {
+      reloaded?.close();
+      if (previousSecretFile === undefined) delete process.env["SCC_LOCAL_SECRET_FILE"];
+      else process.env["SCC_LOCAL_SECRET_FILE"] = previousSecretFile;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not silently replace a corrupted local storage key", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-bad-key-"));
+    const previousSecretFile = process.env["SCC_LOCAL_SECRET_FILE"];
+    const keyFile = join(dir, "local-secret.key");
+    process.env["SCC_LOCAL_SECRET_FILE"] = keyFile;
+    let store: SqliteWorkbenchStore | undefined;
+    try {
+      writeFileSync(keyFile, "not-a-valid-32-byte-base64-key", "utf8");
+      const file = join(dir, "state.sqlite");
+      store = new SqliteWorkbenchStore(file);
+      await expect(store.getPreferences()).rejects.toThrow(/invalid local secret key file/i);
+      expect(readFileSync(keyFile, "utf8")).toBe("not-a-valid-32-byte-base64-key");
+    } finally {
+      store?.close();
+      if (previousSecretFile === undefined) delete process.env["SCC_LOCAL_SECRET_FILE"];
+      else process.env["SCC_LOCAL_SECRET_FILE"] = previousSecretFile;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed with contextual errors for malformed SQLite records", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-malformed-row-"));
+    const previousSecretFile = process.env["SCC_LOCAL_SECRET_FILE"];
+    process.env["SCC_LOCAL_SECRET_FILE"] = join(dir, "local-secret.key");
+    try {
+      const file = join(dir, "state.sqlite");
+      const raw = new Database(file);
+      raw
+        .prepare("CREATE TABLE records (namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(namespace, key))")
+        .run();
+      raw.prepare("INSERT INTO records(namespace, key, value) VALUES (?, ?, ?)").run("tasks", "bad_row", "{MALFORMED_ROW_SECRET");
+      raw.close();
+
+      let thrown: unknown;
+      try {
+        new SqliteWorkbenchStore(file);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      const message = thrown instanceof Error ? thrown.message : String(thrown);
+      expect(message).toMatch(/tasks\/bad_row/i);
+      expect(message).toMatch(/malformed|unreadable/i);
+      expect(message).not.toContain("MALFORMED_ROW_SECRET");
+    } finally {
+      if (previousSecretFile === undefined) delete process.env["SCC_LOCAL_SECRET_FILE"];
+      else process.env["SCC_LOCAL_SECRET_FILE"] = previousSecretFile;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed with contextual errors for corrupted encrypted SQLite rows", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-corrupt-row-"));
+    const previousSecretFile = process.env["SCC_LOCAL_SECRET_FILE"];
+    process.env["SCC_LOCAL_SECRET_FILE"] = join(dir, "local-secret.key");
+    let reloaded: SqliteWorkbenchStore | undefined;
+    try {
+      const file = join(dir, "state.sqlite");
+      const store = new SqliteWorkbenchStore(file);
+      const now = new Date().toISOString();
+      await store.saveTask({
+        id: "task_corrupt_row",
+        title: "Corrupt row task",
+        status: "completed",
+        createdAt: now,
+        updatedAt: now,
+        approvals: [],
+        pendingGuidance: [],
+        events: [{
+          id: "event_corrupt_row",
+          taskId: "task_corrupt_row",
+          type: "assistant_message",
+          createdAt: now,
+          summary: "CORRUPT_ROW_SECRET_TRANSCRIPT",
+          payload: {}
+        }]
+      });
+      store.close();
+
+      const raw = new Database(file);
+      const row = raw.prepare("SELECT value FROM records WHERE namespace = ? AND key = ?").get("tasks", "task_corrupt_row") as { value: string };
+      const envelope = JSON.parse(row.value) as { payload: { value: string } };
+      envelope.payload.value = Buffer.from("tampered ciphertext", "utf8").toString("base64");
+      raw.prepare("UPDATE records SET value = ? WHERE namespace = ? AND key = ?").run(JSON.stringify(envelope), "tasks", "task_corrupt_row");
+      raw.close();
+
+      reloaded = new SqliteWorkbenchStore(file);
+      await expect(reloaded.getTask("task_corrupt_row")).rejects.toThrow(/tasks\/task_corrupt_row.*local secret key|tasks\/task_corrupt_row.*decrypt/i);
+      expect(readSqliteFileFamily(file).includes(Buffer.from("CORRUPT_ROW_SECRET_TRANSCRIPT", "utf8"))).toBe(false);
+    } finally {
+      reloaded?.close();
+      if (previousSecretFile === undefined) delete process.env["SCC_LOCAL_SECRET_FILE"];
+      else process.env["SCC_LOCAL_SECRET_FILE"] = previousSecretFile;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("survives high-volume encrypted writes across repeated reopen cycles", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-high-volume-"));
+    const previousSecretFile = process.env["SCC_LOCAL_SECRET_FILE"];
+    process.env["SCC_LOCAL_SECRET_FILE"] = join(dir, "local-secret.key");
+    try {
+      const file = join(dir, "state.sqlite");
+      const now = new Date().toISOString();
+      const secrets = ["HIGH_VOLUME_TASK_SECRET_000", "HIGH_VOLUME_KNOWLEDGE_SECRET_000", "HIGH_VOLUME_TASK_SECRET_599", "HIGH_VOLUME_KNOWLEDGE_SECRET_599"];
+
+      let store = new SqliteWorkbenchStore(file);
+      for (let index = 0; index < 600; index += 1) {
+        await store.saveTask({
+          id: `high_volume_task_${index}`,
+          title: `High volume task ${index}`,
+          status: "completed",
+          createdAt: now,
+          updatedAt: now,
+          approvals: [],
+          pendingGuidance: [],
+          events: [{
+            id: `high_volume_event_${index}`,
+            taskId: `high_volume_task_${index}`,
+            type: "assistant_message",
+            createdAt: now,
+            summary: `HIGH_VOLUME_TASK_SECRET_${index.toString().padStart(3, "0")}`,
+            payload: { ordinal: index }
+          }]
+        });
+        await store.saveKnowledgeItem({
+          id: `high_volume_knowledge_${index}`,
+          projectId: "default",
+          kind: "memory",
+          title: `High volume knowledge ${index}`,
+          content: `HIGH_VOLUME_KNOWLEDGE_SECRET_${index.toString().padStart(3, "0")}`,
+          tags: ["stress"],
+          indexStatus: "pending",
+          chunkCount: 0,
+          createdAt: now,
+          updatedAt: now
+        });
+      }
+      store.close();
+
+      for (let cycle = 0; cycle < 5; cycle += 1) {
+        store = new SqliteWorkbenchStore(file);
+        expect(await store.listTasks()).toHaveLength(600);
+        expect(await store.listKnowledgeItems("default")).toHaveLength(600);
+        expect((await store.getTask(`high_volume_task_${cycle * 100}`))?.events[0]?.summary).toContain("HIGH_VOLUME_TASK_SECRET_");
+        store.close();
+      }
+
+      expectSqliteFileFamilyNotToContain(file, secrets);
+    } finally {
+      if (previousSecretFile === undefined) delete process.env["SCC_LOCAL_SECRET_FILE"];
+      else process.env["SCC_LOCAL_SECRET_FILE"] = previousSecretFile;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("coordinates concurrent encrypted writes across multiple store instances", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-concurrent-"));
+    const previousSecretFile = process.env["SCC_LOCAL_SECRET_FILE"];
+    process.env["SCC_LOCAL_SECRET_FILE"] = join(dir, "local-secret.key");
+    const stores: SqliteWorkbenchStore[] = [];
+    try {
+      const file = join(dir, "state.sqlite");
+      const now = new Date().toISOString();
+      const writerCount = 4;
+      const writesPerWriter = 40;
+      for (let writer = 0; writer < writerCount; writer += 1) stores.push(new SqliteWorkbenchStore(file));
+
+      await Promise.all(stores.map(async (store, writer) => {
+        for (let index = 0; index < writesPerWriter; index += 1) {
+          await new Promise((resolve) => setTimeout(resolve, (writer + index) % 3));
+          await store.saveTask({
+            id: `concurrent_task_${writer}_${index}`,
+            title: `Concurrent task ${writer}-${index}`,
+            status: "completed",
+            createdAt: now,
+            updatedAt: now,
+            approvals: [],
+            pendingGuidance: [],
+            events: [{
+              id: `concurrent_event_${writer}_${index}`,
+              taskId: `concurrent_task_${writer}_${index}`,
+              type: "assistant_message",
+              createdAt: now,
+              summary: `CONCURRENT_SQLITE_SECRET_${writer}_${index}`,
+              payload: { writer, index }
+            }]
+          });
+        }
+      }));
+      for (const store of stores.splice(0)) store.close();
+
+      const reloaded = new SqliteWorkbenchStore(file);
+      const tasks = await reloaded.listTasks();
+      expect(tasks).toHaveLength(writerCount * writesPerWriter);
+      expect((await reloaded.getTask("concurrent_task_0_0"))?.events[0]?.summary).toBe("CONCURRENT_SQLITE_SECRET_0_0");
+      expect((await reloaded.getTask("concurrent_task_3_39"))?.events[0]?.summary).toBe("CONCURRENT_SQLITE_SECRET_3_39");
+      reloaded.close();
+
+      expectSqliteFileFamilyNotToContain(file, ["CONCURRENT_SQLITE_SECRET_0_0", "CONCURRENT_SQLITE_SECRET_3_39"]);
+    } finally {
+      for (const store of stores) store.close();
+      if (previousSecretFile === undefined) delete process.env["SCC_LOCAL_SECRET_FILE"];
+      else process.env["SCC_LOCAL_SECRET_FILE"] = previousSecretFile;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("recovers encrypted records from an uncheckpointed WAL without exposing plaintext bytes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-wal-recovery-"));
+    const previousSecretFile = process.env["SCC_LOCAL_SECRET_FILE"];
+    process.env["SCC_LOCAL_SECRET_FILE"] = join(dir, "local-secret.key");
+    let writer: SqliteWorkbenchStore | undefined;
+    let reader: SqliteWorkbenchStore | undefined;
+    try {
+      const file = join(dir, "state.sqlite");
+      const now = new Date().toISOString();
+      writer = new SqliteWorkbenchStore(file);
+      for (let index = 0; index < 120; index += 1) {
+        await writer.saveTask({
+          id: `wal_recovery_task_${index}`,
+          title: `WAL recovery task ${index}`,
+          status: "completed",
+          createdAt: now,
+          updatedAt: now,
+          approvals: [],
+          pendingGuidance: [],
+          events: [{
+            id: `wal_recovery_event_${index}`,
+            taskId: `wal_recovery_task_${index}`,
+            type: "assistant_message",
+            createdAt: now,
+            summary: `WAL_RECOVERY_SECRET_${index}`,
+            payload: { index, padding: "wal".repeat(64) }
+          }]
+        });
+      }
+
+      expect(existsSync(`${file}-wal`)).toBe(true);
+      expectSqliteFileFamilyNotToContain(file, ["WAL_RECOVERY_SECRET_0", "WAL_RECOVERY_SECRET_119"]);
+
+      reader = new SqliteWorkbenchStore(file);
+      expect(await reader.listTasks()).toHaveLength(120);
+      expect((await reader.getTask("wal_recovery_task_119"))?.events[0]?.summary).toBe("WAL_RECOVERY_SECRET_119");
+      reader.close();
+      reader = undefined;
+      writer.close();
+      writer = undefined;
+
+      const reopened = new SqliteWorkbenchStore(file);
+      expect((await reopened.getTask("wal_recovery_task_0"))?.events[0]?.summary).toBe("WAL_RECOVERY_SECRET_0");
+      reopened.close();
+      expectSqliteFileFamilyNotToContain(file, ["WAL_RECOVERY_SECRET_0", "WAL_RECOVERY_SECRET_119"]);
+    } finally {
+      if (reader) reader.close();
+      if (writer) writer.close();
+      if (previousSecretFile === undefined) delete process.env["SCC_LOCAL_SECRET_FILE"];
+      else process.env["SCC_LOCAL_SECRET_FILE"] = previousSecretFile;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("opens large encrypted stores with bounded secure-vacuum startup cost", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scc-store-large-open-"));
+    const previousSecretFile = process.env["SCC_LOCAL_SECRET_FILE"];
+    process.env["SCC_LOCAL_SECRET_FILE"] = join(dir, "local-secret.key");
+    try {
+      const file = join(dir, "state.sqlite");
+      const now = new Date().toISOString();
+      const rowCount = 1500;
+      let store = new SqliteWorkbenchStore(file);
+      for (let index = 0; index < rowCount; index += 1) {
+        await store.saveTask({
+          id: `large_open_task_${index}`,
+          title: `Large open task ${index}`,
+          status: "completed",
+          createdAt: now,
+          updatedAt: now,
+          approvals: [],
+          pendingGuidance: [],
+          events: [{
+            id: `large_open_event_${index}`,
+            taskId: `large_open_task_${index}`,
+            type: "user_message",
+            createdAt: now,
+            summary: `LARGE_OPEN_SQLITE_SECRET_${index}`,
+            payload: { index, padding: "x".repeat(256) }
+          }]
+        });
+      }
+      store.close();
+
+      const raw = new Database(file);
+      raw.pragma("user_version = 0");
+      raw.close();
+
+      const startedAt = Date.now();
+      store = new SqliteWorkbenchStore(file);
+      const openDurationMs = Date.now() - startedAt;
+      expect(await store.listTasks()).toHaveLength(rowCount);
+      store.close();
+
+      const checked = new Database(file, { readonly: true });
+      const userVersion = checked.pragma("user_version", { simple: true }) as number;
+      checked.close();
+      expect(userVersion).toBeGreaterThanOrEqual(20260526);
+      expect(openDurationMs).toBeLessThan(10_000);
+      expectSqliteFileFamilyNotToContain(file, ["LARGE_OPEN_SQLITE_SECRET_0", "LARGE_OPEN_SQLITE_SECRET_1499"]);
+    } finally {
+      if (previousSecretFile === undefined) delete process.env["SCC_LOCAL_SECRET_FILE"];
+      else process.env["SCC_LOCAL_SECRET_FILE"] = previousSecretFile;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it("encrypts local records when encryptStorage is enabled while keeping them readable", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scc-store-encrypted-"));
@@ -1802,9 +2920,10 @@ describe("SqliteWorkbenchStore", () => {
 
       expect(taskRow).not.toContain("SECRET_TASK_TRANSCRIPT");
       expect(knowledgeRow).not.toContain("PLAINTEXT_KNOWLEDGE_SECRET");
+      expect(preferencesRow).not.toContain("\"encryptStorage\":true");
       expect(taskRow).toContain("__sccEncrypted");
       expect(knowledgeRow).toContain("__sccEncrypted");
-      expect(preferencesRow).toContain("\"encryptStorage\":true");
+      expect(preferencesRow).toContain("__sccEncrypted");
 
       const reloaded = new SqliteWorkbenchStore(file);
       expect((await reloaded.getTask("task_secret"))?.events[0]?.summary).toBe("SECRET_TASK_TRANSCRIPT");

@@ -22,6 +22,8 @@ const SKILL_CONTENT_TRUNCATE = 1200;
 const MAX_PROJECT_MEMORIES = 5;
 const PROJECT_MEMORY_TRUNCATE = 1000;
 const MAX_KNOWLEDGE_BRIEF_SUMMARY = 220;
+const MAX_KNOWLEDGE_BRIEF_QUERY_EVENTS = 3;
+const MAX_KNOWLEDGE_BRIEF_SCORE_TEXT = 4000;
 const MAX_MCP_SERVERS_DISPLAY = 12;
 const MAX_INTEGRATIONS_DISPLAY = 12;
 const MAX_USER_SUMMARY_TRUNCATE = 2200;
@@ -36,6 +38,7 @@ const SUMMARY_HIGH_PRESSURE_RECENT = 12;
 const SUMMARY_NORMAL_RECENT = 18;
 const SUMMARY_MIN_EVENTS = 12;
 const SUMMARY_FORCE_MIN_EVENTS = 1;
+const MAX_RETAINED_FACTS = 24;
 const MAX_RECENT_USER_MESSAGES = 2;
 const MAX_RECENT_USER_TRUNCATE = 4000;
 const COMPACT_HISTORY_LIMIT = 24;
@@ -51,6 +54,7 @@ const MAX_READ_FILE_CONTENT = 64000;
 const MAX_READ_FILE_HEAD = 16000;
 const MAX_READ_FILE_TAIL = 6000;
 const MAX_READ_FILE_FULL_LINES = 900;
+const MAX_READ_FILE_ROLE_INLINE_CONTENT = 2000;
 const TRACKED_FILE_HEAD_LINES = 140;
 const TRACKED_FILE_TAIL_LINES = 80;
 const MAX_ATTACHMENT_PREVIEW = 1200;
@@ -65,6 +69,19 @@ const EXTRA_TOKEN_BUFFER = 8;
 
 const MEMORY_LIMITS_COMPACT = { user: 3000, global: 5000, project: 5000 };
 const MEMORY_LIMITS_NORMAL = { user: 6000, global: 12000, project: 12000 };
+
+const AGENT_WORKFLOW_HEURISTICS = [
+  "## Agent Workflow Heuristics",
+  "Use these as decision heuristics, not a hard checklist. Preserve autonomy while making important work traceable, verifiable, and aligned.",
+  "- Do not force tools, plans, tests, screenshots, live flows, or long reports for trivial chat, low-risk answers, or narrow user requests.",
+  "- For non-trivial work, preserve acceptance criteria, inspect current mutable evidence when cheap, and choose the lightest responsible workflow.",
+  "- Prefer real product surfaces when practical; avoid hidden fixture state when a real flow is available.",
+  "- Escalate verification with risk and blast radius. A green command is evidence only when it covers the criteria.",
+  "- Never hardcode behavior to satisfy a particular test prompt, fixture, route, date, or expected string. Implement the general business rule.",
+  "- If ideal verification is unavailable or disproportionate, use the strongest practical proof and state residual risk.",
+  "- For UI/CLI/API, verify rendered state, human output, and --json/raw structured output through real paths when practical.",
+  "- Complete when current evidence supports the preserved acceptance criteria at a level proportional to risk; continue gathering evidence when proof is too weak."
+].join("\n");
 
 export interface TokenBudget {
   maxTotal: number;
@@ -114,6 +131,9 @@ export class ContextAssembler {
     systemLayers.push(systemLayer);
     usedTokens += estimateTokens(systemLayer);
 
+    systemLayers.push(AGENT_WORKFLOW_HEURISTICS);
+    usedTokens += estimateTokens(AGENT_WORKFLOW_HEURISTICS);
+
     const memoryFileLayer = await this.buildMemoryFileLayer(task, { compact: false });
     if (memoryFileLayer) {
       systemLayers.push(memoryFileLayer);
@@ -126,38 +146,15 @@ export class ContextAssembler {
       usedTokens += estimateTokens(runtimeLayer);
     }
 
-    const loadedSkills = this.loadedSkillPrompt(task.id);
-    if (loadedSkills) {
-      systemLayers.push(loadedSkills);
-      usedTokens += estimateTokens(loadedSkills);
-    }
-
     const workingFolderLayer = this.buildWorkingFolderLayer(task);
     systemLayers.push(workingFolderLayer);
     usedTokens += estimateTokens(workingFolderLayer);
-
-    const targetModeLayer = this.buildTargetModeLayer(task);
-    if (targetModeLayer) {
-      systemLayers.push(targetModeLayer);
-      usedTokens += estimateTokens(targetModeLayer);
-    }
-
-    const taskGraph = taskGraphFromEvents(task);
-    const taskGraphLayer = buildTaskGraphSystemLayer(taskGraph);
-    if (taskGraphLayer) {
-      systemLayers.push(taskGraphLayer);
-      usedTokens += estimateTokens(taskGraphLayer);
-    }
 
     const currentTurnLayer = this.buildCurrentTurnLayer(task);
     if (currentTurnLayer) {
       inputLayers.push(currentTurnLayer);
       usedTokens += estimateTokens(currentTurnLayer);
     }
-
-    const continuityLayer = this.buildTaskContinuityLayer(task);
-    systemLayers.push(continuityLayer);
-    usedTokens += estimateTokens(continuityLayer);
 
     const skillLayer = await this.buildSkillMetaLayer(preferences);
     if (skillLayer) {
@@ -177,6 +174,29 @@ export class ContextAssembler {
       usedTokens += estimateTokens(knowledgeBriefLayer);
     }
 
+    const loadedSkills = this.loadedSkillPrompt(task.id);
+    if (loadedSkills) {
+      systemLayers.push(loadedSkills);
+      usedTokens += estimateTokens(loadedSkills);
+    }
+
+    const targetModeLayer = this.buildTargetModeLayer(task);
+    if (targetModeLayer) {
+      systemLayers.push(targetModeLayer);
+      usedTokens += estimateTokens(targetModeLayer);
+    }
+
+    const taskGraph = taskGraphFromEvents(task);
+    const taskGraphLayer = buildTaskGraphSystemLayer(taskGraph);
+    if (taskGraphLayer) {
+      systemLayers.push(taskGraphLayer);
+      usedTokens += estimateTokens(taskGraphLayer);
+    }
+
+    const continuityLayer = this.buildTaskContinuityLayer(task);
+    systemLayers.push(continuityLayer);
+    usedTokens += estimateTokens(continuityLayer);
+
     const attachmentLayer = await this.buildAttachmentLayer(task.id);
     if (attachmentLayer) {
       systemLayers.push(attachmentLayer);
@@ -188,7 +208,6 @@ export class ContextAssembler {
     const fileTokens = estimateTokens(fileLayer);
     let fileLayerIncluded = false;
     if (fileLayer && usedTokens + fileTokens < tokenBudget.maxTotal * 0.2) {
-      systemLayers.push(fileLayer);
       usedTokens += fileTokens;
       fileLayerIncluded = true;
     }
@@ -207,6 +226,7 @@ export class ContextAssembler {
       systemLayers.push(summaryLayer);
       usedTokens += estimateTokens(summaryLayer);
     }
+    if (fileLayerIncluded) systemLayers.push(fileLayer);
 
     const remaining = tokenBudget.maxTotal - usedTokens - tokenBudget.reservedForResponse;
     const historyLayer = buildHistoryLayer(task, Math.max(160, remaining), fileLayerIncluded ? tracker : undefined, summary?.rangeEndEventId);
@@ -389,6 +409,7 @@ export class ContextAssembler {
       "When using side-effect-free state tools such as plan_update or use_skill, do not narrate the tool mechanics, tool JSON, or success status to the user; continue with the actual task.",
       "Role-ordered assistant/tool history is Agent Workbench's own execution record. Treat prior tool results as the agent's evidence, not as user-provided examples.",
       "Internal continuity notes and retained thinking are private execution context. Never quote them verbatim, and never answer with a note that says you will continue instead of actually taking the next required action.",
+      "When current tool evidence is enough to answer or explain the user's request, return the final answer directly; do not call ask_user to ask how to interpret, phrase, or confirm that evidence.",
       "For greetings, thanks, simple chat, and capability questions, answer directly without calling tools or loading more context.",
       "When asked to test or list tools, treat it as a safe capability check; do not create files, edit memory, edit skills, or run persistent side-effect tools unless the user explicitly authorizes that scope.",
       "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
@@ -424,6 +445,7 @@ export class ContextAssembler {
       "Continue with evidence-driven exploration, implementation, and verification until the criteria are met or the system pauses on limits, permissions, provider failure, no-progress recovery, or user interruption.",
       "If verification fails, treat the failure as evidence for the next repair step. Do not complete with a promise to continue, a retained-thinking note, or a progress-only summary.",
       "If blocked by permissions or ambiguity, ask the user with ask_user and make the blocker explicit.",
+      "Do not call ask_user merely to offer optional follow-up work, ask whether to continue, or confirm completion after successful evidence; return a final answer instead.",
       verificationCommands.length > 0
         ? `Explicit user-named verification commands: ${verificationCommands.map((command) => `\`${command}\``).join(", ")}.`
         : "",
@@ -547,13 +569,13 @@ export class ContextAssembler {
     const fallbackItems = projectId === "default" ? [] : await this.store.listKnowledgeItems("default");
     const byId = new Map<string, KnowledgeItem>();
     for (const item of [...projectItems, ...fallbackItems]) byId.set(item.id, item);
-    const items = [...byId.values()].sort(compareKnowledgeBriefItems);
+    const items = rankKnowledgeBriefItems([...byId.values()], task);
     if (items.length === 0) return "";
     const selected = items.slice(0, preferences.maxInjectedKnowledgeItems);
     return [
       "## Knowledge Brief",
       `Library knowledge available for this project scope: ${items.length} item(s).`,
-      "These are compact candidate background pointers, not the current user request and not proof of live file state. Use knowledge_search when full evidence or exact wording is needed.",
+      "These are compact candidate background pointers, not the current user request and not proof of live file state. Relevant pointers are shown first when current-task signals are available; otherwise catalog status/order is preserved. Use knowledge_search when full evidence or exact wording is needed.",
       ...selected.map(formatKnowledgeBriefItem)
     ].join("\n");
   }
@@ -589,9 +611,12 @@ export class ContextAssembler {
     const endIndex = Math.max(startIndex, visibleEvents.length - keepRecent);
     const slice = visibleEvents.slice(startIndex, endIndex);
     if (slice.length < (options.force || highPressure || lowBudgetPressure ? 1 : 12)) return latest;
-    const summaryText = buildRollingConversationSummary(task, slice);
     const now = nowIso();
-    const retainedFacts = buildRetainedFacts(task, slice);
+    const retainedFacts = mergeRetainedFacts([
+      ...existing.flatMap((summary) => summary.retainedFacts ?? []),
+      ...buildRetainedFacts(task, slice)
+    ]);
+    const summaryText = buildRollingConversationSummary(task, slice, retainedFacts);
     const summary: ConversationSummary = {
       id: createId("summary"),
       taskId: task.id,
@@ -706,7 +731,7 @@ export class FileStateTracker {
 
   buildFileStateTable(): string {
     if (this.states.size === 0) return "";
-    const lines = ["## Known Files (do not guess content)"];
+    const lines = ["## Known Files (current read_file evidence; overrides earlier summaries)"];
     for (const state of this.states.values()) {
       lines.push(`\n### ${state.path}`);
       const metadata = [
@@ -985,24 +1010,36 @@ function toolResultContentForRole(event: TaskEvent, tracker?: FileStateTracker):
   const output = String(event.payload["output"] ?? "");
   const status = ok ? "completed" : inferToolFailureStatus(output);
   if (tracker && isFileContentInTracker(event, tracker)) {
-    const parsed = parseJson(output);
-    return stableJson({
-      ok,
-      status,
-      toolName,
-      path: parsed["path"],
-      hash: parsed["hash"],
-      partial: Boolean(parsed["partial"]),
-      mode: parsed["mode"],
-      totalLines: parsed["totalLines"],
-      output: "read_file content is recorded in Known Files when context budget allows. If the visible Known Files excerpt does not include the exact lines needed, call search_files for line hits or read_file with offset/limit for the target range."
-    });
+    return trackedReadFileRoleContent(event, ok, status, toolName);
   }
   return stableJson({
     ok,
     status,
     toolName,
     output: formatToolOutput(output)
+  });
+}
+
+function trackedReadFileRoleContent(event: TaskEvent, ok: boolean, status: string, toolName: string): string {
+  const parsed = parseJson(String(event.payload["output"] ?? ""));
+  const content = typeof parsed["content"] === "string" ? parsed["content"] : "";
+  const includeContent =
+    content.length > 0 &&
+    content.length <= MAX_READ_FILE_ROLE_INLINE_CONTENT &&
+    parsed["partial"] !== true;
+  return stableJson({
+    ok,
+    status,
+    toolName,
+    path: parsed["path"],
+    hash: parsed["hash"],
+    partial: Boolean(parsed["partial"]),
+    mode: parsed["mode"],
+    totalLines: parsed["totalLines"],
+    output: includeContent
+      ? "Current read_file content is included below and also recorded in Known Files. Treat this as live file evidence."
+      : "read_file content is recorded in Known Files when context budget allows. If the visible Known Files excerpt does not include the exact lines needed, call search_files for line hits or read_file with offset/limit for the target range.",
+    ...(includeContent ? { content } : {})
   });
 }
 
@@ -1142,7 +1179,7 @@ function formatAttachmentForContext(attachment: TaskAttachment): string {
   return `- ${attachment.id}: ${attachment.fileName} (${attachment.kind}, ${attachment.mimeType}, ${attachment.size} bytes, hash ${attachment.contentHash})${preview}`;
 }
 
-function buildRollingConversationSummary(task: TaskDetail, events: TaskEvent[]): string {
+function buildRollingConversationSummary(task: TaskDetail, events: TaskEvent[], retainedFacts: string[] = []): string {
   const latestUser = latestUserEvent(task);
   const lines = events
     .map((event) => formatEvent(event))
@@ -1155,6 +1192,7 @@ function buildRollingConversationSummary(task: TaskDetail, events: TaskEvent[]):
     "Auditable model context summary. This is for model continuity only; it is not the user-visible transcript.",
     latestUser ? `Current objective: ${truncate(latestUser.summary, 1000)}` : "",
     "Retain decisions, constraints, file-state conclusions, and tool evidence references. Prefer fresh tool evidence when exact file contents or host state matter.",
+    retainedFacts.length > 0 ? ["Retained facts:", ...retainedFacts.map((fact) => `- ${fact}`)].join("\n") : "",
     "Earlier event digest:",
     compact
   ].filter(Boolean).join("\n");
@@ -1174,9 +1212,69 @@ function buildRetainedFacts(task: TaskDetail, summarizedEvents: TaskEvent[]): st
     .map((event) => String(event.payload["toolName"] ?? "tool"))
     .filter(Boolean);
   if (tools.length > 0) facts.add(`Earlier tool evidence refs: ${[...new Set(tools)].slice(0, 8).join(", ")}`);
+  for (const fact of extractFailedToolEvidenceFacts(summarizedEvents)) facts.add(fact);
   const blocked = [...task.events].reverse().find((event) => event.type === "plan_step_blocked");
   if (blocked) facts.add(`Latest blocked step: ${truncate(blocked.summary, 160)}`);
   return [...facts];
+}
+
+function mergeRetainedFacts(facts: string[]): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const fact of facts) {
+    const normalized = fact.replace(/\s+/g, " ").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    merged.push(normalized);
+  }
+  return merged.slice(-MAX_RETAINED_FACTS);
+}
+
+function extractFailedToolEvidenceFacts(events: TaskEvent[]): string[] {
+  return events
+    .filter((event) => event.type === "tool_result")
+    .filter((event) => event.payload["ok"] === false || /assert|expected|actual|fail|error|exception|!==/i.test(String(event.payload["output"] ?? "")))
+    .slice(-3)
+    .flatMap((event) => {
+      const toolName = String(event.payload["toolName"] ?? "tool");
+      const output = String(event.payload["output"] ?? event.summary ?? "");
+      return [
+        ...extractStrictEqualityAssertionFacts(output).map((fact) => `Earlier failed ${toolName} assertion: ${fact}`),
+        `Earlier failed ${toolName} evidence: ${truncate(formatToolOutput(output), 1200)}`
+      ];
+    });
+}
+
+function extractStrictEqualityAssertionFacts(output: string): string[] {
+  const facts: string[] = [];
+  const ansiEscape = String.fromCharCode(27);
+  const clean = output.replace(new RegExp(`${ansiEscape}\\[[0-?]*[ -/]*[@-~]`, "g"), "");
+  const lines = clean.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  for (const line of lines) {
+    const inline = line.match(/^(.+?)\s*!==\s*(.+)$/);
+    if (!inline) continue;
+    facts.push(`strict equality mismatch actual ${normalizeAssertionValue(inline[1] ?? "")}; expected ${normalizeAssertionValue(inline[2] ?? "")}.`);
+    if (facts.length >= 4) return facts;
+  }
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/^\+ actual - expected$/i.test(lines[index] ?? "")) continue;
+    let actual = "";
+    let expected = "";
+    for (const line of lines.slice(index + 1, index + 9)) {
+      if (!actual && /^\+\s+/.test(line) && !/^\+\+\+/.test(line)) actual = line.replace(/^\+\s+/, "");
+      if (!expected && /^-\s+/.test(line) && !/^---/.test(line)) expected = line.replace(/^-\s+/, "");
+      if (actual && expected) break;
+    }
+    if (actual && expected) {
+      facts.push(`strict equality mismatch actual ${normalizeAssertionValue(actual)}; expected ${normalizeAssertionValue(expected)}.`);
+      if (facts.length >= 4) return facts;
+    }
+  }
+  return facts;
+}
+
+function normalizeAssertionValue(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function latestUserEvent(task: TaskDetail): TaskEvent | undefined {
@@ -1272,6 +1370,7 @@ function canonicalizeCommandForComparison(command: string): string {
   const normalized = command
     .toLowerCase()
     .replace(/\.cmd\b/gu, "")
+    .replace(/(?:\s+(?:\d*>\s*&\s*\d+|\d*>>?\s*(?:"[^"]*"|'[^']*'|\S+)|\d*<<?\s*(?:"[^"]*"|'[^']*'|\S+)))+$/gu, "")
     .replace(/\s+/gu, " ")
     .trim();
   if (!normalized) return "";
@@ -1595,6 +1694,111 @@ function defaultProjectMemoryContent(workRoot: string): string {
     "- Add risks only when they remain relevant across future tasks."
   ].join("\n");
 }
+
+function rankKnowledgeBriefItems(items: KnowledgeItem[], task: TaskDetail): KnowledgeItem[] {
+  const queryTokens = knowledgeBriefQueryTokens(task);
+  if (queryTokens.size === 0) return [...items].sort(compareKnowledgeBriefItems);
+  return [...items]
+    .map((item) => ({ item, score: scoreKnowledgeBriefItem(item, queryTokens) }))
+    .sort((left, right) => {
+      const scoreDelta = right.score - left.score;
+      if (scoreDelta !== 0) return scoreDelta;
+      return compareKnowledgeBriefItems(left.item, right.item);
+    })
+    .map(({ item }) => item);
+}
+
+function knowledgeBriefQueryTokens(task: TaskDetail): Set<string> {
+  const recent = [...task.events]
+    .reverse()
+    .filter((event) =>
+      (event.type === "user_message" || event.type === "guidance_pending" || event.type === "guidance_consumed") && !event.reverted
+    )
+    .slice(0, MAX_KNOWLEDGE_BRIEF_QUERY_EVENTS)
+    .map((event) => event.summary);
+  return new Set(tokenizeKnowledgeBriefText([task.title, ...recent].join("\n")).filter((token) => !GENERIC_KNOWLEDGE_BRIEF_TOKENS.has(token)));
+}
+
+function scoreKnowledgeBriefItem(item: KnowledgeItem, queryTokens: Set<string>): number {
+  if (queryTokens.size === 0) return 0;
+  const titleTokens = tokenizeKnowledgeBriefText(item.title);
+  const tagTokens = item.tags.flatMap(tokenizeKnowledgeBriefText);
+  const sourceTokens = tokenizeKnowledgeBriefText([item.fileName, item.sourceUri, item.kind].filter(Boolean).join(" "));
+  const contentTokens = tokenizeKnowledgeBriefText(item.content.slice(0, MAX_KNOWLEDGE_BRIEF_SCORE_TEXT));
+  return (
+    weightedTokenOverlap(queryTokens, titleTokens, 8) +
+    weightedTokenOverlap(queryTokens, tagTokens, 7) +
+    weightedTokenOverlap(queryTokens, sourceTokens, 5) +
+    weightedTokenOverlap(queryTokens, contentTokens, 1)
+  );
+}
+
+function weightedTokenOverlap(queryTokens: Set<string>, candidateTokens: string[], weight: number): number {
+  let score = 0;
+  const seen = new Set<string>();
+  for (const token of candidateTokens) {
+    if (seen.has(token) || !queryTokens.has(token)) continue;
+    seen.add(token);
+    score += weight;
+  }
+  return score;
+}
+
+function tokenizeKnowledgeBriefText(text: string): string[] {
+  const tokens: string[] = [];
+  for (const match of text.toLowerCase().matchAll(/[\p{Script=Han}]+|[a-z0-9_]{2,}/gu)) {
+    const token = match[0];
+    if (!token) continue;
+    if (/^[\p{Script=Han}]+$/u.test(token)) {
+      for (const char of token) tokens.push(char);
+      for (let index = 0; index < token.length - 1; index += 1) tokens.push(token.slice(index, index + 2));
+      continue;
+    }
+    tokens.push(token);
+  }
+  return tokens;
+}
+
+const GENERIC_KNOWLEDGE_BRIEF_TOKENS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "for",
+  "from",
+  "how",
+  "the",
+  "this",
+  "that",
+  "with",
+  "继续",
+  "当前",
+  "检查",
+  "实现",
+  "项目",
+  "功能",
+  "优化",
+  "完善",
+  "测试",
+  "继",
+  "续",
+  "当",
+  "前",
+  "检",
+  "查",
+  "实",
+  "现",
+  "项",
+  "目",
+  "功",
+  "能",
+  "优",
+  "化",
+  "完",
+  "善",
+  "测",
+  "试"
+]);
 
 function compareKnowledgeBriefItems(left: KnowledgeItem, right: KnowledgeItem): number {
   const statusDelta = knowledgeStatusRank(right) - knowledgeStatusRank(left);

@@ -1,60 +1,55 @@
-# Agent Workbench 快速启动指南
+# Agent Workbench 快速启动
 
-## 一键启动
+## 环境要求
 
-在项目根目录运行：
+- Node.js 22 或更新版本
+- npm 10 或更新版本
+- Windows 是当前完整验证平台
 
-```bash
+## 首次启动
+
+```powershell
+npm.cmd ci
+npm.cmd run build
 npm.cmd run dev:all
 ```
 
-这会同时启动：
-- 后端服务器：端口 `5177`，先启动。
-- 前端界面：端口 `5173`，后端启动约 2 秒后启动。
+启动后访问：
 
-启动成功后，在浏览器中打开 http://127.0.0.1:5173/
+- Web UI：`http://127.0.0.1:5173`
+- API 健康检查：`http://127.0.0.1:5177/health`
 
-## 其他可用命令
+默认服务与 session bootstrap 只适合受信任的本机访问，不要直接暴露到
+不受信任网络。
 
-| 命令 | 说明 |
-|------|------|
-| `npm.cmd run build` | 构建整个项目 |
-| `npm.cmd run dev` | 仅启动后端服务器 |
-| `npm.cmd run dev:server` | 仅启动后端服务器 |
-| `npm.cmd run dev:web` | 仅启动前端界面 |
-| `npm.cmd run dev:all` | 同时启动前后端 |
+## CLI
 
-## 首次使用
+仅启动后端：
 
-1. 构建项目：
-   ```bash
-   npm.cmd run build
-   ```
+```powershell
+npm.cmd run cli -- serve
+```
 
-2. 启动开发环境：
-   ```bash
-   npm.cmd run dev:all
-   ```
+在另一个终端中使用 CLI：
 
-3. 在浏览器中打开：
-   - 前端: http://127.0.0.1:5173/
-   - 后端健康检查: http://127.0.0.1:5177/health
+```powershell
+npm.cmd run cli -- health
+npm.cmd run cli -- task list
+npm.cmd run cli -- task create "检查当前项目" --watch
+```
 
-## 端口说明
+完整命令见 [docs/cli.md](docs/cli.md)。
 
-- 后端 API: `5177`
-- 前端 Vite: `5173`
+## 常用验证
 
-## 注意事项
+```powershell
+npm.cmd run lint
+npm.cmd run typecheck
+npm.cmd test
+npm.cmd run build
+npm.cmd run audit:prod
+npm.cmd run quality:full
+```
 
-- 确保已经安装 Node.js 18+。
-- 首次运行需要配置模型提供商。
-- 数据会保存在 `data/workbench.sqlite`。
-- 按 `Ctrl+C` 可以停止所有服务。
-
-## 技术说明
-
-`npm.cmd run dev:all` 使用项目内 Node.js 启动脚本，避免 Windows shell 差异：
-- 后端先启动，约 2 秒后启动前端。
-- 两个服务有独立输出前缀。
-- 按 `Ctrl+C` 会关闭两个子进程。
+运行数据默认保存在 `data/`，该目录不会提交到 Git。不要把 API Key、
+SQLite、模型 trace、附件或测试报告加入版本控制。

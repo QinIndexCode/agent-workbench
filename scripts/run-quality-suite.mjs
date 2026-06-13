@@ -7,21 +7,29 @@ const root = resolve(process.cwd());
 const outDir = resolve(root, "data", "test-reports", "flagship-quality");
 const resultsPath = resolve(outDir, "quality-results.json");
 const summaryPath = resolve(outDir, "summary.md");
-const requireFlagshipReport = (process.env["AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED"] ?? process.env["SCC_FLAGSHIP_REPORT_REQUIRED"]) === "1";
+const args = new Set(process.argv.slice(2));
+const requireFlagshipReport = args.has("--flagship") || (process.env["AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED"] ?? process.env["SCC_FLAGSHIP_REPORT_REQUIRED"]) === "1";
 const requireLiveSmoke = (process.env["AGENT_WORKBENCH_LIVE_MODEL_REQUIRED"] ?? process.env["SCC_LIVE_MODEL_REQUIRED"]) === "1" || requireFlagshipReport;
+const flagshipLiveSmokeStressLevel = process.env["AGENT_WORKBENCH_STRESS_LEVEL"] ?? process.env["SCC_STRESS_LEVEL"] ?? "8";
+const defaultStepTimeoutMs = 120_000;
 
 const steps = [
-  { name: "lint", command: ["npm.cmd", "run", "lint"] },
-  { name: "typecheck", command: ["npm.cmd", "run", "typecheck"] },
-  { name: "unit", command: ["npm.cmd", "test"] },
-  { name: "matrix", command: ["npm.cmd", "run", "test:matrix"] },
-  { name: "stress", command: ["npm.cmd", "run", "test:stress"] },
-  { name: "build", command: ["npm.cmd", "run", "build"] },
-  { name: "web-budgets", command: ["npm.cmd", "run", "test:web-budgets"] },
-  { name: "docs", command: ["npm.cmd", "run", "test:docs"] },
-  { name: "e2e", command: ["npm.cmd", "run", "test:e2e"] },
-  { name: "a11y", command: ["npm.cmd", "run", "test:a11y"] },
-  { name: "no-old-control", command: ["npm.cmd", "run", "check:no-old-control"] }
+  { name: "lint", command: ["npm.cmd", "run", "lint"], timeoutMs: 120_000 },
+  { name: "typecheck", command: ["npm.cmd", "run", "typecheck"], timeoutMs: 120_000 },
+  { name: "unit", command: ["npm.cmd", "test"], timeoutMs: 180_000 },
+  { name: "matrix", command: ["npm.cmd", "run", "test:matrix"], timeoutMs: 120_000 },
+  { name: "stress", command: ["npm.cmd", "run", "test:stress"], timeoutMs: 120_000 },
+  { name: "build", command: ["npm.cmd", "run", "build"], timeoutMs: 180_000 },
+  { name: "web-budgets", command: ["npm.cmd", "run", "test:web-budgets"], timeoutMs: 60_000 },
+  { name: "api-route-coverage", command: ["npm.cmd", "run", "test:api-route-coverage"], timeoutMs: 60_000 },
+  { name: "docs", command: ["npm.cmd", "run", "test:docs"], timeoutMs: 60_000 },
+  { name: "agent-workflow", command: ["npm.cmd", "run", "test:agent-workflow"], timeoutMs: 60_000 },
+  { name: "e2e", command: ["npm.cmd", "run", "test:e2e"], timeoutMs: 360_000 },
+  { name: "a11y", command: ["npm.cmd", "run", "test:a11y"], timeoutMs: 360_000 },
+  { name: "temp-hygiene", command: ["npm.cmd", "run", "test:temp-hygiene"], timeoutMs: 60_000 },
+  { name: "sensitive-artifacts", command: ["npm.cmd", "run", "test:sensitive-artifacts"], timeoutMs: 120_000 },
+  { name: "release-source", command: ["npm.cmd", "run", "check:release-source"], timeoutMs: 60_000 },
+  { name: "no-old-control", command: ["npm.cmd", "run", "check:no-old-control"], timeoutMs: 60_000 }
 ];
 
 mkdirSync(outDir, { recursive: true });
@@ -41,13 +49,14 @@ for (const step of steps) {
     continue;
   }
   const started = Date.now();
-  const outcome = await runCommand(step.command, logPath);
+  const outcome = await runCommand(step.command, logPath, {}, step.timeoutMs);
   const result = {
     name: step.name,
     status: outcome.exitCode === 0 ? "passed" : "failed",
     durationMs: Date.now() - started,
     command: step.command.join(" "),
     exitCode: outcome.exitCode,
+    ...(outcome.timedOut ? { timedOut: true } : {}),
     logPath
   };
   results.push(result);
@@ -61,30 +70,53 @@ if (!previousFailed && requireLiveSmoke) {
   const outcome = await runCommand(step.command, logPath, {
     AGENT_WORKBENCH_LIVE_MODEL_SMOKE: "1",
     AGENT_WORKBENCH_LIVE_MODEL_REQUIRED: "1",
-    AGENT_WORKBENCH_STRESS_LEVEL: process.env["AGENT_WORKBENCH_STRESS_LEVEL"] ?? process.env["SCC_STRESS_LEVEL"] ?? "5"
-  });
+    AGENT_WORKBENCH_STRESS_LEVEL: flagshipLiveSmokeStressLevel
+  }, 1_200_000);
   results.push({
     name: step.name,
     status: outcome.exitCode === 0 ? "passed" : "failed",
     durationMs: Date.now() - started,
     command: step.command.join(" "),
     exitCode: outcome.exitCode,
+    ...(outcome.timedOut ? { timedOut: true } : {}),
     logPath
   });
   previousFailed = outcome.exitCode !== 0;
 }
 
+if (!previousFailed && requireLiveSmoke) {
+  const step = { name: "live-agent-http-resume", command: ["node", "scripts/live-agent-http-resume-verifier.mjs"] };
+  const logPath = resolve(outDir, `${step.name}.log`);
+  const started = Date.now();
+  const outcome = await runCommand(step.command, logPath, {
+    AGENT_WORKBENCH_LIVE_HTTP_AGENT: "1",
+    AGENT_WORKBENCH_LIVE_HTTP_AGENT_REQUIRED: "1",
+    AGENT_WORKBENCH_LIVE_MODEL_REQUIRED: "1"
+  }, 1_200_000);
+  results.push({
+    name: step.name,
+    status: outcome.exitCode === 0 ? "passed" : "failed",
+    durationMs: Date.now() - started,
+    command: step.command.join(" "),
+    exitCode: outcome.exitCode,
+    ...(outcome.timedOut ? { timedOut: true } : {}),
+    logPath
+  });
+  previousFailed = outcome.exitCode !== 0;
+}
+
+const currentSourceFingerprint = sourceFingerprint(root);
 const payload = {
   generatedAt: new Date().toISOString(),
   cwd: root,
-  sourceFingerprint: sourceFingerprint(root),
+  sourceFingerprint: currentSourceFingerprint,
   results
 };
 
 writeFileSync(resultsPath, JSON.stringify(payload, null, 2), "utf8");
 writeFileSync(summaryPath, renderSummary(payload), "utf8");
 
-const liveSmokeFresh = hasFreshArtifact(resolve(root, "data", "test-reports", "live-model-smoke", "report.json"));
+const liveSmokeFresh = hasFreshArtifact(resolve(root, "data", "test-reports", "live-model-smoke", "report.json"), currentSourceFingerprint);
 let reportStatus = "skipped";
 if (liveSmokeFresh || requireFlagshipReport) {
   const outcome = await runCommand(["node", "scripts/write-flagship-report.mjs"], resolve(outDir, "report-write.log"), {
@@ -110,15 +142,35 @@ if (reportStatus === "skipped") {
 }
 console.log(`Results: ${resultsPath}`);
 
-function runCommand(command, logPath, envOverrides = {}) {
+function runCommand(command, logPath, envOverrides = {}, timeoutMs = defaultStepTimeoutMs) {
   return new Promise((resolvePromise, rejectPromise) => {
     let output = "";
+    let settled = false;
+    let timedOut = false;
     const child = spawn(toCommandLine(command), {
       cwd: root,
       env: { ...process.env, ...envOverrides },
       shell: true,
       windowsHide: true
     });
+    const settle = (exitCode) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(timeoutGrace);
+      writeFileSync(logPath, output, "utf8");
+      resolvePromise({ exitCode: timedOut ? 124 : exitCode ?? 1, timedOut });
+    };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      output += `\nCommand timed out after ${timeoutMs}ms.\n`;
+      killProcessTree(child.pid);
+      timeoutGrace = setTimeout(() => {
+        output += "Command process did not emit close after timeout cleanup.\n";
+        settle(124);
+      }, 10_000);
+    }, timeoutMs);
+    let timeoutGrace;
     child.stdout.on("data", (chunk) => {
       const text = String(chunk);
       output += text;
@@ -131,10 +183,20 @@ function runCommand(command, logPath, envOverrides = {}) {
     });
     child.on("error", (error) => rejectPromise(error));
     child.on("close", (exitCode) => {
-      writeFileSync(logPath, output, "utf8");
-      resolvePromise({ exitCode: exitCode ?? 1 });
+      settle(exitCode);
     });
   });
+}
+
+function killProcessTree(pid) {
+  if (!pid) return;
+  const command = process.platform === "win32" ? "taskkill" : "kill";
+  const args = process.platform === "win32" ? ["/pid", String(pid), "/t", "/f"] : ["-TERM", String(pid)];
+  try {
+    spawn(command, args, { windowsHide: true });
+  } catch {
+    // The command result is already marked as timed out; cleanup is best effort.
+  }
 }
 
 function toCommandLine(command) {
@@ -156,12 +218,23 @@ function renderSummary(payload) {
   ].join("\n");
 }
 
-function hasFreshArtifact(reportPath) {
+function hasFreshArtifact(reportPath, expectedSourceFingerprint) {
   try {
     const payload = JSON.parse(readFileSync(reportPath, "utf8"));
     const generatedAt = String(payload.generatedAt ?? "");
-    return generatedAt.startsWith(new Date().toISOString().slice(0, 10));
+    const hash = String(payload.sourceFingerprint?.hash ?? "");
+    const generatedDate = Number.isNaN(Date.parse(generatedAt)) ? "" : localDateStamp(new Date(generatedAt));
+    return generatedDate === localDateStamp(new Date()) && hash === expectedSourceFingerprint.hash;
   } catch {
     return false;
   }
+}
+
+function localDateStamp(date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: process.env["TZ"] || "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(date);
 }

@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as z from "zod/v4";
@@ -30,12 +31,14 @@ import {
   detectSkillConflicts,
   createExperience,
   createId,
+  createTaskMemory,
   loadOpenAiConfig,
   loadOpenAiProviderConfig,
   nowIso,
   promoteExperience,
   reflectMemories,
   selectModelToolsForTask,
+  compileTaskGraph,
   taskGraphFromEvents,
   shouldPromoteExperienceToSkill,
   type TaskGraph,
@@ -43,10 +46,17 @@ import {
 } from "../src/index.js";
 import { defaultTaskWorkRoot } from "../src/workspace-root.js";
 
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const hostObservationModel = new ConfiguredToolModelClient("Get-Process | Sort-Object CPU");
 
 function slackSignature(secret: string, timestamp: string, rawBody: string): string {
   return `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${rawBody}`).digest("hex")}`;
+}
+
+function repoTestTempRoot(): string {
+  const dir = resolve(repoRoot, "data", "test-tmp");
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 function attachExplicitTaskGraph(task: TaskDetail, overrides: Partial<TaskGraphNode> = {}): TaskGraph {
@@ -197,7 +207,57 @@ describe("ContextAssembler", () => {
     expect(context.systemPrompt).toContain("answer directly from your general capabilities");
     expect(context.systemPrompt).toContain("do not inspect files first");
     expect(context.systemPrompt).toContain("Do not claim the project name");
+    expect(context.systemPrompt).toContain("## Agent Workflow Heuristics");
+    expect(context.systemPrompt).toContain("decision heuristics, not a hard checklist");
+    expect(context.systemPrompt).toContain("Do not force tools, plans, tests");
+    expect(context.systemPrompt).toContain("preserve acceptance criteria");
+    expect(context.systemPrompt).toContain("Never hardcode behavior to satisfy a particular test prompt");
+    expect(context.systemPrompt).toContain("strongest practical proof");
+    expect(context.systemPrompt).toContain("do not call ask_user to ask how to interpret");
     expect(context.systemPrompt).toContain("Use Markdown for readable structure");
+  });
+
+  it("injects compiled task graph acceptance and verification guidance", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_compiled_graph_context",
+      title: "Compiled graph context",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_user",
+          taskId: "task_compiled_graph_context",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "补齐 CLI 的 provider list 命令，修改后必须运行 npm.cmd run typecheck。",
+          payload: {}
+        }
+      ]
+    };
+    const graph = compileTaskGraph(task);
+    if (!graph) throw new Error("expected compiled graph");
+    task.events.push({
+      id: createId("event"),
+      taskId: task.id,
+      type: "task_graph_created",
+      createdAt: nowIso(),
+      summary: "Task graph created",
+      payload: { graph }
+    });
+
+    const context = await assembler.assemble(task);
+
+    expect(context.systemPrompt).toContain("## Task Graph");
+    expect(context.systemPrompt).toContain("Active allowed tool classes: workspace_read, workspace_write, host_observation, shell, network, state");
+    expect(context.systemPrompt).toContain("Active acceptance criteria:");
+    expect(context.systemPrompt).toContain("Avoid hardcoded behavior that only satisfies one prompt");
+    expect(context.systemPrompt).toContain("Active verification:");
+    expect(context.systemPrompt).toContain("Run the user-named verification command(s): npm.cmd run typecheck");
   });
 
   it("does not keep a trivial greeting as the original goal after a later real request", async () => {
@@ -498,6 +558,94 @@ describe("ContextAssembler", () => {
     expect(context.messages.at(-1)?.role === "user" ? context.messages.at(-1)?.content : "").toContain("继续检查当前实现");
   });
 
+  it("prioritizes current-turn relevant knowledge without hiding the knowledge_search path", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    await workbench.updatePreferences({ knowledgeActiveInjection: true, maxInjectedKnowledgeItems: 1 });
+    const unrelated = await workbench.createKnowledgeItem({
+      kind: "memory",
+      title: "Provider key rotation runbook",
+      content: "Operational steps for rotating OpenAI-compatible provider credentials and checking API base URLs.",
+      tags: ["provider", "credentials"]
+    });
+    const relevant = await workbench.createKnowledgeItem({
+      kind: "memory",
+      title: "Docs search responsive sidebar",
+      content: "The documentation search page should collapse navigation into a hamburger sidebar on narrow screens.",
+      tags: ["docs", "search", "responsive", "sidebar"]
+    });
+    const assembler = new ContextAssembler(store);
+    const context = await assembler.assemble({
+      id: "task_relevant_knowledge_brief",
+      title: "Docs responsive polish",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_old",
+          taskId: "task_relevant_knowledge_brief",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "先检查 provider 配置",
+          payload: {}
+        },
+        {
+          id: "event_latest",
+          taskId: "task_relevant_knowledge_brief",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "窄屏文档搜索页需要汉堡侧边栏，并完善搜索配置",
+          payload: {}
+        }
+      ]
+    });
+
+    expect(context.systemPrompt).toContain("## Knowledge Brief");
+    expect(context.systemPrompt).toContain("Relevant pointers are shown first");
+    expect(context.systemPrompt).toContain(relevant.id);
+    expect(context.systemPrompt).toContain("knowledge_search");
+    expect(context.systemPrompt).not.toContain(unrelated.id);
+  });
+
+  it("keeps catalog fallback knowledge when the current turn has no specific match", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    await workbench.updatePreferences({ knowledgeActiveInjection: true, maxInjectedKnowledgeItems: 1 });
+    const item = await workbench.createKnowledgeItem({
+      kind: "memory",
+      title: "Release evidence checklist",
+      content: "Use release evidence only as background unless the user asks to inspect exact artifacts.",
+      tags: ["release", "evidence"]
+    });
+    const assembler = new ContextAssembler(store);
+    const context = await assembler.assemble({
+      id: "task_generic_knowledge_brief",
+      title: "Generic continuation",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_user",
+          taskId: "task_generic_knowledge_brief",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "继续",
+          payload: {}
+        }
+      ]
+    });
+
+    expect(context.systemPrompt).toContain("## Knowledge Brief");
+    expect(context.systemPrompt).toContain(item.id);
+    expect(context.systemPrompt).toContain("otherwise catalog status/order is preserved");
+  });
+
   it("keeps the latest user message when a long history is truncated", () => {
     const task: TaskDetail = {
       kind: "primary",
@@ -689,7 +837,7 @@ describe("ContextAssembler", () => {
           payload: {
             toolName: "run_command",
             ok: true,
-            args: { command: "npm.cmd run test" },
+            args: { command: "npm.cmd run test 2>&1" },
             output: "tests passed"
           }
         }
@@ -1003,7 +1151,7 @@ describe("ContextAssembler", () => {
     expect(history).not.toContain("Search evidence returned");
   });
 
-  it("keeps read_file role results compact when file content is already in Known Files", async () => {
+  it("keeps small read_file content in tool role while Known Files also records it", async () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
     const content = "ROLE_READ_FILE_CONTENT";
     const task: TaskDetail = {
@@ -1047,8 +1195,9 @@ describe("ContextAssembler", () => {
 
     expect(context.systemPrompt).toContain(content);
     expect(toolMessage?.role).toBe("tool");
-    expect(toolMessage?.role === "tool" ? toolMessage.content : "").toContain("Known Files");
-    expect(toolMessage?.role === "tool" ? toolMessage.content : "").not.toContain(content);
+    const toolContent = toolMessage?.role === "tool" ? JSON.parse(toolMessage.content) : {};
+    expect(toolContent.output).toContain("live file evidence");
+    expect(toolContent.content).toBe(content);
   });
 
   it("does not compact ordinary small messages by event count alone", async () => {
@@ -1114,6 +1263,142 @@ describe("ContextAssembler", () => {
     expect(context.input).toContain("## Current Turn");
     expect(context.input).not.toContain("Original user goal");
     expect(context.input).toContain("LATEST_DECISION_MARKER");
+  });
+
+  it("retains failed verification output in compacted context summaries", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const assembler = new ContextAssembler(store);
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_failed_verification_summary",
+      title: "Failed verification summary",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_goal",
+          taskId: "task_failed_verification_summary",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "Fix the failing math test and preserve the exact failure evidence.",
+          payload: {}
+        },
+        {
+          id: "event_failed_test",
+          taskId: "task_failed_verification_summary",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool failed",
+          payload: {
+            toolName: "run_command",
+            ok: false,
+            output: "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n3 !== 10\n\nat tests/math.test.mjs:3:8"
+          }
+        },
+        ...Array.from({ length: 80 }, (_, index) => ({
+          id: `event_noise_${index}`,
+          taskId: "task_failed_verification_summary",
+          type: "assistant_message" as const,
+          createdAt: nowIso(),
+          summary: `noise ${index} ${"large context ".repeat(80)}`,
+          payload: {}
+        })),
+        {
+          id: "event_latest",
+          taskId: "task_failed_verification_summary",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "Continue from the earlier failed test evidence.",
+          payload: {}
+        }
+      ]
+    };
+
+    const context = await assembler.assemble(task, { maxTotal: 10000, reservedForResponse: 1600 });
+    const summaries = await store.listConversationSummaries(task.id);
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.retainedFacts.join("\n")).toContain("3 !== 10");
+    expect(summaries[0]?.retainedFacts.join("\n")).toContain("actual 3; expected 10");
+    expect(context.systemPrompt).toContain("Earlier failed run_command evidence");
+    expect(context.systemPrompt).toContain("3 !== 10");
+  });
+
+  it("carries retained failure facts across repeated context summaries", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const assembler = new ContextAssembler(store);
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_repeated_summary_failure_facts",
+      title: "Repeated summary failure facts",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_goal",
+          taskId: "task_repeated_summary_failure_facts",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "Continue repairing from the original failed assertion.",
+          payload: {}
+        },
+        {
+          id: "event_failed_test",
+          taskId: "task_repeated_summary_failure_facts",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool failed",
+          payload: {
+            toolName: "run_command",
+            ok: false,
+            output: "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n3 !== 10\n\nat tests/math.test.mjs:3:8"
+          }
+        },
+        ...Array.from({ length: 80 }, (_, index) => ({
+          id: `event_initial_noise_${index}`,
+          taskId: "task_repeated_summary_failure_facts",
+          type: "assistant_message" as const,
+          createdAt: nowIso(),
+          summary: `initial noise ${index} ${"large context ".repeat(80)}`,
+          payload: {}
+        }))
+      ]
+    };
+
+    await assembler.assemble(task, { maxTotal: 10000, reservedForResponse: 1600 });
+    task.events.push(
+      ...Array.from({ length: 90 }, (_, index) => ({
+        id: `event_later_noise_${index}`,
+        taskId: "task_repeated_summary_failure_facts",
+        type: "assistant_message" as const,
+        createdAt: nowIso(),
+        summary: `later noise ${index} ${"additional context ".repeat(80)}`,
+        payload: {}
+      })),
+      {
+        id: "event_latest",
+        taskId: "task_repeated_summary_failure_facts",
+        type: "user_message",
+        createdAt: nowIso(),
+        summary: "Use the earlier failed assertion exactly.",
+        payload: {}
+      }
+    );
+
+    const context = await assembler.assemble(task, { maxTotal: 10000, reservedForResponse: 1600 });
+    const summaries = await store.listConversationSummaries(task.id);
+    const latestSummaryFacts = summaries.at(-1)?.retainedFacts.join("\n") ?? "";
+
+    expect(summaries).toHaveLength(2);
+    expect(latestSummaryFacts).toContain("actual 3; expected 10");
+    expect(context.systemPrompt).toContain("actual 3; expected 10");
+    expect(context.systemPrompt).toContain("3 !== 10");
   });
 
   it("summarizes large tool payloads as references instead of copying raw edit output", async () => {
@@ -1398,6 +1683,89 @@ describe("Task title generation", () => {
   });
 });
 
+describe("Model provider configuration", () => {
+  const model = { id: "mimo-v2.5", label: "Mimo v2.5", contextWindow: 128000, supportsTools: true, supportsThinking: false };
+
+  it("keeps disabled providers out of active preferences", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store, model: new StreamingFinalModel() });
+
+    const active = await workbench.createModelProvider({
+      vendor: "mimo",
+      label: "Active Mimo",
+      protocol: "openai_compatible",
+      baseUrl: "https://mimo.example/v1",
+      apiKey: "active-secret",
+      models: [model],
+      defaultModelId: model.id,
+      enabled: true,
+      makeActive: true
+    });
+    expect((await workbench.getPreferences()).activeModelProviderId).toBe(active.id);
+
+    const disabled = await workbench.createModelProvider({
+      vendor: "mimo",
+      label: "Disabled Mimo",
+      protocol: "openai_compatible",
+      baseUrl: "https://disabled.example/v1",
+      apiKey: "disabled-secret",
+      models: [model],
+      defaultModelId: model.id,
+      enabled: false,
+      makeActive: true
+    });
+    expect(disabled.enabled).toBe(false);
+    expect((await workbench.getPreferences()).activeModelProviderId).toBe(active.id);
+
+    await workbench.updateModelProvider(active.id, { enabled: false });
+    expect((await workbench.getPreferences()).activeModelProviderId).toBe("");
+  });
+
+  it("rejects model providers whose default model is not configured", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+
+    await expect(
+      workbench.createModelProvider({
+        vendor: "mimo",
+        label: "Broken Mimo",
+        protocol: "openai_compatible",
+        baseUrl: "https://mimo.example/v1",
+        apiKey: "broken-secret",
+        models: [model],
+        defaultModelId: "missing-model",
+        enabled: true,
+        makeActive: true
+      })
+    ).rejects.toThrow("defaultModelId must match a configured model");
+  });
+
+  it("tests model providers without leaking API keys", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
+    const provider = await workbench.createModelProvider({
+      vendor: "mimo",
+      label: "Mimo health",
+      protocol: "openai_compatible",
+      baseUrl: "https://mimo.example/v1",
+      apiKey: "sk-health-secret-123456",
+      models: [model],
+      defaultModelId: model.id,
+      enabled: true,
+      makeActive: true
+    });
+
+    const result = await workbench.testModelProvider(provider.id, async (_input, init) => {
+      expect(String(init?.headers && new Headers(init.headers).get("Authorization"))).toContain("sk-health-secret-123456");
+      return new Response(JSON.stringify({ error: { message: "Invalid API Key sk-health-secret-123456" } }), { status: 401 });
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.failureClass).toBe("provider_configuration");
+    expect(result.statusCode).toBe(401);
+    expect(result.error).toContain("Invalid API Key");
+    expect(result.error).not.toContain("sk-health-secret-123456");
+  });
+});
+
 describe("Tool surface selection", () => {
   it("exposes the stable tool surface without classifying user language", () => {
     const directTask: TaskDetail = {
@@ -1625,6 +1993,51 @@ class StubToolExecutor {
   }
 }
 
+class SecretTraceToolExecutor {
+  calls: ToolCall[] = [];
+
+  async execute(call: ToolCall): Promise<ToolResult> {
+    this.calls.push(call);
+    return {
+      id: createId("tool_result"),
+      toolCallId: call.id,
+      ok: true,
+      createdAt: nowIso(),
+      output: "Fetched with api_key=sk-trace-output1234567890 and Bearer trace-bearer-output-secret"
+    };
+  }
+}
+
+class PassingCommandExecutor {
+  calls: ToolCall[] = [];
+
+  async execute(call: ToolCall): Promise<ToolResult> {
+    this.calls.push(call);
+    return {
+      id: createId("tool_result"),
+      toolCallId: call.id,
+      ok: true,
+      createdAt: nowIso(),
+      output: "math tests passed"
+    };
+  }
+}
+
+class AmbiguousCommandExecutor {
+  calls: ToolCall[] = [];
+
+  async execute(call: ToolCall): Promise<ToolResult> {
+    this.calls.push(call);
+    return {
+      id: createId("tool_result"),
+      toolCallId: call.id,
+      ok: true,
+      createdAt: nowIso(),
+      output: "math tests passed\n1 test failed"
+    };
+  }
+}
+
 class FailingVerificationExecutor {
   calls: ToolCall[] = [];
 
@@ -1636,6 +2049,21 @@ class FailingVerificationExecutor {
       ok: false,
       createdAt: nowIso(),
       output: "npm ERR! build failed"
+    };
+  }
+}
+
+class FailingReadFileExecutor {
+  calls: ToolCall[] = [];
+
+  async execute(call: ToolCall): Promise<ToolResult> {
+    this.calls.push(call);
+    return {
+      id: createId("tool_result"),
+      toolCallId: call.id,
+      ok: false,
+      createdAt: nowIso(),
+      output: "Path is outside the workspace.",
     };
   }
 }
@@ -1965,6 +2393,29 @@ class RepeatedInternalContinuationModel implements ModelClient {
   }
 }
 
+class InternalContinuationSeparatedByToolProgressModel implements ModelClient {
+  calls = 0;
+
+  async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    this.calls += 1;
+    if (this.calls === 1 || this.calls === 3) {
+      return {
+        kind: "final",
+        message: "Internal continuity note. Do not quote this note verbatim or use it as the final answer: I still need another tool-backed step.",
+        ...(stream?.streamId ? { streamId: stream.streamId } : {})
+      };
+    }
+    if (this.calls === 2) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "read_file", args: { path: "src/math.mjs" } }],
+        ...(stream?.streamId ? { streamId: stream.streamId } : {})
+      };
+    }
+    return { kind: "final", message: "Completed after tool-backed progress.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+}
+
 class AskUserThenFinishModel implements ModelClient {
   async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
     const answer = [...task.events].reverse().find(
@@ -1982,9 +2433,122 @@ class AskUserThenFinishModel implements ModelClient {
   }
 }
 
+class OptionalAskAfterVerificationModel implements ModelClient {
+  calls = 0;
+
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    this.calls += 1;
+    const askResolution = [...task.events].reverse().find(
+      (event) =>
+        event.type === "tool_result" &&
+        event.payload["toolName"] === "ask_user" &&
+        String(event.payload["output"] ?? "").includes("optional_follow_up_after_verified_progress")
+    );
+    if (askResolution) return { kind: "final", message: "Final answer after verified progress." };
+    if (task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command")) {
+      return {
+        kind: "tool_calls",
+        calls: [{
+          id: createId("tool_call"),
+          toolName: "ask_user",
+          args: { question: "测试已经通过。还需要我继续处理其他内容吗？" }
+        }]
+      };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{ id: createId("tool_call"), toolName: "run_command", args: { command: "node tests/math.test.mjs" } }]
+    };
+  }
+}
+
+class AskHowToExplainEvidenceModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    const askResolution = [...task.events].reverse().find(
+      (event) =>
+        event.type === "tool_result" &&
+        event.payload["toolName"] === "ask_user" &&
+        String(event.payload["output"] ?? "").includes("answer_from_current_tool_evidence")
+    );
+    if (askResolution) return { kind: "final", message: "Final answer from outside workspace rejection evidence." };
+    if (task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "read_file")) {
+      return {
+        kind: "tool_calls",
+        calls: [{
+          id: createId("tool_call"),
+          toolName: "ask_user",
+          args: {
+            question: "工具层已拒绝越界读取，我应该如何解释这个结果？",
+            details: "工具返回 Path is outside the workspace，需要基于当前证据回答。"
+          }
+        }]
+      };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{ id: createId("tool_call"), toolName: "read_file", args: { path: "../outside.txt" } }]
+    };
+  }
+}
+
 class PlainFinalModel implements ModelClient {
+  constructor(private readonly message = "Done.") {}
+
   async next(): Promise<ModelTurn> {
-    return { kind: "final", message: "Done." };
+    return { kind: "final", message: this.message };
+  }
+}
+
+class ClaimedSearchEvidenceThenToolModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "search_files")) {
+      return { kind: "final", message: "search_files returned the requested marker." };
+    }
+    if (task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "claimed_tool_evidence_without_result")) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "search_files", args: { query: "AW-LIVE-FILE-TOOLS" } }]
+      };
+    }
+    return { kind: "final", message: "search_files returned AW-LIVE-FILE-TOOLS." };
+  }
+}
+
+class RepeatedClaimedEvidenceThenCleanFinalModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    const retryCount = task.events.filter((event) => event.type === "model_no_progress" && event.payload["reason"] === "claimed_tool_evidence_without_result").length;
+    if (retryCount < 2) return { kind: "final", message: "knowledge_search found the requested marker." };
+    return { kind: "final", message: "No tool evidence was used because the requested tool path was unavailable." };
+  }
+}
+
+class FailedReadFileBoundaryModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "read_file")) {
+      return { kind: "final", message: "read_file returned an outside workspace rejection." };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{ id: createId("tool_call"), toolName: "read_file", args: { path: "../outside.txt" } }]
+    };
+  }
+}
+
+class FailedReadFileCategoryBoundaryModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "read_file")) {
+      return {
+        kind: "final",
+        message: [
+          "尝试读取 ../outside.txt 失败，read_file 返回 Path is outside the workspace。",
+          "list_files、search_files 等文件类工具也遵循相同的工作区边界规则。"
+        ].join("\n")
+      };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{ id: createId("tool_call"), toolName: "read_file", args: { path: "../outside.txt" } }]
+    };
   }
 }
 
@@ -2043,6 +2607,47 @@ class InlineToolMarkupModel implements ModelClient {
   }
 }
 
+class SelfClosingToolInvocationMarkupModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    if (task.events.filter((event) => event.type === "tool_result").length >= 2) {
+      await stream?.onAssistantDelta("Reads verified.");
+      return { kind: "final", message: "Reads verified.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+    }
+    const message = [
+      "I need to inspect two files.",
+      "<tool_invocation name=\"read_file\" arguments={\"path\":\"src/math.mjs\"} />",
+      "<tool_invocation name=\"read_file\" arguments={\"path\":\"src/totals.mjs\"} />"
+    ].join("\n");
+    await stream?.onAssistantDelta(message);
+    return { kind: "final", message, ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+}
+
+class ToolIntentOnlyFinalThenCallModel implements ModelClient {
+  calls = 0;
+
+  async next(task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    this.calls += 1;
+    if (task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "write_file")) {
+      return { kind: "final", message: "File created after tool execution.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+    }
+    if (this.calls === 1) {
+      const message = "Now step 4: write_file to create docs/file-tool-coverage.md with expectedHash = __new__.";
+      await stream?.onAssistantDelta(message);
+      return { kind: "final", message, ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{
+        id: createId("tool_call"),
+        toolName: "write_file",
+        args: { path: "docs/file-tool-coverage.md", expectedHash: "__new__", content: "created" }
+      }],
+      ...(stream?.streamId ? { streamId: stream.streamId } : {})
+    };
+  }
+}
+
 class ProviderFallbackEventModel implements ModelClient {
   async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
     await stream?.onProviderFallback?.({
@@ -2093,6 +2698,63 @@ class TraceEmittingToolRoundTripModel implements ModelClient {
       timestamp: nowIso(),
       streamId,
       provider: { protocol: "openai_compatible", model: "trace-test-model", baseURL: "http://trace.local" },
+      payload: { response }
+    });
+    return response;
+  }
+}
+
+class SecretTraceRoundTripModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    const streamId = stream?.streamId ?? createId("model_stream");
+    await stream?.onTrace?.({
+      kind: "request",
+      timestamp: nowIso(),
+      streamId,
+      provider: {
+        protocol: "openai_compatible",
+        model: "trace-secret-model",
+        baseURL: "https://trace.example.test/v1?api_key=sk-trace-provider1234567890"
+      },
+      payload: {
+        request: {
+          messages: [{
+            role: "user",
+            content: task.events.find((event) => event.type === "user_message")?.summary ?? ""
+          }]
+        }
+      }
+    });
+    if (!task.events.some((event) => event.type === "tool_result")) {
+      const response: ModelTurn = {
+        kind: "tool_calls",
+        calls: [{
+          id: createId("tool_call"),
+          toolName: "list_files",
+          args: {
+            path: ".",
+            apiKey: "sk-trace-arg1234567890",
+            authorization: "Bearer trace-token-secret-123456",
+            nested: { password: "trace-password-secret" }
+          }
+        }],
+        ...(stream?.streamId ? { streamId: stream.streamId } : {})
+      };
+      await stream?.onTrace?.({
+        kind: "response",
+        timestamp: nowIso(),
+        streamId,
+        provider: { protocol: "openai_compatible", model: "trace-secret-model", baseURL: "https://trace.example.test/v1" },
+        payload: { response }
+      });
+      return response;
+    }
+    const response: ModelTurn = { kind: "final", message: "Trace redaction complete.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+    await stream?.onTrace?.({
+      kind: "response",
+      timestamp: nowIso(),
+      streamId,
+      provider: { protocol: "openai_compatible", model: "trace-secret-model", baseURL: "https://trace.example.test/v1" },
       payload: { response }
     });
     return response;
@@ -2165,6 +2827,124 @@ describe("Attention-first task graph runtime", () => {
     expect(task.status).toBe("completed");
     expect(task.events.some((event) => event.type === "task_graph_created")).toBe(false);
     expect(task.events.some((event) => event.type === "task_memory_created")).toBe(false);
+  });
+
+  it("creates a compiled task graph for broad implementation work", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new PlainFinalModel() });
+
+    const task = await workbench.createTask("帮我在本文件夹中编写一个完整的 React 页面，修改后必须运行 npm.cmd run build。");
+    const graph = taskGraphFromEvents(task);
+
+    expect(graph?.nodes.some((node) => node.role === "implement")).toBe(true);
+    expect(graph?.nodes.some((node) => node.role === "verify" && node.verification.required)).toBe(true);
+    expect(graph?.nodes.flatMap((node) => node.verification.commands ?? [])).toContain("npm.cmd run build");
+    expect(task.status).toBe("paused");
+    expect(task.events.some((event) => event.type === "assistant_message" && event.payload["completionBlocked"] === true)).toBe(true);
+  });
+
+  it("treats target-mode repair goals as implementation work even when phrased as diagnosis", async () => {
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_target_repair_graph",
+      title: "Target repair fixture",
+      status: "running",
+      runMode: "target",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_user",
+          taskId: "task_target_repair_graph",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "这个小项目跑不起来，帮我定位并修好，最后给出证据。请按你认为合适的方式检查当前文件夹，不要只给建议。",
+          payload: {}
+        }
+      ]
+    };
+
+    const graph = compileTaskGraph(task);
+
+    expect(graph?.nodes.some((node) => node.role === "implement")).toBe(true);
+    expect(graph?.nodes.some((node) => node.role === "verify" && node.verification.required)).toBe(true);
+  });
+
+  it("keeps target-mode read-only requests on the research path", async () => {
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_target_readonly_graph",
+      title: "Target read-only fixture",
+      status: "running",
+      runMode: "target",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_user",
+          taskId: "task_target_readonly_graph",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "先看一下为什么测试失败，暂时不用改代码，只诊断并告诉我风险。",
+          payload: {}
+        }
+      ]
+    };
+
+    const graph = compileTaskGraph(task);
+
+    expect(graph?.nodes).toHaveLength(1);
+    expect(graph?.nodes[0]?.role).toBe("research");
+    expect(graph?.nodes[0]?.verification.required).toBe(false);
+  });
+
+  it("does not force a shell verification gate for documentation-only authoring", async () => {
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_doc_authoring_graph",
+      title: "Document fixture",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_user",
+          taskId: "task_doc_authoring_graph",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "Write concise API documentation from the source.",
+          payload: {}
+        }
+      ]
+    };
+
+    const graph = compileTaskGraph(task);
+
+    expect(graph?.nodes.some((node) => node.role === "implement")).toBe(true);
+    expect(graph?.nodes.some((node) => node.role === "verify" && node.verification.required)).toBe(false);
+    expect(graph?.nodes[0]?.verification.required).toBe(false);
+  });
+
+  it("does not satisfy required verification with a narrower command", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new SequenceToolModel([{ toolName: "run_command", args: { command: "npm.cmd test -- one.spec.ts" } }]),
+      tools: new StubToolExecutor()
+    });
+    await workbench.grantGlobalPermission("shell", "fixture verification");
+
+    const task = await workbench.createTask("修复测试失败，完成后必须运行 npm.cmd test。");
+    const blocker = task.events.find((event) => event.type === "assistant_message" && event.payload["completionBlocked"] === true);
+
+    expect(task.status).toBe("paused");
+    expect(task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command")).toBe(true);
+    expect(task.events.some((event) => event.type === "verification_result_recorded" && event.payload["status"] === "passed")).toBe(false);
+    expect(String(blocker?.summary ?? "")).toContain("Remaining required command(s): npm.cmd test");
   });
 
   it("routes configured local tool attempts through permission instead of user-text filters", async () => {
@@ -2299,6 +3079,127 @@ describe("Attention-first task graph runtime", () => {
     expect(task.events.some((event) => event.type === "assistant_message" && event.payload["completionBlocked"] === true)).toBe(true);
   });
 
+  it("pauses when a final answer claims tool evidence without a matching tool result", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new PlainFinalModel("knowledge_search 查询到 COMBINED-KNOWLEDGE-MARKER，web_search 返回 AW-COMBINED-WEB-MARKER。")
+    });
+
+    const task = await workbench.createTask("Use knowledge and web search.");
+    const blocker = task.events.find((event) => event.type === "assistant_message" && event.payload["completionBlocked"] === true);
+
+    expect(task.status).toBe("paused");
+    expect(String(blocker?.summary ?? "")).toMatch(/claimed knowledge_search evidence/i);
+    expect(blocker?.payload["blockedFinalMessage"]).toContain("COMBINED-KNOWLEDGE-MARKER");
+    expect(task.events.some((event) => event.type === "task_memory_created")).toBe(false);
+  });
+
+  it("pauses when a final answer claims file tool evidence without a matching tool result", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new PlainFinalModel("我已调用 search_files 搜索 AW-LIVE-FILE-TOOLS，并用 write_file 写入 docs/file-tool-coverage.md。")
+    });
+
+    const task = await workbench.createTask("Verify file tools.");
+    const blocker = task.events.find((event) => event.type === "assistant_message" && event.payload["completionBlocked"] === true);
+
+    expect(task.status).toBe("paused");
+    expect(String(blocker?.summary ?? "")).toMatch(/claimed search_files evidence/i);
+  });
+
+  it("retries once when claimed tool evidence can be repaired by running the missing tool", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new StubToolExecutor(),
+      model: new ClaimedSearchEvidenceThenToolModel()
+    });
+    await workbench.grantGlobalPermission("workspace_read", "fixture read");
+
+    const task = await workbench.createTask("Find the marker with search_files.");
+
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "claimed_tool_evidence_without_result")).toBe(true);
+    expect(task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "search_files")).toBe(true);
+  });
+
+  it("allows a second claimed-evidence retry before accepting a clean final answer", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new RepeatedClaimedEvidenceThenCleanFinalModel()
+    });
+
+    const task = await workbench.createTask("Answer after a denied or unavailable tool path.");
+    const retries = task.events.filter((event) => event.type === "model_no_progress" && event.payload["reason"] === "claimed_tool_evidence_without_result");
+
+    expect(task.status).toBe("completed");
+    expect(retries).toHaveLength(2);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.payload["completionBlocked"] === true)).toBe(false);
+    expect(task.events.some((event) => event.type === "task_memory_created")).toBe(true);
+  });
+
+  it("does not block a final answer that explicitly says tool evidence was not used", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new PlainFinalModel("I did not call knowledge_search; no tool evidence was used.")
+    });
+
+    const task = await workbench.createTask("Answer without using tools.");
+
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "assistant_message" && event.payload["completionBlocked"] === true)).toBe(false);
+  });
+
+  it("does not block final answers that mention tool names only as alternatives", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new PlainFinalModel(
+        [
+          "工具审批被拒绝，我无法执行 cd 命令。",
+          "仍然可以做的事情：",
+          "1. 用 list_files 查看当前工作区的文件列表。",
+          "2. 用 search_files 在工作区中搜索文件路径或内容。",
+          "3. 用 web_search / knowledge_search 搜索网络或本地知识库。",
+          "如果你愿意，我可以直接用 list_files 作为替代方案。"
+        ].join("\n")
+      )
+    });
+
+    const task = await workbench.createTask("Explain the denied tool path.");
+
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "assistant_message" && event.payload["completionBlocked"] === true)).toBe(false);
+  });
+
+  it("allows final answers to cite failed tool results as boundary evidence", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new FailingReadFileExecutor(),
+      model: new FailedReadFileBoundaryModel()
+    });
+    await workbench.grantGlobalPermission("workspace_read", "fixture read");
+
+    const task = await workbench.createTask("Check whether read_file can leave the work root.");
+
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "read_file" && event.payload["ok"] === false)).toBe(true);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.payload["completionBlocked"] === true)).toBe(false);
+  });
+
+  it("does not require every file tool to run when explaining a shared boundary rule", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new FailingReadFileExecutor(),
+      model: new FailedReadFileCategoryBoundaryModel()
+    });
+    await workbench.grantGlobalPermission("workspace_read", "fixture read");
+
+    const task = await workbench.createTask("Check whether read_file can leave the work root.");
+
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "read_file" && event.payload["ok"] === false)).toBe(true);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.payload["completionBlocked"] === true)).toBe(false);
+  });
+
   it("records verification command evidence and permits completion after it passes", async () => {
     const store = new InMemoryWorkbenchStore();
     await store.savePreferences({ ...(await store.getPreferences()), autoApprove: "all", updatedAt: nowIso() });
@@ -2358,6 +3259,8 @@ describe("PermissionEngine", () => {
   it("classifies workspace writes and network requests", () => {
     const engine = new PermissionEngine();
     expect(engine.assess("run_command", { command: "Set-Content note.txt hi" }).category).toBe("workspace_write");
+    expect(engine.assess("run_command", { command: "npm test 2>&1" }).category).toBe("shell");
+    expect(engine.assess("run_command", { command: "npm test > results.log 2>&1" }).category).toBe("workspace_write");
     expect(engine.assess("run_command", { command: "npm view left-pad version" }).category).toBe("network");
   });
 
@@ -2639,6 +3542,47 @@ describe("AgentWorkbench", () => {
 
     rmSync(workRoot, { recursive: true, force: true });
     rmSync(traceRoot, { recursive: true, force: true });
+  });
+
+  it("redacts secrets from model trace requests, tool arguments, and tool results", async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), "scc-model-trace-secret-"));
+    const traceRoot = mkdtempSync(join(tmpdir(), "agent-workbench-secret-trace-"));
+    try {
+      const workbench = new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        tools: new SecretTraceToolExecutor(),
+        model: new SecretTraceRoundTripModel(),
+        traceRoot
+      });
+      const folder = await workbench.createTaskFolder({ name: "trace-secret-folder", rootPath: workRoot });
+      await workbench.grantGlobalPermission("workspace_read", "trace secret logging");
+
+      const completed = await workbench.createTask(
+        "trace redaction with api_key=sk-traceprompt1234567890 and Bearer trace-prompt-token-secret",
+        undefined,
+        folder.id
+      );
+      const traceText = readFileSync(join(traceRoot, completed.id, "trace.jsonl"), "utf8");
+
+      expect(completed.status).toBe("completed");
+      expect(traceText).toContain("model_request");
+      expect(traceText).toContain("model_response");
+      expect(traceText).toContain("tool_requested");
+      expect(traceText).toContain("tool_result");
+      expect(traceText).toContain("[redacted-secret]");
+      expect(traceText).toContain("Bearer [redacted-token]");
+      expect(traceText).not.toContain("sk-traceprompt1234567890");
+      expect(traceText).not.toContain("trace-prompt-token-secret");
+      expect(traceText).not.toContain("sk-trace-provider1234567890");
+      expect(traceText).not.toContain("sk-trace-arg1234567890");
+      expect(traceText).not.toContain("trace-token-secret-123456");
+      expect(traceText).not.toContain("trace-password-secret");
+      expect(traceText).not.toContain("sk-trace-output1234567890");
+      expect(traceText).not.toContain("trace-bearer-output-secret");
+    } finally {
+      rmSync(workRoot, { recursive: true, force: true });
+      rmSync(traceRoot, { recursive: true, force: true });
+    }
   });
 
   it("coalesces noisy progress streams before persisting task events and trace", async () => {
@@ -2928,6 +3872,36 @@ describe("AgentWorkbench", () => {
     expect(completed.events.some((event) => event.type === "assistant_delta" && event.payload["uiHidden"] === true)).toBe(true);
   });
 
+  it("continues execution when a provider returns self-closing tool invocation markup as text", async () => {
+    const tools = new StubToolExecutor();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), tools, model: new SelfClosingToolInvocationMarkupModel() });
+    await workbench.grantGlobalPermission("workspace_read", "inline markup regression");
+
+    const completed = await workbench.createTask("read two files before answering");
+
+    expect(completed.status).toBe("completed");
+    expect(tools.calls.map((call) => call.toolName)).toEqual(["read_file", "read_file"]);
+    expect(tools.calls.map((call) => call.args["path"])).toEqual(["src/math.mjs", "src/totals.mjs"]);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("<tool_invocation"))).toBe(false);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("Reads verified"))).toBe(true);
+  });
+
+  it("retries instead of completing on final answers that only announce a pending tool call", async () => {
+    const tools = new StubToolExecutor();
+    const model = new ToolIntentOnlyFinalThenCallModel();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), tools, model });
+    await workbench.grantGlobalPermission("workspace_write", "fixture write");
+
+    const completed = await workbench.createTask("create the requested file");
+
+    expect(model.calls).toBe(3);
+    expect(completed.status).toBe("completed");
+    expect(tools.calls.map((call) => call.toolName)).toEqual(["write_file"]);
+    expect(completed.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "internal_continuation_final")).toBe(true);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.startsWith("Now step 4"))).toBe(false);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary === "File created after tool execution.")).toBe(true);
+  });
+
   it("compacts and retries once after a model context overflow", async () => {
     const model = new OverflowOnceModel();
     const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model });
@@ -3139,23 +4113,34 @@ describe("AgentWorkbench", () => {
     const store = new InMemoryWorkbenchStore();
     const assembler = new ContextAssembler(store);
     const workbench = new AgentWorkbench({ store, contextAssembler: assembler, model: new StreamingFinalModel() });
+    const attachmentContent = "# Notes\nImportant fixture content with api_key=sk-attachment-secret1234567890.";
     const uploaded = await workbench.uploadTaskAttachment({
       fileName: "notes.md",
       mimeType: "text/markdown",
-      size: Buffer.byteLength("# Notes\nImportant fixture content."),
-      dataBase64: Buffer.from("# Notes\nImportant fixture content.").toString("base64")
+      size: Buffer.byteLength(attachmentContent),
+      dataBase64: Buffer.from(attachmentContent).toString("base64")
     });
 
-    const task = await workbench.createTask("summarize attached notes", "Summarize notes", undefined, [uploaded.id]);
-    const linked = await workbench.listTaskAttachments(task.id);
-    const context = await assembler.assemble(task);
+    try {
+      const task = await workbench.createTask("summarize attached notes", "Summarize notes", undefined, [uploaded.id]);
+      const linked = await workbench.listTaskAttachments(task.id);
+      const context = await assembler.assemble(task);
+      const storedBytes = readFileSync(uploaded.storagePath, "utf8");
 
-    expect(linked).toHaveLength(1);
-    expect(linked[0]?.taskId).toBe(task.id);
-    expect(existsSync(uploaded.storagePath)).toBe(true);
-    expect(task.events.some((event) => event.type === "attachment_added")).toBe(true);
-    expect(context.systemPrompt).toContain("notes.md (markdown");
-    expect(context.systemPrompt).toContain("Important fixture content");
+      expect(linked).toHaveLength(1);
+      expect(linked[0]?.taskId).toBe(task.id);
+      expect(existsSync(uploaded.storagePath)).toBe(true);
+      expect(storedBytes).toContain("__agentWorkbenchEncryptedFile");
+      expect(storedBytes).not.toContain("Important fixture content");
+      expect(storedBytes).not.toContain("sk-attachment-secret1234567890");
+      expect(task.events.some((event) => event.type === "attachment_added")).toBe(true);
+      expect(context.systemPrompt).toContain("notes.md (markdown");
+      expect(context.systemPrompt).toContain("Important fixture content");
+      expect(context.systemPrompt).toContain("[redacted-secret]");
+      expect(context.systemPrompt).not.toContain("sk-attachment-secret1234567890");
+    } finally {
+      await workbench.deleteTaskAttachment(uploaded.id);
+    }
   });
 
   it("runs due scheduled tasks through the normal task pipeline", async () => {
@@ -3179,6 +4164,24 @@ describe("AgentWorkbench", () => {
     expect(new Date(changed[0]?.nextRunAt ?? 0).getTime()).toBeGreaterThan(Date.now());
     expect(tasks.some((task) => task.title === "Daily note")).toBe(true);
     expect(tasks.find((task) => task.title === "Daily note")?.events.some((event) => event.type === "scheduled_task_created")).toBe(true);
+  });
+
+  it("rejects invalid scheduled task interval patches instead of silently coercing them", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store, model: new StreamingFinalModel() });
+    const scheduled = await workbench.createScheduledTask({
+      title: "Frequent note",
+      prompt: "summarize the latest project state",
+      folderId: "default",
+      scheduleKind: "interval",
+      intervalHours: 0,
+      intervalMinutes: 5
+    });
+
+    await expect(workbench.updateScheduledTask(scheduled.id, { intervalHours: 0, intervalMinutes: 0 })).rejects.toThrow(
+      /greater than 0/i
+    );
+    expect((await store.getScheduledTask(scheduled.id))?.schedule.intervalMinutes).toBe(5);
   });
 
   it("executes web_search through permission grants and records search evidence", async () => {
@@ -3245,6 +4248,160 @@ describe("AgentWorkbench", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("keeps legacy custom web search endpoints usable without templates", async () => {
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          results: [
+            {
+              title: "Legacy custom search",
+              url: `https://example.test/search?q=${url.searchParams.get("q") ?? ""}`,
+              snippet: `limit=${url.searchParams.get("limit") ?? ""}`
+            }
+          ]
+        })
+      );
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      await store.saveWebSearchProvider({
+        id: "legacy_custom_search",
+        label: "Legacy custom search",
+        kind: "custom",
+        endpoint: `http://127.0.0.1:${port}/search`,
+        enabled: true,
+        createdAt: nowIso(),
+        updatedAt: nowIso()
+      });
+      const result = await new WebSearchToolExecutor(store).execute({
+        id: createId("tool_call"),
+        toolName: "web_search",
+        args: { query: "agent workbench", limit: 2 }
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.output).toContain("Legacy custom search");
+      expect(result.output).toContain("agent workbench");
+      expect(result.output).toContain("limit=2");
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  });
+
+  it("clears stale web search endpoint and API key when switching provider kind", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    const provider = await workbench.createWebSearchProvider({
+      label: "Custom search",
+      kind: "custom",
+      endpoint: "https://search.example.test?q={query}",
+      apiKey: "custom-search-secret",
+      enabled: true
+    });
+
+    const updated = await workbench.updateWebSearchProvider(provider.id, {
+      kind: "duckduckgo",
+      label: "DuckDuckGo",
+      enabled: true
+    });
+
+    expect(updated.kind).toBe("duckduckgo");
+    expect(updated.endpoint).toBeUndefined();
+    expect(updated.apiKeyRef).toBeUndefined();
+    expect(await store.getWebSearchProviderSecret(provider.id)).toBeUndefined();
+  });
+
+  it("uses stored custom web search API keys through placeholders without exposing endpoint secrets", async () => {
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          results: [
+            {
+              title: "Authenticated custom search",
+              url: "https://example.test/authenticated",
+              snippet: `key=${url.searchParams.get("api_key") ?? ""}; query=${url.searchParams.get("q") ?? ""}`
+            }
+          ]
+        })
+      );
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      const workbench = new AgentWorkbench({ store });
+      const provider = await workbench.createWebSearchProvider({
+        label: "Authenticated custom search",
+        kind: "custom",
+        endpoint: `http://127.0.0.1:${port}/search?q={query}&api_key={apiKey}`,
+        apiKey: "custom-placeholder-secret",
+        enabled: true
+      });
+
+      expect(provider.endpoint).toContain("{apiKey}");
+      expect(JSON.stringify(provider)).not.toContain("custom-placeholder-secret");
+
+      const result = await new WebSearchToolExecutor(store).execute({
+        id: createId("tool_call"),
+        toolName: "web_search",
+        args: { query: "agent workbench", limit: 1 }
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.output).toContain("custom-placeholder-secret");
+      expect(result.output).toContain("agent workbench");
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  });
+
+  it("rejects incomplete side capability provider configuration before runtime", async () => {
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore() });
+
+    await expect(workbench.createWebSearchProvider({
+      label: "Broken custom search",
+      kind: "custom",
+      enabled: true
+    })).rejects.toThrow(/requires an endpoint/i);
+
+    await expect(workbench.createWebSearchProvider({
+      label: "Broken template",
+      kind: "custom",
+      endpoint: "https://example.test/search?limit={limit}",
+      enabled: true
+    })).rejects.toThrow(/\{query\}/i);
+
+    await expect(workbench.createWebSearchProvider({
+      label: "Broken protocol",
+      kind: "duckduckgo",
+      endpoint: "file:///tmp/search",
+      enabled: true
+    })).rejects.toThrow(/http or https/i);
+
+    await expect(workbench.createWebSearchProvider({
+      label: "Embedded secret",
+      kind: "custom",
+      endpoint: "https://example.test/search?q={query}&api_key=plain-secret-123456",
+      enabled: true
+    })).rejects.toThrow(/embedding secrets/i);
+
+    await expect(workbench.createIntegrationProvider({
+      kind: "discord",
+      label: "Bad callback",
+      publicKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      callbackUrl: "file:///tmp/callback",
+      defaultFolderId: "default",
+      defaultPermissionPreset: "ask",
+      enabled: false
+    })).rejects.toThrow(/http or https/i);
   });
 
   it("indexes knowledge locally and exposes knowledge_search as workspace-read evidence", async () => {
@@ -3517,6 +4674,45 @@ describe("AgentWorkbench", () => {
       const knownFilesAfterRollback = contextAssembler.getFileStateTracker(completed.id).buildFileStateTable();
       expect(knownFilesAfterRollback).toContain("File was rolled back");
       expect(knownFilesAfterRollback).not.toContain("after");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("encrypts checkpoint snapshots on disk while preserving exact rollback content", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-encrypted-checkpoint-"));
+    const hash = (content: string) => createHash("sha256").update(content).digest("hex").slice(0, 16);
+    try {
+      const filePath = join(root, ".env");
+      const before = "API_KEY=sk-checkpoint-secret1234567890\n";
+      writeFileSync(filePath, before, "utf8");
+      const workbench = new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        model: new SingleToolModel("write_file", {
+          path: ".env",
+          expectedHash: hash(before),
+          content: "API_KEY=rotated\n"
+        }),
+        tools: new ShellToolExecutor()
+      });
+      const folder = await workbench.createTaskFolder({ name: "Encrypted checkpoint root", rootPath: root });
+      await workbench.grantGlobalPermission("workspace_write", "encrypted checkpoint test");
+
+      const completed = await workbench.createTask("rotate env", "Rotate env", folder.id);
+      const checkpoint = (await workbench.listTaskCheckpoints(completed.id))[0];
+      const snapshotPath = checkpoint?.files[0]?.snapshotPath;
+      if (!snapshotPath) throw new Error("expected snapshot path");
+      const snapshotText = readFileSync(snapshotPath, "utf8");
+
+      expect(readFileSync(filePath, "utf8")).toBe("API_KEY=rotated\n");
+      expect(snapshotText).toContain("__agentWorkbenchEncryptedFile");
+      expect(snapshotText).not.toContain("sk-checkpoint-secret1234567890");
+
+      const rolledBack = await workbench.rollbackTask(completed.id);
+      expect(rolledBack.restoredFiles).toBe(1);
+      expect(readFileSync(filePath, "utf8")).toBe(before);
+      await workbench.deleteTask(completed.id);
+      expect(existsSync(snapshotPath)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -3824,6 +5020,44 @@ describe("AgentWorkbench", () => {
     expect(await workbench.listIntegrationProviders()).toHaveLength(1);
   });
 
+  it("clears stale integration secrets and provider-specific fields when switching provider kind", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store, model: new StreamingFinalModel() });
+    const integration = await workbench.createIntegrationProvider({
+      kind: "telegram",
+      label: "Telegram inbound",
+      botToken: "telegram-bot-secret",
+      secretToken: "telegram-secret-token",
+      appId: "telegram-app",
+      publicKey: "telegram-public-key",
+      callbackUrl: "https://telegram.example.test/webhook",
+      defaultFolderId: "default",
+      defaultPermissionPreset: "ask",
+      enabled: true
+    });
+
+    const updated = await workbench.updateIntegrationProvider(integration.id, {
+      kind: "slack",
+      label: "Slack inbound",
+      signingSecret: "slack-signing-secret",
+      callbackUrl: "https://slack.example.test/events",
+      enabled: true
+    });
+    const stored = await store.getIntegrationProvider(integration.id);
+
+    expect(updated.kind).toBe("slack");
+    expect(updated.status).toBe("connected");
+    expect(updated.signingSecretRef?.last4).toBe("cret");
+    expect(updated.botTokenRef).toBeUndefined();
+    expect(updated.secretTokenRef).toBeUndefined();
+    expect(updated.publicKey).toBeUndefined();
+    expect(updated.appId).toBeUndefined();
+    expect(await store.getIntegrationSecret(integration.id, "botToken")).toBeUndefined();
+    expect(await store.getIntegrationSecret(integration.id, "secretToken")).toBeUndefined();
+    expect(stored?.botTokenRef).toBeUndefined();
+    expect(stored?.secretTokenRef).toBeUndefined();
+  });
+
   it("rejects stale Slack request signatures before accepting replayable payloads", () => {
     const secret = "slack-secret";
     const rawBody = JSON.stringify({ type: "event_callback", event: { text: "hello" } });
@@ -3921,6 +5155,21 @@ describe("AgentWorkbench", () => {
     expect(task.events.some((event) => event.type === "assistant_message")).toBe(false);
   });
 
+  it("resets internal continuity retry tracking after real tool progress", async () => {
+    const model = new InternalContinuationSeparatedByToolProgressModel();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), tools: new StubToolExecutor(), model });
+    await workbench.grantGlobalPermission("workspace_read", "fixture read");
+
+    const task = await workbench.createTask("continue after a leaked continuity note if a tool call made progress");
+
+    expect(model.calls).toBe(4);
+    expect(task.status).toBe("completed");
+    expect(task.events.filter((event) => event.type === "model_no_progress")).toHaveLength(2);
+    expect(task.events.filter((event) => event.type === "tool_requested" && event.payload["toolName"] === "read_file")).toHaveLength(1);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary.startsWith("Internal continuity note"))).toBe(false);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary === "Completed after tool-backed progress.")).toBe(true);
+  });
+
   it("pauses after repeated empty model responses without producing assistant body text", async () => {
     const model = new EmptyResponseModel();
     const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model });
@@ -3956,6 +5205,64 @@ describe("AgentWorkbench", () => {
     expect(completed.status).toBe("completed");
     expect(completed.events.some((event) => event.type === "user_input_answered")).toBe(true);
     expect(String(askResult?.payload["output"] ?? "")).toContain("Use option B");
+  });
+
+  it("continues through optional ask_user follow-up after verification evidence passed", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new PassingCommandExecutor(),
+      model: new OptionalAskAfterVerificationModel()
+    });
+    await workbench.grantGlobalPermission("shell", "fixture verification");
+
+    const completed = await workbench.createTask("Run the verification and summarize when it passes");
+    const askResult = completed.events.find((event) => event.type === "tool_result" && event.payload["toolName"] === "ask_user");
+
+    expect(completed.status).toBe("completed");
+    expect(completed.events.some((event) => event.type === "user_input_requested")).toBe(false);
+    expect(completed.events.some((event) => event.type === "tool_requested" && event.payload["toolName"] === "ask_user" && event.payload["autoResolved"] === true)).toBe(true);
+    expect(String(askResult?.payload["output"] ?? "")).toContain("optional_follow_up_after_verified_progress");
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary === "Final answer after verified progress.")).toBe(true);
+  });
+
+  it("continues through ask_user that asks how to explain current tool evidence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-ask-evidence-"));
+    try {
+      const workbench = new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        tools: new ShellToolExecutor(root),
+        model: new AskHowToExplainEvidenceModel()
+      });
+      await workbench.grantGlobalPermission("workspace_read", "fixture boundary evidence");
+      const folder = await workbench.createTaskFolder({ name: "Boundary fixture", rootPath: root });
+
+      const completed = await workbench.createTask("Try to read ../outside.txt and explain the tool result", "Boundary ask", folder.id);
+      const askResult = completed.events.find((event) => event.type === "tool_result" && event.payload["toolName"] === "ask_user");
+
+      expect(completed.status).toBe("completed");
+      expect(completed.events.some((event) => event.type === "user_input_requested")).toBe(false);
+      expect(completed.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "read_file" && event.payload["ok"] === false)).toBe(true);
+      expect(completed.events.some((event) => event.type === "tool_requested" && event.payload["toolName"] === "ask_user" && event.payload["autoResolved"] === true)).toBe(true);
+      expect(String(askResult?.payload["output"] ?? "")).toContain("answer_from_current_tool_evidence");
+      expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("outside workspace rejection"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not auto-resolve optional ask_user after ambiguous verification output", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new AmbiguousCommandExecutor(),
+      model: new OptionalAskAfterVerificationModel()
+    });
+    await workbench.grantGlobalPermission("shell", "fixture verification");
+
+    const waiting = await workbench.createTask("Run the verification and summarize only if it cleanly passes");
+
+    expect(waiting.status).toBe("waiting_for_user");
+    expect(waiting.events.some((event) => event.type === "user_input_requested")).toBe(true);
+    expect(waiting.events.some((event) => event.type === "tool_requested" && event.payload["toolName"] === "ask_user" && event.payload["autoResolved"] === true)).toBe(false);
   });
 
   it("snapshots the selected local folder root when a task is created", async () => {
@@ -4086,6 +5393,87 @@ describe("AgentWorkbench", () => {
     expect(skills).toHaveLength(0);
   });
 
+  it("redacts tool arguments and outputs before storing reusable task memories", () => {
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_secret_memory",
+      folderId: "default",
+      workRoot: "",
+      title: "Check provider configuration",
+      status: "completed",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        {
+          id: "event_user",
+          taskId: "task_secret_memory",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "Check provider api_key=sk-testsecret1234567890 and email admin@example.com",
+          payload: {}
+        },
+        {
+          id: "event_tool",
+          taskId: "task_secret_memory",
+          type: "tool_requested",
+          createdAt: nowIso(),
+          summary: "call_provider",
+          payload: {
+            toolCallId: "call_secret",
+            toolName: "call_provider",
+            args: {
+              endpoint: "https://example.test/search?api_key=sk-querysecret1234567890",
+              authorization: "Bearer provider-secret-token",
+              nested: {
+                password: "plain-password",
+                path: "C:\\Users\\Admin\\secret.txt",
+                email: "owner@example.com"
+              }
+            }
+          }
+        },
+        {
+          id: "event_result",
+          taskId: "task_secret_memory",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool completed",
+          payload: {
+            toolCallId: "call_secret",
+            ok: true,
+            output: "Fetched with api_key=sk-outputsecret1234567890 for owner@example.com from C:\\Users\\Admin\\secret.txt"
+          }
+        },
+        {
+          id: "event_assistant",
+          taskId: "task_secret_memory",
+          type: "assistant_message",
+          createdAt: nowIso(),
+          summary: "Done. token=sk-finalsecret1234567890",
+          payload: {}
+        }
+      ]
+    };
+
+    const memory = createTaskMemory(task);
+    const experience = createExperience(task);
+    const serialized = JSON.stringify({ memory, experience });
+
+    expect(serialized).not.toContain("sk-testsecret1234567890");
+    expect(serialized).not.toContain("sk-querysecret1234567890");
+    expect(serialized).not.toContain("sk-outputsecret1234567890");
+    expect(serialized).not.toContain("sk-finalsecret1234567890");
+    expect(serialized).not.toContain("Bearer provider-secret-token");
+    expect(serialized).not.toContain("plain-password");
+    expect(serialized).not.toContain("owner@example.com");
+    expect(serialized).not.toContain("admin@example.com");
+    expect(serialized).not.toContain("C:\\Users\\Admin");
+    expect(memory.toolsUsed[0]?.args["authorization"]).toBe("[redacted-secret]");
+    expect(memory.toolsUsed[0]?.result).toContain("api_key=***");
+  });
+
   it("surfaces skill curator explanations for candidates and low-value memories", async () => {
     const workbench = new AgentWorkbench({
       store: new InMemoryWorkbenchStore(),
@@ -4138,15 +5526,19 @@ describe("AgentWorkbench", () => {
   });
 
   it("deletes a task and can clean linked learning records and derived skills", async () => {
+    const traceRoot = mkdtempSync(join(tmpdir(), "aw-traces-"));
     const workbench = new AgentWorkbench({
       store: new InMemoryWorkbenchStore(),
       tools: new StubToolExecutor(),
-      model: new ConfiguredToolModelClient("Get-Process")
+      model: new ConfiguredToolModelClient("Get-Process"),
+      traceRoot
     });
     const created = await workbench.createTask("check running processes");
     const approval = created.approvals[0];
     if (!approval) throw new Error("expected approval");
     const completed = await workbench.decideApproval(created.id, approval.id, "allow_for_task");
+    const traceDir = join(traceRoot, completed.id);
+    expect(existsSync(join(traceDir, "trace.jsonl"))).toBe(true);
     const experience = (await workbench.listExperiences())[0];
     if (!experience) throw new Error("expected experience");
     await workbench.createSkill({
@@ -4175,6 +5567,8 @@ describe("AgentWorkbench", () => {
     expect(await workbench.listExperiences()).toHaveLength(0);
     expect(await workbench.listTaskMemories()).toHaveLength(0);
     expect(await workbench.listSkills()).toHaveLength(0);
+    expect(existsSync(traceDir)).toBe(false);
+    rmSync(traceRoot, { recursive: true, force: true });
   });
 
   it("rejects one-off experience promotion and keeps generated skill bodies reusable", async () => {
@@ -4638,6 +6032,9 @@ describe("OpenAIModelClient", () => {
       const attention = (requestTrace?.["payload"] as Record<string, unknown> | undefined)?.["attention"] as Record<string, unknown> | undefined;
 
       expect(turn.kind).toBe("final");
+      expect(request?.["max_tokens"]).toBeUndefined();
+      expect(request?.["max_completion_tokens"]).toBeUndefined();
+      expect(request?.["prompt_cache_key"]).toBeUndefined();
       expect(messages[0]?.["role"]).toBe("system");
       expect(String(messages[0]?.["content"] ?? "")).toContain("Stable Memory Files");
       expect(String(messages[0]?.["content"] ?? "")).toContain("copy the observed text exactly");
@@ -4658,6 +6055,83 @@ describe("OpenAIModelClient", () => {
       expect(String(messages.map((message) => message["content"] ?? "").join("\n"))).not.toContain("## Active Node");
       expect((attention?.["activeNode"] as Record<string, unknown> | undefined)?.["role"]).toBe("implement");
       expect(attention?.["evidenceRefs"]).toContain("event_tool_result:list_files:ok");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("uses a stable scoped prompt cache key without leaking task or endpoint details", async () => {
+    const capturedRequests: Array<Record<string, unknown>> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        capturedRequests.push(JSON.parse(body) as Record<string, unknown>);
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "done" } }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+        response.write("data: [DONE]\n\n");
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      let toolListCall = 0;
+      const client = new OpenAIModelClient({
+        apiKey: "cache-secret-key",
+        baseURL: `http://127.0.0.1:${port}/v1/private-endpoint`,
+        model: "cache-model",
+        promptCacheMode: "always",
+        toolProvider: {
+          listModelTools: async () => {
+            toolListCall += 1;
+            const properties = toolListCall % 2 === 0
+              ? { beta: { type: "number" }, alpha: { type: "string" } }
+              : { alpha: { type: "string" }, beta: { type: "number" } };
+            return [{
+              type: "function",
+              function: {
+                name: "cache_probe",
+                description: "Probe deterministic tool schemas.",
+                parameters: { type: "object", properties, required: ["alpha"] }
+              }
+            }];
+          }
+        }
+      });
+      const task = (id: string, folderId: string): TaskDetail => ({
+        kind: "primary",
+        id,
+        folderId,
+        title: "Cache probe",
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [{ id: `event_${id}`, taskId: id, type: "user_message", createdAt: nowIso(), summary: "probe", payload: {} }]
+      });
+
+      await client.next(task("task_cache_one", "folder_shared"));
+      await client.next(task("task_cache_two", "folder_shared"));
+      await client.next(task("task_cache_three", "folder_other"));
+
+      const keys = capturedRequests.map((request) => String(request["prompt_cache_key"] ?? ""));
+      expect(keys[0]).toMatch(/^aw-[a-f0-9]{40}$/);
+      expect(keys[1]).toBe(keys[0]);
+      expect(keys[2]).not.toBe(keys[0]);
+      expect(keys.join(" ")).not.toContain("task_cache");
+      expect(keys.join(" ")).not.toContain("cache-secret-key");
+      expect(keys.join(" ")).not.toContain("private-endpoint");
+      const dynamicTool = (capturedRequests[0]?.["tools"] as Array<Record<string, unknown>>)
+        .find((tool) => (tool["function"] as Record<string, unknown> | undefined)?.["name"] === "cache_probe");
+      const parameters = ((dynamicTool?.["function"] as Record<string, unknown>)["parameters"] as Record<string, unknown>);
+      expect(Object.keys(parameters)).toEqual(["properties", "required", "type"]);
+      expect(Object.keys(parameters["properties"] as Record<string, unknown>)).toEqual(["alpha", "beta"]);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -4839,7 +6313,7 @@ describe("OpenAIModelClient", () => {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify({
           content: [{ type: "text", text: "done" }],
-          usage: { input_tokens: 12, output_tokens: 3 }
+          usage: { input_tokens: 12, output_tokens: 3, cache_read_input_tokens: 7, cache_creation_input_tokens: 11 }
         }));
       });
     });
@@ -4901,6 +6375,11 @@ describe("OpenAIModelClient", () => {
 
       expect(turn.kind).toBe("final");
       expect(capturedRequests).toHaveLength(1);
+      expect(request?.["max_tokens"]).toBe(16000);
+      expect(request?.["cache_control"]).toEqual({ type: "ephemeral" });
+      expect(turn.usage?.inputTokens).toBe(30);
+      expect(turn.usage?.cachedTokens).toBe(7);
+      expect(turn.usage?.raw?.["cache_creation_input_tokens"]).toBe(11);
       expect(JSON.stringify(request)).not.toContain(":null");
       expect(assistantContent).toContainEqual({ type: "tool_use", id: "call_anthropic_list", name: "list_files", input: { path: "." } });
       expect(toolResultUser).toBeTruthy();
@@ -5183,8 +6662,71 @@ describe("OpenAIModelClient", () => {
 });
 
 describe("McpRegistry", () => {
+  it("redacts MCP server secrets from public configuration responses", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const registry = new McpRegistry(store);
+
+    const created = await registry.createServer({
+      id: "secret_mcp",
+      label: "Secret MCP",
+      transport: "streamable_http",
+      url: "https://mcp.example.test/stream?api_key=mcp-secret-1234567890",
+      args: [],
+      env: {
+        API_KEY: "sk-mcp-secret-1234567890",
+        SAFE_LABEL: "visible"
+      },
+      enabled: true,
+      toolRiskOverrides: {}
+    });
+    const listed = await registry.listServers();
+    const stored = await store.getMcpServer("secret_mcp");
+
+    expect(JSON.stringify(created)).not.toContain("sk-mcp-secret");
+    expect(JSON.stringify(created)).not.toContain("mcp-secret-1234567890");
+    expect(JSON.stringify(listed)).not.toContain("sk-mcp-secret");
+    expect(JSON.stringify(listed)).not.toContain("mcp-secret-1234567890");
+    expect(stored?.env["API_KEY"]).toBe("sk-mcp-secret-1234567890");
+    expect(stored?.url).toContain("mcp-secret-1234567890");
+  });
+
+  it("validates MCP endpoints before saving transport changes", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const registry = new McpRegistry(store);
+
+    await expect(
+      registry.createServer({
+        id: "bad_http",
+        label: "Bad HTTP MCP",
+        transport: "streamable_http",
+        url: "file:///tmp/mcp",
+        args: [],
+        env: {},
+        enabled: true,
+        toolRiskOverrides: {}
+      })
+    ).rejects.toThrow(/http or https/i);
+
+    await registry.createServer({
+      id: "stdio_mcp",
+      label: "Stdio MCP",
+      transport: "stdio",
+      command: process.execPath,
+      args: ["--version"],
+      env: {},
+      enabled: true,
+      toolRiskOverrides: {}
+    });
+
+    await expect(registry.patchServer("stdio_mcp", { transport: "streamable_http" })).rejects.toThrow(/require url/i);
+    const switched = await registry.patchServer("stdio_mcp", { transport: "streamable_http", url: "http://127.0.0.1:59999/mcp" });
+    expect(switched.transport).toBe("streamable_http");
+    expect(switched.url).toBe("http://127.0.0.1:59999/mcp");
+    expect(switched.command).toBeUndefined();
+  });
+
   it("discovers stdio MCP tools, routes execution through approval, and reuses global permission", async () => {
-    const temp = mkdtempSync(join(process.cwd(), "tmp-scc-mcp-"));
+    const temp = mkdtempSync(join(repoTestTempRoot(), "tmp-scc-mcp-"));
     try {
       const script = join(temp, "mock-mcp.mjs");
       writeFileSync(script, mockMcpServerSource());
@@ -5232,6 +6774,53 @@ describe("McpRegistry", () => {
       rmSync(temp, { recursive: true, force: true });
     }
   });
+
+  it("redacts secrets before materializing long MCP output on disk", async () => {
+    const temp = mkdtempSync(join(repoTestTempRoot(), "tmp-scc-mcp-secret-output-"));
+    let rawOutputRef = "";
+    try {
+      const script = join(temp, "secret-output-mcp.mjs");
+      writeFileSync(script, longSecretMcpServerSource());
+      const store = new InMemoryWorkbenchStore();
+      const registry = new McpRegistry(store);
+      await registry.createServer({
+        id: "secret_output",
+        label: "Secret output MCP",
+        transport: "stdio",
+        command: process.execPath,
+        args: [script],
+        env: {},
+        enabled: true,
+        toolRiskOverrides: { long_secret: "workspace_read" }
+      });
+
+      const status = await registry.connectServer("secret_output");
+      expect(status.state).toBe("connected");
+      const result = await registry.execute({
+        id: createId("tool_call"),
+        toolName: "mcp__secret_output__long_secret",
+        args: {}
+      });
+      const parsed = JSON.parse(result.output) as { rawOutputRef: string; summary: string; sanitized?: boolean };
+      rawOutputRef = parsed.rawOutputRef;
+      const rawOutput = readFileSync(rawOutputRef, "utf8");
+
+      expect(result.ok).toBe(true);
+      expect(parsed.sanitized).toBe(true);
+      expect(parsed.summary).toContain("[redacted-secret]");
+      expect(parsed.summary).toContain("Bearer [redacted-token]");
+      expect(rawOutput).toContain("[redacted-secret]");
+      expect(rawOutput).toContain("Bearer [redacted-token]");
+      expect(result.output).not.toContain("sk-mcp-output-secret1234567890");
+      expect(result.output).not.toContain("mcp-output-bearer-secret123456");
+      expect(rawOutput).not.toContain("sk-mcp-output-secret1234567890");
+      expect(rawOutput).not.toContain("mcp-output-bearer-secret123456");
+      await registry.disconnectServer("secret_output");
+    } finally {
+      if (rawOutputRef) rmSync(rawOutputRef, { force: true });
+      rmSync(temp, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   it("discovers and calls streamable HTTP MCP tools", async () => {
     const mock = await startMockHttpMcpServer();
@@ -5383,7 +6972,7 @@ describe("McpRegistry", () => {
   });
 });
 
-describe("ShellToolExecutor", () => {
+describe("ShellToolExecutor", { timeout: 15_000 }, () => {
   it("runs a harmless command", async () => {
     const executor = new ShellToolExecutor();
     const result = await executor.execute({
@@ -5549,7 +7138,36 @@ describe("ShellToolExecutor", () => {
       rmSync(defaultRoot, { recursive: true, force: true });
       rmSync(workRoot, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
+
+  it("redacts secrets before materializing long command output on disk", async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), "scc-command-output-secret-"));
+    try {
+      const executor = new ShellToolExecutor(workRoot);
+      const result = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "run_command",
+        args: {
+          command: "node -e \"console.log('api_key=sk-long-output-secret1234567890 ' + 'x'.repeat(13050) + ' Bearer long-output-bearer-secret123456')\""
+        }
+      });
+
+      expect(result.ok).toBe(true);
+      const parsed = JSON.parse(result.output) as { rawOutputRef: string; summary: string; sanitized?: boolean };
+      const rawOutput = readFileSync(parsed.rawOutputRef, "utf8");
+      expect(parsed.sanitized).toBe(true);
+      expect(parsed.summary).toContain("[redacted-secret]");
+      expect(parsed.summary).toContain("Bearer [redacted-token]");
+      expect(rawOutput).toContain("[redacted-secret]");
+      expect(rawOutput).toContain("Bearer [redacted-token]");
+      expect(result.output).not.toContain("sk-long-output-secret1234567890");
+      expect(result.output).not.toContain("long-output-bearer-secret123456");
+      expect(rawOutput).not.toContain("sk-long-output-secret1234567890");
+      expect(rawOutput).not.toContain("long-output-bearer-secret123456");
+    } finally {
+      rmSync(workRoot, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   it("reads complete small and medium files by default without manual line pagination", async () => {
     const temp = mkdtempSync(join(tmpdir(), "tmp-scc-read-full-"));
@@ -5715,6 +7333,35 @@ describe("ShellToolExecutor", () => {
       expect(parsed["path"]).toContain("generated.txt");
       expect(parsed["changed"]).toBe(true);
       expect(result.output).not.toContain("chunk");
+      expect(readdirSync(temp).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves existing file mode when atomically replacing file content", async () => {
+    if (process.platform === "win32") return;
+    const temp = mkdtempSync(join(tmpdir(), "tmp-scc-write-mode-"));
+    try {
+      const file = join(temp, "script.sh");
+      const original = "#!/bin/sh\necho before\n";
+      writeFileSync(file, original, "utf8");
+      chmodSync(file, 0o755);
+      const executor = new ShellToolExecutor(temp);
+
+      const result = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "write_file",
+        args: {
+          path: "script.sh",
+          expectedHash: createHash("sha256").update(original).digest("hex").slice(0, 16),
+          content: "#!/bin/sh\necho after\n"
+        }
+      });
+
+      expect(result.ok).toBe(true);
+      expect(statSync(file).mode & 0o777).toBe(0o755);
+      expect(readdirSync(temp).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }
@@ -5771,6 +7418,148 @@ describe("ShellToolExecutor", () => {
     }
   });
 
+  it("rejects malformed file mutation arguments without changing disk state", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "tmp-scc-tool-fuzz-"));
+    const hash = (content: string) => createHash("sha256").update(content).digest("hex").slice(0, 16);
+    try {
+      const file = join(temp, "note.txt");
+      const original = "alpha\nbeta\ngamma\n";
+      writeFileSync(file, original, "utf8");
+      const executor = new ShellToolExecutor(temp);
+      const attempts: Array<{ name: string; call: ToolCall; output: RegExp }> = [
+        {
+          name: "empty edit list",
+          call: {
+            id: createId("tool_call"),
+            toolName: "edit_file",
+            args: { path: "note.txt", expectedHash: hash(original), edits: [] }
+          },
+          output: /No edits provided/
+        },
+        {
+          name: "non integer edit range",
+          call: {
+            id: createId("tool_call"),
+            toolName: "edit_file",
+            args: { path: "note.txt", expectedHash: hash(original), edits: [{ startLine: 1.5, endLine: 2, newText: "changed" }] }
+          },
+          output: /positive integers/
+        },
+        {
+          name: "negative edit range",
+          call: {
+            id: createId("tool_call"),
+            toolName: "edit_file",
+            args: { path: "note.txt", expectedHash: hash(original), edits: [{ startLine: 3, endLine: 1, newText: "changed" }] }
+          },
+          output: /Invalid edit range/
+        },
+        {
+          name: "range past end",
+          call: {
+            id: createId("tool_call"),
+            toolName: "edit_file",
+            args: { path: "note.txt", expectedHash: hash(original), edits: [{ startLine: 9, endLine: 9, newText: "changed" }] }
+          },
+          output: /no longer matches/
+        },
+        {
+          name: "expected text mismatch",
+          call: {
+            id: createId("tool_call"),
+            toolName: "edit_file",
+            args: { path: "note.txt", expectedHash: hash(original), edits: [{ startLine: 2, endLine: 2, expectedText: "delta", newText: "changed" }] }
+          },
+          output: /Expected text/
+        },
+        {
+          name: "overlapping edit ranges",
+          call: {
+            id: createId("tool_call"),
+            toolName: "edit_file",
+            args: {
+              path: "note.txt",
+              expectedHash: hash(original),
+              edits: [
+                { startLine: 1, endLine: 2, newText: "first" },
+                { startLine: 2, endLine: 3, newText: "second" }
+              ]
+            }
+          },
+          output: /must not overlap/
+        },
+        {
+          name: "duplicate insertion anchors",
+          call: {
+            id: createId("tool_call"),
+            toolName: "edit_file",
+            args: {
+              path: "note.txt",
+              expectedHash: hash(original),
+              edits: [
+                { startLine: 2, endLine: 1, newText: "insert one" },
+                { startLine: 2, endLine: 1, newText: "insert two" }
+              ]
+            }
+          },
+          output: /must not overlap/
+        },
+        {
+          name: "expected hash mismatch",
+          call: {
+            id: createId("tool_call"),
+            toolName: "edit_file",
+            args: { path: "note.txt", expectedHash: hash("stale\n"), edits: [{ startLine: 1, endLine: 1, newText: "changed" }] }
+          },
+          output: /File changed before write/
+        },
+        {
+          name: "write without hash",
+          call: {
+            id: createId("tool_call"),
+            toolName: "write_file",
+            args: { path: "created.txt", content: "created" }
+          },
+          output: /Missing expectedHash/
+        },
+        {
+          name: "new file intent against existing file",
+          call: {
+            id: createId("tool_call"),
+            toolName: "write_file",
+            args: { path: "note.txt", expectedHash: "__new__", content: "replacement" }
+          },
+          output: /File changed before write/
+        }
+      ];
+
+      for (const attempt of attempts) {
+        const result = await executor.execute(attempt.call);
+        expect(result.ok, attempt.name).toBe(false);
+        expect(result.output, attempt.name).toMatch(attempt.output);
+        expect(readFileSync(file, "utf8"), attempt.name).toBe(original);
+        expect(existsSync(join(temp, "created.txt")), attempt.name).toBe(false);
+      }
+
+      const adjacent = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "edit_file",
+        args: {
+          path: "note.txt",
+          expectedHash: hash(original),
+          edits: [
+            { startLine: 1, endLine: 1, expectedText: "alpha", newText: "ALPHA" },
+            { startLine: 3, endLine: 3, expectedText: "gamma", newText: "GAMMA" }
+          ]
+        }
+      });
+      expect(adjacent.ok).toBe(true);
+      expect(readFileSync(file, "utf8")).toBe("ALPHA\nbeta\nGAMMA\n");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   it("rejects linked directory escapes for read, write, and search operations", async () => {
     const workRoot = mkdtempSync(join(tmpdir(), "scc-tools-linked-root-"));
     const outsideRoot = mkdtempSync(join(tmpdir(), "scc-tools-linked-outside-"));
@@ -5816,6 +7605,95 @@ describe("ShellToolExecutor", () => {
       rmSync(outsideRoot, { recursive: true, force: true });
     }
   });
+
+  it("rejects linked file escapes for read, write, edit, and search operations", async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), "scc-tools-linked-file-root-"));
+    const outsideRoot = mkdtempSync(join(tmpdir(), "scc-tools-linked-file-outside-"));
+    try {
+      const outsideFile = join(outsideRoot, "secret.txt");
+      writeFileSync(outsideFile, "outside file secret", "utf8");
+      try {
+        symlinkSync(outsideFile, join(workRoot, "linked-secret.txt"), "file");
+      } catch {
+        return;
+      }
+      const executor = new ShellToolExecutor(workRoot);
+      const attempts: ToolCall[] = [
+        { id: createId("tool_call"), toolName: "read_file", args: { path: "linked-secret.txt" } },
+        { id: createId("tool_call"), toolName: "search_files", args: { path: "linked-secret.txt", query: "secret" } },
+        { id: createId("tool_call"), toolName: "write_file", args: { path: "linked-secret.txt", expectedHash: "__new__", content: "overwrite" } },
+        {
+          id: createId("tool_call"),
+          toolName: "edit_file",
+          args: {
+            path: "linked-secret.txt",
+            expectedHash: createHash("sha256").update("outside file secret").digest("hex").slice(0, 16),
+            edits: [{ startLine: 1, endLine: 1, newText: "overwrite" }]
+          }
+        }
+      ];
+
+      for (const call of attempts) {
+        const result = await executor.execute(call);
+        expect(result.ok, call.toolName).toBe(false);
+        expect(result.output, call.toolName).toContain("outside the workspace");
+      }
+      expect(readFileSync(outsideFile, "utf8")).toBe("outside file secret");
+    } finally {
+      rmSync(workRoot, { recursive: true, force: true });
+      rmSync(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects absolute, sibling-prefix, and linked-directory workspace escapes across file tools", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "scc-tools-path-parent-"));
+    const workRoot = join(parent, "workspace");
+    const siblingRoot = join(parent, "workspace-evil");
+    const outsideRoot = join(parent, "outside");
+    mkdirSync(workRoot, { recursive: true });
+    mkdirSync(siblingRoot, { recursive: true });
+    mkdirSync(outsideRoot, { recursive: true });
+    try {
+      writeFileSync(join(workRoot, "inside.txt"), "inside", "utf8");
+      writeFileSync(join(siblingRoot, "secret.txt"), "sibling secret", "utf8");
+      writeFileSync(join(outsideRoot, "secret.txt"), "outside secret", "utf8");
+      createDirectoryAlias(outsideRoot, join(workRoot, "escape"));
+      const executor = new ShellToolExecutor(workRoot);
+      const escapedWritePath = join(outsideRoot, "created.txt");
+
+      const attempts: ToolCall[] = [
+        { id: createId("tool_call"), toolName: "read_file", args: { path: join(siblingRoot, "secret.txt") } },
+        { id: createId("tool_call"), toolName: "read_file", args: { path: join(outsideRoot, "secret.txt") } },
+        { id: createId("tool_call"), toolName: "read_file", args: { path: "../workspace-evil/secret.txt" } },
+        { id: createId("tool_call"), toolName: "read_file", args: { path: "escape/secret.txt" } },
+        { id: createId("tool_call"), toolName: "list_files", args: { path: "escape" } },
+        { id: createId("tool_call"), toolName: "search_files", args: { path: "escape", query: "secret" } },
+        { id: createId("tool_call"), toolName: "write_file", args: { path: "escape/created.txt", expectedHash: "__new__", content: "escaped write" } },
+        {
+          id: createId("tool_call"),
+          toolName: "edit_file",
+          args: {
+            path: "escape/created.txt",
+            expectedHash: "__new__",
+            edits: [{ startLine: 1, endLine: 1, newText: "escaped edit\n" }]
+          }
+        }
+      ];
+
+      for (const call of attempts) {
+        const result = await executor.execute(call);
+        expect(result.ok, `${call.toolName} should reject ${String(call.args["path"])}`).toBe(false);
+        expect(result.output).toContain("outside the workspace");
+      }
+      expect(existsSync(escapedWritePath)).toBe(false);
+
+      const inside = await executor.execute({ id: createId("tool_call"), toolName: "read_file", args: { path: "inside.txt" } });
+      expect(inside.ok).toBe(true);
+      expect(inside.output).toContain("inside");
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
 });
 
 function createDirectoryAlias(target: string, aliasPath: string): void {
@@ -5826,9 +7704,13 @@ describe("OpenAI provider config", () => {
   it("does not implicitly load a local API key document unless SCC_API_KEY_FILE is set", () => {
     const previous = {
       apiKey: process.env["OPENAI_API_KEY"],
+      agentApiKey: process.env["AGENT_WORKBENCH_OPENAI_API_KEY"],
+      sccApiKey: process.env["SCC_OPENAI_API_KEY"],
       baseUrl: process.env["OPENAI_BASE_URL"],
       baseurl: process.env["OPENAI_BASEURL"],
+      agentBaseUrl: process.env["AGENT_WORKBENCH_OPENAI_BASE_URL"],
       sccBaseUrl: process.env["SCC_OPENAI_BASE_URL"],
+      agentModel: process.env["AGENT_WORKBENCH_MODEL"],
       model: process.env["SCC_MODEL"],
       openAiModel: process.env["OPENAI_MODEL"],
       apiKeyFile: process.env["SCC_API_KEY_FILE"],
@@ -5838,9 +7720,13 @@ describe("OpenAI provider config", () => {
 
     try {
       delete process.env["OPENAI_API_KEY"];
+      delete process.env["AGENT_WORKBENCH_OPENAI_API_KEY"];
+      delete process.env["SCC_OPENAI_API_KEY"];
       delete process.env["OPENAI_BASE_URL"];
       delete process.env["OPENAI_BASEURL"];
+      delete process.env["AGENT_WORKBENCH_OPENAI_BASE_URL"];
       delete process.env["SCC_OPENAI_BASE_URL"];
+      delete process.env["AGENT_WORKBENCH_MODEL"];
       delete process.env["SCC_MODEL"];
       delete process.env["OPENAI_MODEL"];
       delete process.env["SCC_API_KEY_FILE"];
@@ -5851,9 +7737,13 @@ describe("OpenAI provider config", () => {
       expect(loadOpenAiProviderConfig()).toEqual({});
     } finally {
       restoreEnv("OPENAI_API_KEY", previous.apiKey);
+      restoreEnv("AGENT_WORKBENCH_OPENAI_API_KEY", previous.agentApiKey);
+      restoreEnv("SCC_OPENAI_API_KEY", previous.sccApiKey);
       restoreEnv("OPENAI_BASE_URL", previous.baseUrl);
       restoreEnv("OPENAI_BASEURL", previous.baseurl);
+      restoreEnv("AGENT_WORKBENCH_OPENAI_BASE_URL", previous.agentBaseUrl);
       restoreEnv("SCC_OPENAI_BASE_URL", previous.sccBaseUrl);
+      restoreEnv("AGENT_WORKBENCH_MODEL", previous.agentModel);
       restoreEnv("SCC_MODEL", previous.model);
       restoreEnv("OPENAI_MODEL", previous.openAiModel);
       restoreEnv("SCC_API_KEY_FILE", previous.apiKeyFile);
@@ -5867,9 +7757,13 @@ describe("OpenAI provider config", () => {
     const filePath = join(temp, "dont_touch_(APIKEY).md");
     const previous = {
       apiKey: process.env["OPENAI_API_KEY"],
+      agentApiKey: process.env["AGENT_WORKBENCH_OPENAI_API_KEY"],
+      sccApiKey: process.env["SCC_OPENAI_API_KEY"],
       baseUrl: process.env["OPENAI_BASE_URL"],
       baseurl: process.env["OPENAI_BASEURL"],
+      agentBaseUrl: process.env["AGENT_WORKBENCH_OPENAI_BASE_URL"],
       sccBaseUrl: process.env["SCC_OPENAI_BASE_URL"],
+      agentModel: process.env["AGENT_WORKBENCH_MODEL"],
       model: process.env["SCC_MODEL"],
       openAiModel: process.env["OPENAI_MODEL"],
       apiKeyFile: process.env["SCC_API_KEY_FILE"],
@@ -5879,9 +7773,13 @@ describe("OpenAI provider config", () => {
 
     try {
       delete process.env["OPENAI_API_KEY"];
+      delete process.env["AGENT_WORKBENCH_OPENAI_API_KEY"];
+      delete process.env["SCC_OPENAI_API_KEY"];
       delete process.env["OPENAI_BASE_URL"];
       delete process.env["OPENAI_BASEURL"];
+      delete process.env["AGENT_WORKBENCH_OPENAI_BASE_URL"];
       delete process.env["SCC_OPENAI_BASE_URL"];
+      delete process.env["AGENT_WORKBENCH_MODEL"];
       delete process.env["SCC_MODEL"];
       delete process.env["OPENAI_MODEL"];
       process.env["SCC_API_KEY_FILE"] = filePath;
@@ -5923,15 +7821,75 @@ describe("OpenAI provider config", () => {
       });
     } finally {
       restoreEnv("OPENAI_API_KEY", previous.apiKey);
+      restoreEnv("AGENT_WORKBENCH_OPENAI_API_KEY", previous.agentApiKey);
+      restoreEnv("SCC_OPENAI_API_KEY", previous.sccApiKey);
       restoreEnv("OPENAI_BASE_URL", previous.baseUrl);
       restoreEnv("OPENAI_BASEURL", previous.baseurl);
+      restoreEnv("AGENT_WORKBENCH_OPENAI_BASE_URL", previous.agentBaseUrl);
       restoreEnv("SCC_OPENAI_BASE_URL", previous.sccBaseUrl);
+      restoreEnv("AGENT_WORKBENCH_MODEL", previous.agentModel);
       restoreEnv("SCC_MODEL", previous.model);
       restoreEnv("OPENAI_MODEL", previous.openAiModel);
       restoreEnv("SCC_API_KEY_FILE", previous.apiKeyFile);
       restoreEnv("SCC_API_PROVIDER", previous.provider);
       restoreEnv("OPENAI_PROVIDER", previous.openAiProvider);
       rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("loads scoped Agent Workbench API key environment overrides", () => {
+    const previous = {
+      apiKey: process.env["OPENAI_API_KEY"],
+      agentApiKey: process.env["AGENT_WORKBENCH_OPENAI_API_KEY"],
+      sccApiKey: process.env["SCC_OPENAI_API_KEY"],
+      baseUrl: process.env["OPENAI_BASE_URL"],
+      baseurl: process.env["OPENAI_BASEURL"],
+      agentBaseUrl: process.env["AGENT_WORKBENCH_OPENAI_BASE_URL"],
+      sccBaseUrl: process.env["SCC_OPENAI_BASE_URL"],
+      model: process.env["AGENT_WORKBENCH_MODEL"],
+      legacyModel: process.env["SCC_MODEL"],
+      openAiModel: process.env["OPENAI_MODEL"],
+      apiKeyFile: process.env["SCC_API_KEY_FILE"]
+    };
+
+    try {
+      delete process.env["OPENAI_API_KEY"];
+      process.env["AGENT_WORKBENCH_OPENAI_API_KEY"] = "agent-env-key";
+      process.env["SCC_OPENAI_API_KEY"] = "legacy-env-key";
+      delete process.env["OPENAI_BASE_URL"];
+      delete process.env["OPENAI_BASEURL"];
+      process.env["AGENT_WORKBENCH_OPENAI_BASE_URL"] = "https://agent.example/v1";
+      process.env["SCC_OPENAI_BASE_URL"] = "https://legacy.example/v1";
+      process.env["AGENT_WORKBENCH_MODEL"] = "agent-model";
+      process.env["SCC_MODEL"] = "legacy-model";
+      delete process.env["OPENAI_MODEL"];
+      delete process.env["SCC_API_KEY_FILE"];
+
+      expect(loadOpenAiConfig()).toEqual({
+        apiKey: "agent-env-key",
+        baseURL: "https://agent.example/v1",
+        model: "agent-model"
+      });
+
+      process.env["OPENAI_API_KEY"] = "openai-env-key";
+      process.env["OPENAI_BASE_URL"] = "https://openai.example/v1";
+      expect(loadOpenAiConfig()).toEqual({
+        apiKey: "openai-env-key",
+        baseURL: "https://openai.example/v1",
+        model: "agent-model"
+      });
+    } finally {
+      restoreEnv("OPENAI_API_KEY", previous.apiKey);
+      restoreEnv("AGENT_WORKBENCH_OPENAI_API_KEY", previous.agentApiKey);
+      restoreEnv("SCC_OPENAI_API_KEY", previous.sccApiKey);
+      restoreEnv("OPENAI_BASE_URL", previous.baseUrl);
+      restoreEnv("OPENAI_BASEURL", previous.baseurl);
+      restoreEnv("AGENT_WORKBENCH_OPENAI_BASE_URL", previous.agentBaseUrl);
+      restoreEnv("SCC_OPENAI_BASE_URL", previous.sccBaseUrl);
+      restoreEnv("AGENT_WORKBENCH_MODEL", previous.model);
+      restoreEnv("SCC_MODEL", previous.legacyModel);
+      restoreEnv("OPENAI_MODEL", previous.openAiModel);
+      restoreEnv("SCC_API_KEY_FILE", previous.apiKeyFile);
     }
   });
 });
@@ -6001,6 +7959,30 @@ server.registerTool(
   },
   async ({ text }) => ({
     content: [{ type: "text", text: "echo:" + (text ?? "") }]
+  })
+);
+await server.connect(new StdioServerTransport());
+`;
+}
+
+function longSecretMcpServerSource(): string {
+  return `
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+
+const server = new McpServer({ name: "secret-output-mcp", version: "1.0.0" });
+server.registerTool(
+  "long_secret",
+  {
+    description: "Return long output containing secrets.",
+    inputSchema: {},
+    annotations: { readOnlyHint: true }
+  },
+  async () => ({
+    content: [{
+      type: "text",
+      text: "api_key=sk-mcp-output-secret1234567890 " + "x".repeat(13050) + " Bearer mcp-output-bearer-secret123456"
+    }]
   })
 );
 await server.connect(new StdioServerTransport());

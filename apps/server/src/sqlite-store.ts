@@ -72,6 +72,8 @@ type EncryptedRecordEnvelope = {
   payload: EncryptedSecretValue;
 };
 
+const SECURE_VACUUM_USER_VERSION = 20260526;
+
 export class SqliteWorkbenchStore implements WorkbenchStore {
   private readonly db: Database.Database;
   private secretBox: LocalSecretBox | undefined;
@@ -80,21 +82,32 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   constructor(filePath: string) {
     mkdirSync(dirname(filePath), { recursive: true });
     this.db = new Database(filePath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("busy_timeout = 5000");
-    this.db
-      .prepare(
-        "CREATE TABLE IF NOT EXISTS records (namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(namespace, key))"
-      )
-      .run();
-    this.checkpointInterval = setInterval(() => {
+    try {
+      this.db.pragma("secure_delete = ON");
+      this.db.pragma("journal_mode = WAL");
+      this.db.pragma("busy_timeout = 5000");
+      this.db
+        .prepare(
+          "CREATE TABLE IF NOT EXISTS records (namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(namespace, key))"
+        )
+        .run();
+      this.secureVacuumEncryptedDatabaseOnOpen(this.encryptAlwaysEncryptedRecords());
+      this.checkpointInterval = setInterval(() => {
+        try {
+          this.db.pragma("wal_checkpoint(TRUNCATE)");
+        } catch {
+          // checkpoint is best-effort
+        }
+      }, 60_000);
+      if (this.checkpointInterval.unref) this.checkpointInterval.unref();
+    } catch (error) {
       try {
-        this.db.pragma("wal_checkpoint(TRUNCATE)");
+        this.db.close();
       } catch {
-        // checkpoint is best-effort
+        // Preserve the original construction failure.
       }
-    }, 60_000);
-    if (this.checkpointInterval.unref) this.checkpointInterval.unref();
+      throw error;
+    }
   }
 
   async saveTask(task: TaskDetail): Promise<void> {
@@ -560,7 +573,7 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
   }
 
   private upsert(namespace: Namespace, key: string, value: unknown): void {
-    const stored = namespace !== "preferences" && this.isStorageEncryptionEnabled() ? this.encryptRecordValue(value) : value;
+    const stored = this.shouldEncryptNamespace(namespace) ? this.encryptRecordValue(value) : value;
     this.retryWrite(() => {
       this.db
         .prepare("INSERT INTO records(namespace, key, value) VALUES (?, ?, ?) ON CONFLICT(namespace, key) DO UPDATE SET value=excluded.value")
@@ -585,12 +598,12 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
     const row = this.db.prepare("SELECT value FROM records WHERE namespace = ? AND key = ?").get(namespace, key) as
       | Row
       | undefined;
-    return row ? this.decodeRecordValue<T>(JSON.parse(row.value)) : undefined;
+    return row ? this.decodeStoredRecord<T>(namespace, key, row.value) : undefined;
   }
 
   private list<T>(namespace: Namespace): T[] {
-    const rows = this.db.prepare("SELECT value FROM records WHERE namespace = ?").all(namespace) as Row[];
-    return rows.map((row) => this.decodeRecordValue<T>(JSON.parse(row.value)));
+    const rows = this.db.prepare("SELECT key, value FROM records WHERE namespace = ?").all(namespace) as Row[];
+    return rows.map((row) => this.decodeStoredRecord<T>(namespace, row.key, row.value));
   }
 
   private delete(namespace: Namespace, key: string): void {
@@ -599,25 +612,71 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
 
   private rewriteEncryptedRecords(enabled: boolean): void {
     const rows = this.db.prepare("SELECT namespace, key, value FROM records WHERE namespace <> ?").all("preferences") as NamespacedRow[];
+    if (rows.length === 0) return;
     const update = this.db.prepare("UPDATE records SET value = ? WHERE namespace = ? AND key = ?");
     const rewrite = this.db.transaction((records: NamespacedRow[]) => {
       for (const row of records) {
-        const decoded = this.decodeRecordValue<unknown>(JSON.parse(row.value));
-        const stored = enabled ? this.encryptRecordValue(decoded) : decoded;
+        const decoded = this.decodeStoredRecord<unknown>(row.namespace, row.key, row.value);
+        const stored = enabled || shouldAlwaysEncryptNamespace(row.namespace) ? this.encryptRecordValue(decoded) : decoded;
         update.run(JSON.stringify(stored), row.namespace, row.key);
       }
     });
     rewrite(rows);
+    this.secureVacuum();
+  }
+
+  private encryptAlwaysEncryptedRecords(): boolean {
+    const sensitiveNamespaces = alwaysEncryptedNamespaces();
+    if (sensitiveNamespaces.length === 0) return false;
+    const placeholders = sensitiveNamespaces.map(() => "?").join(",");
+    const rows = this.db.prepare(`SELECT namespace, key, value FROM records WHERE namespace IN (${placeholders})`).all(...sensitiveNamespaces) as NamespacedRow[];
+    if (rows.length === 0) return false;
+    const update = this.db.prepare("UPDATE records SET value = ? WHERE namespace = ? AND key = ?");
+    let changed = false;
+    const rewrite = this.db.transaction((records: NamespacedRow[]) => {
+      for (const row of records) {
+        const parsed = this.parseStoredRecord(row.namespace, row.key, row.value);
+        if (isEncryptedRecordEnvelope(parsed)) continue;
+        changed = true;
+        update.run(JSON.stringify(this.encryptRecordValue(parsed)), row.namespace, row.key);
+      }
+    });
+    rewrite(rows);
+    if (changed) this.secureVacuum();
+    return changed;
+  }
+
+  private secureVacuumEncryptedDatabaseOnOpen(force: boolean): void {
+    const userVersion = Number(this.db.pragma("user_version", { simple: true }) ?? 0);
+    if (!force && userVersion >= SECURE_VACUUM_USER_VERSION) return;
+    if (!force && !this.hasEncryptedRecords()) return;
+    this.secureVacuum();
+    try {
+      this.db.pragma(`user_version = ${SECURE_VACUUM_USER_VERSION}`);
+    } catch {
+      // Best-effort marker: vacuum already ran, but old SQLite builds may reject the pragma.
+    }
+  }
+
+  private hasEncryptedRecords(): boolean {
+    const row = this.db.prepare("SELECT 1 FROM records WHERE value LIKE ? LIMIT 1").get("%\"__sccEncrypted\":true%") as
+      | { 1: number }
+      | undefined;
+    return Boolean(row);
+  }
+
+  private shouldEncryptNamespace(namespace: Namespace): boolean {
+    return shouldAlwaysEncryptNamespace(namespace) || this.isStorageEncryptionEnabled();
   }
 
   private isStorageEncryptionEnabled(): boolean {
     const row = this.db.prepare("SELECT value FROM records WHERE namespace = ? AND key = ?").get("preferences", "default") as Row | undefined;
-    if (!row) return false;
+    if (!row) return defaultPreferences().encryptStorage === true;
     try {
-      const preferences = this.decodeRecordValue<{ encryptStorage?: unknown }>(JSON.parse(row.value));
+      const preferences = this.decodeStoredRecord<{ encryptStorage?: unknown }>("preferences", "default", row.value);
       return preferences.encryptStorage === true;
     } catch {
-      return false;
+      return defaultPreferences().encryptStorage === true;
     }
   }
 
@@ -634,9 +693,35 @@ export class SqliteWorkbenchStore implements WorkbenchStore {
     return JSON.parse(this.storageSecretBox().decrypt(value.payload)) as T;
   }
 
+  private decodeStoredRecord<T>(namespace: Namespace, key: string, value: string): T {
+    try {
+      return this.decodeRecordValue<T>(this.parseStoredRecord(namespace, key, value));
+    } catch (error) {
+      throw new Error(`Stored SQLite record ${namespace}/${key} is unreadable (${classifyStoredRecordError(error)}). The local secret key file may be missing, changed, or corrupted, or the row is malformed.`);
+    }
+  }
+
+  private parseStoredRecord(namespace: Namespace, key: string, value: string): unknown {
+    try {
+      return JSON.parse(value);
+    } catch (error) {
+      throw new Error(`Stored SQLite record ${namespace}/${key} is malformed (${classifyStoredRecordError(error)}).`);
+    }
+  }
+
   private storageSecretBox(): LocalSecretBox {
     this.secretBox ??= new LocalSecretBox();
     return this.secretBox;
+  }
+
+  private secureVacuum(): void {
+    try {
+      this.db.pragma("wal_checkpoint(TRUNCATE)");
+      this.db.exec("VACUUM");
+      this.db.pragma("wal_checkpoint(TRUNCATE)");
+    } catch {
+      // Best-effort cleanup: the logical rows are encrypted even if compaction is unavailable.
+    }
   }
 }
 
@@ -644,4 +729,50 @@ function isEncryptedRecordEnvelope(value: unknown): value is EncryptedRecordEnve
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<EncryptedRecordEnvelope>;
   return record.__sccEncrypted === true && record.algorithm === "local-secret-box-v1" && Boolean(record.payload);
+}
+
+function classifyStoredRecordError(error: unknown): string {
+  if (error instanceof SyntaxError) return "malformed JSON";
+  if (error instanceof Error && /secret key/i.test(error.message)) return "local secret key failure";
+  if (error instanceof Error && /decrypt|auth|corrupt/i.test(error.message)) return "decryption failure";
+  return "record decode failure";
+}
+
+function shouldAlwaysEncryptNamespace(namespace: Namespace): boolean {
+  return alwaysEncryptedNamespaces().includes(namespace);
+}
+
+function alwaysEncryptedNamespaces(): Namespace[] {
+  return [
+    "tasks",
+    "task_turns",
+    "task_attachments",
+    "task_checkpoints",
+    "conversation_summaries",
+    "task_folders",
+    "experiences",
+    "task_memories",
+    "patterns",
+    "skills",
+    "skill_conflicts",
+    "mcp_servers",
+    "global_permissions",
+    "model_providers",
+    "scheduled_tasks",
+    "web_search_providers",
+    "reflection_sessions",
+    "project_memories",
+    "knowledge_items",
+    "knowledge_chunks",
+    "knowledge_embeddings",
+    "knowledge_search_index",
+    "prompt_cache_stats",
+    "model_provider_secrets",
+    "web_search_provider_secrets",
+    "preferences",
+    "integration_providers",
+    "integration_secrets",
+    "integration_messages",
+    "integration_task_links"
+  ];
 }
