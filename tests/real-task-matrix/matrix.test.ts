@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -169,7 +169,7 @@ describe("real task matrix", () => {
 
       expect(task.status).toBe("completed");
       expect(finalSource).toContain("formatCurrency");
-      expect(task.workRoot).toBe(fixture.root);
+      expectSamePath(task.workRoot, fixture.root);
       expect(successfulToolOutputs(task).join("\n")).toContain("totals tests passed");
       recordPass("maintenance refactor", task, { workRoot: task.workRoot });
     } finally {
@@ -803,6 +803,17 @@ function writeFixture(root: string, path: string, content: string): void {
   const full = join(root, path);
   mkdirSync(dirname(full), { recursive: true });
   writeFileSync(full, content, "utf8");
+}
+
+function comparablePath(path: string): string {
+  const resolved = resolve(path.trim());
+  const real = realpathSync.native(resolved);
+  return process.platform === "win32" ? real.toLowerCase() : real;
+}
+
+function expectSamePath(actual: string | undefined, expected: string): void {
+  expect(actual).toBeDefined();
+  expect(comparablePath(actual ?? "")).toBe(comparablePath(expected));
 }
 
 function assistantText(task: TaskDetail): string {

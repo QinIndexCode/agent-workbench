@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createCipheriv, createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
@@ -54,6 +54,17 @@ function isPublicTestPath(pathname: string): boolean {
     pathname === "/api/integrations/telegram/updates" ||
     pathname === "/api/integrations/wecom/callback"
   );
+}
+
+function comparablePath(path: string): string {
+  const resolved = resolve(path.trim());
+  const real = realpathSync.native(resolved);
+  return process.platform === "win32" ? real.toLowerCase() : real;
+}
+
+function expectSamePath(actual: string | undefined, expected: string): void {
+  expect(actual).toBeDefined();
+  expect(comparablePath(actual ?? "")).toBe(comparablePath(expected));
 }
 
 class StubToolExecutor {
@@ -829,7 +840,7 @@ describe("server API", () => {
     expect(folderResponse.statusCode).toBe(201);
     const folder = folderResponse.json();
     expect(folder.name).toBe("System checks");
-    expect(folder.rootPath).toBe(resolve(localRoot));
+    expectSamePath(folder.rootPath, localRoot);
     expect(folder.exists).toBe(true);
 
     const created = (
@@ -840,7 +851,7 @@ describe("server API", () => {
       })
     ).json();
     expect(created.folderId).toBe(folder.id);
-    expect(created.workRoot).toBe(resolve(localRoot));
+    expectSamePath(created.workRoot, localRoot);
 
     const renamed = (
       await app.inject({
@@ -851,7 +862,7 @@ describe("server API", () => {
     ).json();
     expect(renamed.title).toBe("Process check renamed");
     expect(renamed.folderId).toBe("default");
-    expect(renamed.workRoot).toBe(resolve(localRoot));
+    expectSamePath(renamed.workRoot, localRoot);
 
     expect(
       (
