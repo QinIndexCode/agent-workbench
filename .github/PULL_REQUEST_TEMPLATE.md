@@ -11,4 +11,3 @@ List the exact commands and manual checks performed.
 Describe permission, persistence, provider, Web, CLI, compatibility, and
 migration implications. Confirm that no secrets or generated runtime data are
 included.
-

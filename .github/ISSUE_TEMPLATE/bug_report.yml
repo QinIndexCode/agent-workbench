@@ -46,4 +46,3 @@ body:
     attributes:
       label: Redacted evidence
       description: Include relevant logs or screenshots after removing secrets.
-

@@ -2,6 +2,11 @@ name: live-quality
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+      - release/**
 
 jobs:
   live-model-quality:

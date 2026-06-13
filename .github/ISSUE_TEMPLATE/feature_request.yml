@@ -23,4 +23,3 @@ body:
     attributes:
       label: Security and compatibility considerations
       description: Note permission, persistence, provider, Web, or CLI implications.
-

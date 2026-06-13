@@ -52,3 +52,13 @@
 - 配置或密钥需要检查：通常是 401/403、无密钥、Base URL 或模型 ID 不匹配。
 - 服务限流：通常是 429，需要等待配额恢复或更换 Provider。
 - 服务暂时不可用：通常是 5xx 或网络瞬断，可以稍后重试。
+
+## Prompt Cache
+
+Agent Workbench 会把稳定指令、项目上下文和确定性排序后的工具 Schema
+放在请求前部，让 Provider 能在多轮任务中复用相同的 Prompt 前缀。
+
+Anthropic Messages 默认启用自动 Prompt Cache；OpenAI 官方端点会收到稳定的
+`prompt_cache_key`。不同的 OpenAI 兼容服务支持情况不一致，仅在服务明确支持
+该参数时设置 `AGENT_WORKBENCH_PROMPT_CACHE_MODE=always`；设置为 `off`
+可关闭显式缓存提示。Provider 返回缓存 Token 数据时，Workbench 会记录实际命中量。

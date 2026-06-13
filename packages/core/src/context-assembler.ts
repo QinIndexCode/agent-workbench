@@ -146,38 +146,15 @@ export class ContextAssembler {
       usedTokens += estimateTokens(runtimeLayer);
     }
 
-    const loadedSkills = this.loadedSkillPrompt(task.id);
-    if (loadedSkills) {
-      systemLayers.push(loadedSkills);
-      usedTokens += estimateTokens(loadedSkills);
-    }
-
     const workingFolderLayer = this.buildWorkingFolderLayer(task);
     systemLayers.push(workingFolderLayer);
     usedTokens += estimateTokens(workingFolderLayer);
-
-    const targetModeLayer = this.buildTargetModeLayer(task);
-    if (targetModeLayer) {
-      systemLayers.push(targetModeLayer);
-      usedTokens += estimateTokens(targetModeLayer);
-    }
-
-    const taskGraph = taskGraphFromEvents(task);
-    const taskGraphLayer = buildTaskGraphSystemLayer(taskGraph);
-    if (taskGraphLayer) {
-      systemLayers.push(taskGraphLayer);
-      usedTokens += estimateTokens(taskGraphLayer);
-    }
 
     const currentTurnLayer = this.buildCurrentTurnLayer(task);
     if (currentTurnLayer) {
       inputLayers.push(currentTurnLayer);
       usedTokens += estimateTokens(currentTurnLayer);
     }
-
-    const continuityLayer = this.buildTaskContinuityLayer(task);
-    systemLayers.push(continuityLayer);
-    usedTokens += estimateTokens(continuityLayer);
 
     const skillLayer = await this.buildSkillMetaLayer(preferences);
     if (skillLayer) {
@@ -196,6 +173,29 @@ export class ContextAssembler {
       systemLayers.push(knowledgeBriefLayer);
       usedTokens += estimateTokens(knowledgeBriefLayer);
     }
+
+    const loadedSkills = this.loadedSkillPrompt(task.id);
+    if (loadedSkills) {
+      systemLayers.push(loadedSkills);
+      usedTokens += estimateTokens(loadedSkills);
+    }
+
+    const targetModeLayer = this.buildTargetModeLayer(task);
+    if (targetModeLayer) {
+      systemLayers.push(targetModeLayer);
+      usedTokens += estimateTokens(targetModeLayer);
+    }
+
+    const taskGraph = taskGraphFromEvents(task);
+    const taskGraphLayer = buildTaskGraphSystemLayer(taskGraph);
+    if (taskGraphLayer) {
+      systemLayers.push(taskGraphLayer);
+      usedTokens += estimateTokens(taskGraphLayer);
+    }
+
+    const continuityLayer = this.buildTaskContinuityLayer(task);
+    systemLayers.push(continuityLayer);
+    usedTokens += estimateTokens(continuityLayer);
 
     const attachmentLayer = await this.buildAttachmentLayer(task.id);
     if (attachmentLayer) {

@@ -44,3 +44,16 @@ The connection test sends one minimal model request through the server. The web 
 - Configuration or API key needs attention: usually 401/403, a missing key, a wrong Base URL, or a mismatched model id.
 - Rate limited: usually 429; wait for quota to recover or switch providers.
 - Provider temporarily unavailable: usually 5xx or a transient network failure; retry later.
+
+## Prompt caching
+
+Agent Workbench keeps stable instructions, project context, and deterministic
+tool schemas at the front of model requests so providers can reuse prompt
+prefixes across turns.
+
+Anthropic Messages enables automatic prompt caching by default. Official OpenAI
+endpoints also receive a stable `prompt_cache_key`. Custom OpenAI-compatible
+services differ: set `AGENT_WORKBENCH_PROMPT_CACHE_MODE=always` only when the
+service documents support for `prompt_cache_key`. Use `off` to disable explicit
+cache hints. Provider usage records expose cached-token counts when the provider
+returns them.

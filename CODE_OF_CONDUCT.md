@@ -20,4 +20,3 @@ publication of another person's private information are not acceptable.
 Report conduct concerns privately through the repository maintainer channels.
 Maintainers may edit or remove content, reject contributions, or restrict
 participation when necessary to protect the project and its contributors.
-

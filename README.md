@@ -1,4 +1,12 @@
-# Agent Workbench
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="apps/web/src/assets/logo/logo-whiteTheme.png">
+    <source media="(prefers-color-scheme: light)" srcset="apps/web/src/assets/logo/logo-blackTheme.png">
+    <img src="./apps/web/src/assets/logo/logo-blackTheme.png" alt="Agent Workbench logo" width="152">
+  </picture>
+</p>
+
+<h1 align="center">Agent Workbench</h1>
 
 Agent Workbench is a local-first workspace for running tool-using AI tasks with
 explicit permissions, durable SQLite state, visible evidence, a Web UI, and an
@@ -63,11 +71,19 @@ also supported:
 AGENT_WORKBENCH_OPENAI_API_KEY
 AGENT_WORKBENCH_OPENAI_BASE_URL
 AGENT_WORKBENCH_MODEL
+AGENT_WORKBENCH_PROMPT_CACHE_MODE
 ```
 
 Plaintext key files are not loaded implicitly. Without a configured provider,
 the workbench uses a small local fallback so permission and tool flows remain
 testable.
+
+Prompt caching defaults to `auto`: Anthropic Messages enables automatic prompt
+caching, and official OpenAI endpoints receive a stable `prompt_cache_key`.
+Set `AGENT_WORKBENCH_PROMPT_CACHE_MODE=always` for a compatible custom OpenAI
+endpoint that supports `prompt_cache_key`, or `off` to disable explicit cache
+hints. Agent Workbench also keeps stable context and tool-schema prefixes ahead
+of task-specific content to improve provider-side cache reuse.
 
 ## CLI
 

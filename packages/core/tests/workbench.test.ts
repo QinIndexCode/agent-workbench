@@ -6045,6 +6045,7 @@ describe("OpenAIModelClient", () => {
       expect(turn.kind).toBe("final");
       expect(request?.["max_tokens"]).toBeUndefined();
       expect(request?.["max_completion_tokens"]).toBeUndefined();
+      expect(request?.["prompt_cache_key"]).toBeUndefined();
       expect(messages[0]?.["role"]).toBe("system");
       expect(String(messages[0]?.["content"] ?? "")).toContain("Stable Memory Files");
       expect(String(messages[0]?.["content"] ?? "")).toContain("copy the observed text exactly");
@@ -6065,6 +6066,83 @@ describe("OpenAIModelClient", () => {
       expect(String(messages.map((message) => message["content"] ?? "").join("\n"))).not.toContain("## Active Node");
       expect((attention?.["activeNode"] as Record<string, unknown> | undefined)?.["role"]).toBe("implement");
       expect(attention?.["evidenceRefs"]).toContain("event_tool_result:list_files:ok");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("uses a stable scoped prompt cache key without leaking task or endpoint details", async () => {
+    const capturedRequests: Array<Record<string, unknown>> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        capturedRequests.push(JSON.parse(body) as Record<string, unknown>);
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "done" } }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+        response.write("data: [DONE]\n\n");
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      let toolListCall = 0;
+      const client = new OpenAIModelClient({
+        apiKey: "cache-secret-key",
+        baseURL: `http://127.0.0.1:${port}/v1/private-endpoint`,
+        model: "cache-model",
+        promptCacheMode: "always",
+        toolProvider: {
+          listModelTools: async () => {
+            toolListCall += 1;
+            const properties = toolListCall % 2 === 0
+              ? { beta: { type: "number" }, alpha: { type: "string" } }
+              : { alpha: { type: "string" }, beta: { type: "number" } };
+            return [{
+              type: "function",
+              function: {
+                name: "cache_probe",
+                description: "Probe deterministic tool schemas.",
+                parameters: { type: "object", properties, required: ["alpha"] }
+              }
+            }];
+          }
+        }
+      });
+      const task = (id: string, folderId: string): TaskDetail => ({
+        kind: "primary",
+        id,
+        folderId,
+        title: "Cache probe",
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [{ id: `event_${id}`, taskId: id, type: "user_message", createdAt: nowIso(), summary: "probe", payload: {} }]
+      });
+
+      await client.next(task("task_cache_one", "folder_shared"));
+      await client.next(task("task_cache_two", "folder_shared"));
+      await client.next(task("task_cache_three", "folder_other"));
+
+      const keys = capturedRequests.map((request) => String(request["prompt_cache_key"] ?? ""));
+      expect(keys[0]).toMatch(/^aw-[a-f0-9]{40}$/);
+      expect(keys[1]).toBe(keys[0]);
+      expect(keys[2]).not.toBe(keys[0]);
+      expect(keys.join(" ")).not.toContain("task_cache");
+      expect(keys.join(" ")).not.toContain("cache-secret-key");
+      expect(keys.join(" ")).not.toContain("private-endpoint");
+      const dynamicTool = (capturedRequests[0]?.["tools"] as Array<Record<string, unknown>>)
+        .find((tool) => (tool["function"] as Record<string, unknown> | undefined)?.["name"] === "cache_probe");
+      const parameters = ((dynamicTool?.["function"] as Record<string, unknown>)["parameters"] as Record<string, unknown>);
+      expect(Object.keys(parameters)).toEqual(["properties", "required", "type"]);
+      expect(Object.keys(parameters["properties"] as Record<string, unknown>)).toEqual(["alpha", "beta"]);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -6246,7 +6324,7 @@ describe("OpenAIModelClient", () => {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify({
           content: [{ type: "text", text: "done" }],
-          usage: { input_tokens: 12, output_tokens: 3 }
+          usage: { input_tokens: 12, output_tokens: 3, cache_read_input_tokens: 7, cache_creation_input_tokens: 11 }
         }));
       });
     });
@@ -6309,6 +6387,10 @@ describe("OpenAIModelClient", () => {
       expect(turn.kind).toBe("final");
       expect(capturedRequests).toHaveLength(1);
       expect(request?.["max_tokens"]).toBe(16000);
+      expect(request?.["cache_control"]).toEqual({ type: "ephemeral" });
+      expect(turn.usage?.inputTokens).toBe(30);
+      expect(turn.usage?.cachedTokens).toBe(7);
+      expect(turn.usage?.raw?.["cache_creation_input_tokens"]).toBe(11);
       expect(JSON.stringify(request)).not.toContain(":null");
       expect(assistantContent).toContainEqual({ type: "tool_use", id: "call_anthropic_list", name: "list_files", input: { path: "." } });
       expect(toolResultUser).toBeTruthy();
