@@ -39,6 +39,7 @@ import {
   reflectMemories,
   selectModelToolsForTask,
   shouldSendOpenAIPromptCacheKey,
+  shouldSendOpenAIPromptCacheRetention,
   compileTaskGraph,
   taskGraphFromEvents,
   shouldPromoteExperienceToSkill,
@@ -2774,16 +2775,22 @@ class SecretTraceRoundTripModel implements ModelClient {
 }
 
 class UsageModel implements ModelClient {
+  private calls = 0;
+
+  constructor(private readonly usages: ModelTurn["usage"][] = [{
+    inputTokens: 1000,
+    outputTokens: 80,
+    cachedTokens: 400,
+    raw: { prompt_tokens: 1000, completion_tokens: 80, prompt_tokens_details: { cached_tokens: 400 } }
+  }]) {}
+
   async next(): Promise<ModelTurn> {
+    const usage = this.usages[Math.min(this.calls, this.usages.length - 1)];
+    this.calls += 1;
     return {
       kind: "final",
       message: "Provider usage recorded.",
-      usage: {
-        inputTokens: 1000,
-        outputTokens: 80,
-        cachedTokens: 400,
-        raw: { prompt_tokens: 1000, completion_tokens: 80, prompt_tokens_details: { cached_tokens: 400 } }
-      }
+      ...(usage ? { usage } : {})
     };
   }
 }
@@ -5102,7 +5109,38 @@ describe("AgentWorkbench", () => {
     expect(stats[0]?.outputTokens).toBe(80);
     expect(stats[0]?.totalTokens).toBe(1080);
     expect(stats[0]?.cachedTokens).toBe(400);
+    expect(stats[0]?.cacheTargetHitRatio).toBe(0.9);
+    expect(stats[0]?.cacheTargetMet).toBeUndefined();
+    expect(stats[0]?.rollingInputTokens).toBe(1000);
+    expect(stats[0]?.rollingCachedTokens).toBe(400);
+    expect(stats[0]?.rollingWindowSize).toBe(1);
     expect(task.events.some((event) => event.type === "token_usage_recorded")).toBe(true);
+  });
+
+  it("records rolling prompt cache hit progress against the 90 percent target", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new UsageModel([
+        { inputTokens: 1000, outputTokens: 80, cachedTokens: 800 },
+        { inputTokens: 1000, outputTokens: 80, cachedTokens: 1000 }
+      ])
+    });
+    const first = await workbench.createTask("warm prompt cache");
+    const second = await workbench.appendMessage(first.id, "reuse prompt cache");
+    const stats = await workbench.listPromptCacheStats(second.id);
+    const latest = stats[0];
+
+    expect(stats).toHaveLength(2);
+    expect(latest?.cacheHitRatio).toBe(1);
+    expect(latest?.rollingInputTokens).toBe(2000);
+    expect(latest?.rollingCachedTokens).toBe(1800);
+    expect(latest?.rollingCacheHitRatio).toBeCloseTo(0.9, 5);
+    expect(latest?.rollingWindowSize).toBe(2);
+    expect(latest?.cacheTargetMet).toBe(true);
+    expect(second.events.some((event) =>
+      event.type === "token_usage_recorded" &&
+      event.summary.includes("rolling cache hit target met")
+    )).toBe(true);
   });
 
   it("retries one empty model response without storing diagnostic text as an assistant answer", async () => {
@@ -5962,6 +6000,11 @@ describe("OpenAIModelClient", () => {
     expect(shouldSendOpenAIPromptCacheKey("auto", "https://openrouter.ai/api/v1")).toBe(false);
     expect(shouldSendOpenAIPromptCacheKey("always", "http://127.0.0.1:9999/v1")).toBe(true);
     expect(shouldSendOpenAIPromptCacheKey("off", "https://api.openai.com/v1")).toBe(false);
+    expect(shouldSendOpenAIPromptCacheRetention("auto", undefined)).toBe(true);
+    expect(shouldSendOpenAIPromptCacheRetention("auto", "https://api.openai.com/v1")).toBe(true);
+    expect(shouldSendOpenAIPromptCacheRetention("always", "https://api.moonshot.cn/v1")).toBe(false);
+    expect(shouldSendOpenAIPromptCacheRetention("auto", "https://token-plan-cn.xiaomimimo.com/v1")).toBe(false);
+    expect(shouldSendOpenAIPromptCacheRetention("off", "https://api.openai.com/v1")).toBe(false);
   });
 
   it("serializes assembled context with native chat roles and tool results", async () => {
@@ -6127,10 +6170,13 @@ describe("OpenAIModelClient", () => {
           }
         }
       });
-      const task = (id: string, folderId: string): TaskDetail => ({
+      const cacheWorkRoot = resolve("workspace", "CacheRoot");
+      const equivalentCacheWorkRoot = process.platform === "win32" ? `${cacheWorkRoot.toUpperCase()}\\` : `${cacheWorkRoot}/`;
+      const task = (id: string, folderId: string, workRoot = cacheWorkRoot): TaskDetail => ({
         kind: "primary",
         id,
         folderId,
+        workRoot,
         title: "Cache probe",
         status: "running",
         createdAt: nowIso(),
@@ -6141,16 +6187,20 @@ describe("OpenAIModelClient", () => {
       });
 
       await client.next(task("task_cache_one", "folder_shared"));
-      await client.next(task("task_cache_two", "folder_shared"));
-      await client.next(task("task_cache_three", "folder_other"));
+      await client.next(task("task_cache_two", "folder_shared", equivalentCacheWorkRoot));
+      await client.next(task("task_cache_three", "folder_other", `${cacheWorkRoot}/`));
 
       const keys = capturedRequests.map((request) => String(request["prompt_cache_key"] ?? ""));
       expect(keys[0]).toMatch(/^aw-[a-f0-9]{40}$/);
       expect(keys[1]).toBe(keys[0]);
-      expect(keys[2]).not.toBe(keys[0]);
+      expect(keys[2]).toBe(keys[0]);
       expect(keys.join(" ")).not.toContain("task_cache");
       expect(keys.join(" ")).not.toContain("cache-secret-key");
       expect(keys.join(" ")).not.toContain("private-endpoint");
+      expect(capturedRequests.map((request) => request["prompt_cache_retention"])).toEqual([undefined, undefined, undefined]);
+      const toolNames = ((capturedRequests[0]?.["tools"] as Array<Record<string, unknown>>) ?? [])
+        .map((tool) => String((tool["function"] as Record<string, unknown> | undefined)?.["name"] ?? ""));
+      expect(toolNames).toEqual([...toolNames].sort((left, right) => left.localeCompare(right)));
       const dynamicTool = (capturedRequests[0]?.["tools"] as Array<Record<string, unknown>>)
         .find((tool) => (tool["function"] as Record<string, unknown> | undefined)?.["name"] === "cache_probe");
       const parameters = ((dynamicTool?.["function"] as Record<string, unknown>)["parameters"] as Record<string, unknown>);

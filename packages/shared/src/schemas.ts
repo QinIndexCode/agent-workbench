@@ -602,6 +602,12 @@ export const PromptCacheStatsSchema = z.object({
   totalTokens: z.number().int().nonnegative().optional(),
   cachedTokens: z.number().int().nonnegative(),
   cacheHitRatio: z.number().min(0).max(1),
+  cacheTargetHitRatio: z.number().min(0).max(1).optional(),
+  cacheTargetMet: z.boolean().optional(),
+  rollingInputTokens: z.number().int().nonnegative().optional(),
+  rollingCachedTokens: z.number().int().nonnegative().optional(),
+  rollingCacheHitRatio: z.number().min(0).max(1).optional(),
+  rollingWindowSize: z.number().int().nonnegative().optional(),
   estimatedSavings: z.number().nonnegative(),
   providerUsage: z.record(z.unknown()).optional(),
   createdAt: z.string()

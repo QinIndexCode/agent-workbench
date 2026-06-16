@@ -69,3 +69,9 @@ MiMo Token Plan OpenAI-compatible 端点会收到稳定的 `prompt_cache_key`。
 OpenAI 兼容服务支持情况不一致，仅在服务明确支持该参数时设置
 `AGENT_WORKBENCH_PROMPT_CACHE_MODE=always`；设置为 `off` 可关闭显式缓存提示。
 Provider 返回缓存 Token 数据时，Workbench 会记录实际命中量。
+
+缓存命中率目标按滚动窗口计算。第一轮请求通常是 warmup，后续同一 workspace、
+同一 provider/model/endpoint 和同一组工具 Schema 的请求会复用稳定
+`prompt_cache_key`。达到生产成本目标时，滚动 `cachedTokens / inputTokens`
+应不低于 90%；如果低于目标，优先检查是否频繁切换模型、Base URL、工具集合、
+工作区或禁用了 provider 侧缓存。

@@ -63,3 +63,10 @@ official Kimi, and MiMo Token Plan OpenAI-compatible endpoints receive a stable
 `AGENT_WORKBENCH_PROMPT_CACHE_MODE=always` only when the service documents
 support for `prompt_cache_key`. Use `off` to disable explicit cache hints.
 Provider usage records expose cached-token counts when the provider returns them.
+
+Cache-hit quality is tracked with a rolling window. The first request is usually
+a warmup; later requests with the same workspace, provider, model, endpoint, and
+sorted tool schema reuse a stable `prompt_cache_key`. For production cost
+control, the rolling `cachedTokens / inputTokens` target is at least 90%. If the
+ratio stays below target, first check for frequent model, Base URL, tool-set,
+workspace, or provider-cache-mode changes.

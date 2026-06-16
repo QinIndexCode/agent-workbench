@@ -8,10 +8,12 @@ import { createId, nowIso } from "./ids.js";
 import type { ModelClient, ModelStreamHandlers, ModelTraceEvent, ModelTurn, ModelUsage } from "./fallback-model.js";
 import { ConfiguredToolModelClient, FallbackModelClient } from "./fallback-model.js";
 import { toolAllowedByTaskGraph } from "./task-graph.js";
+import { defaultTaskWorkRoot } from "./workspace-root.js";
 
 const DEFAULT_PROVIDER_OUTPUT_TOKENS = 4096;
 const MAX_PROVIDER_OUTPUT_TOKENS = 64000;
 const DEFAULT_PROMPT_CACHE_MODE = "auto";
+const OPENAI_EXTENDED_PROMPT_CACHE_RETENTION = "24h";
 const OPENAI_COMPATIBLE_PROMPT_CACHE_KEY_HOSTS = new Set([
   "api.openai.com",
   "api.moonshot.cn",
@@ -85,7 +87,7 @@ export class OpenAIModelClient implements ModelClient {
     const context = this.contextAssembler ? await this.contextAssembler.assemble(task) : null;
     const preferences = await this.preferenceProvider?.();
     const dynamicTools = (await this.toolProvider?.listModelTools()) ?? [];
-    const modelTools = selectModelToolsForTask(task, dynamicTools);
+    const modelTools = stableModelToolsForRequest(selectModelToolsForTask(task, dynamicTools));
     return await this.nextWithProviderFallbacks(task, context, preferences, modelTools, stream);
   }
 
@@ -167,6 +169,9 @@ export class OpenAIModelClient implements ModelClient {
     };
     if (shouldSendOpenAIPromptCacheKey(this.promptCacheMode, baseURL)) {
       request.prompt_cache_key = buildPromptCacheKey(task, provider?.providerId, model, baseURL, modelTools);
+    }
+    if (shouldSendOpenAIPromptCacheRetention(this.promptCacheMode, baseURL)) {
+      (request as unknown as Record<string, unknown>)["prompt_cache_retention"] = OPENAI_EXTENDED_PROMPT_CACHE_RETENTION;
     }
     if (modelTools.length > 0) {
       request.tool_choice = "auto";
@@ -835,6 +840,16 @@ export function shouldSendOpenAIPromptCacheKey(mode: PromptCacheMode, baseURL: s
   }
 }
 
+export function shouldSendOpenAIPromptCacheRetention(mode: PromptCacheMode, baseURL: string | undefined): boolean {
+  if (mode === "off") return false;
+  if (!baseURL) return true;
+  try {
+    return new URL(baseURL).hostname.toLowerCase() === "api.openai.com";
+  } catch {
+    return false;
+  }
+}
+
 function buildPromptCacheKey(
   task: TaskDetail,
   providerId: string | undefined,
@@ -847,7 +862,7 @@ function buildPromptCacheKey(
     providerId: providerId ?? "default",
     model,
     endpoint: promptCacheEndpointScope(baseURL),
-    folderId: task.folderId ?? "default",
+    workspaceScope: promptCacheWorkspaceScope(task),
     tools
   });
   return `aw-${createHash("sha256").update(fingerprint).digest("hex").slice(0, 40)}`;
@@ -861,6 +876,30 @@ function promptCacheEndpointScope(baseURL: string | undefined): string {
   } catch {
     return baseURL.replace(/\/+$/, "");
   }
+}
+
+function promptCacheWorkspaceScope(task: TaskDetail): string {
+  return createHash("sha256")
+    .update(normalizePromptCacheWorkspaceRoot(task.workRoot || defaultTaskWorkRoot()))
+    .digest("hex")
+    .slice(0, 24);
+}
+
+function normalizePromptCacheWorkspaceRoot(workRoot: string): string {
+  const normalized = resolve(workRoot).replace(/\\/g, "/").replace(/\/+$/, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function stableModelToolsForRequest(tools: ModelToolDefinition[]): ModelToolDefinition[] {
+  return tools
+    .map(stabilizeModelTool)
+    .sort((left, right) => {
+      const leftName = left.function.name;
+      const rightName = right.function.name;
+      return leftName === rightName
+        ? stableJson(left).localeCompare(stableJson(right))
+        : leftName.localeCompare(rightName);
+    });
 }
 
 function stabilizeModelTool(tool: ModelToolDefinition): ModelToolDefinition {

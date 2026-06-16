@@ -176,6 +176,8 @@ const TRACE_PROGRESS_LINE_STEP = 40;
 const TRACE_PROGRESS_ITEM_STEP = 1;
 const SUBAGENT_MAX_CHILDREN_PER_PARENT = 6;
 const SUBAGENT_MAX_CONCURRENT_CHILDREN = 2;
+const PROMPT_CACHE_TARGET_HIT_RATIO = 0.9;
+const PROMPT_CACHE_ROLLING_WINDOW = 20;
 const SUBAGENT_ALLOWED_RISKS: RiskCategory[] = ["host_observation", "workspace_read", "network"];
 const SUBAGENT_TARGET_LIMITS = {
   maxModelTurns: 16,
@@ -2925,6 +2927,12 @@ export class AgentWorkbench {
     const outputTokens = usage.outputTokens ?? 0;
     const cachedTokens = usage.cachedTokens ?? 0;
     const totalTokens = inputTokens + outputTokens;
+    const rolling = await this.calculatePromptCacheRollingStats({
+      providerId: provider?.providerId,
+      model: provider?.model ?? "local-fallback",
+      inputTokens,
+      cachedTokens
+    });
     const stats: PromptCacheStats = {
       id: createId("prompt_cache_stats"),
       taskId: task.id,
@@ -2937,12 +2945,23 @@ export class AgentWorkbench {
       totalTokens,
       cachedTokens,
       cacheHitRatio: cachedTokens / Math.max(1, inputTokens),
+      cacheTargetHitRatio: PROMPT_CACHE_TARGET_HIT_RATIO,
+      ...(rolling.windowSize > 1 ? { cacheTargetMet: rolling.cacheHitRatio >= PROMPT_CACHE_TARGET_HIT_RATIO } : {}),
+      rollingInputTokens: rolling.inputTokens,
+      rollingCachedTokens: rolling.cachedTokens,
+      rollingCacheHitRatio: rolling.cacheHitRatio,
+      rollingWindowSize: rolling.windowSize,
       estimatedSavings: 0,
       ...(usage?.raw ? { providerUsage: usage.raw } : {}),
       createdAt: nowIso()
     };
     await this.store.savePromptCacheStats(stats);
-    this.addEvent(task, "token_usage_recorded", `Provider token usage recorded: ${totalTokens} total.`, {
+    const targetSuffix = stats.cacheTargetMet === undefined
+      ? "warming prompt cache."
+      : stats.cacheTargetMet
+        ? `rolling cache hit target met (${Math.round(rolling.cacheHitRatio * 100)}%).`
+        : `rolling cache hit below 90% (${Math.round(rolling.cacheHitRatio * 100)}%).`;
+    this.addEvent(task, "token_usage_recorded", `Provider token usage recorded: ${totalTokens} total; ${targetSuffix}`, {
       statsId: stats.id,
       providerId: stats.providerId,
       model: stats.model,
@@ -2950,8 +2969,39 @@ export class AgentWorkbench {
       outputTokens: stats.outputTokens,
       totalTokens: stats.totalTokens,
       cachedTokens: stats.cachedTokens,
-      source: stats.source
+      source: stats.source,
+      cacheHitRatio: stats.cacheHitRatio,
+      cacheTargetHitRatio: stats.cacheTargetHitRatio,
+      cacheTargetMet: stats.cacheTargetMet,
+      rollingCacheHitRatio: stats.rollingCacheHitRatio,
+      rollingWindowSize: stats.rollingWindowSize
     });
+  }
+
+  private async calculatePromptCacheRollingStats(input: {
+    providerId?: string | undefined;
+    model: string;
+    inputTokens: number;
+    cachedTokens: number;
+  }): Promise<{ inputTokens: number; cachedTokens: number; cacheHitRatio: number; windowSize: number }> {
+    const previous = (await this.store.listPromptCacheStats())
+      .filter((record) =>
+        record.source === "provider" &&
+        record.model === input.model &&
+        record.providerId === input.providerId &&
+        record.inputTokens > 0
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .slice(-(PROMPT_CACHE_ROLLING_WINDOW - 1));
+    const window = [...previous, input];
+    const inputTokens = window.reduce((total, record) => total + record.inputTokens, 0);
+    const cachedTokens = window.reduce((total, record) => total + record.cachedTokens, 0);
+    return {
+      inputTokens,
+      cachedTokens,
+      cacheHitRatio: cachedTokens / Math.max(1, inputTokens),
+      windowSize: window.length
+    };
   }
 
   private async safeModelNext(task: TaskDetail): Promise<Awaited<ReturnType<ModelClient["next"]>> | null> {

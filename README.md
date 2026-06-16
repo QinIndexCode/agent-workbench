@@ -86,6 +86,12 @@ endpoint that supports `prompt_cache_key`, or `off` to disable explicit cache
 hints. Agent Workbench also keeps stable context and tool-schema prefixes ahead
 of task-specific content to improve provider-side cache reuse.
 
+Provider usage records include per-request and rolling prompt-cache hit ratios.
+After the first warmup request, the target rolling hit ratio is 90% or better
+for cache-capable providers. OpenAI-compatible cache keys are scoped to the
+workspace, model, endpoint, and sorted tool schema so related tasks can reuse
+the same provider-side prompt prefix without exposing local paths.
+
 ## CLI
 
 Start the server explicitly:
