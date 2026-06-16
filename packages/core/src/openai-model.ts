@@ -168,7 +168,7 @@ export class OpenAIModelClient implements ModelClient {
       stream_options: { include_usage: true }
     };
     if (shouldSendOpenAIPromptCacheKey(this.promptCacheMode, baseURL)) {
-      request.prompt_cache_key = buildPromptCacheKey(task, provider?.providerId, model, baseURL, modelTools);
+      request.prompt_cache_key = buildPromptCacheKey(task, model, baseURL, modelTools);
     }
     if (shouldSendOpenAIPromptCacheRetention(this.promptCacheMode, baseURL)) {
       (request as unknown as Record<string, unknown>)["prompt_cache_retention"] = OPENAI_EXTENDED_PROMPT_CACHE_RETENTION;
@@ -852,14 +852,12 @@ export function shouldSendOpenAIPromptCacheRetention(mode: PromptCacheMode, base
 
 function buildPromptCacheKey(
   task: TaskDetail,
-  providerId: string | undefined,
   model: string,
   baseURL: string | undefined,
   tools: ModelToolDefinition[]
 ): string {
   const fingerprint = stableJson({
     protocol: "openai_compatible",
-    providerId: providerId ?? "default",
     model,
     endpoint: promptCacheEndpointScope(baseURL),
     workspaceScope: promptCacheWorkspaceScope(task),

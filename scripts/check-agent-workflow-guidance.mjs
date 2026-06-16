@@ -11,6 +11,8 @@ const qualityPath = resolve(root, "scripts", "run-quality-suite.mjs");
 const reportWriterPath = resolve(root, "scripts", "write-flagship-report.mjs");
 const e2eRunnerPath = resolve(root, "scripts", "run-e2e.mjs");
 const liveHttpPath = resolve(root, "scripts", "live-agent-http-resume-verifier.mjs");
+const ciWorkflowPath = resolve(root, ".github", "workflows", "ci.yml");
+const liveQualityWorkflowPath = resolve(root, ".github", "workflows", "live-quality.yml");
 
 const context = readFileSync(contextPath, "utf8");
 const taskGraph = readFileSync(taskGraphPath, "utf8");
@@ -21,6 +23,8 @@ const quality = readFileSync(qualityPath, "utf8");
 const reportWriter = readFileSync(reportWriterPath, "utf8");
 const e2eRunner = readFileSync(e2eRunnerPath, "utf8");
 const liveHttp = readFileSync(liveHttpPath, "utf8");
+const ciWorkflow = readFileSync(ciWorkflowPath, "utf8");
+const liveQualityWorkflow = readFileSync(liveQualityWorkflowPath, "utf8");
 
 assertIncludes(context, [
   "Agent Workflow Heuristics",
@@ -87,6 +91,24 @@ assertIncludes(liveHttp, [
   "AGENT_WORKBENCH_DB_PATH",
   "AGENT_WORKBENCH_DEFAULT_TASK_ROOT"
 ], liveHttpPath);
+assertIncludes(ciWorkflow, [
+  "FORCE_JAVASCRIPT_ACTIONS_TO_NODE24",
+  "actions/checkout@v6",
+  "actions/setup-node@v6",
+  "actions/upload-artifact@v6"
+], ciWorkflowPath);
+assertIncludes(liveQualityWorkflow, [
+  "Resolve live smoke configuration",
+  "steps.live_smoke.outputs.configured == 'true'",
+  "missing_live_model_secrets",
+  "data/test-reports/live-model-smoke/skip.json",
+  "AGENT_WORKBENCH_LIVE_MODEL_REQUIRED: \"1\"",
+  "actions/checkout@v6",
+  "actions/setup-node@v6",
+  "actions/upload-artifact@v6"
+], liveQualityWorkflowPath);
+assertNotIncludes(ciWorkflow, ["actions/checkout@v4", "actions/checkout@v5", "actions/setup-node@v4", "actions/upload-artifact@v4"], ciWorkflowPath);
+assertNotIncludes(liveQualityWorkflow, ["actions/checkout@v4", "actions/checkout@v5", "actions/setup-node@v4", "actions/upload-artifact@v4", "throw \"Missing secret"], liveQualityWorkflowPath);
 
 console.log("Agent workflow guidance validation passed.");
 

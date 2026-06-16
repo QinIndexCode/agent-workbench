@@ -13,9 +13,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 120
     env:
-      AGENT_WORKBENCH_LIVE_MODEL_SMOKE: "1"
-      AGENT_WORKBENCH_LIVE_MODEL_REQUIRED: "1"
-      AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED: "1"
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       AGENT_WORKBENCH_STRESS_LEVEL: "5"
       AGENT_WORKBENCH_OPENAI_API_KEY: ${{ secrets.AGENT_WORKBENCH_OPENAI_API_KEY }}
       AGENT_WORKBENCH_OPENAI_BASE_URL: ${{ secrets.AGENT_WORKBENCH_OPENAI_BASE_URL }}
@@ -24,32 +22,52 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
 
-      - name: Verify live smoke secrets
+      - name: Resolve live smoke configuration
+        id: live_smoke
         shell: pwsh
         run: |
-          if (-not $env:AGENT_WORKBENCH_OPENAI_API_KEY) { throw "Missing secret AGENT_WORKBENCH_OPENAI_API_KEY" }
-          if (-not $env:AGENT_WORKBENCH_OPENAI_BASE_URL) { throw "Missing secret AGENT_WORKBENCH_OPENAI_BASE_URL" }
+          $configured = -not [string]::IsNullOrWhiteSpace($env:AGENT_WORKBENCH_OPENAI_API_KEY) -and -not [string]::IsNullOrWhiteSpace($env:AGENT_WORKBENCH_OPENAI_BASE_URL)
+          "configured=$($configured.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if (-not $configured) {
+            New-Item -ItemType Directory -Force -Path "data/test-reports/live-model-smoke" | Out-Null
+            $skip = [ordered]@{
+              generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+              status = "skipped"
+              reason = "missing_live_model_secrets"
+              requiredSecrets = @("AGENT_WORKBENCH_OPENAI_API_KEY", "AGENT_WORKBENCH_OPENAI_BASE_URL")
+              message = "Live model quality was skipped because the repository does not have the required live model secrets configured."
+            }
+            $skip | ConvertTo-Json -Depth 4 | Out-File -FilePath "data/test-reports/live-model-smoke/skip.json" -Encoding utf8
+            Write-Warning "Skipping live model quality because AGENT_WORKBENCH_OPENAI_API_KEY or AGENT_WORKBENCH_OPENAI_BASE_URL is missing."
+          }
 
       - name: Install dependencies
+        if: steps.live_smoke.outputs.configured == 'true'
         run: npm.cmd ci
 
       - name: Run flagship quality suite with live model evidence
+        if: steps.live_smoke.outputs.configured == 'true'
+        env:
+          AGENT_WORKBENCH_LIVE_MODEL_SMOKE: "1"
+          AGENT_WORKBENCH_LIVE_MODEL_REQUIRED: "1"
+          AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED: "1"
         run: npm.cmd run quality:full
 
       - name: Upload live quality artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: live-quality-artifacts
           path: |
+            data/test-reports/**
             data/test-reports/live-model-smoke/**
             docs/reports/*flagship-revalidation.md
           if-no-files-found: warn

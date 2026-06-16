@@ -6148,11 +6148,19 @@ describe("OpenAIModelClient", () => {
     try {
       const port = (server.address() as AddressInfo).port;
       let toolListCall = 0;
+      let providerCall = 0;
       const client = new OpenAIModelClient({
-        apiKey: "cache-secret-key",
-        baseURL: `http://127.0.0.1:${port}/v1/private-endpoint`,
-        model: "cache-model",
         promptCacheMode: "always",
+        providerResolver: async () => {
+          providerCall += 1;
+          return {
+            providerId: `cache-provider-alias-${providerCall}`,
+            protocol: "openai_compatible",
+            apiKey: "cache-secret-key",
+            baseURL: `http://127.0.0.1:${port}/v1/private-endpoint`,
+            model: "cache-model"
+          };
+        },
         toolProvider: {
           listModelTools: async () => {
             toolListCall += 1;
@@ -6196,6 +6204,7 @@ describe("OpenAIModelClient", () => {
       expect(keys[2]).toBe(keys[0]);
       expect(keys.join(" ")).not.toContain("task_cache");
       expect(keys.join(" ")).not.toContain("cache-secret-key");
+      expect(keys.join(" ")).not.toContain("cache-provider-alias");
       expect(keys.join(" ")).not.toContain("private-endpoint");
       expect(capturedRequests.map((request) => request["prompt_cache_retention"])).toEqual([undefined, undefined, undefined]);
       const toolNames = ((capturedRequests[0]?.["tools"] as Array<Record<string, unknown>>) ?? [])
