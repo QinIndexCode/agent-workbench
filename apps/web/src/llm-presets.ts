@@ -19,10 +19,12 @@ export type ModelProviderPreset = {
   protocol: ModelProviderProtocol;
   baseUrl: string;
   docsUrl?: string | undefined;
+  apiKeyLabel?: string | undefined;
+  setupNotes?: string[] | undefined;
   models: ModelPreset[];
 };
 
-const verifiedAt = "2026-05-07";
+const verifiedAt = "2026-06-16";
 
 function preset(
   id: string,
@@ -84,8 +86,11 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     baseUrl: "https://api.openai.com/v1",
     docsUrl: "https://developers.openai.com/api/docs/models",
     models: [
+      preset("gpt-5.5", 1_000_000, true, true, "https://developers.openai.com/api/docs/models/gpt-5.5", { maxOutputTokens: 128_000 }),
+      preset("gpt-5.5-pro", 1_050_000, true, true, "https://developers.openai.com/api/docs/models/gpt-5.5-pro", { maxOutputTokens: 128_000 }),
       preset("gpt-5.4", 1_050_000, true, true, "https://developers.openai.com/api/docs/models/gpt-5.4"),
       preset("gpt-5.4-mini", 1_050_000, true, true, "https://developers.openai.com/api/docs/models/gpt-5.4-mini"),
+      preset("gpt-5.4-nano", 1_050_000, true, true, "https://developers.openai.com/api/docs/models/gpt-5.4-nano"),
       preset("gpt-5.4-pro", 1_050_000, true, true, "https://developers.openai.com/api/docs/models/gpt-5.4-pro"),
       preset("gpt-4.1", 1_047_576, true, false, "https://developers.openai.com/api/docs/models"),
       preset("gpt-4.1-mini", 1_047_576, true, false, "https://developers.openai.com/api/docs/models"),
@@ -101,8 +106,9 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     baseUrl: "https://api.anthropic.com",
     docsUrl: "https://platform.claude.com/docs/en/build-with-claude/context-windows",
     models: [
+      preset("claude-fable-5", 1_000_000, true, true, "https://docs.anthropic.com/en/docs/about-claude/models", { maxOutputTokens: 128_000 }),
+      preset("claude-opus-4-8", 1_000_000, true, true, "https://docs.anthropic.com/en/docs/about-claude/models/whats-new-claude-4-8", { maxOutputTokens: 128_000 }),
       preset("claude-opus-4-7", 1_000_000, true, true, "https://platform.claude.com/docs/en/build-with-claude/context-windows"),
-      preset("claude-opus-4-6", 1_000_000, true, true, "https://platform.claude.com/docs/en/build-with-claude/context-windows"),
       preset("claude-sonnet-4-6", 1_000_000, true, true, "https://platform.claude.com/docs/en/build-with-claude/context-windows"),
       preset("claude-sonnet-4-5", 200_000, true, true, "https://platform.claude.com/docs/en/build-with-claude/context-windows"),
       preset("claude-haiku-4-5", 200_000, true, true, "https://platform.claude.com/docs/en/build-with-claude/context-windows")
@@ -115,11 +121,12 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     baseUrl: "https://generativelanguage.googleapis.com/v1beta",
     docsUrl: "https://ai.google.dev/gemini-api/docs/models",
     models: [
-      preset("gemini-3.1-pro-preview", 2_000_000, true, true, "https://ai.google.dev/gemini-api/docs/models", { maxOutputTokens: 65_536, contextWindowKind: "input" }),
+      preset("gemini-3.5-flash", 1_000_000, true, true, "https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash", { contextWindowKind: "input" }),
+      preset("gemini-3.1-pro-preview", 2_000_000, true, true, "https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview", { maxOutputTokens: 65_536, contextWindowKind: "input" }),
+      preset("gemini-3-flash-preview", 1_000_000, true, true, "https://ai.google.dev/gemini-api/docs/models/gemini-3-flash-preview", { contextWindowKind: "input" }),
       preset("gemini-2.5-pro", 1_048_576, true, true, "https://ai.google.dev/gemini-api/docs/models", { maxOutputTokens: 65_536, contextWindowKind: "input" }),
       preset("gemini-2.5-flash", 1_048_576, true, true, "https://ai.google.dev/gemini-api/docs/models", { contextWindowKind: "input" }),
-      preset("gemini-3-flash", 1_000_000, true, false, "https://ai.google.dev/gemini-api/docs/models", { contextWindowKind: "input" }),
-      preset("gemini-2.0-flash", 1_048_576, true, false, "https://ai.google.dev/gemini-api/docs/models", { contextWindowKind: "input" })
+      preset("gemini-2.5-flash-lite", 1_048_576, true, true, "https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-lite", { contextWindowKind: "input" })
     ]
   },
   {
@@ -129,9 +136,9 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     baseUrl: "https://api.x.ai/v1",
     docsUrl: "https://docs.x.ai/docs/models",
     models: [
-      preset("grok-4-1-fast", 1_500_000, true, false, "https://docs.x.ai/docs/models"),
-      preset("grok-4-1", 1_500_000, true, true, "https://docs.x.ai/docs/models"),
-      preset("grok-4-1-thinking", 1_500_000, true, true, "https://docs.x.ai/docs/models"),
+      preset("grok-4.3", 1_000_000, true, true, "https://docs.x.ai/docs/models/grok-3"),
+      preset("grok-4.3-latest", 1_000_000, true, true, "https://docs.x.ai/docs/models/grok-3"),
+      preset("grok-4-1-fast", 1_000_000, true, false, "https://docs.x.ai/docs/models"),
       preset("grok-4-fast", 1_310_720, true, false, "https://docs.x.ai/docs/models")
     ]
   },
@@ -140,10 +147,16 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     label: "DeepSeek",
     protocol: "openai_compatible",
     baseUrl: "https://api.deepseek.com",
-    docsUrl: "https://platform.deepseek.com/api-docs",
+    docsUrl: "https://api-docs.deepseek.com/quick_start/pricing",
+    setupNotes: [
+      "DeepSeek V4 uses the OpenAI-compatible base URL https://api.deepseek.com; Anthropic-compatible clients must use https://api.deepseek.com/anthropic instead.",
+      "deepseek-v4-flash and deepseek-v4-pro both support thinking/non-thinking mode; provider-specific reasoning controls are not the same as OpenAI reasoning.effort."
+    ],
     models: [
-      preset("deepseek-chat", 131_072, true, false, "https://platform.deepseek.com/api-docs"),
-      preset("deepseek-reasoner", 131_072, true, true, "https://platform.deepseek.com/api-docs")
+      preset("deepseek-v4-flash", 1_000_000, true, true, "https://api-docs.deepseek.com/quick_start/pricing", { maxOutputTokens: 384_000 }),
+      preset("deepseek-v4-pro", 1_000_000, true, true, "https://api-docs.deepseek.com/quick_start/pricing", { maxOutputTokens: 384_000 }),
+      preset("deepseek-chat", 131_072, true, false, "https://api-docs.deepseek.com/quick_start/pricing"),
+      preset("deepseek-reasoner", 131_072, true, true, "https://api-docs.deepseek.com/quick_start/pricing")
     ]
   },
   {
@@ -151,14 +164,20 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     label: "Qwen",
     protocol: "openai_compatible",
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    docsUrl: "https://help.aliyun.com/zh/model-studio/user-guide/models",
+    docsUrl: "https://help.aliyun.com/zh/model-studio/text-generation-model/",
+    setupNotes: [
+      "Qwen OpenAI-compatible Chat Completions supports Qwen3.7, Qwen3.6, Qwen3.5 and related model families through DashScope compatible mode.",
+      "Hybrid thinking controls such as enable_thinking are provider-specific extra_body fields; the current Workbench preset keeps the request OpenAI-compatible and does not force those non-standard fields.",
+      "DashScope token plans, resource packages and batch discounts are billing features, not interchangeable API key formats like MiMo Token Plan."
+    ],
     models: [
-      preset("qwen3.6-plus", 500_000, true, true, "https://help.aliyun.com/zh/model-studio/user-guide/models"),
-      preset("qwen3.5-plus", 256_000, true, true, "https://help.aliyun.com/zh/model-studio/user-guide/models"),
-      preset("qwen3-max", 131_072, true, true, "https://help.aliyun.com/zh/model-studio/user-guide/models"),
-      preset("qwen3-235b-a22b", 131_072, true, true, "https://help.aliyun.com/zh/model-studio/user-guide/models"),
-      preset("qwen3-coder", 131_072, true, true, "https://help.aliyun.com/zh/model-studio/user-guide/models"),
-      preset("qwen3.5-0.8b", 131_072, true, false, "https://help.aliyun.com/zh/model-studio/user-guide/models")
+      preset("qwen3.7-max", 1_000_000, true, true, "https://help.aliyun.com/zh/model-studio/deep-thinking"),
+      preset("qwen3.7-plus", 1_000_000, true, true, "https://help.aliyun.com/zh/model-studio/text-generation-model/"),
+      preset("qwen3.6-flash", 1_000_000, true, true, "https://help.aliyun.com/zh/model-studio/text-generation-model/"),
+      preset("qwen3.6-plus", 1_000_000, true, true, "https://help.aliyun.com/zh/model-studio/deep-thinking"),
+      preset("qwen3.5-plus", 256_000, true, true, "https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions"),
+      preset("qwen3.5-flash", 256_000, true, true, "https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions"),
+      preset("qwen3-coder", 131_072, true, true, "https://help.aliyun.com/zh/model-studio/partial-mode")
     ]
   },
   {
@@ -166,13 +185,18 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     label: "Kimi",
     protocol: "openai_compatible",
     baseUrl: "https://api.moonshot.cn/v1",
-    docsUrl: "https://platform.moonshot.cn/docs",
+    docsUrl: "https://platform.kimi.com/docs/api/chat",
+    setupNotes: [
+      "Kimi Code Plan requires a stable prompt_cache_key to improve cache hit rate; Agent Workbench sends one automatically for official Kimi endpoints in auto prompt-cache mode.",
+      "kimi-k2.7-code keeps thinking enabled by design; older Kimi models may expose different thinking behavior."
+    ],
     models: [
-      preset("kimi-k2.6", 256_000, true, true, "https://platform.moonshot.cn/docs"),
-      preset("kimi-k2.5", 256_000, true, true, "https://platform.moonshot.cn/docs"),
-      preset("kimi-k2-thinking", 128_000, true, true, "https://platform.moonshot.cn/docs"),
-      preset("moonshot-v1-32k", 32_000, true, false, "https://platform.moonshot.cn/docs"),
-      preset("moonshot-v1-128k", 128_000, true, false, "https://platform.moonshot.cn/docs")
+      preset("kimi-k2.7-code", 256_000, true, true, "https://platform.kimi.com/docs/api/chat"),
+      preset("kimi-k2.7-code-highspeed", 256_000, true, true, "https://platform.kimi.com/docs/api/chat"),
+      preset("kimi-k2.6", 256_000, true, true, "https://platform.kimi.com/docs/api/chat"),
+      preset("kimi-k2.5", 256_000, true, true, "https://platform.kimi.com/docs/api/chat"),
+      preset("moonshot-v1", 128_000, true, false, "https://platform.kimi.com/docs/api/chat"),
+      preset("moonshot-v1-128k", 128_000, true, false, "https://platform.kimi.com/docs/api/chat")
     ]
   },
   {
@@ -180,12 +204,13 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     label: "Mistral AI",
     protocol: "openai_compatible",
     baseUrl: "https://api.mistral.ai/v1",
-    docsUrl: "https://docs.mistral.ai/getting-started/models/",
+    docsUrl: "https://docs.mistral.ai/models/overview",
     models: [
-      preset("mistral-medium-3.5", 256_000, true, true, "https://docs.mistral.ai/getting-started/models/"),
-      preset("mistral-large-3", 256_000, true, true, "https://docs.mistral.ai/getting-started/models/"),
-      preset("mistral-small-4", 256_000, true, true, "https://docs.mistral.ai/getting-started/models/"),
-      preset("codestral-latest", 256_000, true, false, "https://docs.mistral.ai/getting-started/models/")
+      preset("mistral-medium-3.5", 256_000, true, true, "https://docs.mistral.ai/models/overview"),
+      preset("mistral-small-4", 256_000, true, true, "https://docs.mistral.ai/models/overview"),
+      preset("mistral-large-3", 256_000, true, true, "https://docs.mistral.ai/models/overview"),
+      preset("devstral-2", 256_000, true, true, "https://docs.mistral.ai/models/overview"),
+      preset("codestral-latest", 256_000, true, false, "https://docs.mistral.ai/models/overview")
     ]
   },
   {
@@ -193,11 +218,14 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     label: "MiniMax",
     protocol: "openai_compatible",
     baseUrl: "https://api.minimax.chat/v1",
-    docsUrl: "https://platform.minimaxi.com/document/Models",
+    docsUrl: "https://platform.minimax.io/docs/guides/models-intro",
     models: [
-      preset("MiniMax-M2.7", 1_000_000, true, true, "https://platform.minimaxi.com/document/Models"),
-      preset("MiniMax-M1", 456_000, true, true, "https://platform.minimaxi.com/document/Models"),
-      preset("MiniMax-M1-40k", 40_000, true, false, "https://platform.minimaxi.com/document/Models")
+      preset("MiniMax-M3", 1_000_000, true, true, "https://platform.minimax.io/docs/guides/models-intro"),
+      preset("MiniMax-M2.7", 200_000, true, true, "https://platform.minimax.io/docs/guides/models-intro"),
+      preset("MiniMax-M2.7-highspeed", 200_000, true, true, "https://platform.minimax.io/docs/guides/models-intro"),
+      preset("MiniMax-M2.5", 200_000, true, true, "https://platform.minimax.io/docs/guides/models-intro"),
+      preset("MiniMax-M2.5-highspeed", 200_000, true, true, "https://platform.minimax.io/docs/guides/models-intro"),
+      preset("MiniMax-M2", 200_000, true, true, "https://platform.minimax.io/docs/guides/models-intro")
     ]
   },
   {
@@ -205,11 +233,67 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     label: "Xiaomi MiMo",
     protocol: "openai_compatible",
     baseUrl: "https://api.xiaomimimo.com/v1",
-    docsUrl: "https://dev.mi.com/platform/doc?p=/doc/m/mimo",
+    docsUrl: "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/quick-access",
+    apiKeyLabel: "Pay-as-you-go API Key",
+    setupNotes: [
+      "Pay-as-you-go MiMo API keys use sk-* and the ordinary OpenAI-compatible base URL https://api.xiaomimimo.com/v1.",
+      "MiMo Token Plan keys use tp-* and cannot be mixed with pay-as-you-go keys; choose a Token Plan preset when using a subscription package.",
+      "V2 legacy model names are near retirement or auto-forwarding in Token Plan docs, so the preset only promotes V2.5 chat models."
+    ],
     models: [
-      preset("mimo-v2.5-pro", 1_048_576, true, true, "https://dev.mi.com/platform/doc?p=/doc/m/mimo"),
-      preset("mimo-v2.5", 1_048_576, true, true, "https://dev.mi.com/platform/doc?p=/doc/m/mimo"),
-      preset("mimo-v2-flash", 131_072, true, false, "https://dev.mi.com/platform/doc?p=/doc/m/mimo")
+      preset("mimo-v2.5-pro", 1_048_576, true, true, "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription"),
+      preset("mimo-v2.5", 1_048_576, true, true, "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription")
+    ]
+  },
+  {
+    vendor: "mimo-token-plan-cn",
+    label: "Xiaomi MiMo Token Plan · China",
+    protocol: "openai_compatible",
+    baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+    docsUrl: "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription",
+    apiKeyLabel: "Token Plan API Key",
+    setupNotes: [
+      "Use the Token Plan API key from the Token Plan page; the documented format is tp-* and it is independent from sk-* pay-as-you-go keys.",
+      "This preset uses the OpenAI-compatible China cluster. Anthropic-compatible tools must use the /anthropic endpoint, which is a different protocol shape.",
+      "Token Plan is documented for AI programming tools and package quotas; do not use this preset for unrelated pay-as-you-go backend traffic."
+    ],
+    models: [
+      preset("mimo-v2.5-pro", 1_048_576, true, true, "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription"),
+      preset("mimo-v2.5", 1_048_576, true, true, "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription")
+    ]
+  },
+  {
+    vendor: "mimo-token-plan-sgp",
+    label: "Xiaomi MiMo Token Plan · Singapore",
+    protocol: "openai_compatible",
+    baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
+    docsUrl: "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription",
+    apiKeyLabel: "Token Plan API Key",
+    setupNotes: [
+      "Use the Token Plan API key from the Token Plan page; the documented format is tp-* and it is independent from sk-* pay-as-you-go keys.",
+      "This preset uses the OpenAI-compatible Singapore cluster. Anthropic-compatible tools must use the /anthropic endpoint, which is a different protocol shape.",
+      "Token Plan is documented for AI programming tools and package quotas; do not use this preset for unrelated pay-as-you-go backend traffic."
+    ],
+    models: [
+      preset("mimo-v2.5-pro", 1_048_576, true, true, "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription"),
+      preset("mimo-v2.5", 1_048_576, true, true, "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription")
+    ]
+  },
+  {
+    vendor: "mimo-token-plan-ams",
+    label: "Xiaomi MiMo Token Plan · Europe",
+    protocol: "openai_compatible",
+    baseUrl: "https://token-plan-ams.xiaomimimo.com/v1",
+    docsUrl: "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription",
+    apiKeyLabel: "Token Plan API Key",
+    setupNotes: [
+      "Use the Token Plan API key from the Token Plan page; the documented format is tp-* and it is independent from sk-* pay-as-you-go keys.",
+      "This preset uses the OpenAI-compatible Europe cluster. Anthropic-compatible tools must use the /anthropic endpoint, which is a different protocol shape.",
+      "Token Plan is documented for AI programming tools and package quotas; do not use this preset for unrelated pay-as-you-go backend traffic."
+    ],
+    models: [
+      preset("mimo-v2.5-pro", 1_048_576, true, true, "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription"),
+      preset("mimo-v2.5", 1_048_576, true, true, "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription")
     ]
   },
   {
@@ -231,7 +315,14 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     protocol: "openai_compatible",
     baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
     docsUrl: "https://www.volcengine.com/docs/82379",
+    setupNotes: [
+      "Volcengine Ark model IDs may be endpoint-specific; if a console deployment exposes a different endpoint model name, switch to Custom model and keep this base URL.",
+      "Doubao Seed 2.0 model IDs use hyphenated endpoint-style names in model-list docs and dotted family names in pricing docs; prefer the exact ID shown by the Ark console for production."
+    ],
     models: [
+      preset("doubao-seed-2-0-pro-260428", 256_000, true, true, "https://www.volcengine.com/docs/82379/1330310"),
+      preset("doubao-seed-2-0-mini-260428", 256_000, true, true, "https://www.volcengine.com/docs/82379/1330310"),
+      preset("doubao-seed-2-0-lite-260428", 256_000, true, false, "https://www.volcengine.com/docs/82379/1330310"),
       preset("doubao-seed-1-6-pro", 256_000, true, true, "https://www.volcengine.com/docs/82379"),
       preset("doubao-seed-1-6", 256_000, true, true, "https://www.volcengine.com/docs/82379"),
       preset("doubao-seed-1-6-lite", 128_000, true, false, "https://www.volcengine.com/docs/82379")
@@ -314,12 +405,16 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     protocol: "openai_compatible",
     baseUrl: "https://openrouter.ai/api/v1",
     docsUrl: "https://openrouter.ai/docs/overview",
+    setupNotes: [
+      "OpenRouter routes upstream model IDs; availability and exact IDs can change faster than provider-native docs. Use OpenRouter's model page when a routed model fails.",
+      "Prompt-cache support is provider-routed. Keep AGENT_WORKBENCH_PROMPT_CACHE_MODE=auto unless OpenRouter documents prompt_cache_key support for the selected route."
+    ],
     models: [
-      preset("openai/gpt-5.4", 1_050_000, true, true, "https://openrouter.ai/docs/models"),
-      preset("anthropic/claude-opus-4-6", 1_000_000, true, true, "https://openrouter.ai/docs/models"),
-      preset("google/gemini-2.5-pro", 1_048_576, true, true, "https://openrouter.ai/docs/models", { maxOutputTokens: 65_536 }),
-      preset("deepseek/deepseek-chat", 131_072, true, false, "https://openrouter.ai/docs/models"),
-      preset("qwen/qwen3-max", 131_072, true, true, "https://openrouter.ai/docs/models"),
+      preset("openai/gpt-5.5", 1_000_000, true, true, "https://openrouter.ai/docs/models", { maxOutputTokens: 128_000 }),
+      preset("anthropic/claude-fable-5", 1_000_000, true, true, "https://openrouter.ai/docs/models", { maxOutputTokens: 128_000 }),
+      preset("google/gemini-3.5-flash", 1_000_000, true, true, "https://openrouter.ai/docs/models"),
+      preset("deepseek/deepseek-v4-flash", 1_000_000, true, true, "https://openrouter.ai/docs/models", { maxOutputTokens: 384_000 }),
+      preset("qwen/qwen3.7-plus", 1_000_000, true, true, "https://openrouter.ai/docs/models"),
       preset("mistralai/mistral-large-3", 256_000, true, true, "https://openrouter.ai/docs/models")
     ]
   },

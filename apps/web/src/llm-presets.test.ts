@@ -27,17 +27,39 @@ describe("llm presets", () => {
     expect(MODEL_PROVIDER_PRESETS.at(-1)?.vendor).toBe("custom");
   });
 
-  it("keeps the Xiaomi MiMo preset aligned with the OpenAI-compatible public endpoint", () => {
+  it("keeps the Xiaomi MiMo pay-as-you-go preset separate from Token Plan presets", () => {
     const mimo = MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor === "mimo");
     expect(mimo).toMatchObject({
       protocol: "openai_compatible",
-      baseUrl: "https://api.xiaomimimo.com/v1"
+      baseUrl: "https://api.xiaomimimo.com/v1",
+      apiKeyLabel: "Pay-as-you-go API Key"
     });
-    expect(mimo?.models.map((model) => model.id)).toEqual(["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-flash"]);
+    expect(mimo?.models.map((model) => model.id)).toEqual(["mimo-v2.5-pro", "mimo-v2.5"]);
     expect(mimo?.models.find((model) => model.id === "mimo-v2.5-pro")).toMatchObject({
       contextWindow: 1_048_576,
       supportsTools: true,
       supportsThinking: true
     });
+
+    const tokenPlan = MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor === "mimo-token-plan-cn");
+    expect(tokenPlan).toMatchObject({
+      protocol: "openai_compatible",
+      baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+      apiKeyLabel: "Token Plan API Key"
+    });
+    expect(tokenPlan?.setupNotes?.join(" ")).toContain("tp-*");
+    expect(tokenPlan?.setupNotes?.join(" ")).toContain("sk-*");
+  });
+
+  it("keeps current provider presets unique and default models selectable", () => {
+    const vendors = MODEL_PROVIDER_PRESETS.map((preset) => preset.vendor);
+    expect(new Set(vendors).size).toBe(vendors.length);
+    for (const provider of MODEL_PROVIDER_PRESETS) {
+      expect(provider.models.length).toBeGreaterThan(0);
+      expect(provider.models[0]?.id).toBeTruthy();
+    }
+    expect(MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor === "kimi")?.models[0]?.id).toBe("kimi-k2.7-code");
+    expect(MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor === "deepseek")?.models[0]?.id).toBe("deepseek-v4-flash");
+    expect(MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor === "qwen")?.models[0]?.id).toBe("qwen3.7-max");
   });
 });

@@ -31,7 +31,13 @@ The actual request entrypoint. Verify this carefully for custom-compatible provi
 
 Pick from presets or enter a custom model id.
 
-For Xiaomi MiMo, use the OpenAI-compatible endpoint `https://api.xiaomimimo.com/v1` and the lowercase model ids from the preset, such as `mimo-v2.5-pro`. Keeping the model id and context window aligned prevents the workbench from unnecessarily capping request size.
+For Xiaomi MiMo pay-as-you-go API, use the OpenAI-compatible endpoint `https://api.xiaomimimo.com/v1` with an `sk-*` API key. MiMo Token Plan is a separate subscription path: keys use the `tp-*` format and the Base URL must come from the Token Plan page, such as `https://token-plan-cn.xiaomimimo.com/v1`, `https://token-plan-sgp.xiaomimimo.com/v1`, or `https://token-plan-ams.xiaomimimo.com/v1`. These two key types are independent and cannot be mixed.
+
+Token Plan docs also publish Anthropic-compatible `/anthropic` endpoints, but the built-in Token Plan presets represent the OpenAI-compatible request shape. Use the matching protocol or a custom endpoint when an external tool expects Anthropic Messages.
+
+Kimi Code Plan requires a stable `prompt_cache_key` to improve cache hit rate. Agent Workbench sends one automatically for official Kimi endpoints in automatic prompt-cache mode. Other custom OpenAI-compatible services do not receive this field by default unless `AGENT_WORKBENCH_PROMPT_CACHE_MODE=always` is set.
+
+Qwen and DeepSeek thinking controls use provider extensions, such as Qwen `enable_thinking` or DeepSeek reasoning controls. The built-in presets keep requests OpenAI-compatible and do not inject non-standard fields that are not exposed in the UI; use provider consoles or future custom extensions when you need per-request thinking control.
 
 ### Context window
 
@@ -51,9 +57,9 @@ Agent Workbench keeps stable instructions, project context, and deterministic
 tool schemas at the front of model requests so providers can reuse prompt
 prefixes across turns.
 
-Anthropic Messages enables automatic prompt caching by default. Official OpenAI
-endpoints also receive a stable `prompt_cache_key`. Custom OpenAI-compatible
-services differ: set `AGENT_WORKBENCH_PROMPT_CACHE_MODE=always` only when the
-service documents support for `prompt_cache_key`. Use `off` to disable explicit
-cache hints. Provider usage records expose cached-token counts when the provider
-returns them.
+Anthropic Messages enables automatic prompt caching by default. Official OpenAI,
+official Kimi, and MiMo Token Plan OpenAI-compatible endpoints receive a stable
+`prompt_cache_key`. Custom OpenAI-compatible services differ: set
+`AGENT_WORKBENCH_PROMPT_CACHE_MODE=always` only when the service documents
+support for `prompt_cache_key`. Use `off` to disable explicit cache hints.
+Provider usage records expose cached-token counts when the provider returns them.

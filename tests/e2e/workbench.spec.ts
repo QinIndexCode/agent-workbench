@@ -216,7 +216,7 @@ test("manages model providers and MCP servers from settings", async ({ page }, t
   const providerDialog = page.locator('form[aria-label="Add model"]');
   await expect(providerDialog).toBeVisible();
   await providerDialog.getByRole("button", { name: "Preset vendor" }).click();
-  await page.getByRole("option", { name: "Mimo" }).click();
+  await page.getByRole("option", { name: "Mimo Xiaomi MiMo", exact: true }).click();
   await providerDialog.getByLabel("API Key").fill(`e2e-mimo-key-${suffix}`);
   await providerDialog.getByRole("button", { name: "Save" }).click();
   const mimoRow = page.locator(".providerRow").filter({ hasText: "Mimo" }).first();

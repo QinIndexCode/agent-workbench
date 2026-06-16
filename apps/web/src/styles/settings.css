@@ -4108,6 +4108,37 @@ p.knowledgeHighlights span {
   margin: 0 0 2px;
 }
 
+.providerPresetNotes {
+  display: grid;
+  gap: 8px;
+  margin: 2px 0 4px;
+  padding: 12px 14px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-1));
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: var(--radius-sm);
+}
+
+.providerPresetNotes strong {
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.providerPresetNotes ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.providerPresetNotes li {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
 .stdFormGrid {
   display: grid;
   gap: 18px;

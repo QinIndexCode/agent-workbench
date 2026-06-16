@@ -63,6 +63,7 @@ export function ModelProvidersPanel({
   const selectedPreset = useMemo(() => MODEL_PROVIDER_PRESETS.find((preset) => preset.vendor === draft.vendor) ?? MODEL_PROVIDER_PRESETS[0]!, [draft.vendor]);
   const modelPresets = selectedPreset.models;
   const selectedModel = modelPresets.find((model) => model.id === draft.modelId) ?? modelPresets[0] ?? null;
+  const apiKeyLabel = selectedPreset.apiKeyLabel ?? text.apiKey;
   const customContextResult = useMemo(() => {
     if (draft.modelMode !== "custom" || !draft.customContextWindow.trim()) return null;
     try {
@@ -238,6 +239,16 @@ export function ModelProvidersPanel({
             </div>
             <div className="stdBody">
               <p className="stdDialogHelp">{text.dialogHelp}</p>
+              {selectedPreset.setupNotes?.length ? (
+                <section className="providerPresetNotes" aria-label={text.providerNotes}>
+                  <strong>{text.providerNotes}</strong>
+                  <ul>
+                    {selectedPreset.setupNotes.map((note) => (
+                      <li key={note}>{note}</li>
+                    ))}
+                  </ul>
+                </section>
+              ) : null}
               <div className="stdFormGrid cols2">
                 <div className="stdField">
                   <span className="stdFieldLabel">{text.vendor}</span>
@@ -362,7 +373,7 @@ export function ModelProvidersPanel({
                   )}
                 </div>
                 <div className="stdField wide">
-                  <span className="stdFieldLabel">{text.apiKey}</span>
+                  <span className="stdFieldLabel">{apiKeyLabel}</span>
                   <input
                     className="stdInput"
                     aria-label={text.apiKey}
@@ -643,6 +654,7 @@ function getProviderCopy(language?: string | null) {
     maxOutput: zh ? "最大输出" : "Max output",
     source: zh ? "来源" : "Source",
     apiKey: "API Key",
+    providerNotes: zh ? "厂商请求差异" : "Provider request notes",
     makeActive: zh ? "设为当前模型" : "Make active",
     makeActiveHint: zh ? "保存后立即切换到这个模型配置。" : "Use this model configuration immediately after saving.",
     makeCurrent: (modelId: string) => zh ? `切换到 ${modelId}` : `Switch to ${modelId}`,

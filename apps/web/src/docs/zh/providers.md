@@ -31,7 +31,13 @@
 
 可以从预设中选，也可以手动填自定义模型 ID。
 
-配置 Xiaomi MiMo 时，使用 OpenAI 兼容入口 `https://api.xiaomimimo.com/v1`，并使用预设里的小写模型 ID，例如 `mimo-v2.5-pro`。模型 ID 和上下文窗口保持一致，可以避免 Workbench 在请求规模上错误降级。
+配置 Xiaomi MiMo 普通按量 API 时，使用 OpenAI 兼容入口 `https://api.xiaomimimo.com/v1` 和 `sk-*` API Key。MiMo Token Plan 是独立套餐，API Key 格式为 `tp-*`，Base URL 也必须换成 Token Plan 页面显示的专属地址，例如 `https://token-plan-cn.xiaomimimo.com/v1`、`https://token-plan-sgp.xiaomimimo.com/v1` 或 `https://token-plan-ams.xiaomimimo.com/v1`。两类 Key 不能混用。
+
+Token Plan 文档还提供 Anthropic 兼容入口，例如 `/anthropic`，但当前模型配置预设只代表 OpenAI-compatible 请求形态；如果某个外部工具要求 Anthropic 协议，需要选择对应协议或自定义端点。
+
+Kimi Code Plan 要求稳定的 `prompt_cache_key` 来提高缓存命中率。Workbench 在自动缓存模式下会对 Kimi 官方端点发送稳定缓存键；普通自定义 OpenAI-compatible 服务不会默认发送该字段，除非你显式设置 `AGENT_WORKBENCH_PROMPT_CACHE_MODE=always`。
+
+Qwen / DeepSeek 的“思考模式”控制存在厂商扩展字段，例如 Qwen 的 `enable_thinking` 或 DeepSeek 的 reasoning 控制。Workbench 的预设保持标准 OpenAI-compatible 请求，不会自动注入未暴露在 UI 中的非标准参数；需要精细控制时可使用厂商控制台或后续自定义能力扩展。
 
 ### Context window
 
@@ -58,7 +64,8 @@
 Agent Workbench 会把稳定指令、项目上下文和确定性排序后的工具 Schema
 放在请求前部，让 Provider 能在多轮任务中复用相同的 Prompt 前缀。
 
-Anthropic Messages 默认启用自动 Prompt Cache；OpenAI 官方端点会收到稳定的
-`prompt_cache_key`。不同的 OpenAI 兼容服务支持情况不一致，仅在服务明确支持
-该参数时设置 `AGENT_WORKBENCH_PROMPT_CACHE_MODE=always`；设置为 `off`
-可关闭显式缓存提示。Provider 返回缓存 Token 数据时，Workbench 会记录实际命中量。
+Anthropic Messages 默认启用自动 Prompt Cache；OpenAI 官方端点、Kimi 官方端点和
+MiMo Token Plan OpenAI-compatible 端点会收到稳定的 `prompt_cache_key`。不同的
+OpenAI 兼容服务支持情况不一致，仅在服务明确支持该参数时设置
+`AGENT_WORKBENCH_PROMPT_CACHE_MODE=always`；设置为 `off` 可关闭显式缓存提示。
+Provider 返回缓存 Token 数据时，Workbench 会记录实际命中量。

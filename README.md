@@ -79,8 +79,9 @@ the workbench uses a small local fallback so permission and tool flows remain
 testable.
 
 Prompt caching defaults to `auto`: Anthropic Messages enables automatic prompt
-caching, and official OpenAI endpoints receive a stable `prompt_cache_key`.
-Set `AGENT_WORKBENCH_PROMPT_CACHE_MODE=always` for a compatible custom OpenAI
+caching, and official OpenAI, Kimi, and MiMo Token Plan OpenAI-compatible
+endpoints receive a stable `prompt_cache_key`. Set
+`AGENT_WORKBENCH_PROMPT_CACHE_MODE=always` for a compatible custom OpenAI
 endpoint that supports `prompt_cache_key`, or `off` to disable explicit cache
 hints. Agent Workbench also keeps stable context and tool-schema prefixes ahead
 of task-specific content to improve provider-side cache reuse.

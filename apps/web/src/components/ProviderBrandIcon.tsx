@@ -85,5 +85,11 @@ function resolveProviderIconKind(vendor?: string | null, modelId?: string | null
 }
 
 function asProviderIconKind(value: string): ProviderIconKind {
-  return value in providerIconMeta ? (value as ProviderIconKind) : "custom";
+  const normalized = value.toLowerCase();
+  if (normalized.startsWith("mimo")) return "mimo";
+  if (normalized.startsWith("kimi")) return "kimi";
+  if (normalized.startsWith("qwen")) return "qwen";
+  if (normalized.startsWith("deepseek")) return "deepseek";
+  if (normalized in providerIconMeta) return normalized as ProviderIconKind;
+  return "custom";
 }

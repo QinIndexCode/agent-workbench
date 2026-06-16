@@ -38,6 +38,7 @@ import {
   promoteExperience,
   reflectMemories,
   selectModelToolsForTask,
+  shouldSendOpenAIPromptCacheKey,
   compileTaskGraph,
   taskGraphFromEvents,
   shouldPromoteExperienceToSkill,
@@ -5951,6 +5952,18 @@ describe("AgentWorkbench", () => {
 });
 
 describe("OpenAIModelClient", () => {
+  it("sends prompt cache keys only for documented OpenAI-compatible hosts in auto mode", () => {
+    expect(shouldSendOpenAIPromptCacheKey("auto", undefined)).toBe(true);
+    expect(shouldSendOpenAIPromptCacheKey("auto", "https://api.openai.com/v1")).toBe(true);
+    expect(shouldSendOpenAIPromptCacheKey("auto", "https://api.moonshot.cn/v1")).toBe(true);
+    expect(shouldSendOpenAIPromptCacheKey("auto", "https://platform.kimi.com/v1")).toBe(true);
+    expect(shouldSendOpenAIPromptCacheKey("auto", "https://token-plan-cn.xiaomimimo.com/v1")).toBe(true);
+    expect(shouldSendOpenAIPromptCacheKey("auto", "https://api.xiaomimimo.com/v1")).toBe(false);
+    expect(shouldSendOpenAIPromptCacheKey("auto", "https://openrouter.ai/api/v1")).toBe(false);
+    expect(shouldSendOpenAIPromptCacheKey("always", "http://127.0.0.1:9999/v1")).toBe(true);
+    expect(shouldSendOpenAIPromptCacheKey("off", "https://api.openai.com/v1")).toBe(false);
+  });
+
   it("serializes assembled context with native chat roles and tool results", async () => {
     const capturedRequests: Array<Record<string, unknown>> = [];
     const server = createServer((request, response) => {

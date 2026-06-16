@@ -12,6 +12,15 @@ import { toolAllowedByTaskGraph } from "./task-graph.js";
 const DEFAULT_PROVIDER_OUTPUT_TOKENS = 4096;
 const MAX_PROVIDER_OUTPUT_TOKENS = 64000;
 const DEFAULT_PROMPT_CACHE_MODE = "auto";
+const OPENAI_COMPATIBLE_PROMPT_CACHE_KEY_HOSTS = new Set([
+  "api.openai.com",
+  "api.moonshot.cn",
+  "platform.kimi.com",
+  "api.kimi.com",
+  "token-plan-cn.xiaomimimo.com",
+  "token-plan-sgp.xiaomimimo.com",
+  "token-plan-ams.xiaomimimo.com"
+]);
 
 export type PromptCacheMode = "auto" | "always" | "off";
 
@@ -815,12 +824,12 @@ function promptCacheModeFromEnvironment(): PromptCacheMode {
   return value === "always" || value === "off" || value === "auto" ? value : DEFAULT_PROMPT_CACHE_MODE;
 }
 
-function shouldSendOpenAIPromptCacheKey(mode: PromptCacheMode, baseURL: string | undefined): boolean {
+export function shouldSendOpenAIPromptCacheKey(mode: PromptCacheMode, baseURL: string | undefined): boolean {
   if (mode === "off") return false;
   if (mode === "always") return true;
   if (!baseURL) return true;
   try {
-    return new URL(baseURL).hostname.toLowerCase() === "api.openai.com";
+    return OPENAI_COMPATIBLE_PROMPT_CACHE_KEY_HOSTS.has(new URL(baseURL).hostname.toLowerCase());
   } catch {
     return false;
   }
