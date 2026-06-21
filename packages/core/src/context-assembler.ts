@@ -1200,9 +1200,14 @@ function buildCanonicalHistoryMessages(
 }
 
 function buildOmittedToolEvidenceLayer(events: TaskEvent[], recentStructuredToolEventIds: Set<string>, tracker?: FileStateTracker): string {
-  const omittedResults = events
-    .filter((event) => event.type === "tool_result" && !isContextOnlyStateToolEvent(event) && !recentStructuredToolEventIds.has(event.id))
-    .slice(-MAX_OMITTED_TOOL_EVIDENCE_RESULTS);
+  const allOmittedResults = events
+    .filter((event) => event.type === "tool_result" && !isContextOnlyStateToolEvent(event) && !recentStructuredToolEventIds.has(event.id));
+  const omittedResults = allOmittedResults.length <= MAX_OMITTED_TOOL_EVIDENCE_RESULTS
+    ? allOmittedResults
+    : [
+        allOmittedResults[0],
+        ...allOmittedResults.slice(-(MAX_OMITTED_TOOL_EVIDENCE_RESULTS - 1))
+      ].filter((event): event is TaskEvent => Boolean(event));
   if (omittedResults.length === 0) return "";
   return [
     "## Earlier Tool Evidence (compact)",

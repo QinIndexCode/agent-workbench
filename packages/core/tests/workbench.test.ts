@@ -4367,6 +4367,36 @@ describe("Attention-first task graph runtime", () => {
     expect(final?.summary).toContain("math tests passed");
   });
 
+  it("completes from verified edit evidence instead of pausing at target tool limits", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new DebugRepairToolExecutor(),
+      model: new StateOnlyAfterCompleteDebugEvidenceModel()
+    });
+    await workbench.grantGlobalPermission("shell", "test commands");
+    await workbench.grantGlobalPermission("workspace_read", "source inspection");
+    await workbench.grantGlobalPermission("workspace_write", "source edits");
+
+    const task = await workbench.createTask(
+      "Run tests, inspect source, fix the failure, verify it, and close with evidence.",
+      "Target limit verified repair",
+      "default",
+      [],
+      {
+        runMode: "target",
+        targetLimits: { maxModelTurns: 40, maxToolCalls: 4, maxWallTimeMs: 60_000 }
+      }
+    );
+    const finalization = task.events.find((event) => event.type === "model_no_progress" && event.payload["reason"] === "finalization_at_target_limit");
+    const final = [...task.events].reverse().find((event) => event.type === "assistant_message");
+
+    expect(task.status).toBe("completed");
+    expect(finalization?.payload["status"]).toBe("completed");
+    expect(final?.payload["synthesizedFromToolEvidence"]).toBe(true);
+    expect(final?.summary).toContain("src/math.mjs");
+    expect(final?.summary).toContain("math tests passed");
+  });
+
   it("allows a second claimed-evidence retry before accepting a clean final answer", async () => {
     const workbench = new AgentWorkbench({
       store: new InMemoryWorkbenchStore(),

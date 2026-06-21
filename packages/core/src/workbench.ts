@@ -2483,6 +2483,31 @@ export class AgentWorkbench {
       }
       const targetLimitReason = targetLimitReached(task, modelTurns, countToolResultEvents(task), startedAt);
       if (targetLimitReason) {
+        const evidenceBackedFinal = evidenceBackedFinalAnswerFromToolEvidence(task);
+        if (evidenceBackedFinal) {
+          this.addEvent(task, "model_no_progress", "Target limit reached after successful edit and verification evidence; completing from the completed tool evidence instead of pausing.", {
+            status: "completed",
+            reason: "finalization_at_target_limit",
+            targetLimitReason
+          });
+          await this.safeAppendTaskTrace(task, {
+            kind: "model_no_progress",
+            timestamp: nowIso(),
+            reason: "finalization_at_target_limit",
+            status: "completed",
+            message: targetLimitReason
+          });
+          this.addEvent(task, "assistant_message", evidenceBackedFinal, {
+            synthesizedFromToolEvidence: true,
+            blocker: "finalization_at_target_limit",
+            targetLimitReason
+          });
+          this.setStatus(task, "completed");
+          await this.recordExperience(task);
+          await this.store.saveTask(task);
+          if (task.kind === "subagent") await this.projectSubagentCompletionToParent(task, "completed");
+          return task;
+        }
         await this.pauseTaskForLoop(task, targetLimitReason);
         return task;
       }
