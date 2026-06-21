@@ -6,7 +6,18 @@ import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { AgentWorkbench, ConfiguredToolModelClient, InMemoryWorkbenchStore, McpRegistry, defaultPreferences, normalizeSkillRecord, type ModelClient, type ModelTurn } from "@agent-workbench/core";
+import {
+  AgentWorkbench,
+  ConfiguredToolModelClient,
+  DEFAULT_BROWSER_COMPUTER_CONTROL_SKILL_TITLE,
+  DEFAULT_OFFICE_VISUAL_QA_SKILL_TITLE,
+  InMemoryWorkbenchStore,
+  McpRegistry,
+  defaultPreferences,
+  normalizeSkillRecord,
+  type ModelClient,
+  type ModelTurn
+} from "@agent-workbench/core";
 import type { SkillRecord, TaskDetail, TaskEvent, ToolApproval, ToolCall, ToolResult } from "@agent-workbench/shared";
 import { createApp } from "../src/server.js";
 import { SqliteWorkbenchStore } from "../src/sqlite-store.js";
@@ -65,6 +76,10 @@ function comparablePath(path: string): string {
 function expectSamePath(actual: string | undefined, expected: string): void {
   expect(actual).toBeDefined();
   expect(comparablePath(actual ?? "")).toBe(comparablePath(expected));
+}
+
+function isDefaultSkillTitle(title: string): boolean {
+  return title === DEFAULT_OFFICE_VISUAL_QA_SKILL_TITLE || title === DEFAULT_BROWSER_COMPUTER_CONTROL_SKILL_TITLE;
 }
 
 class StubToolExecutor {
@@ -953,7 +968,7 @@ describe("server API", () => {
     const experiences = (await app.inject("/api/experiences")).json();
     const skills = (await app.inject("/api/skills")).json();
     expect(experiences.length).toBeGreaterThan(0);
-    expect(skills.length).toBe(0);
+    expect(skills.filter((item: SkillRecord) => !isDefaultSkillTitle(item.title))).toHaveLength(0);
 
     const manualSkill = await app.inject({
       method: "POST",
@@ -1135,6 +1150,45 @@ describe("server API", () => {
       expect(stored).toContain("__agentWorkbenchEncryptedFile");
       expect(stored).not.toContain("Incident note");
 
+      const imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+      const imageBytes = Buffer.from(imageBase64, "base64");
+      const imageUpload = await app.inject({
+        method: "POST",
+        url: "/api/task-attachments",
+        payload: {
+          fileName: "agent-screenshot.png",
+          mimeType: "image/png",
+          size: imageBytes.byteLength,
+          dataBase64: imageBase64
+        }
+      });
+      const imageAttachment = imageUpload.json();
+      const createdTask = await app.inject({
+        method: "POST",
+        url: "/api/tasks",
+        payload: {
+          goal: "Inspect uploaded screenshot",
+          attachmentIds: [imageAttachment.id]
+        }
+      });
+      const task = createdTask.json() as TaskDetail;
+      const imageContent = await app.inject({
+        method: "GET",
+        url: `/api/tasks/${task.id}/attachments/${imageAttachment.id}/content`
+      });
+      const crossTaskContent = await app.inject({
+        method: "GET",
+        url: `/api/tasks/task_other/attachments/${imageAttachment.id}/content`
+      });
+
+      expect(imageUpload.statusCode).toBe(201);
+      expect(imageAttachment.kind).toBe("image");
+      expect(createdTask.statusCode).toBe(201);
+      expect(imageContent.statusCode).toBe(200);
+      expect(imageContent.headers["content-type"]).toContain("image/png");
+      expect(Buffer.compare(imageContent.rawPayload, imageBytes)).toBe(0);
+      expect(crossTaskContent.statusCode).toBe(404);
+
       const badSize = await app.inject({
         method: "POST",
         url: "/api/task-attachments",
@@ -1195,10 +1249,30 @@ describe("server API", () => {
     expect(cleanup.statusCode).toBe(200);
     expect(cleanup.json()).toMatchObject({ merged: 1, deleted: 1 });
     expect(after.json()).toHaveLength(0);
-    expect(skills).toHaveLength(1);
-    expect(skills[0]?.id).toBe("skill_duplicate_canonical");
-    expect(skills[0]?.sourceMemoryIds).toEqual(expect.arrayContaining(["memory_canonical", "memory_duplicate"]));
+    const mergedSkill = skills.find((item) => item.id === "skill_duplicate_canonical");
+    expect(mergedSkill).toBeTruthy();
+    expect(skills.filter((item) => !isDefaultSkillTitle(item.title))).toHaveLength(1);
+    expect(mergedSkill?.sourceMemoryIds).toEqual(expect.arrayContaining(["memory_canonical", "memory_duplicate"]));
     await app.close();
+  });
+
+  it("exposes built-in skills on startup", async () => {
+    const app = await createTestApp({ workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore() }) });
+    try {
+      const skills = (await app.inject("/api/skills")).json() as SkillRecord[];
+      const officeSkill = skills.find((item) => item.title === DEFAULT_OFFICE_VISUAL_QA_SKILL_TITLE);
+      const computerControlSkill = skills.find((item) => item.title === DEFAULT_BROWSER_COMPUTER_CONTROL_SKILL_TITLE);
+      expect(officeSkill?.status).toBe("active");
+      expect(officeSkill?.body).toContain("Visual QA gate");
+      expect(officeSkill?.applicability.keywords).toEqual(expect.arrayContaining(["docx", "pptx"]));
+      expect(officeSkill?.applicability.requiredTools).toContain("attach_task_file");
+      expect(computerControlSkill?.status).toBe("active");
+      expect(computerControlSkill?.body).toContain("Do not fake GUI capability");
+      expect(computerControlSkill?.applicability.keywords).toEqual(expect.arrayContaining(["browser", "keyboard", "mouse"]));
+      expect(computerControlSkill?.applicability.requiredTools).toContain("attach_task_file");
+    } finally {
+      await app.close();
+    }
   });
 
   it("downloads knowledge model assets through the API and auto-updates preferences", async () => {

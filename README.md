@@ -83,14 +83,18 @@ caching, and official OpenAI, Kimi, and MiMo Token Plan OpenAI-compatible
 endpoints receive a stable `prompt_cache_key`. Set
 `AGENT_WORKBENCH_PROMPT_CACHE_MODE=always` for a compatible custom OpenAI
 endpoint that supports `prompt_cache_key`, or `off` to disable explicit cache
-hints. Agent Workbench also keeps stable context and tool-schema prefixes ahead
-of task-specific content to improve provider-side cache reuse.
+hints. Agent Workbench also keeps stable instructions and context ahead
+of task-specific content to improve provider-side cache reuse. Initial
+direct-answer final replies can also be served from a short in-memory response
+cache; tool calls, file evidence, image inputs, and tasks with existing history
+are excluded.
 
 Provider usage records include per-request and rolling prompt-cache hit ratios.
 After the first warmup request, the target rolling hit ratio is 90% or better
 for cache-capable providers. OpenAI-compatible cache keys are scoped to the
-workspace, model, endpoint, and sorted tool schema so related tasks can reuse
-the same provider-side prompt prefix without exposing local paths.
+model, endpoint, and sorted tool-name family so harmless schema text changes do
+not fragment routing. The full tool schema is still sent in every request, so
+cache routing does not reduce available tool capability or task quality.
 
 ## CLI
 

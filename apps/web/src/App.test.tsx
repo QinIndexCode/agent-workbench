@@ -19,7 +19,7 @@ import { TaskList } from "./components/TaskList.js";
 import { TaskThread } from "./components/TaskThread.js";
 import { Timeline } from "./components/Timeline.js";
 import { WebSearchPanel } from "./components/WebSearchPanel.js";
-import { applyTaskShellEvents, compactTaskEventsForTranscript, mergeSelectedTaskShell } from "./useWorkbenchData.js";
+import { applyTaskShellEvents, compactTaskEventsForTranscript, hasTerminalStatusEvent, mergeSelectedTaskShell } from "./useWorkbenchData.js";
 
 afterEach(() => {
   cleanup();
@@ -1013,6 +1013,30 @@ describe("Workbench components", () => {
     expect(merged.title).toBe("Create validation-probe-lines.txt with five lines");
     expect(merged.status).toBe("completed");
     expect(merged.updatedAt).toBe("2026-05-17T10:00:03.000Z");
+  });
+
+  it("detects terminal realtime status events for final transcript reconciliation", () => {
+    expect(hasTerminalStatusEvent([
+      {
+        id: "event_terminal",
+        taskId: "task_1",
+        type: "status_changed",
+        createdAt: "2026-05-17T10:00:03.000Z",
+        summary: "completed",
+        payload: {}
+      }
+    ])).toBe(true);
+
+    expect(hasTerminalStatusEvent([
+      {
+        id: "event_running",
+        taskId: "task_1",
+        type: "status_changed",
+        createdAt: "2026-05-17T10:00:03.000Z",
+        summary: "running",
+        payload: {}
+      }
+    ])).toBe(false);
   });
 
   it("keeps tool evidence collapsed, path-focused, and free of placeholder text", () => {
@@ -3295,6 +3319,121 @@ describe("Workbench components", () => {
     });
     await waitFor(() => expect(webSocketConstructor).toHaveBeenCalledTimes(2), { timeout: 1200 });
     expect(requests.some((url) => url.includes("/events/ws"))).toBe(false);
+  });
+
+  it("reconciles the final transcript when realtime delivers terminal status before tool results", async () => {
+    const now = new Date("2026-05-17T10:00:00.000Z").toISOString();
+    const toolStartedAt = new Date("2026-05-17T10:00:01.000Z").toISOString();
+    const completedAt = new Date("2026-05-17T10:00:02.000Z").toISOString();
+    const runningTask: TaskDetail = {
+      ...task,
+      id: "task_terminal_reconcile",
+      title: "Terminal reconcile",
+      status: "running",
+      approvals: [],
+      updatedAt: now,
+      events: [
+        {
+          id: "event_terminal_user",
+          taskId: "task_terminal_reconcile",
+          type: "user_message",
+          createdAt: now,
+          summary: "Show current host processes",
+          payload: {}
+        },
+        {
+          id: "event_terminal_tool_call",
+          taskId: "task_terminal_reconcile",
+          type: "tool_started",
+          createdAt: toolStartedAt,
+          summary: "Get-Process | Sort-Object -Property CPU -Descending",
+          payload: {
+            toolCallId: "call_terminal_processes",
+            toolName: "shell_command",
+            args: { command: "Get-Process | Sort-Object -Property CPU -Descending" }
+          }
+        }
+      ]
+    };
+    const terminalEvent: TaskEvent = {
+      id: "event_terminal_status",
+      taskId: "task_terminal_reconcile",
+      type: "status_changed",
+      createdAt: completedAt,
+      summary: "completed",
+      payload: {}
+    };
+    const finalTask: TaskDetail = {
+      ...runningTask,
+      status: "completed",
+      updatedAt: completedAt,
+      events: [...runningTask.events, terminalEvent]
+    };
+    const finalTranscript: TaskEvent[] = [
+      ...runningTask.events,
+      {
+        id: "event_terminal_tool_result",
+        taskId: "task_terminal_reconcile",
+        type: "tool_result",
+        createdAt: completedAt,
+        summary: "Process summary ready",
+        payload: {
+          toolCallId: "call_terminal_processes",
+          toolName: "shell_command",
+          ok: true,
+          args: { command: "Get-Process | Sort-Object -Property CPU -Descending" },
+          output: "Process summary ready\nnode 120\nAgentWorkbench 80"
+        }
+      },
+      terminalEvent
+    ];
+    const webSockets: Array<{
+      url: string;
+      readyState: number;
+      close: ReturnType<typeof vi.fn>;
+      onopen: ((event: Event) => void) | null;
+      onmessage: ((event: MessageEvent) => void) | null;
+      onerror: ((event: Event) => void) | null;
+      onclose: ((event: CloseEvent) => void) | null;
+    }> = [];
+    const webSocketConstructor = vi.fn(function MockWebSocket(url: string) {
+      const socket = {
+        url,
+        readyState: 1,
+        close: vi.fn(),
+        onopen: null,
+        onmessage: null,
+        onerror: null,
+        onclose: null
+      };
+      webSockets.push(socket);
+      return socket;
+    });
+    const requests: string[] = [];
+    vi.stubGlobal("WebSocket", webSocketConstructor);
+    stubAuthedFetch(async (url) => {
+        requests.push(url);
+        if (url === "/health") return jsonResponse({ ok: true });
+        if (url === "/api/tasks") return jsonResponse([runningTask]);
+        if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+        if (url === "/api/preferences") return jsonResponse(defaultPreferences("zh-CN"));
+        if (url === "/api/tasks/task_terminal_reconcile" || url.startsWith("/api/tasks/task_terminal_reconcile?")) return jsonResponse(finalTask);
+        if (url === "/api/tasks/task_terminal_reconcile/transcript") return jsonResponse(finalTranscript);
+        if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+        return jsonResponse([]);
+      });
+
+    const { container } = render(<App />);
+    expect(await screen.findByRole("heading", { name: "Terminal reconcile" })).toBeInTheDocument();
+    await waitFor(() => expect(webSocketConstructor).toHaveBeenCalledOnce());
+
+    await act(async () => {
+      webSockets[0]?.onopen?.(new Event("open"));
+      webSockets[0]?.onmessage?.({ data: JSON.stringify({ type: "event", event: terminalEvent }) } as MessageEvent);
+    });
+
+    await waitFor(() => expect(requests).toContain("/api/tasks/task_terminal_reconcile/transcript"));
+    await waitFor(() => expect(container.querySelector(".event.tool_result")).not.toBeNull());
   });
 
   it("batches rapid streaming transcript events and keeps long live text bounded", async () => {

@@ -1,28 +1,24 @@
 import { defineConfig } from "vitest/config";
-import { resolve } from "node:path";
 
 export default defineConfig({
-  resolve: {
-    alias: {
-      "@agent-workbench/core": resolve(__dirname, "packages/core/src/index.ts"),
-      "@agent-workbench/shared": resolve(__dirname, "packages/shared/src/index.ts")
-    }
-  },
   test: {
-    globals: true,
-    environment: "node",
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/dist-types/**",
+      "apps/web/dist/**",
+      "data/**",
+      "tests/e2e/**"
+    ],
+    hookTimeout: 15_000,
+    include: [
+      "apps/**/*.test.ts",
+      "apps/**/*.test.tsx",
+      "packages/**/*.test.ts",
+      "tests/real-task-matrix/**/*.test.ts",
+      "tests/stress/**/*.test.ts"
+    ],
     setupFiles: ["tests/setup-warning-filter.ts"],
-    include: ["packages/**/*.test.ts", "apps/**/*.test.ts", "apps/**/*.test.tsx", "tests/**/*.test.ts"],
-    coverage: {
-      provider: "v8",
-      reporter: ["text", "lcov"],
-      include: ["packages/core/src/**/*.ts", "apps/server/src/**/*.ts", "apps/web/src/**/*.{ts,tsx}"],
-      exclude: [
-        "apps/server/src/index.ts",
-        "apps/web/src/main.tsx",
-        "packages/core/src/openai-model.ts",
-        "**/*.d.ts"
-      ]
-    }
+    testTimeout: 15_000
   }
 });

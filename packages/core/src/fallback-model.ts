@@ -5,6 +5,7 @@ export interface ModelUsage {
   inputTokens?: number;
   outputTokens?: number;
   cachedTokens?: number;
+  cacheSource?: "provider" | "local_response";
   raw?: Record<string, unknown>;
 }
 
@@ -22,7 +23,7 @@ export interface ModelTraceEvent {
 }
 
 export type ModelTurn =
-  | { kind: "final"; message: string; streamId?: string; usage?: ModelUsage; reasoningContent?: string }
+  | { kind: "final"; message: string; streamId?: string; usage?: ModelUsage; reasoningContent?: string; inlineToolCallsAllowed?: boolean }
   | { kind: "tool_calls"; calls: ToolCall[]; streamId?: string; usage?: ModelUsage; reasoningContent?: string }
   | { kind: "empty_response"; reason: string; streamId?: string; usage?: ModelUsage; rawPayload?: Record<string, unknown>; reasoningContent?: string };
 

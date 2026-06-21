@@ -187,6 +187,18 @@ async function request<T>(path: string, init?: RequestInit, options: { auth?: bo
   }
 }
 
+async function requestBlob(path: string, init?: RequestInit, options: { auth?: boolean } = {}): Promise<Blob> {
+  const headers = new Headers(init?.headers);
+  const auth = options.auth !== false;
+  if (auth) headers.set(SESSION_HEADER, await getSessionToken());
+  const response = await fetch(`${apiBase}${path}`, { ...init, headers });
+  if (!response.ok) {
+    const bodyText = await response.text().catch(() => "");
+    throw new Error(getFriendlyErrorMessage(response, bodyText));
+  }
+  return response.blob();
+}
+
 async function getSessionToken(): Promise<string> {
   if (!sessionTokenPromise) sessionTokenPromise = bootstrapSessionToken();
   return sessionTokenPromise;
@@ -271,6 +283,9 @@ export const api = {
   },
   listTaskAttachments(taskId: string): Promise<TaskAttachment[]> {
     return request(`/api/tasks/${taskId}/attachments`);
+  },
+  getTaskAttachmentContent(taskId: string, attachmentId: string): Promise<Blob> {
+    return requestBlob(`/api/tasks/${taskId}/attachments/${attachmentId}/content`);
   },
   listConversationSummaries(taskId: string): Promise<ConversationSummary[]> {
     return request(`/api/tasks/${taskId}/summaries`);

@@ -49,6 +49,17 @@ function inferMimeType(path: string): string {
       return "text/html";
     case ".txt":
       return "text/plain";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".svg":
+      return "image/svg+xml";
     default:
       return "application/octet-stream";
   }

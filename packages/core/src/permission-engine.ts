@@ -23,7 +23,7 @@ const workspaceReadPattern = /\b(dir|ls|get-childitem|tree|git status|git diff|g
 
 export class PermissionEngine {
   assess(toolName: string, args: Record<string, unknown>): RiskAssessment {
-    if (toolName === "read_file" || toolName === "search_files" || toolName === "list_files") {
+    if (toolName === "read_file" || toolName === "search_files" || toolName === "list_files" || toolName === "attach_task_file") {
       return { category: "workspace_read", reason: `${toolName} reads local project state.` };
     }
     if (toolName === "use_skill") {

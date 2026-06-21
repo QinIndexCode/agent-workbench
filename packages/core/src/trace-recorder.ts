@@ -149,11 +149,25 @@ function summarizeModelTracePayload(kind: ModelTraceEvent["kind"], payload: Reco
 
 function summarizeModelRequestTracePayload(payload: Record<string, unknown>): Record<string, unknown> {
   const request = recordFromUnknown(payload["request"]);
+  const cache = summarizeTraceCache(recordFromUnknown(payload["cache"]));
   return {
     ...("taskStatus" in payload ? { taskStatus: payload["taskStatus"] } : {}),
     ...("eventCount" in payload ? { eventCount: payload["eventCount"] } : {}),
     ...(Object.keys(recordFromUnknown(payload["attention"])).length > 0 ? { attention: summarizeTraceAttention(recordFromUnknown(payload["attention"])) } : {}),
+    ...(Object.keys(cache).length > 0 ? { cache } : {}),
     ...(Object.keys(request).length > 0 ? { request: summarizeModelRequestBody(request) } : {})
+  };
+}
+
+function summarizeTraceCache(cache: Record<string, unknown>): Record<string, unknown> {
+  if (Object.keys(cache).length === 0) return {};
+  const promptCacheKey = typeof cache["promptCacheKey"] === "string" ? cache["promptCacheKey"] : "";
+  return {
+    ...(typeof cache["promptCacheMode"] === "string" ? { promptCacheMode: cache["promptCacheMode"] } : {}),
+    ...(promptCacheKey ? { promptCacheKeySent: true, promptCacheKeyPrefix: promptCacheKey.slice(0, 12) } : {}),
+    ...(typeof cache["thinking"] === "string" ? { thinking: cache["thinking"] } : {}),
+    ...(Number.isFinite(Number(cache["stablePrefixTokens"])) ? { stablePrefixTokens: Number(cache["stablePrefixTokens"]) } : {}),
+    ...(cache["toolCacheFamily"] ? { toolCacheFamily: compactTraceValue(cache["toolCacheFamily"], 0) } : {})
   };
 }
 
@@ -297,6 +311,21 @@ function summarizeTraceMessageContent(value: unknown): string {
     return excerptTraceText(parts.join(" | "), TRACE_MODEL_EXCERPT_CHARS);
   }
   const record = recordFromUnknown(value);
+  if (record["image_url"]) {
+    const imageUrl = recordFromUnknown(record["image_url"]);
+    const url = typeof imageUrl["url"] === "string" ? imageUrl["url"] : "";
+    return url.startsWith("data:") ? `[image_url ${url.slice(5, Math.max(5, url.indexOf(";")))}]` : "[image_url]";
+  }
+  if (record["inlineData"]) {
+    const inlineData = recordFromUnknown(record["inlineData"]);
+    return `[inline_image ${String(inlineData["mimeType"] ?? "image")}]`;
+  }
+  if (record["source"]) {
+    const source = recordFromUnknown(record["source"]);
+    if (source["type"] === "base64" && typeof source["data"] === "string") {
+      return `[image ${String(source["media_type"] ?? "image")}]`;
+    }
+  }
   if (typeof record["text"] === "string") return excerptTraceText(record["text"], TRACE_MODEL_EXCERPT_CHARS);
   if (typeof record["content"] === "string") return excerptTraceText(record["content"], TRACE_MODEL_EXCERPT_CHARS);
   if (record["tool_result"]) return excerptTraceText(JSON.stringify(record["tool_result"]), TRACE_MODEL_EXCERPT_CHARS);

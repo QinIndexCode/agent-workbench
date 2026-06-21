@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ToolCall, ToolResult } from "@agent-workbench/shared";
 import { createId, nowIso } from "./ids.js";
 import { resolveWorkspacePathStrict } from "./path-guards.js";
@@ -174,12 +174,12 @@ export class ShellToolExecutor implements ToolExecutor {
 
       const timeout = setTimeout(() => {
         timedOut = true;
-        child.kill();
+        void terminateProcessTree(child.pid);
       }, timeoutMs);
 
       const onAbort = () => {
         cancelled = true;
-        child.kill();
+        void terminateProcessTree(child.pid);
       };
       options.signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -196,12 +196,30 @@ export class ShellToolExecutor implements ToolExecutor {
       if (!requestedPath) {
         return this.result(call, false, "Missing path.");
       }
-      const path = await this.resolveWorkspacePath(requestedPath, this.rootFor(options));
+      const taskRoot = this.rootFor(options);
+      const path = await this.resolveWorkspacePath(requestedPath, taskRoot);
+      const displayPath = workspaceRelativePath(taskRoot, path);
       if (isInternalTracePath(path)) {
         return this.result(call, false, "Agent Workbench internal trace files are excluded from workspace read tools.");
       }
       const hasExplicitRange = Object.hasOwn(call.args, "offset") || Object.hasOwn(call.args, "limit");
       const info = await stat(path);
+      if (info.isDirectory()) {
+        return this.result(
+          call,
+          false,
+          JSON.stringify(
+            {
+              status: "failed",
+              reason: "path_is_directory",
+              path: displayPath || ".",
+              guidance: "read_file requires a workspace-relative file path, not a directory. Use list_files for this directory, or read a specific file path named by the user or returned by list_files/search_files."
+            },
+            null,
+            2
+          )
+        );
+      }
       await emitToolProgress(options, {
         status: "running",
         targetPath: path,
@@ -218,7 +236,7 @@ export class ShellToolExecutor implements ToolExecutor {
           true,
           JSON.stringify(
             {
-              path,
+              path: displayPath,
               mode: "range",
               displayMode: "inline",
               offset,
@@ -252,7 +270,7 @@ export class ShellToolExecutor implements ToolExecutor {
         JSON.stringify(
           isFull
             ? {
-                path,
+                path: displayPath,
                 mode: "full",
                 displayMode: "inline",
                 sizeBytes: info.size,
@@ -263,7 +281,7 @@ export class ShellToolExecutor implements ToolExecutor {
               }
             : isCompactFull
               ? {
-                  path,
+                  path: displayPath,
                   mode: "full_compact",
                   displayMode: "summary_only",
                   sizeBytes: info.size,
@@ -276,7 +294,7 @@ export class ShellToolExecutor implements ToolExecutor {
                     "Full text is available to the model context, but the UI timeline shows a summary to keep the thread readable."
                 }
             : {
-                path,
+                path: displayPath,
                 mode: "large_preview",
                 displayMode: "summary_only",
                 sizeBytes: info.size,
@@ -347,6 +365,7 @@ export class ShellToolExecutor implements ToolExecutor {
       const validation = await this.validateAndPrepareFileWrite(call, options);
       if (!("path" in validation)) return validation;
       const { path, current, existed } = validation;
+      const displayPath = workspaceRelativePath(this.rootFor(options), path);
 
       const lines = current.split(/\r?\n/);
       const appliedEdits: Array<{ startLine: number; endLine: number; beforeText: string; afterText: string }> = [];
@@ -403,7 +422,7 @@ export class ShellToolExecutor implements ToolExecutor {
       }
 
       const next = lines.join("\n");
-      const changes = lineChangeSummary(path, current, next, existed ? "edit" : "create", existed);
+      const changes = lineChangeSummary(displayPath, current, next, existed ? "edit" : "create", existed);
       const nextBytes = Buffer.byteLength(next, "utf8");
       const displayMode = isLargeChange(changes, next) ? "summary_only" : "inline";
       await emitToolProgress(options, {
@@ -461,7 +480,7 @@ export class ShellToolExecutor implements ToolExecutor {
         true,
         JSON.stringify({
           status: "success",
-          path,
+          path: displayPath,
           hash: hash(next),
           changed: current !== next,
           changes,
@@ -480,8 +499,9 @@ export class ShellToolExecutor implements ToolExecutor {
       const validation = await this.validateAndPrepareFileWrite(call, options);
       if (!("path" in validation)) return validation;
       const { path, current, existed } = validation;
+      const displayPath = workspaceRelativePath(this.rootFor(options), path);
 
-      const changes = lineChangeSummary(path, current, content, existed ? "write" : "create", existed);
+      const changes = lineChangeSummary(displayPath, current, content, existed ? "write" : "create", existed);
       const totalBytes = Buffer.byteLength(content, "utf8");
       const displayMode = isLargeChange(changes, content) ? "summary_only" : "inline";
       await emitToolProgress(options, {
@@ -540,7 +560,7 @@ export class ShellToolExecutor implements ToolExecutor {
         JSON.stringify(
           {
             status: "success",
-            path,
+            path: displayPath,
             hash: hash(content),
             changed: current !== content,
             changes,
@@ -562,7 +582,8 @@ export class ShellToolExecutor implements ToolExecutor {
       const query = String(call.args["query"] ?? "");
       if (!query.trim()) return this.result(call, false, "Missing query.");
       const terms = parseSearchTerms(query);
-      const root = await this.resolveWorkspacePath(String(call.args["path"] ?? "."), this.rootFor(options));
+      const taskRoot = this.rootFor(options);
+      const root = await this.resolveWorkspacePath(String(call.args["path"] ?? "."), taskRoot);
       if (isInternalTracePath(root)) {
         return this.result(call, false, "Agent Workbench internal trace files are excluded from workspace search tools.");
       }
@@ -573,7 +594,7 @@ export class ShellToolExecutor implements ToolExecutor {
         if (matches.length >= 100) break;
         const pathTerm = findMatchedTerm(file, terms);
         if (pathTerm) {
-          matches.push({ path: file, matchedTerm: pathTerm });
+          matches.push({ path: workspaceRelativePath(taskRoot, file), matchedTerm: pathTerm });
           continue;
         }
         if (!isTextFile(file)) continue;
@@ -586,14 +607,16 @@ export class ShellToolExecutor implements ToolExecutor {
           if (!matchedTerm || matchedTermsInFile.has(matchedTerm)) continue;
           matchedTermsInFile.add(matchedTerm);
           const text = line.slice(0, 240);
-          matches.push(text ? { path: file, line: index + 1, text, matchedTerm } : { path: file, line: index + 1, matchedTerm });
+          const displayPath = workspaceRelativePath(taskRoot, file);
+          matches.push(text ? { path: displayPath, line: index + 1, text, matchedTerm } : { path: displayPath, line: index + 1, matchedTerm });
         }
       }
       return this.result(call, true, JSON.stringify({
         kind: "workspace_file_search",
         query,
+        path: workspaceRelativePath(taskRoot, root),
         terms,
-        note: "search_files returns matching project paths and line snippets only. Use read_file with the returned path, and offset/limit when needed, to inspect complete content.",
+        note: "search_files returns workspace-relative paths plus line snippets only. Use read_file with the returned relative path, and offset/limit when needed, to inspect complete content.",
         matches
       }, null, 2));
     } catch (error) {
@@ -603,14 +626,18 @@ export class ShellToolExecutor implements ToolExecutor {
 
   private async listFiles(call: ToolCall, options: ToolExecutionOptions): Promise<ToolResult> {
     try {
-      const root = await this.resolveWorkspacePath(String(call.args["path"] ?? "."), this.rootFor(options));
+      const taskRoot = this.rootFor(options);
+      const root = await this.resolveWorkspacePath(String(call.args["path"] ?? "."), taskRoot);
       if (isInternalTracePath(root)) {
         return this.result(call, false, "Agent Workbench internal trace files are excluded from workspace list tools.");
       }
       const recursive = Boolean(call.args["recursive"] ?? false);
       await emitToolProgress(options, { status: "running", targetPath: root, operation: "list", message: "Listing workspace files.", progress: { processed: 0, unit: "files" } });
       const files = recursive ? await walk(root, 500) : await list(root);
-      return this.result(call, true, JSON.stringify({ path: root, files }, null, 2));
+      return this.result(call, true, JSON.stringify({
+        path: workspaceRelativePath(taskRoot, root),
+        files: files.map((file) => workspaceRelativePath(taskRoot, file))
+      }, null, 2));
     } catch (error) {
       return this.result(call, false, error instanceof Error ? error.message : String(error));
     }
@@ -652,6 +679,15 @@ export class ShellToolExecutor implements ToolExecutor {
       )
     );
   }
+}
+
+function workspaceRelativePath(root: string, path: string): string {
+  const resolvedRoot = resolve(root);
+  const resolvedPath = resolve(path);
+  const relativePath = relative(resolvedRoot, resolvedPath).replace(/\\/g, "/");
+  if (!relativePath) return ".";
+  if (relativePath === ".." || relativePath.startsWith("../") || isAbsolute(relativePath)) return resolvedPath;
+  return relativePath;
 }
 
 function hash(content: string): string {
@@ -973,6 +1009,21 @@ async function syncDirectoryBestEffort(path: string): Promise<void> {
     // Directory fsync is not supported on every platform/filesystem.
   } finally {
     await handle.close().catch(() => undefined);
+  }
+}
+
+async function terminateProcessTree(pid: number | undefined): Promise<void> {
+  if (!pid) return;
+  if (process.platform === "win32") {
+    await new Promise<void>((resolveProcess) => {
+      execFile("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true }, () => resolveProcess());
+    });
+    return;
+  }
+  try {
+    process.kill(pid);
+  } catch {
+    // The process may already have exited.
   }
 }
 

@@ -52,6 +52,7 @@ function startProcess(name, command, args) {
   });
   child.e2eName = name;
   child.e2eExit = null;
+  child.e2eStopping = false;
   child.stdout.on("data", (chunk) => {
     if (shouldStreamServerLogs) process.stdout.write(`[${name}] ${chunk}`);
   });
@@ -60,7 +61,7 @@ function startProcess(name, command, args) {
   });
   child.once("exit", (code, signal) => {
     child.e2eExit = { code, signal };
-    if (code !== 0 && signal === null) {
+    if (code !== 0 && signal === null && !child.e2eStopping) {
       process.stderr.write(`[${name}] exited with code ${code}\n`);
     }
   });
@@ -136,13 +137,10 @@ function describeProcessExit(child) {
 
 function stopProcessTree(child) {
   if (!child.pid || child.exitCode !== null) return Promise.resolve();
+  child.e2eStopping = true;
   if (process.platform === "win32") {
     return new Promise((resolve) => {
-      const killer = spawn("powershell.exe", [
-        "-NoProfile",
-        "-Command",
-        `Stop-Process -Id ${child.pid} -Force -ErrorAction SilentlyContinue`
-      ], {
+      const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
         stdio: "ignore",
         windowsHide: true
       });

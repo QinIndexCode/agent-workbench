@@ -9,7 +9,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as z from "zod/v4";
 import { describe, expect, it } from "vitest";
-import type { RiskCategory, TaskDetail, TaskMemory, ToolCall, ToolResult } from "@agent-workbench/shared";
+import type { RiskCategory, TaskDetail, TaskEvent, TaskMemory, ToolCall, ToolResult } from "@agent-workbench/shared";
 import { ShellToolExecutor, type ToolExecutionOptions } from "../src/tools.js";
 import {
   AgentWorkbench,
@@ -43,6 +43,10 @@ import {
   compileTaskGraph,
   taskGraphFromEvents,
   shouldPromoteExperienceToSkill,
+  DEFAULT_BROWSER_COMPUTER_CONTROL_SKILL_ID,
+  DEFAULT_BROWSER_COMPUTER_CONTROL_SKILL_TITLE,
+  DEFAULT_OFFICE_VISUAL_QA_SKILL_ID,
+  DEFAULT_OFFICE_VISUAL_QA_SKILL_TITLE,
   type TaskGraph,
   type TaskGraphNode
 } from "../src/index.js";
@@ -192,6 +196,37 @@ function attachVerificationTaskGraph(task: TaskDetail): TaskGraph {
 }
 
 describe("ContextAssembler", () => {
+  it("guides file workflows toward relative paths and targeted inspection", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_file_guidance",
+      title: "Fix source file",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [{
+        id: "event_file_guidance",
+        taskId: "task_file_guidance",
+        type: "user_message",
+        createdAt: nowIso(),
+        summary: "修复 src/math.ts 的失败测试并验证。",
+        payload: {}
+      }]
+    };
+
+    const context = await assembler.assemble(task);
+
+    expect(context.systemPrompt).toContain("prefer workspace-relative paths");
+    expect(context.systemPrompt).toContain("Do not pass the absolute workRoot path back into file tools");
+    expect(context.systemPrompt).toContain("already names exact files");
+    expect(context.systemPrompt).toContain("Do not call list_files on the same directory more than once");
+    expect(context.systemPrompt).toContain("include the opening line through its matching closing delimiter");
+    expect(context.systemPrompt).toContain(process.platform === "win32" ? "Windows PowerShell" : "POSIX-like shell");
+  });
+
   it("keeps capability questions direct and evidence-grounded", async () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
     const task: TaskDetail = {
@@ -205,11 +240,27 @@ describe("ContextAssembler", () => {
       pendingGuidance: [],
       events: [
         {
+          id: "event_turn",
+          taskId: "task_capabilities",
+          type: "turn_started",
+          createdAt: nowIso(),
+          summary: "Started model turn.",
+          payload: {}
+        },
+        {
           id: "event_user",
           taskId: "task_capabilities",
           type: "user_message",
           createdAt: nowIso(),
           summary: "你可以帮我做些什么",
+          payload: {}
+        },
+        {
+          id: "event_status",
+          taskId: "task_capabilities",
+          type: "status_changed",
+          createdAt: nowIso(),
+          summary: "Task is running.",
           payload: {}
         }
       ]
@@ -217,17 +268,93 @@ describe("ContextAssembler", () => {
 
     const context = await assembler.assemble(task);
 
-    expect(context.systemPrompt).toContain("answer directly from your general capabilities");
-    expect(context.systemPrompt).toContain("do not inspect files first");
+    expect(context.systemPrompt).toContain("## Direct Answer Mode");
+    expect(context.systemPrompt).toContain("Answer directly from general capabilities");
     expect(context.systemPrompt).toContain("Do not claim the project name");
-    expect(context.systemPrompt).toContain("## Agent Workflow Heuristics");
-    expect(context.systemPrompt).toContain("decision heuristics, not a hard checklist");
-    expect(context.systemPrompt).toContain("Do not force tools, plans, tests");
-    expect(context.systemPrompt).toContain("preserve acceptance criteria");
-    expect(context.systemPrompt).toContain("Never hardcode behavior to satisfy a particular test prompt");
-    expect(context.systemPrompt).toContain("strongest practical proof");
-    expect(context.systemPrompt).toContain("do not call ask_user to ask how to interpret");
-    expect(context.systemPrompt).toContain("Use Markdown for readable structure");
+    expect(context.systemPrompt).toContain("Respond in Chinese");
+    expect(context.systemPrompt).not.toContain("## Agent Workflow Heuristics");
+    expect(context.systemPrompt).not.toContain("## Stable Memory Files");
+    expect(context.systemPrompt).not.toContain("## Runtime Metadata");
+    expect(context.systemPrompt).not.toContain("## Current Working Folder");
+    expect(context.systemPrompt).not.toContain("## Task Graph");
+    expect(context.messages.map((message) => message.role)).toEqual(["system", "user"]);
+    expect(context.messages[1]?.content).toBe("你可以帮我做些什么");
+  });
+
+  it("uses direct answer mode for no-tool same-thread follow-ups without injecting workbench tail context", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_direct_followup",
+      title: "Direct follow-up",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_user_1", taskId: "task_direct_followup", type: "user_message", createdAt: nowIso(), summary: "第 1 轮：请只用一句话回答，不要使用工具。", payload: {} },
+        {
+          id: "event_agent_1",
+          taskId: "task_direct_followup",
+          type: "assistant_message",
+          createdAt: nowIso(),
+          summary: "第 1 轮已收到。",
+          payload: { reasoningContent: "这是内部连续性备注，不能回放到 direct answer prompt。" }
+        },
+        { id: "event_user_2", taskId: "task_direct_followup", type: "user_message", createdAt: nowIso(), summary: "第 2 轮：只补充一个风险点，不要使用工具。", payload: {} }
+      ]
+    };
+
+    const context = await assembler.assemble(task);
+
+    expect(context.systemPrompt).toContain("## Direct Answer Mode");
+    expect(context.systemPrompt).not.toContain("## Current Working Folder");
+    expect(context.messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(JSON.stringify(context.messages)).not.toContain("## Current Workbench Context");
+    expect(JSON.stringify(context.messages)).not.toContain("Internal continuity note");
+    expect(JSON.stringify(context.messages)).not.toContain("内部连续性备注");
+    expect(context.messages.at(-1)?.role === "user" ? context.messages.at(-1)?.content : "").toContain("第 2 轮");
+  });
+
+  it("preserves long low-budget context management instead of bypassing summary for direct follow-ups", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const assembler = new ContextAssembler(store);
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_direct_long_low_budget",
+      title: "Direct long low budget",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        ...Array.from({ length: 70 }, (_, index): TaskEvent => ({
+          id: `event_seed_${index}`,
+          taskId: "task_direct_long_low_budget",
+          type: index % 2 === 0 ? "user_message" : "assistant_message",
+          createdAt: nowIso(),
+          summary: `Seeded context ${index} with CTX-MARKER-LOW-BUDGET`,
+          payload: {}
+        })),
+        {
+          id: "event_latest_direct",
+          taskId: "task_direct_long_low_budget",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "继续这个任务：请说明你是否仍能看到上下文标记，并用一句话回答。不要使用工具。",
+          payload: {}
+        }
+      ]
+    };
+
+    const context = await assembler.assemble(task, { maxTotal: 1200, reservedForResponse: 180 });
+    const summaries = await store.listConversationSummaries(task.id);
+
+    expect(context.systemPrompt).not.toContain("## Direct Answer Mode");
+    expect(summaries.length).toBeGreaterThan(0);
+    expect(context.systemPrompt).toContain("## Conversation Summary");
   });
 
   it("injects compiled task graph acceptance and verification guidance", async () => {
@@ -271,6 +398,9 @@ describe("ContextAssembler", () => {
     expect(context.systemPrompt).toContain("Avoid hardcoded behavior that only satisfies one prompt");
     expect(context.systemPrompt).toContain("Active verification:");
     expect(context.systemPrompt).toContain("Run the user-named verification command(s): npm.cmd run typecheck");
+    expect(context.messages[0]?.role === "system" ? context.messages[0].content : "").not.toContain("## Task Graph");
+    expect(context.messages[1]?.role === "user" ? context.messages[1].content : "").toContain("## Task Graph");
+    expect(context.messages.at(-1)?.role === "user" ? context.messages.at(-1)?.content : "").not.toContain("## Task Graph");
   });
 
   it("does not keep a trivial greeting as the original goal after a later real request", async () => {
@@ -298,10 +428,12 @@ describe("ContextAssembler", () => {
     expect(context.input).not.toContain("Original user goal: 你好");
     expect(`${context.systemPrompt}\n${context.input}`).not.toContain("Task title:");
     expect(`${context.systemPrompt}\n${context.input}`).not.toMatch(/task title/i);
-    expect(context.messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "user"]);
-    const latest = context.messages.at(-1);
+    expect(context.messages.map((message) => message.role)).toEqual(["system", "user", "user", "assistant", "user", "user"]);
+    expect(context.messages[1]?.role === "user" ? context.messages[1].content : "").toContain("## Stable Task Context");
+    const latest = context.messages.at(-2);
     expect(latest?.role).toBe("user");
     expect(latest && "content" in latest ? latest.content : "").toContain("测试所有你能调用的工具");
+    expect(context.messages.at(-1)?.role === "user" ? context.messages.at(-1)?.content : "").toContain("## Current Workbench Context");
   });
 
   it("carries rollback completion into the next model turn history", async () => {
@@ -344,8 +476,9 @@ describe("ContextAssembler", () => {
     expect(rollbackMessage && "content" in rollbackMessage ? rollbackMessage.content : "").toContain("restoredFiles=2");
   });
 
-  it("carries retained thinking into canonical history through private continuity messages", async () => {
+  it("omits retained thinking from canonical history unless explicitly replayed", async () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const previousReplay = process.env["AGENT_WORKBENCH_REASONING_HISTORY_REPLAY"];
     const task: TaskDetail = {
       kind: "primary",
       id: "task_reasoning_history",
@@ -371,16 +504,30 @@ describe("ContextAssembler", () => {
       ]
     };
 
-    const context = await assembler.assemble(task);
+    try {
+      delete process.env["AGENT_WORKBENCH_REASONING_HISTORY_REPLAY"];
+      const context = await assembler.assemble(task);
 
-    expect(context.messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "assistant"]);
-    expect(context.messages[2]).toMatchObject({
-      role: "assistant",
-      content: expect.stringContaining("Internal continuity note")
-    });
-    expect(context.messages[2] && "content" in context.messages[2] ? context.messages[2].content : "").toContain("Do not quote this note");
-    expect(context.messages[2] && "content" in context.messages[2] ? context.messages[2].content : "").toContain("先检查当前目录结构");
-    expect(context.messages[3]).toMatchObject({ role: "assistant", content: "我已经检查完当前结构。" });
+      expect(context.messages.map((message) => message.role)).toEqual(["system", "user", "user", "assistant", "user"]);
+      expect(context.messages[1]?.role === "user" ? context.messages[1].content : "").toContain("## Stable Task Context");
+      expect(JSON.stringify(context.messages.slice(1))).not.toContain("Internal continuity note");
+      expect(JSON.stringify(context.messages.slice(1))).not.toContain("先检查当前目录结构");
+      expect(context.messages[3]).toMatchObject({ role: "assistant", content: "我已经检查完当前结构。" });
+      expect(context.messages.at(-1)?.role === "user" ? context.messages.at(-1)?.content : "").toContain("## Current Workbench Context");
+
+      process.env["AGENT_WORKBENCH_REASONING_HISTORY_REPLAY"] = "enabled";
+      const replayed = await assembler.assemble(task);
+      expect(replayed.messages.map((message) => message.role)).toEqual(["system", "user", "user", "assistant", "assistant", "user"]);
+      expect(replayed.messages[3]).toMatchObject({
+        role: "assistant",
+        content: expect.stringContaining("Internal continuity note")
+      });
+      expect(replayed.messages[3] && "content" in replayed.messages[3] ? replayed.messages[3].content : "").toContain("Do not quote this note");
+      expect(replayed.messages[3] && "content" in replayed.messages[3] ? replayed.messages[3].content : "").toContain("先检查当前目录结构");
+    } finally {
+      if (previousReplay === undefined) delete process.env["AGENT_WORKBENCH_REASONING_HISTORY_REPLAY"];
+      else process.env["AGENT_WORKBENCH_REASONING_HISTORY_REPLAY"] = previousReplay;
+    }
   });
 
   it("keeps explicit task graph state in system context without impersonating the user", async () => {
@@ -411,6 +558,9 @@ describe("ContextAssembler", () => {
 
     const context = await assembler.assemble(task);
     const latest = context.messages.at(-1);
+    const latestConversationUser = context.messages
+      .filter((message) => message.role === "user" && !message.content.startsWith("## Current Workbench Context"))
+      .at(-1);
 
     expect(graph?.nodes.some((node) => node.role === "implement")).toBe(true);
     expect(context.systemPrompt).toContain("## Task Graph");
@@ -418,7 +568,7 @@ describe("ContextAssembler", () => {
     expect(`${context.systemPrompt}\n${context.input}`).not.toMatch(/task title/i);
     expect(context.attentionPacket.activeNode?.role).toBe("implement");
     expect(latest?.role).toBe("user");
-    expect(latest && "content" in latest ? latest.content : "").toContain("编写一个完整的博客页面");
+    expect(latestConversationUser && "content" in latestConversationUser ? latestConversationUser.content : "").toContain("编写一个完整的博客页面");
     expect(latest && "content" in latest ? latest.content : "").not.toContain("## Active Node");
   });
 
@@ -501,6 +651,7 @@ describe("ContextAssembler", () => {
       sourceMemoryIds: [],
       relatedPatterns: []
     });
+    await workbench.ensureDefaultSkills();
     const assembler = new ContextAssembler(store);
     const context = await assembler.assemble({
       id: "task_skill_catalog",
@@ -525,6 +676,9 @@ describe("ContextAssembler", () => {
     expect(context.systemPrompt).toContain("not selected from the latest user text");
     expect(context.systemPrompt).toContain(financeSkill.id);
     expect(context.systemPrompt).toContain(releaseSkill.id);
+    expect(context.systemPrompt).toContain(DEFAULT_OFFICE_VISUAL_QA_SKILL_TITLE);
+    expect(context.systemPrompt).toContain(DEFAULT_BROWSER_COMPUTER_CONTROL_SKILL_TITLE);
+    expect(context.systemPrompt).toContain("mcp, screenshot, browser, computer-control");
     expect(context.systemPrompt).toContain("React Blog Candidate");
     expect(context.systemPrompt).toContain("shown for awareness only");
     expect(context.systemPrompt).not.toContain(candidate.id);
@@ -567,8 +721,18 @@ describe("ContextAssembler", () => {
     expect(context.systemPrompt).toContain("Routing notes");
     expect(context.systemPrompt).toContain("not the current user request");
     expect(context.systemPrompt).not.toContain("FULL_BODY_MARKER_SHOULD_NOT_APPEAR");
-    expect(context.messages.at(-1)?.role).toBe("user");
-    expect(context.messages.at(-1)?.role === "user" ? context.messages.at(-1)?.content : "").toContain("继续检查当前实现");
+    const latestConversationUser = context.messages
+      .filter(
+        (message) =>
+          message.role === "user" &&
+          !message.content.startsWith("## Stable Task Context") &&
+          !message.content.startsWith("## Current Workbench Context")
+      )
+      .at(-1);
+    expect(latestConversationUser?.role).toBe("user");
+    expect(latestConversationUser?.content ?? "").toContain("继续检查当前实现");
+    expect(context.messages[1]?.role === "user" ? context.messages[1].content : "").toContain("## Knowledge Brief");
+    expect(context.messages.at(-1)?.role === "user" ? context.messages.at(-1)?.content : "").not.toContain("## Knowledge Brief");
   });
 
   it("prioritizes current-turn relevant knowledge without hiding the knowledge_search path", async () => {
@@ -1092,7 +1256,9 @@ describe("ContextAssembler", () => {
     };
 
     const context = await assembler.assemble(task);
-    const roleMessages = context.messages.filter((message) => message.role !== "system");
+    const roleMessages = context.messages.filter(
+      (message) => message.role !== "system" && !(message.role === "user" && message.content.startsWith("## Stable Task Context"))
+    );
 
     expect(roleMessages[0]?.role).toBe("user");
     expect(roleMessages[1]?.role).toBe("assistant");
@@ -1155,16 +1321,19 @@ describe("ContextAssembler", () => {
 
     const context = await assembler.assemble(task);
     const history = buildHistoryLayer(task, 2000);
-    const roleMessages = context.messages.filter((message) => message.role !== "system");
+    const roleMessages = context.messages.filter(
+      (message) => message.role !== "system" && !(message.role === "user" && message.content.startsWith("## Stable Task Context"))
+    );
 
-    expect(roleMessages.map((message) => message.role)).toEqual(["user", "assistant", "tool"]);
+    expect(roleMessages.map((message) => message.role)).toEqual(["user", "assistant", "tool", "user"]);
     expect(roleMessages[2]?.role === "tool" ? roleMessages[2].content : "").toContain(marker);
+    expect(roleMessages[3]?.role === "user" ? roleMessages[3].content : "").toContain("## Current Workbench Context");
     expect(JSON.stringify(context.messages)).not.toContain("Web search result: Search evidence returned");
     expect(history).toContain(marker);
     expect(history).not.toContain("Search evidence returned");
   });
 
-  it("keeps small read_file content in tool role while Known Files also records it", async () => {
+  it("keeps small read_file content in Known Files without duplicating it in the tool role", async () => {
     const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
     const content = "ROLE_READ_FILE_CONTENT";
     const task: TaskDetail = {
@@ -1209,8 +1378,60 @@ describe("ContextAssembler", () => {
     expect(context.systemPrompt).toContain(content);
     expect(toolMessage?.role).toBe("tool");
     const toolContent = toolMessage?.role === "tool" ? JSON.parse(toolMessage.content) : {};
-    expect(toolContent.output).toContain("live file evidence");
-    expect(toolContent.content).toBe(content);
+    expect(toolContent.output).toContain("Known Files");
+    expect(toolContent.path).toBe("src/example.ts");
+    expect(toolContent.hash).toBe("hash_1");
+    expect(toolContent.content).toBeUndefined();
+    expect(toolMessage?.role === "tool" ? toolMessage.content : "").not.toContain(content);
+  });
+
+  it("compacts file mutation tool role output without replaying edit text", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const beforeText = "const total = items.length;";
+    const afterText = "const total = items.reduce((sum, item) => sum + item.price, 0);";
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_file_mutation_role_compact",
+      title: "Mutation compact",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_user", taskId: "task_file_mutation_role_compact", type: "user_message", createdAt: nowIso(), summary: "Fix src/totals.mjs", payload: {} },
+        {
+          id: "event_edit",
+          taskId: "task_file_mutation_role_compact",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool completed",
+          payload: {
+            toolCallId: "call_edit",
+            toolName: "edit_file",
+            args: { path: "src/totals.mjs" },
+            ok: true,
+            output: JSON.stringify({
+              path: "src/totals.mjs",
+              changed: true,
+              hash: "hash_after",
+              editsApplied: [{ startLine: 1, endLine: 1, beforeText, afterText }]
+            })
+          }
+        }
+      ]
+    };
+
+    const context = await assembler.assemble(task);
+    const toolMessage = context.messages.find((message) => message.role === "tool");
+    const toolContent = toolMessage?.role === "tool" ? JSON.parse(toolMessage.content) : {};
+
+    expect(toolContent.path).toBe("src/totals.mjs");
+    expect(toolContent.hash).toBe("hash_after");
+    expect(toolContent.editsApplied).toBe(1);
+    expect(toolContent.output).toContain("Re-read the file");
+    expect(toolMessage?.role === "tool" ? toolMessage.content : "").not.toContain(beforeText);
+    expect(toolMessage?.role === "tool" ? toolMessage.content : "").not.toContain(afterText);
   });
 
   it("does not compact ordinary small messages by event count alone", async () => {
@@ -1780,17 +2001,17 @@ describe("Model provider configuration", () => {
 });
 
 describe("Tool surface selection", () => {
-  it("exposes the stable tool surface without classifying user language", () => {
+  it("omits tool schemas for direct-answer chat and trims optional tools for ordinary real work", () => {
     const directTask: TaskDetail = {
       kind: "primary",
       id: "task_direct_chat",
-      title: "你好",
+      title: "你可以帮我做些什么？请直接回答，不要读取文件、不要运行命令、不要检查项目结构。",
       status: "running",
       createdAt: nowIso(),
       updatedAt: nowIso(),
       approvals: [],
       pendingGuidance: [],
-      events: [{ id: "event_direct", taskId: "task_direct_chat", type: "user_message", createdAt: nowIso(), summary: "你好", payload: {} }]
+      events: [{ id: "event_direct", taskId: "task_direct_chat", type: "user_message", createdAt: nowIso(), summary: "你可以帮我做些什么？请直接回答，不要读取文件、不要运行命令、不要检查项目结构。", payload: {} }]
     };
     const inventoryTask: TaskDetail = {
       kind: "primary",
@@ -1821,15 +2042,241 @@ describe("Tool surface selection", () => {
         payload: {}
       }]
     };
+    const readTask: TaskDetail = {
+      kind: "primary",
+      id: "task_read_summary",
+      title: "读取并总结文件",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [{
+        id: "event_read_summary",
+        taskId: "task_read_summary",
+        type: "user_message",
+        createdAt: nowIso(),
+        summary: "读取 package.json 和 src/totals.mjs，并总结当前结构，不要修改文件。",
+        payload: {}
+      }]
+    };
+    const docsTask: TaskDetail = {
+      kind: "primary",
+      id: "task_docs_author",
+      title: "创建 API 文档",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [{
+        id: "event_docs_author",
+        taskId: "task_docs_author",
+        type: "user_message",
+        createdAt: nowIso(),
+        summary: "根据 src/totals.mjs 创建 docs/api.md，先读取源码，再写一个简洁 Markdown 文档。",
+        payload: {}
+      }]
+    };
+    const clarifyTask: TaskDetail = {
+      kind: "primary",
+      id: "task_clarify",
+      title: "澄清需求",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [{
+        id: "event_clarify",
+        taskId: "task_clarify",
+        type: "user_message",
+        createdAt: nowIso(),
+        summary: "实现一个项目功能，但具体范围可能不明确；如果需求不明确，请先询问用户确认。",
+        payload: {}
+      }]
+    };
+    const firstRunTask: TaskDetail = {
+      kind: "primary",
+      id: "task_first_run",
+      title: "先运行测试",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [{
+        id: "event_first_run",
+        taskId: "task_first_run",
+        type: "user_message",
+        createdAt: nowIso(),
+        summary: "先运行 npm test，基于真实失败输出定位问题，然后再读取相关源码并修复。",
+        payload: {}
+      }]
+    };
+    const commandOnlyTask: TaskDetail = {
+      kind: "primary",
+      id: "task_command_only",
+      title: "只运行测试",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [{
+        id: "event_command_only",
+        taskId: "task_command_only",
+        type: "user_message",
+        createdAt: nowIso(),
+        summary: "请只运行 npm test，然后告诉我结果，不要读取文件，不要修改文件。",
+        payload: {}
+      }]
+    };
+    const afterFirstRunTask: TaskDetail = {
+      ...firstRunTask,
+      id: "task_after_first_run",
+      events: [
+        ...(firstRunTask.events.map((event) => ({ ...event, taskId: "task_after_first_run" }))),
+        {
+          id: "event_first_run_result",
+          taskId: "task_after_first_run",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool completed",
+          payload: { toolCallId: "call_test", toolName: "run_command", args: { command: "npm test" }, ok: true, output: "tests failed at src/math.ts" }
+        }
+      ]
+    };
+    const commandThenInspectTask: TaskDetail = {
+      kind: "primary",
+      id: "task_command_then_inspect",
+      title: "运行测试后定位",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [{
+        id: "event_command_then_inspect",
+        taskId: "task_command_then_inspect",
+        type: "user_message",
+        createdAt: nowIso(),
+        summary: "请运行 npm test，定位所有失败测试，读取相关源码，然后只修改必要源文件。",
+        payload: {}
+      }]
+    };
+    const artifactReadyTask: TaskDetail = {
+      ...docsTask,
+      id: "task_docs_artifact_ready",
+      events: [
+        ...(docsTask.events.map((event) => ({ ...event, taskId: "task_docs_artifact_ready" }))),
+        {
+          id: "event_docs_write",
+          taskId: "task_docs_artifact_ready",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool completed",
+          payload: { toolCallId: "call_write", toolName: "edit_file", args: { path: "docs/api.md" }, ok: true, output: JSON.stringify({ path: "docs/api.md", hash: "hash_after" }) }
+        },
+        {
+          id: "event_docs_readback",
+          taskId: "task_docs_artifact_ready",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool completed",
+          payload: { toolCallId: "call_read", toolName: "read_file", args: { path: "docs/api.md" }, ok: true, output: JSON.stringify({ path: "docs/api.md", content: "# API", hash: "hash_after" }) }
+        }
+      ]
+    };
+    const docsAfterSourceReadTask: TaskDetail = {
+      ...docsTask,
+      id: "task_docs_after_source_read",
+      events: [
+        ...(docsTask.events.map((event) => ({ ...event, taskId: "task_docs_after_source_read" }))),
+        {
+          id: "event_docs_source_read",
+          taskId: "task_docs_after_source_read",
+          type: "tool_result",
+          createdAt: nowIso(),
+          summary: "Tool completed",
+          payload: { toolCallId: "call_read_source", toolName: "read_file", args: { path: "src/totals.mjs" }, ok: true, output: JSON.stringify({ path: "src/totals.mjs", content: "export function renderTotal() {}", hash: "hash_source" }) }
+        }
+      ]
+    };
+    const previewStillNeedsToolsTask: TaskDetail = {
+      ...artifactReadyTask,
+      id: "task_docs_preview_needed",
+      events: [
+        {
+          ...docsTask.events[0]!,
+          taskId: "task_docs_preview_needed",
+          summary: "创建 docs/api.md，读回确认后还要 attach 附件供用户预览。"
+        },
+        ...artifactReadyTask.events.slice(1).map((event) => ({ ...event, taskId: "task_docs_preview_needed" }))
+      ]
+    };
 
     const directNames = selectModelToolsForTask(directTask).map((tool) => tool.function.name);
     const inventoryNames = selectModelToolsForTask(inventoryTask).map((tool) => tool.function.name);
     const buildNames = selectModelToolsForTask(buildTask).map((tool) => tool.function.name);
+    const readNames = selectModelToolsForTask(readTask).map((tool) => tool.function.name);
+    const docsNames = selectModelToolsForTask(docsTask).map((tool) => tool.function.name);
+    const clarifyNames = selectModelToolsForTask(clarifyTask).map((tool) => tool.function.name);
+    const firstRunNames = selectModelToolsForTask(firstRunTask).map((tool) => tool.function.name);
+    const commandOnlyNames = selectModelToolsForTask(commandOnlyTask).map((tool) => tool.function.name);
+    const afterFirstRunNames = selectModelToolsForTask(afterFirstRunTask).map((tool) => tool.function.name);
+    const commandThenInspectNames = selectModelToolsForTask(commandThenInspectTask).map((tool) => tool.function.name);
+    const firstRunCommandTool = selectModelToolsForTask(firstRunTask).find((tool) => tool.function.name === "run_command");
+    const firstRunCommandSchema = ((firstRunCommandTool?.function.parameters["properties"] as Record<string, unknown>)["command"] as Record<string, unknown>);
+    const readTaskReadTool = selectModelToolsForTask(readTask).find((tool) => tool.function.name === "read_file");
+    const readTaskReadPathSchema = ((readTaskReadTool?.function.parameters["properties"] as Record<string, unknown>)["path"] as Record<string, unknown>);
+    const docsReadTool = selectModelToolsForTask(docsTask).find((tool) => tool.function.name === "read_file");
+    const docsReadPathSchema = ((docsReadTool?.function.parameters["properties"] as Record<string, unknown>)["path"] as Record<string, unknown>);
+    const docsAfterSourceReadNames = selectModelToolsForTask(docsAfterSourceReadTask).map((tool) => tool.function.name);
+    const artifactReadyNames = selectModelToolsForTask(artifactReadyTask).map((tool) => tool.function.name);
+    const previewStillNeedsToolsNames = selectModelToolsForTask(previewStillNeedsToolsTask).map((tool) => tool.function.name);
 
-    expect(directNames).toContain("read_file");
-    expect(directNames).toContain("write_file");
-    expect(inventoryNames).toEqual(directNames);
-    expect(buildNames).toEqual(directNames);
+    expect(directNames).toEqual([]);
+    expect(inventoryNames).toContain("read_file");
+    expect(inventoryNames).toContain("run_command");
+    expect(commandOnlyNames).toEqual(["run_command"]);
+    expect(firstRunNames).toEqual([
+      "run_command",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "search_files",
+      "list_files",
+      "plan_update"
+    ]);
+    expect(commandThenInspectNames).toEqual(firstRunNames);
+    expect(firstRunCommandSchema["enum"]).toEqual(["npm test"]);
+    expect(firstRunCommandSchema["description"]).toContain(process.platform === "win32" ? "Windows PowerShell" : "POSIX-compatible");
+    expect(readTaskReadPathSchema["enum"]).toEqual(["package.json", "src/totals.mjs"]);
+    expect(docsReadPathSchema["enum"]).toEqual(["src/totals.mjs"]);
+    expect(String(docsReadPathSchema["description"])).toContain("Do not pass");
+    expect(docsAfterSourceReadNames).toContain("read_file");
+    expect(docsAfterSourceReadNames).toContain("edit_file");
+    expect(docsAfterSourceReadNames).toContain("write_file");
+    expect(docsAfterSourceReadNames).toContain("search_files");
+    expect(artifactReadyNames).toEqual([]);
+    expect(previewStillNeedsToolsNames).toContain("attach_task_file");
+    expect(afterFirstRunNames).toContain("read_file");
+    expect(afterFirstRunNames).toContain("edit_file");
+    expect(afterFirstRunNames).toContain("list_files");
+    expect(readNames).toEqual(["read_file", "list_files"]);
+    expect(docsNames).toEqual(["read_file", "edit_file", "write_file", "search_files"]);
+    expect(clarifyNames).toContain("ask_user");
+    expect(buildNames).toEqual([
+      "run_command",
+      "read_file",
+      "edit_file",
+      "write_file",
+      "search_files",
+      "list_files",
+      "plan_update"
+    ]);
+    expect(inventoryNames.length).toBeGreaterThan(buildNames.length);
   });
 
   it("uses explicit task graph role policy to restrict tools without parsing user text", () => {
@@ -1874,6 +2321,107 @@ describe("Tool surface selection", () => {
     expect(buildNames).toContain("plan_update");
     expect(buildNames).not.toContain("user_memory_add");
     expect(buildNames).not.toContain("skill_create");
+  });
+
+  it("honors latest-turn explicit tool limits before exposing schemas", () => {
+    const noToolsTask: TaskDetail = {
+      kind: "primary",
+      id: "task_no_tools_followup",
+      title: "Long follow-up",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_initial", taskId: "task_no_tools_followup", type: "user_message", createdAt: nowIso(), summary: "先检查项目。", payload: {} },
+        { id: "event_answer", taskId: "task_no_tools_followup", type: "assistant_message", createdAt: nowIso(), summary: "已记录。", payload: {} },
+        { id: "event_followup", taskId: "task_no_tools_followup", type: "user_message", createdAt: nowIso(), summary: "第 3 轮：继续保持同一个任务，只补充一个验证点，不要使用工具。", payload: {} }
+      ]
+    };
+    const readFileOnlyTask: TaskDetail = {
+      kind: "primary",
+      id: "task_read_file_only",
+      title: "Rollback follow-up",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_initial", taskId: "task_read_file_only", type: "user_message", createdAt: nowIso(), summary: "先修复测试。", payload: {} },
+        { id: "event_followup", taskId: "task_read_file_only", type: "user_message", createdAt: nowIso(), summary: "基于同一线程补全 JSON，不要请求除 read_file 之外的工具。", payload: {} }
+      ]
+    };
+
+    expect(selectModelToolsForTask(noToolsTask).map((tool) => tool.function.name)).toEqual([]);
+    expect(selectModelToolsForTask(readFileOnlyTask).map((tool) => tool.function.name)).toEqual(["read_file"]);
+  });
+
+  it("omits tool schemas when the task is explicitly finalizing", () => {
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_finalizing_schema",
+      title: "Finalize after tools",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        { id: "event_user", taskId: "task_finalizing_schema", type: "user_message", createdAt: nowIso(), summary: "修复测试并最终总结。", payload: {} },
+        { id: "event_tool", taskId: "task_finalizing_schema", type: "tool_result", createdAt: nowIso(), summary: "Tool completed", payload: { toolCallId: "call_test", toolName: "run_command", ok: true, output: "tests passed" } },
+        {
+          id: "event_finalizing",
+          taskId: "task_finalizing_schema",
+          type: "model_no_progress",
+          createdAt: nowIso(),
+          summary: "Run limit reached after successful tool evidence; requesting a final answer without more tool calls.",
+          payload: { status: "finalizing", reason: "finalization_before_turn_limit" }
+        }
+      ]
+    };
+
+    expect(selectModelToolsForTask(task).map((tool) => tool.function.name)).toEqual([]);
+  });
+
+  it("omits tool schemas after required verification passed until the user asks for more work", () => {
+    const baseEvents: TaskDetail["events"] = [
+      { id: "event_user", taskId: "task_verified_summary_schema", type: "user_message", createdAt: nowIso(), summary: "修复失败测试，最后运行 npm test 并总结验证结果。", payload: {} },
+      { id: "event_read", taskId: "task_verified_summary_schema", type: "tool_result", createdAt: nowIso(), summary: "Tool completed", payload: { toolCallId: "call_read", toolName: "read_file", ok: true, output: "{}" } },
+      { id: "event_edit", taskId: "task_verified_summary_schema", type: "tool_result", createdAt: nowIso(), summary: "Tool completed", payload: { toolCallId: "call_edit", toolName: "edit_file", ok: true, output: "{}" } },
+      { id: "event_test", taskId: "task_verified_summary_schema", type: "tool_result", createdAt: nowIso(), summary: "Tool completed", payload: { toolCallId: "call_test", toolName: "run_command", args: { command: "npm test" }, ok: true, output: "tests passed" } },
+      {
+        id: "event_verified",
+        taskId: "task_verified_summary_schema",
+        type: "verification_result_recorded",
+        createdAt: nowIso(),
+        summary: "run_command passed",
+        payload: { nodeId: "node_verify", status: "passed", evidenceRef: "event_test", toolName: "run_command" }
+      }
+    ];
+    const verifiedTask: TaskDetail = {
+      kind: "primary",
+      id: "task_verified_summary_schema",
+      title: "Verified summary",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: baseEvents
+    };
+    const followUpTask: TaskDetail = {
+      ...verifiedTask,
+      id: "task_verified_followup_schema",
+      events: [
+        ...baseEvents.map((event) => ({ ...event, taskId: "task_verified_followup_schema" })),
+        { id: "event_followup", taskId: "task_verified_followup_schema", type: "user_message", createdAt: nowIso(), summary: "继续检查 docs/api.md。", payload: {} }
+      ]
+    };
+
+    expect(selectModelToolsForTask(verifiedTask).map((tool) => tool.function.name)).toEqual([]);
+    expect(selectModelToolsForTask(followUpTask).map((tool) => tool.function.name)).toContain("read_file");
   });
 
   it("spawns read-only subagent tasks, keeps child flow isolated, and projects completion back to the parent", async () => {
@@ -2032,6 +2580,111 @@ class PassingCommandExecutor {
       ok: true,
       createdAt: nowIso(),
       output: "math tests passed"
+    };
+  }
+}
+
+class DebugRepairToolExecutor {
+  calls: ToolCall[] = [];
+  private commandCalls = 0;
+
+  async execute(call: ToolCall): Promise<ToolResult> {
+    this.calls.push(call);
+    if (call.toolName === "run_command") {
+      this.commandCalls += 1;
+      return {
+        id: createId("tool_result"),
+        toolCallId: call.id,
+        ok: this.commandCalls > 1,
+        createdAt: nowIso(),
+        output: this.commandCalls > 1 ? "math tests passed" : "AssertionError: expected sum([2,3,5]) to equal 10 but got 3"
+      };
+    }
+    if (call.toolName === "read_file") {
+      return {
+        id: createId("tool_result"),
+        toolCallId: call.id,
+        ok: true,
+        createdAt: nowIso(),
+        output: JSON.stringify({
+          path: "src/math.mjs",
+          content: "export function sum(numbers) {\n  return numbers.length;\n}\n",
+          hash: "hash_before"
+        })
+      };
+    }
+    if (call.toolName === "edit_file") {
+      return {
+        id: createId("tool_result"),
+        toolCallId: call.id,
+        ok: true,
+        createdAt: nowIso(),
+        output: JSON.stringify({
+          status: "success",
+          path: "src/math.mjs",
+          hash: "hash_after",
+          changed: true,
+          editsApplied: [{
+            beforeText: "export function sum(numbers) {\n  return numbers.length;\n}\n",
+            afterText: "export function sum(numbers) {\n  return numbers.reduce((acc, value) => acc + value, 0);\n}\n"
+          }]
+        })
+      };
+    }
+    return {
+      id: createId("tool_result"),
+      toolCallId: call.id,
+      ok: true,
+      createdAt: nowIso(),
+      output: "ok"
+    };
+  }
+}
+
+class CommandOutcomeToolExecutor {
+  calls: ToolCall[] = [];
+
+  async execute(call: ToolCall): Promise<ToolResult> {
+    this.calls.push(call);
+    const command = String(call.args["command"] ?? "");
+    const ok = !command.includes("fail-command");
+    return {
+      id: createId("tool_result"),
+      toolCallId: call.id,
+      ok,
+      createdAt: nowIso(),
+      output: ok ? "verified repaired evidence passed" : "simulated command failure"
+    };
+  }
+}
+
+class EnvironmentCheckToolExecutor {
+  calls: ToolCall[] = [];
+
+  async execute(call: ToolCall): Promise<ToolResult> {
+    this.calls.push(call);
+    return {
+      id: createId("tool_result"),
+      toolCallId: call.id,
+      ok: true,
+      createdAt: nowIso(),
+      output: "comtypes version: 1.4.16"
+    };
+  }
+}
+
+class SetupThenArtifactToolExecutor {
+  calls: ToolCall[] = [];
+
+  async execute(call: ToolCall): Promise<ToolResult> {
+    this.calls.push(call);
+    const command = String(call.args["command"] ?? "");
+    return {
+      id: createId("tool_result"),
+      toolCallId: call.id,
+      ok: true,
+      createdAt: nowIso(),
+      output: command.includes("generate-artifact") ? "generated status-closure-report.docx" : "comtypes version: 1.4.16"
     };
   }
 }
@@ -2239,6 +2892,97 @@ class RepeatingPlanOnlyModel implements ModelClient {
   }
 }
 
+class StateOnlyThenSubstantiveToolModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command")) {
+      return { kind: "final", message: "Recovered from planning-only loop and verified with a substantive tool." };
+    }
+    if (task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "state_only_tools_without_task_evidence")) {
+      return {
+        kind: "tool_calls",
+        calls: [{
+          id: createId("tool_call"),
+          toolName: "run_command",
+          args: { command: "Write-Output recovered" }
+        }]
+      };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{
+        id: createId("tool_call"),
+        toolName: "plan_update",
+        args: { context: "Still preparing", status: "running", steps: [{ title: "Preparing", status: "running" }] }
+      }]
+    };
+  }
+}
+
+const NORMAL_MODEL_TURN_LIMIT_FOR_TEST = 24;
+
+class FinalizesAtRunLimitModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "finalization_before_turn_limit")) {
+      return { kind: "final", message: "Finalized from completed tool evidence." };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{
+        id: createId("tool_call"),
+        toolName: "run_command",
+        args: { command: "Write-Output evidence" }
+      }]
+    };
+  }
+}
+
+class RepeatingShellAfterLimitModel implements ModelClient {
+  async next(): Promise<ModelTurn> {
+    return {
+      kind: "tool_calls",
+      calls: [{
+        id: createId("tool_call"),
+        toolName: "run_command",
+        args: { command: "Write-Output evidence" }
+      }]
+    };
+  }
+}
+
+class RepairsFailedToolAtRunLimitModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "finalization_before_turn_limit")) {
+      return { kind: "final", message: "Finalized after repairing the failed tool operation." };
+    }
+    const shouldRepair = task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "repair_after_tool_failure_before_turn_limit");
+    return {
+      kind: "tool_calls",
+      calls: [{
+        id: createId("tool_call"),
+        toolName: "run_command",
+        args: { command: shouldRepair ? "Write-Output repaired" : "fail-command" }
+      }]
+    };
+  }
+}
+
+class GeneratesArtifactAfterSetupLimitModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "finalization_before_turn_limit")) {
+      return { kind: "final", message: "Finalized after setup produced artifact evidence." };
+    }
+    const shouldGenerate = task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "continue_after_setup_before_turn_limit");
+    return {
+      kind: "tool_calls",
+      calls: [{
+        id: createId("tool_call"),
+        toolName: "run_command",
+        args: { command: shouldGenerate ? "generate-artifact" : "check-environment" }
+      }]
+    };
+  }
+}
+
 class RepeatingReadOnlyModel implements ModelClient {
   async next(): Promise<ModelTurn> {
     return {
@@ -2249,6 +2993,46 @@ class RepeatingReadOnlyModel implements ModelClient {
         args: { path: "index.html" }
       }]
     };
+  }
+}
+
+class StateThenRepeatingReadOnlyModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (!task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "plan_update")) {
+      return {
+        kind: "tool_calls",
+        calls: [{
+          id: createId("tool_call"),
+          toolName: "plan_update",
+          args: { status: "running", steps: [{ id: "inspect", title: "Inspect repeated file", status: "running" }] }
+        }]
+      };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{
+        id: createId("tool_call"),
+        toolName: "read_file",
+        args: { path: "index.html" }
+      }]
+    };
+  }
+}
+
+class RepeatedListingThenFinalModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    const readOnlyResults = task.events.filter((event) =>
+      event.type === "tool_result" &&
+      (event.payload["toolName"] === "list_files" || event.payload["toolName"] === "read_file")
+    );
+    if (readOnlyResults.length >= 4) return { kind: "final", message: "Enough file evidence after bounded listings." };
+    const sequence: ToolCall[] = [
+      { id: createId("tool_call"), toolName: "list_files", args: {} },
+      { id: createId("tool_call"), toolName: "list_files", args: { path: "src" } },
+      { id: createId("tool_call"), toolName: "read_file", args: { path: "src/totals.mjs" } },
+      { id: createId("tool_call"), toolName: "list_files", args: { path: "." } }
+    ];
+    return { kind: "tool_calls", calls: [sequence[Math.min(readOnlyResults.length, sequence.length - 1)]!] };
   }
 }
 
@@ -2406,6 +3190,29 @@ class RepeatedInternalContinuationModel implements ModelClient {
   }
 }
 
+class InternalContinuationAfterEvidenceModel implements ModelClient {
+  calls = 0;
+
+  async next(task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    this.calls += 1;
+    if (!task.events.some((event) => event.type === "tool_result")) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "run_command", args: { command: "Write-Output verified" } }],
+        ...(stream?.streamId ? { streamId: stream.streamId } : {})
+      };
+    }
+    if (task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "finalization_after_internal_continuation")) {
+      return { kind: "final", message: "Final answer after verified tool evidence.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+    }
+    return {
+      kind: "final",
+      message: "Internal continuity note. Do not quote this note verbatim or use it as the final answer: I still need to continue.",
+      ...(stream?.streamId ? { streamId: stream.streamId } : {})
+    };
+  }
+}
+
 class InternalContinuationSeparatedByToolProgressModel implements ModelClient {
   calls = 0;
 
@@ -2475,6 +3282,49 @@ class OptionalAskAfterVerificationModel implements ModelClient {
   }
 }
 
+class OptionalAskAfterFileEvidenceModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    const askResolution = [...task.events].reverse().find(
+      (event) =>
+        event.type === "tool_result" &&
+        event.payload["toolName"] === "ask_user" &&
+        String(event.payload["output"] ?? "").includes("optional_follow_up_after_completed_progress")
+    );
+    if (askResolution) return { kind: "final", message: "Final answer after completed file evidence." };
+    if (!task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "write_file")) {
+      return {
+        kind: "tool_calls",
+        calls: [{
+          id: createId("tool_call"),
+          toolName: "write_file",
+          args: {
+            path: "docs/api.md",
+            expectedHash: "__new__",
+            content: "# API\n\n## renderTotal\n\n```js\nrenderTotal([{ price: 2 }]);\n```\n"
+          }
+        }]
+      };
+    }
+    if (!task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "read_file")) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "read_file", args: { path: "docs/api.md" } }]
+      };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{
+        id: createId("tool_call"),
+        toolName: "ask_user",
+        args: {
+          question: "我已创建 docs/api.md 并读回确认。您希望我调整文档格式或内容吗？",
+          required: false
+        }
+      }]
+    };
+  }
+}
+
 class AskHowToExplainEvidenceModel implements ModelClient {
   async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
     const askResolution = [...task.events].reverse().find(
@@ -2504,6 +3354,32 @@ class AskHowToExplainEvidenceModel implements ModelClient {
   }
 }
 
+class AskSpecificTaskAfterEvidenceModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    const askResolution = [...task.events].reverse().find(
+      (event) =>
+        event.type === "tool_result" &&
+        event.payload["toolName"] === "ask_user" &&
+        String(event.payload["output"] ?? "").includes("current_task_already_specified")
+    );
+    if (askResolution) return { kind: "final", message: "Final answer after the task-continuation ask was auto-resolved." };
+    if (task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command")) {
+      return {
+        kind: "tool_calls",
+        calls: [{
+          id: createId("tool_call"),
+          toolName: "ask_user",
+          args: { question: "技能已加载，您希望执行哪个具体任务？", required: true }
+        }]
+      };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{ id: createId("tool_call"), toolName: "run_command", args: { command: "node tests/math.test.mjs" } }]
+    };
+  }
+}
+
 class PlainFinalModel implements ModelClient {
   constructor(private readonly message = "Done.") {}
 
@@ -2524,6 +3400,74 @@ class ClaimedSearchEvidenceThenToolModel implements ModelClient {
       };
     }
     return { kind: "final", message: "search_files returned AW-LIVE-FILE-TOOLS." };
+  }
+}
+
+class WeakFinalAfterToolEvidenceModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (!task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command")) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "run_command", args: { command: "node tests/math.test.mjs" } }]
+      };
+    }
+    if (!task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "weak_final_answer_after_tool_evidence")) {
+      return { kind: "final", message: "src/math.mjs 1 3" };
+    }
+    return {
+      kind: "final",
+      message: "Root cause: sum returned numbers.length instead of adding values. Changed src/math.mjs and verified with node tests/math.test.mjs: math tests passed."
+    };
+  }
+}
+
+class MissingRootCauseFinalAfterToolEvidenceModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    if (!task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command")) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "run_command", args: { command: "node tests/math.test.mjs" } }]
+      };
+    }
+    if (!task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "weak_final_answer_after_tool_evidence")) {
+      return { kind: "final", message: "已完成：运行测试，读取源码，修复 sum 函数，重新运行测试通过。Status: completed" };
+    }
+    return {
+      kind: "final",
+      message: "Root cause: sum returned `numbers.length` instead of adding array values. Changed src/math.mjs and verified with node tests/math.test.mjs: math tests passed."
+    };
+  }
+}
+
+class RepeatedWeakFinalAfterCompleteDebugEvidenceModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    const toolResults = task.events.filter((event) => event.type === "tool_result");
+    const runResults = toolResults.filter((event) => event.payload["toolName"] === "run_command");
+    if (runResults.length === 0) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "run_command", args: { command: "node tests/math.test.mjs" } }]
+      };
+    }
+    if (!toolResults.some((event) => event.payload["toolName"] === "read_file")) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "read_file", args: { path: "src/math.mjs" } }]
+      };
+    }
+    if (!toolResults.some((event) => event.payload["toolName"] === "edit_file")) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "edit_file", args: { path: "src/math.mjs", expectedHash: "hash_before", edits: [] } }]
+      };
+    }
+    if (runResults.length < 2) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "run_command", args: { command: "node tests/math.test.mjs" } }]
+      };
+    }
+    return { kind: "final", message: "src/math.mjs" };
   }
 }
 
@@ -2636,6 +3580,39 @@ class SelfClosingToolInvocationMarkupModel implements ModelClient {
   }
 }
 
+class LegacyToolCallMarkupModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    if (task.events.some((event) => event.type === "tool_result")) {
+      await stream?.onAssistantDelta("Legacy markup read verified.");
+      return { kind: "final", message: "Legacy markup read verified.", ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+    }
+    const message = [
+      "<tool_call>",
+      "<function=read_file>",
+      "<parameter=path>src/math.mjs</parameter>",
+      "</function>",
+      "</tool_call>"
+    ].join("\n");
+    await stream?.onAssistantDelta(message);
+    return { kind: "final", message, ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+}
+
+class SuppressedInlineToolMarkupModel implements ModelClient {
+  async next(_task: Parameters<ModelClient["next"]>[0], stream?: ModelStreamHandlers): Promise<ModelTurn> {
+    const message = [
+      "<tool_call>",
+      "<function=plan_update>",
+      "<parameter=status>completed</parameter>",
+      "<parameter=evidence>已创建 docs/api.md，并读回确认。</parameter>",
+      "</function>",
+      "</tool_call>"
+    ].join("\n");
+    await stream?.onAssistantDelta(message);
+    return { kind: "final", message, inlineToolCallsAllowed: false, ...(stream?.streamId ? { streamId: stream.streamId } : {}) };
+  }
+}
+
 class ToolIntentOnlyFinalThenCallModel implements ModelClient {
   calls = 0;
 
@@ -2684,6 +3661,13 @@ class TraceEmittingToolRoundTripModel implements ModelClient {
       streamId,
       provider: { protocol: "openai_compatible", model: "trace-test-model", baseURL: "http://trace.local" },
       payload: {
+        cache: {
+          promptCacheMode: "auto",
+          promptCacheKey: "aw-trace-cache-key-1234567890",
+          thinking: "provider_default",
+          stablePrefixTokens: 2048,
+          toolCacheFamily: { mode: "tools", names: ["list_files"] }
+        },
         request: {
           messages: [{ role: "user", content: task.events.find((event) => event.type === "user_message")?.summary ?? "" }],
           eventCount: task.events.length
@@ -2837,6 +3821,15 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 1000): Pro
   throw new Error("Timed out waiting for condition");
 }
 
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe("Attention-first task graph runtime", () => {
   it("does not create a task graph for a greeting", async () => {
     const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model: new StreamingFinalModel() });
@@ -2978,6 +3971,51 @@ describe("Attention-first task graph runtime", () => {
     expect(task.status).toBe("waiting_approval");
     expect(task.events.some((event) => event.type === "tool_requested")).toBe(true);
     expect(task.events.some((event) => event.type === "tool_result")).toBe(false);
+  });
+
+  it("keeps all same-turn tool approvals pending until each approved tool has executed", async () => {
+    class TwoApprovalToolModel implements ModelClient {
+      async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+        const results = task.events.filter((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command");
+        if (results.length >= 2) return { kind: "final", message: "Both approved commands executed." };
+        return {
+          kind: "tool_calls",
+          calls: [
+            { id: createId("tool_call"), toolName: "run_command", args: { command: "first-check" } },
+            { id: createId("tool_call"), toolName: "run_command", args: { command: "second-check" } }
+          ]
+        };
+      }
+    }
+
+    const tools = new StubToolExecutor();
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      model: new TwoApprovalToolModel(),
+      tools
+    });
+
+    const waiting = await workbench.createTask("run both checks after approval");
+    const approvals = waiting.approvals.filter((approval) => approval.status === "pending");
+
+    expect(waiting.status).toBe("waiting_approval");
+    expect(approvals).toHaveLength(2);
+    expect(waiting.events.filter((event) => event.type === "approval_pending")).toHaveLength(2);
+    expect(tools.calls).toHaveLength(0);
+
+    const afterFirst = await workbench.decideApproval(waiting.id, approvals[0]!.id, "allow_once");
+    const remaining = afterFirst.approvals.filter((approval) => approval.status === "pending");
+
+    expect(afterFirst.status).toBe("waiting_approval");
+    expect(tools.calls.map((call) => call.args["command"])).toEqual(["first-check"]);
+    expect(remaining).toHaveLength(1);
+
+    const completed = await workbench.decideApproval(waiting.id, remaining[0]!.id, "allow_once");
+
+    expect(completed.status).toBe("completed");
+    expect(tools.calls.map((call) => call.args["command"])).toEqual(["first-check", "second-check"]);
+    expect(completed.events.filter((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command")).toHaveLength(2);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary === "Both approved commands executed.")).toBe(true);
   });
 
   it("keeps follow-up tool execution governed by approval grants, not natural-language denial", async () => {
@@ -3139,6 +4177,68 @@ describe("Attention-first task graph runtime", () => {
     expect(task.status).toBe("completed");
     expect(task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "claimed_tool_evidence_without_result")).toBe(true);
     expect(task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "search_files")).toBe(true);
+  });
+
+  it("retries once when a final answer is too terse after successful tool evidence", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new PassingCommandExecutor(),
+      model: new WeakFinalAfterToolEvidenceModel()
+    });
+    await workbench.grantGlobalPermission("shell", "verification command");
+
+    const task = await workbench.createTask("Run the verification command and summarize the root cause, changed file, and test result.");
+    const retries = task.events.filter((event) => event.type === "model_no_progress" && event.payload["reason"] === "weak_final_answer_after_tool_evidence");
+    const final = [...task.events].reverse().find((event) => event.type === "assistant_message");
+
+    expect(task.status).toBe("completed");
+    expect(retries).toHaveLength(1);
+    expect(final?.summary).toContain("Root cause");
+    expect(final?.summary).toContain("math tests passed");
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary === "src/math.mjs 1 3")).toBe(false);
+  });
+
+  it("retries once when the requested root cause is missing from the final answer", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new PassingCommandExecutor(),
+      model: new MissingRootCauseFinalAfterToolEvidenceModel()
+    });
+    await workbench.grantGlobalPermission("shell", "verification command");
+
+    const task = await workbench.createTask("Run the verification command. The final answer must include the root cause expression, changed file, and verification result.");
+    const retries = task.events.filter((event) => event.type === "model_no_progress" && event.payload["reason"] === "weak_final_answer_after_tool_evidence");
+    const final = [...task.events].reverse().find((event) => event.type === "assistant_message");
+
+    expect(task.status).toBe("completed");
+    expect(retries).toHaveLength(1);
+    expect(String(retries[0]?.summary ?? "")).toContain("requested root cause");
+    expect(final?.summary).toContain("numbers.length");
+    expect(final?.summary).toContain("math tests passed");
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary.includes("Status: completed"))).toBe(false);
+  });
+
+  it("synthesizes a conservative final answer from complete tool evidence after repeated weak finals", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new DebugRepairToolExecutor(),
+      model: new RepeatedWeakFinalAfterCompleteDebugEvidenceModel()
+    });
+    await workbench.grantGlobalPermission("shell", "test commands");
+    await workbench.grantGlobalPermission("workspace_read", "source inspection");
+    await workbench.grantGlobalPermission("workspace_write", "source edits");
+
+    const task = await workbench.createTask("Run tests, inspect source, fix the failure, and include the root cause expression, changed file, and verification result.");
+    const retries = task.events.filter((event) => event.type === "model_no_progress" && event.payload["reason"] === "weak_final_answer_after_tool_evidence");
+    const final = [...task.events].reverse().find((event) => event.type === "assistant_message");
+
+    expect(task.status).toBe("completed");
+    expect(retries).toHaveLength(1);
+    expect(final?.payload["synthesizedFromToolEvidence"]).toBe(true);
+    expect(final?.summary).toContain("return numbers.length");
+    expect(final?.summary).toContain("return numbers.reduce");
+    expect(final?.summary).toContain("src/math.mjs");
+    expect(final?.summary).toContain("math tests passed");
   });
 
   it("allows a second claimed-evidence retry before accepting a clean final answer", async () => {
@@ -3474,8 +4574,135 @@ describe("AgentWorkbench", () => {
     const planResults = paused.events.filter((event) => event.type === "tool_result" && event.payload["toolName"] === "plan_update");
 
     expect(paused.status).toBe("paused");
-    expect(planResults).toHaveLength(2);
+    expect(planResults).toHaveLength(4);
+    expect(paused.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "state_only_tools_without_task_evidence")).toBe(true);
     expect(paused.events.some((event) => event.type === "assistant_message" && event.summary.includes("no-progress loop"))).toBe(true);
+  });
+
+  it("recovers once from repeated state-only tool turns when the model switches to substantive work", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new StubToolExecutor(),
+      model: new StateOnlyThenSubstantiveToolModel()
+    });
+    await workbench.updatePreferences({
+      permissionMode: "auto_approval",
+      autoApproveRiskCategories: ["shell"]
+    });
+
+    const completed = await workbench.createTask("create evidence after planning");
+    const planResults = completed.events.filter((event) => event.type === "tool_result" && event.payload["toolName"] === "plan_update");
+    const commandResults = completed.events.filter((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command");
+
+    expect(completed.status).toBe("completed");
+    expect(planResults).toHaveLength(2);
+    expect(commandResults).toHaveLength(1);
+    expect(completed.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "state_only_tools_without_task_evidence")).toBe(true);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("Recovered from planning-only loop"))).toBe(true);
+  });
+
+  it("requests one final answer at the model turn limit when successful tool evidence exists", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new PassingCommandExecutor(),
+      model: new FinalizesAtRunLimitModel()
+    });
+    await workbench.updatePreferences({
+      permissionMode: "auto_approval",
+      autoApproveRiskCategories: ["shell"]
+    });
+
+    const completed = await workbench.createTask("verify repeatedly, then close with a final answer");
+    const toolResults = completed.events.filter((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command");
+
+    expect(completed.status).toBe("completed");
+    expect(toolResults).toHaveLength(NORMAL_MODEL_TURN_LIMIT_FOR_TEST);
+    expect(completed.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "finalization_before_turn_limit")).toBe(true);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("Finalized from completed tool evidence"))).toBe(true);
+  });
+
+  it("pauses instead of running more tools when the finalization turn still asks for tools", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new PassingCommandExecutor(),
+      model: new RepeatingShellAfterLimitModel()
+    });
+    await workbench.updatePreferences({
+      permissionMode: "auto_approval",
+      autoApproveRiskCategories: ["shell"]
+    });
+
+    const paused = await workbench.createTask("keep verifying forever");
+    const toolResults = paused.events.filter((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command");
+
+    expect(paused.status).toBe("paused");
+    expect(toolResults).toHaveLength(NORMAL_MODEL_TURN_LIMIT_FOR_TEST);
+    expect(paused.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "tool_call_during_finalization")).toBe(true);
+  });
+
+  it("repairs unresolved failed tool evidence once at the model turn limit before finalizing", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new CommandOutcomeToolExecutor(),
+      model: new RepairsFailedToolAtRunLimitModel()
+    });
+    await workbench.updatePreferences({
+      permissionMode: "auto_approval",
+      autoApproveRiskCategories: ["shell"]
+    });
+
+    const completed = await workbench.createTask("keep trying until the failing command is repaired");
+    const failedResults = completed.events.filter((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command" && event.payload["ok"] === false);
+    const successfulResults = completed.events.filter((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command" && event.payload["ok"] !== false);
+
+    expect(completed.status).toBe("completed");
+    expect(failedResults).toHaveLength(NORMAL_MODEL_TURN_LIMIT_FOR_TEST);
+    expect(successfulResults).toHaveLength(1);
+    expect(completed.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "repair_after_tool_failure_before_turn_limit")).toBe(true);
+    expect(completed.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "finalization_before_turn_limit")).toBe(true);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("Finalized after repairing"))).toBe(true);
+  });
+
+  it("continues once at the model turn limit from setup-only tool evidence but does not finalize from it", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new EnvironmentCheckToolExecutor(),
+      model: new RepeatingShellAfterLimitModel()
+    });
+    await workbench.updatePreferences({
+      permissionMode: "auto_approval",
+      autoApproveRiskCategories: ["shell"]
+    });
+
+    const paused = await workbench.createTask("prepare environment before generating artifacts");
+    const toolResults = paused.events.filter((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command");
+
+    expect(paused.status).toBe("paused");
+    expect(toolResults).toHaveLength(NORMAL_MODEL_TURN_LIMIT_FOR_TEST + 1);
+    expect(paused.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "continue_after_setup_before_turn_limit")).toBe(true);
+    expect(paused.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "finalization_before_turn_limit")).toBe(false);
+    expect(paused.events.some((event) => event.type === "assistant_message" && event.summary.includes("model turns"))).toBe(true);
+  });
+
+  it("finalizes after setup-only evidence turns into artifact evidence at the model turn limit", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new SetupThenArtifactToolExecutor(),
+      model: new GeneratesArtifactAfterSetupLimitModel()
+    });
+    await workbench.updatePreferences({
+      permissionMode: "auto_approval",
+      autoApproveRiskCategories: ["shell"]
+    });
+
+    const completed = await workbench.createTask("prepare environment, then generate artifacts");
+    const toolResults = completed.events.filter((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command");
+
+    expect(completed.status).toBe("completed");
+    expect(toolResults).toHaveLength(NORMAL_MODEL_TURN_LIMIT_FOR_TEST + 1);
+    expect(completed.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "continue_after_setup_before_turn_limit")).toBe(true);
+    expect(completed.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "finalization_before_turn_limit")).toBe(true);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("Finalized after setup"))).toBe(true);
   });
 
   it("executes fully read-only multi-tool turns concurrently", async () => {
@@ -3508,7 +4735,41 @@ describe("AgentWorkbench", () => {
 
     expect(paused.status).toBe("paused");
     expect(noProgress?.payload["reason"]).toBe("repeated_read_only_tools");
-    expect(Number(noProgress?.payload["readOnlyToolCount"])).toBeGreaterThanOrEqual(16);
+    expect(Number(noProgress?.payload["readOnlyToolCount"])).toBeGreaterThanOrEqual(4);
+  });
+
+  it("does not pause a bounded directory listing pattern after only two repeated list targets", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new StubToolExecutor(),
+      model: new RepeatedListingThenFinalModel()
+    });
+    await workbench.grantGlobalPermission("workspace_read", "bounded listing");
+
+    const completed = await workbench.createTask("inspect a folder and create documentation from the evidence");
+
+    expect(completed.status).toBe("completed");
+    expect(completed.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "repeated_read_only_tools")).toBe(false);
+    expect(completed.events.filter((event) => event.type === "tool_result")).toHaveLength(4);
+  });
+
+  it("pauses trailing repeated read-only exploration even after state-only tools", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new StubToolExecutor(),
+      model: new StateThenRepeatingReadOnlyModel()
+    });
+    await workbench.grantGlobalPermission("workspace_read", "loop guard after state tool");
+
+    const paused = await workbench.createTask("update plan, then avoid reading the same file forever");
+    const noProgress = paused.events.find((event) => event.type === "model_no_progress");
+    const planResult = paused.events.find((event) => event.type === "tool_result" && event.payload["toolName"] === "plan_update");
+
+    expect(paused.status).toBe("paused");
+    expect(planResult).toBeTruthy();
+    expect(noProgress?.payload["reason"]).toBe("repeated_read_only_tools");
+    expect(Number(noProgress?.payload["readOnlyToolCount"])).toBeGreaterThanOrEqual(4);
+    expect(Number(noProgress?.payload["repeatedTargetCount"])).toBeGreaterThanOrEqual(2);
   });
 
   it("writes per-task model trace logs across model requests and tool results", async () => {
@@ -3545,6 +4806,14 @@ describe("AgentWorkbench", () => {
     expect(kinds).toContain("tool_result");
     expect(kinds.filter((kind) => kind === "model_turn_started")).toHaveLength(2);
     expect(modelRequest?.["payload"]).toMatchObject({
+      cache: {
+        promptCacheMode: "auto",
+        promptCacheKeySent: true,
+        promptCacheKeyPrefix: "aw-trace-cac",
+        thinking: "provider_default",
+        stablePrefixTokens: 2048,
+        toolCacheFamily: { mode: "tools", names: ["list_files"] }
+      },
       request: {
         messageSummary: {
           count: expect.any(Number),
@@ -3712,16 +4981,33 @@ describe("AgentWorkbench", () => {
       expect(existsSync(tracePath)).toBe(true);
       expect(traceEntries.some((entry) => entry["kind"] === "model_request")).toBe(true);
       expect(requestMessages[0]?.at(-1)?.["role"]).toBe("user");
-      expect(String(requestMessages[0]?.at(-1)?.["content"] ?? "")).toContain("Trace the full request-response loop");
+      const firstConversationUser = requestMessages[0]
+        ?.filter(
+          (message) =>
+            message["role"] === "user" &&
+            !String(message["content"] ?? "").startsWith("## Current Workbench Context") &&
+            !String(message["content"] ?? "").startsWith("## Stable Task Context")
+        )
+        .at(-1);
+      expect(String(firstConversationUser?.["content"] ?? "")).toContain("Trace the full request-response loop");
       expect(String(requestMessages[0]?.at(-1)?.["content"] ?? "")).not.toContain("Active Node");
       expect(requestMessages[1]?.some((message) => message["role"] === "tool")).toBe(true);
       expect(requestMessages[0]?.some((message) => "reasoning_content" in message)).toBe(false);
+      expect(requestMessages[1]?.some((message) => "reasoning_content" in message)).toBe(false);
       const replayedToolCallMessage = requestMessages[1]?.find((message) => Array.isArray(message["tool_calls"]));
       expect(replayedToolCallMessage?.["content"]).toBe("");
-      expect(replayedToolCallMessage?.["reasoning_content"]).toBe("I should inspect the workspace before answering.");
+      expect(replayedToolCallMessage?.["reasoning_content"]).toBeUndefined();
+      expect(JSON.stringify(requestMessages[1])).not.toContain("I should inspect the workspace before answering.");
       expect(String(requestMessages[1]?.find((message) => message["role"] === "tool")?.["content"] ?? "")).toContain("README.md");
       expect(String(requestMessages[1]?.[0]?.["content"] ?? "")).not.toContain("## Known Files");
-      const lastUser = requestMessages[1]?.filter((message) => message["role"] === "user").at(-1);
+      const lastUser = requestMessages[1]
+        ?.filter(
+          (message) =>
+            message["role"] === "user" &&
+            !String(message["content"] ?? "").startsWith("## Current Workbench Context") &&
+            !String(message["content"] ?? "").startsWith("## Stable Task Context")
+        )
+        .at(-1);
       expect(String(lastUser?.["content"] ?? "")).toContain("Trace the full request-response loop");
 
       writeFileSync(join(outDir, "captured-requests.json"), JSON.stringify(capturedRequests, null, 2), "utf8");
@@ -3903,6 +5189,33 @@ describe("AgentWorkbench", () => {
     expect(tools.calls.map((call) => call.args["path"])).toEqual(["src/math.mjs", "src/totals.mjs"]);
     expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("<tool_invocation"))).toBe(false);
     expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("Reads verified"))).toBe(true);
+  });
+
+  it("continues execution when a provider returns legacy tool_call function markup as text", async () => {
+    const tools = new StubToolExecutor();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), tools, model: new LegacyToolCallMarkupModel() });
+    await workbench.grantGlobalPermission("workspace_read", "legacy inline markup regression");
+
+    const completed = await workbench.createTask("read math source before answering");
+
+    expect(completed.status).toBe("completed");
+    expect(tools.calls.map((call) => call.toolName)).toEqual(["read_file"]);
+    expect(tools.calls.map((call) => call.args["path"])).toEqual(["src/math.mjs"]);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("<tool_call>"))).toBe(false);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("Legacy markup read verified"))).toBe(true);
+  });
+
+  it("does not execute inline tool markup when the model turn explicitly disables it", async () => {
+    const tools = new StubToolExecutor();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), tools, model: new SuppressedInlineToolMarkupModel() });
+
+    const completed = await workbench.createTask("summarize completed artifact evidence without more tools");
+
+    expect(completed.status).toBe("completed");
+    expect(tools.calls).toHaveLength(0);
+    expect(completed.events.some((event) => event.type === "tool_requested" && event.payload["toolName"] === "plan_update")).toBe(false);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("<tool_call>"))).toBe(false);
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary.includes("读回确认"))).toBe(true);
   });
 
   it("retries instead of completing on final answers that only announce a pending tool call", async () => {
@@ -4159,6 +5472,126 @@ describe("AgentWorkbench", () => {
       expect(context.systemPrompt).not.toContain("sk-attachment-secret1234567890");
     } finally {
       await workbench.deleteTaskAttachment(uploaded.id);
+    }
+  });
+
+  it("passes uploaded image attachments into model context as visual inputs", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const assembler = new ContextAssembler(store);
+    const workbench = new AgentWorkbench({ store, contextAssembler: assembler, model: new StreamingFinalModel() });
+    const imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const imageBytes = Buffer.from(imageBase64, "base64");
+    const uploaded = await workbench.uploadTaskAttachment({
+      fileName: "visual-check.png",
+      mimeType: "image/png",
+      size: imageBytes.byteLength,
+      dataBase64: imageBase64
+    });
+
+    try {
+      const task = await workbench.createTask("describe the uploaded image", "Image task", undefined, [uploaded.id]);
+      const context = await assembler.assemble(task);
+      const imageMessage = context.messages.find((message) => message.role === "user" && message.imageAttachments?.length);
+
+      expect(imageMessage?.content).toContain("Attached image inputs for visual analysis");
+      expect(imageMessage?.imageAttachments?.[0]).toMatchObject({
+        attachmentId: uploaded.id,
+        fileName: "visual-check.png",
+        mimeType: "image/png",
+        size: imageBytes.byteLength,
+        dataBase64: imageBase64
+      });
+      expect(context.systemPrompt).toContain("visual-check.png (image");
+    } finally {
+      await workbench.deleteTaskAttachment(uploaded.id);
+    }
+  });
+
+  it("keeps image attachments as references on later non-visual turns without resending base64", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const assembler = new ContextAssembler(store);
+    const workbench = new AgentWorkbench({ store, contextAssembler: assembler, model: new StreamingFinalModel() });
+    const imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const imageBytes = Buffer.from(imageBase64, "base64");
+    const uploaded = await workbench.uploadTaskAttachment({
+      fileName: "visual-check.png",
+      mimeType: "image/png",
+      size: imageBytes.byteLength,
+      dataBase64: imageBase64
+    });
+
+    try {
+      const task = await workbench.createTask("describe the uploaded image", "Image task", undefined, [uploaded.id]);
+      const firstContext = await assembler.assemble(task);
+      const followed = await workbench.appendMessage(task.id, "继续这个任务，只用一句话总结；不需要再次看图。");
+      const secondContext = await assembler.assemble(followed);
+
+      expect(firstContext.messages.some((message) => message.role === "user" && message.imageAttachments?.length)).toBe(true);
+      expect(secondContext.messages.some((message) => message.role === "user" && message.imageAttachments?.length)).toBe(false);
+      expect(secondContext.systemPrompt).toContain("visual-check.png (image");
+      expect(secondContext.systemPrompt).not.toContain(imageBase64);
+    } finally {
+      await workbench.deleteTaskAttachment(uploaded.id);
+    }
+  });
+
+  it("lets agents attach generated screenshots from the task folder to the timeline", async () => {
+    const root = mkdtempSync(join(repoTestTempRoot(), "agent-attach-image-"));
+    const imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const imageBytes = Buffer.from(imageBase64, "base64");
+    writeFileSync(join(root, "agent-screenshot.png"), imageBytes);
+    try {
+      const store = new InMemoryWorkbenchStore();
+      const workbench = new AgentWorkbench({
+        store,
+        model: new SingleToolModel("attach_task_file", { path: "agent-screenshot.png" })
+      });
+      const folder = await workbench.createTaskFolder({ name: "attach-image-root", rootPath: root });
+      await workbench.grantGlobalPermission("workspace_read", "allow attaching task-local generated screenshot");
+      const task = await workbench.createTask("Attach the generated screenshot for the user.", "Attach screenshot", folder.id);
+      const attachments = await workbench.listTaskAttachments(task.id);
+      const attachResult = task.events.find((event) => event.type === "tool_result" && event.payload["toolName"] === "attach_task_file");
+      const attachmentEvent = task.events.find((event) => event.type === "attachment_added");
+
+      expect(task.status).toBe("completed");
+      expect(attachResult?.payload["ok"]).toBe(true);
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0]).toMatchObject({
+        taskId: task.id,
+        fileName: "agent-screenshot.png",
+        mimeType: "image/png",
+        kind: "image",
+        size: imageBytes.byteLength
+      });
+      expect(attachmentEvent?.payload["attachmentId"]).toBe(attachments[0]?.id);
+      const content = await workbench.readTaskAttachmentContent(task.id, attachments[0]!.id);
+      expect(content.bytes.equals(imageBytes)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects agent attachment paths outside the task folder", async () => {
+    const root = mkdtempSync(join(repoTestTempRoot(), "agent-attach-root-"));
+    const outside = mkdtempSync(join(repoTestTempRoot(), "agent-attach-outside-"));
+    writeFileSync(join(outside, "outside.png"), Buffer.from("not a png"));
+    try {
+      const workbench = new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        model: new SingleToolModel("attach_task_file", { path: relative(root, join(outside, "outside.png")) })
+      });
+      const folder = await workbench.createTaskFolder({ name: "attach-boundary-root", rootPath: root });
+      await workbench.grantGlobalPermission("workspace_read", "allow testing task-local attachment boundary");
+      const task = await workbench.createTask("Try attaching an outside screenshot.", "Reject outside screenshot", folder.id);
+      const attachResult = task.events.find((event) => event.type === "tool_result" && event.payload["toolName"] === "attach_task_file");
+
+      expect(task.status).toBe("completed");
+      expect(attachResult?.payload["ok"]).toBe(false);
+      expect(String(attachResult?.payload["output"] ?? "")).toMatch(/outside|path/i);
+      expect(await workbench.listTaskAttachments(task.id)).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
     }
   });
 
@@ -4643,6 +6076,27 @@ describe("AgentWorkbench", () => {
     expect(failed.output).not.toContain("secret-token");
     expect(cancelled.ok).toBe(false);
     expect(cancelled.output).toContain("cancelled");
+  });
+
+  it("returns structured guidance when read_file is called on a directory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-read-dir-"));
+    try {
+      mkdirSync(join(root, "src"), { recursive: true });
+      writeFileSync(join(root, "src", "index.ts"), "export const value = 1;\n", "utf8");
+      const tools = new ShellToolExecutor(root);
+
+      const result = await tools.execute({
+        id: createId("tool_call"),
+        toolName: "read_file",
+        args: { path: "." }
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("\"reason\": \"path_is_directory\"");
+      expect(result.output).toContain("Use list_files");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("creates checkpoints before edits and can roll back task file changes", async () => {
@@ -5167,6 +6621,24 @@ describe("AgentWorkbench", () => {
     expect(task.events.some((event) => event.type === "assistant_message" && event.summary === "Completed after continuing instead of exposing an internal note.")).toBe(true);
   });
 
+  it("extracts the visible answer when an internal note leaks before a think delimiter", async () => {
+    const model: ModelClient = {
+      async next() {
+        return {
+          kind: "final",
+          message: "Internal continuity note. Do not quote this note verbatim or use it as the final answer:\nprivate reasoning</think>第3轮补充验证点：可通过对比多轮回答的逻辑一致性来检验上下文保持效果。"
+        };
+      }
+    };
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model });
+    const task = await workbench.createTask("第 3 轮：只补充一个验证点，不要使用工具。");
+
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "internal_continuation_final")).toBe(false);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary.startsWith("Internal continuity note"))).toBe(false);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary === "第3轮补充验证点：可通过对比多轮回答的逻辑一致性来检验上下文保持效果。")).toBe(true);
+  });
+
   it("retries when a legacy retained-thinking preamble is exposed as a final answer", async () => {
     const model = new LegacyPriorThinkingThenFinalModel();
     const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), model });
@@ -5203,6 +6675,23 @@ describe("AgentWorkbench", () => {
     expect(task.status).toBe("paused");
     expect(task.events.filter((event) => event.type === "model_no_progress")).toHaveLength(2);
     expect(task.events.some((event) => event.type === "assistant_message")).toBe(false);
+  });
+
+  it("requests a final answer after repeated internal continuation when tool evidence exists", async () => {
+    const model = new InternalContinuationAfterEvidenceModel();
+    const workbench = new AgentWorkbench({ store: new InMemoryWorkbenchStore(), tools: new PassingCommandExecutor(), model });
+    await workbench.updatePreferences({
+      permissionMode: "auto_approval",
+      autoApproveRiskCategories: ["shell"]
+    });
+
+    const task = await workbench.createTask("verify with a tool, then close from evidence");
+
+    expect(model.calls).toBe(4);
+    expect(task.status).toBe("completed");
+    expect(task.events.some((event) => event.type === "tool_result" && event.payload["toolName"] === "run_command")).toBe(true);
+    expect(task.events.some((event) => event.type === "model_no_progress" && event.payload["reason"] === "finalization_after_internal_continuation")).toBe(true);
+    expect(task.events.some((event) => event.type === "assistant_message" && event.summary === "Final answer after verified tool evidence.")).toBe(true);
   });
 
   it("resets internal continuity retry tracking after real tool progress", async () => {
@@ -5275,6 +6764,33 @@ describe("AgentWorkbench", () => {
     expect(completed.events.some((event) => event.type === "assistant_message" && event.summary === "Final answer after verified progress.")).toBe(true);
   });
 
+  it("continues through optional ask_user follow-up after completed file evidence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-ask-file-evidence-"));
+    try {
+      mkdirSync(join(root, "docs"), { recursive: true });
+      const workbench = new AgentWorkbench({
+        store: new InMemoryWorkbenchStore(),
+        tools: new ShellToolExecutor(root),
+        model: new OptionalAskAfterFileEvidenceModel()
+      });
+      await workbench.grantGlobalPermission("workspace_write", "fixture file write");
+      await workbench.grantGlobalPermission("workspace_read", "fixture file readback");
+      const folder = await workbench.createTaskFolder({ name: "Docs fixture", rootPath: root });
+
+      const completed = await workbench.createTask("Create docs/api.md, read it back, and summarize", "Docs authoring", folder.id);
+      const askResult = completed.events.find((event) => event.type === "tool_result" && event.payload["toolName"] === "ask_user");
+
+      expect(completed.status).toBe("completed");
+      expect(readFileSync(join(root, "docs", "api.md"), "utf8")).toContain("renderTotal");
+      expect(completed.events.some((event) => event.type === "user_input_requested")).toBe(false);
+      expect(completed.events.some((event) => event.type === "tool_requested" && event.payload["toolName"] === "ask_user" && event.payload["autoResolved"] === true)).toBe(true);
+      expect(String(askResult?.payload["output"] ?? "")).toContain("optional_follow_up_after_completed_progress");
+      expect(completed.events.some((event) => event.type === "assistant_message" && event.summary === "Final answer after completed file evidence.")).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("continues through ask_user that asks how to explain current tool evidence", async () => {
     const root = mkdtempSync(join(tmpdir(), "scc-ask-evidence-"));
     try {
@@ -5298,6 +6814,24 @@ describe("AgentWorkbench", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("continues through ask_user that asks what task to perform after tool evidence", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new PassingCommandExecutor(),
+      model: new AskSpecificTaskAfterEvidenceModel()
+    });
+    await workbench.grantGlobalPermission("shell", "fixture evidence");
+
+    const completed = await workbench.createTask("Load the guidance and return the requested marker");
+    const askResult = completed.events.find((event) => event.type === "tool_result" && event.payload["toolName"] === "ask_user");
+
+    expect(completed.status).toBe("completed");
+    expect(completed.events.some((event) => event.type === "user_input_requested")).toBe(false);
+    expect(completed.events.some((event) => event.type === "tool_requested" && event.payload["toolName"] === "ask_user" && event.payload["autoResolved"] === true)).toBe(true);
+    expect(String(askResult?.payload["output"] ?? "")).toContain("current_task_already_specified");
+    expect(completed.events.some((event) => event.type === "assistant_message" && event.summary === "Final answer after the task-continuation ask was auto-resolved.")).toBe(true);
   });
 
   it("does not auto-resolve optional ask_user after ambiguous verification output", async () => {
@@ -5441,6 +6975,37 @@ describe("AgentWorkbench", () => {
     const skills = await workbench.listSkills();
     expect(experiences[0]?.readOnly).toBe(true);
     expect(skills).toHaveLength(0);
+  });
+
+  it("seeds built-in skills idempotently without overwriting user edits", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+
+    const seeded = await workbench.ensureDefaultSkills();
+    const repeated = await workbench.ensureDefaultSkills();
+    const skills = await workbench.listSkills();
+    const officeSkill = seeded.find((skill) => skill.title === DEFAULT_OFFICE_VISUAL_QA_SKILL_TITLE);
+    const computerControlSkill = seeded.find((skill) => skill.title === DEFAULT_BROWSER_COMPUTER_CONTROL_SKILL_TITLE);
+
+    expect(officeSkill?.id).toBe(DEFAULT_OFFICE_VISUAL_QA_SKILL_ID);
+    expect(officeSkill?.status).toBe("active");
+    expect(officeSkill?.body).toContain("rendered visual evidence");
+    expect(officeSkill?.applicability.keywords).toEqual(expect.arrayContaining(["docx", "pptx", "visual qa"]));
+    expect(computerControlSkill?.id).toBe(DEFAULT_BROWSER_COMPUTER_CONTROL_SKILL_ID);
+    expect(computerControlSkill?.body).toContain("keyboard or mouse actions");
+    expect(computerControlSkill?.applicability.keywords).toEqual(expect.arrayContaining(["browser", "keyboard", "mouse", "mcp"]));
+    expect(repeated.map((skill) => skill.id)).toEqual(seeded.map((skill) => skill.id));
+    expect(skills.filter((skill) => skill.title === DEFAULT_OFFICE_VISUAL_QA_SKILL_TITLE)).toHaveLength(1);
+    expect(skills.filter((skill) => skill.title === DEFAULT_BROWSER_COMPUTER_CONTROL_SKILL_TITLE)).toHaveLength(1);
+
+    const edited = await workbench.updateSkill(DEFAULT_OFFICE_VISUAL_QA_SKILL_ID, {
+      body: "User-edited Office QA guidance",
+      status: "candidate"
+    });
+    const afterEdit = await workbench.ensureDefaultSkills();
+    const editedAfterEnsure = afterEdit.find((skill) => skill.id === edited.id);
+    expect(editedAfterEnsure?.body).toBe("User-edited Office QA guidance");
+    expect(editedAfterEnsure?.status).toBe("candidate");
   });
 
   it("redacts tool arguments and outputs before storing reusable task memories", () => {
@@ -5995,8 +7560,8 @@ describe("OpenAIModelClient", () => {
     expect(shouldSendOpenAIPromptCacheKey("auto", "https://api.openai.com/v1")).toBe(true);
     expect(shouldSendOpenAIPromptCacheKey("auto", "https://api.moonshot.cn/v1")).toBe(true);
     expect(shouldSendOpenAIPromptCacheKey("auto", "https://platform.kimi.com/v1")).toBe(true);
+    expect(shouldSendOpenAIPromptCacheKey("auto", "https://api.xiaomimimo.com/v1")).toBe(true);
     expect(shouldSendOpenAIPromptCacheKey("auto", "https://token-plan-cn.xiaomimimo.com/v1")).toBe(true);
-    expect(shouldSendOpenAIPromptCacheKey("auto", "https://api.xiaomimimo.com/v1")).toBe(false);
     expect(shouldSendOpenAIPromptCacheKey("auto", "https://openrouter.ai/api/v1")).toBe(false);
     expect(shouldSendOpenAIPromptCacheKey("always", "http://127.0.0.1:9999/v1")).toBe(true);
     expect(shouldSendOpenAIPromptCacheKey("off", "https://api.openai.com/v1")).toBe(false);
@@ -6005,6 +7570,105 @@ describe("OpenAIModelClient", () => {
     expect(shouldSendOpenAIPromptCacheRetention("always", "https://api.moonshot.cn/v1")).toBe(false);
     expect(shouldSendOpenAIPromptCacheRetention("auto", "https://token-plan-cn.xiaomimimo.com/v1")).toBe(false);
     expect(shouldSendOpenAIPromptCacheRetention("off", "https://api.openai.com/v1")).toBe(false);
+  });
+
+  it("supports explicit MiMo thinking disable and reasoning replay opt-in modes", async () => {
+    const capturedRequests: Array<Record<string, unknown>> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        capturedRequests.push(JSON.parse(body) as Record<string, unknown>);
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "done" } }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+        response.write("data: [DONE]\n\n");
+        response.end();
+      });
+    });
+    const previousThinking = process.env["AGENT_WORKBENCH_OPENAI_COMPAT_THINKING"];
+    const previousReplay = process.env["AGENT_WORKBENCH_OPENAI_COMPAT_REASONING_REPLAY"];
+    const previousHistoryReplay = process.env["AGENT_WORKBENCH_REASONING_HISTORY_REPLAY"];
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const makeClient = () => new OpenAIModelClient({
+        providerResolver: async () => ({
+          providerId: "xiaomimimo-test",
+          protocol: "openai_compatible",
+          apiKey: "test-key",
+          baseURL: `http://127.0.0.1:${port}/v1`,
+          model: "mimo-v2.5-pro"
+        }),
+        contextAssembler: new ContextAssembler(new InMemoryWorkbenchStore())
+      });
+      const task: TaskDetail = {
+        kind: "primary",
+        id: "task_mimo_thinking",
+        title: "MiMo thinking mode",
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [
+          { id: "event_user_mimo_thinking", taskId: "task_mimo_thinking", type: "user_message", createdAt: nowIso(), summary: "Continue after a tool call.", payload: {} },
+          {
+            id: "event_tool_requested_mimo_thinking",
+            taskId: "task_mimo_thinking",
+            type: "tool_requested",
+            createdAt: nowIso(),
+            summary: "list_files",
+            payload: {
+              toolCallId: "call_mimo_thinking",
+              toolName: "list_files",
+              args: { path: "." },
+              reasoningContent: "I should inspect files first."
+            }
+          },
+          {
+            id: "event_tool_result_mimo_thinking",
+            taskId: "task_mimo_thinking",
+            type: "tool_result",
+            createdAt: nowIso(),
+            summary: "Tool completed",
+            payload: {
+              toolCallId: "call_mimo_thinking",
+              toolName: "list_files",
+              args: { path: "." },
+              ok: true,
+              output: "[]",
+              reasoningContent: "I should inspect files first."
+            }
+          }
+        ]
+      };
+
+      process.env["AGENT_WORKBENCH_OPENAI_COMPAT_THINKING"] = "disabled";
+      delete process.env["AGENT_WORKBENCH_OPENAI_COMPAT_REASONING_REPLAY"];
+      delete process.env["AGENT_WORKBENCH_REASONING_HISTORY_REPLAY"];
+      await makeClient().next(task);
+      process.env["AGENT_WORKBENCH_OPENAI_COMPAT_THINKING"] = "enabled";
+      process.env["AGENT_WORKBENCH_OPENAI_COMPAT_REASONING_REPLAY"] = "enabled";
+      process.env["AGENT_WORKBENCH_REASONING_HISTORY_REPLAY"] = "enabled";
+      await makeClient().next(task);
+
+      expect(capturedRequests[0]?.["thinking"]).toEqual({ type: "disabled" });
+      expect(JSON.stringify(capturedRequests[0]?.["messages"])).not.toContain("reasoning_content");
+      expect(capturedRequests[1]?.["thinking"]).toBeUndefined();
+      expect(JSON.stringify(capturedRequests[1]?.["messages"])).toContain("reasoning_content");
+    } finally {
+      if (previousThinking === undefined) delete process.env["AGENT_WORKBENCH_OPENAI_COMPAT_THINKING"];
+      else process.env["AGENT_WORKBENCH_OPENAI_COMPAT_THINKING"] = previousThinking;
+      if (previousReplay === undefined) delete process.env["AGENT_WORKBENCH_OPENAI_COMPAT_REASONING_REPLAY"];
+      else process.env["AGENT_WORKBENCH_OPENAI_COMPAT_REASONING_REPLAY"] = previousReplay;
+      if (previousHistoryReplay === undefined) delete process.env["AGENT_WORKBENCH_REASONING_HISTORY_REPLAY"];
+      else process.env["AGENT_WORKBENCH_REASONING_HISTORY_REPLAY"] = previousHistoryReplay;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("serializes assembled context with native chat roles and tool results", async () => {
@@ -6106,22 +7770,110 @@ describe("OpenAIModelClient", () => {
       expect(String(messages[0]?.["content"] ?? "")).toContain("Stable Memory Files");
       expect(String(messages[0]?.["content"] ?? "")).toContain("copy the observed text exactly");
       expect(String(messages[0]?.["content"] ?? "")).not.toContain("Task title:");
-      expect(messages.map((message) => message["role"])).toEqual(["system", "user", "assistant", "user", "assistant", "assistant", "tool"]);
-      expect(messages[3]?.["content"]).toBe("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
-      expect(String(messages[4]?.["content"] ?? "")).toContain("Internal continuity note");
-      expect(String(messages[4]?.["content"] ?? "")).toContain("Do not quote this note");
-      expect(String(messages[4]?.["content"] ?? "")).toContain("I should inspect the workspace before writing the page.");
+      expect(messages.map((message) => message["role"])).toEqual(["system", "user", "user", "assistant", "user", "assistant", "tool", "user"]);
+      expect(String(messages[1]?.["content"] ?? "")).toContain("## Stable Task Context");
+      expect(String(messages[1]?.["content"] ?? "")).toContain("## Current Working Folder");
+      expect(messages[4]?.["content"]).toBe("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
+      expect(JSON.stringify(messages.slice(1))).not.toContain("Internal continuity note");
+      expect(JSON.stringify(messages.slice(1))).not.toContain("I should inspect the workspace before writing the page.");
       expect(messages[5]?.["tool_calls"]).toEqual([
         { id: "call_list", type: "function", function: { name: "list_files", arguments: "{\"path\":\".\"}" } }
       ]);
       expect(messages[5]?.["content"]).toBe("");
-      expect(messages[5]?.["reasoning_content"]).toBe("I should inspect the workspace before writing the page.");
+      expect(messages[5]?.["reasoning_content"]).toBeUndefined();
       expect(messages[6]?.["tool_call_id"]).toBe("call_list");
-      const lastUser = messages.filter((message) => message["role"] === "user").at(-1);
+      expect(String(messages[7]?.["content"] ?? "")).toContain("## Current Workbench Context");
+      const lastUser = messages
+        .filter((message) => message["role"] === "user" && !String(message["content"] ?? "").startsWith("## Current Workbench Context"))
+        .at(-1);
       expect(lastUser?.["content"]).toBe("帮我在本文件夹中编写一个完整的博客页面，使用react编写，并且需要特别丰富，优雅，动画丝滑");
       expect(String(messages.map((message) => message["content"] ?? "").join("\n"))).not.toContain("## Active Node");
       expect((attention?.["activeNode"] as Record<string, unknown> | undefined)?.["role"]).toBe("implement");
       expect(attention?.["evidenceRefs"]).toContain("event_tool_result:list_files:ok");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("serializes uploaded image attachments as OpenAI-compatible image_url parts", async () => {
+    const capturedRequests: Array<Record<string, unknown>> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        capturedRequests.push(JSON.parse(body) as Record<string, unknown>);
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "saw image" } }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+        response.write("data: [DONE]\n\n");
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      const assembler = new ContextAssembler(store);
+      const workbench = new AgentWorkbench({ store, contextAssembler: assembler, model: new StreamingFinalModel() });
+      const imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+      const imageBytes = Buffer.from(imageBase64, "base64");
+      const uploaded = await workbench.uploadTaskAttachment({
+        fileName: "openai-image.png",
+        mimeType: "image/png",
+        size: imageBytes.byteLength,
+        dataBase64: imageBase64
+      });
+      const task: TaskDetail = {
+        kind: "primary",
+        id: "task_openai_image",
+        title: "Image input",
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [
+          { id: "event_user_image", taskId: "task_openai_image", type: "user_message", createdAt: nowIso(), summary: "What is in the uploaded image?", payload: {} },
+          {
+            id: "event_image_attached",
+            taskId: "task_openai_image",
+            type: "attachment_added",
+            createdAt: nowIso(),
+            summary: "openai-image.png",
+            payload: {
+              attachmentId: uploaded.id,
+              fileName: "openai-image.png",
+              mimeType: "image/png",
+              size: imageBytes.byteLength,
+              kind: "image",
+              contentHash: uploaded.contentHash
+            }
+          }
+        ]
+      };
+      await store.saveTaskAttachment({ ...uploaded, taskId: task.id });
+      const client = new OpenAIModelClient({
+        apiKey: "test-key",
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        model: "gpt-image-test",
+        contextAssembler: assembler
+      });
+
+      const turn = await client.next(task);
+      const request = capturedRequests[0];
+      const messages = request?.["messages"] as Array<Record<string, unknown>>;
+      const imageMessage = messages.find((message) => Array.isArray(message["content"]) && JSON.stringify(message["content"]).includes("image_url"));
+      const content = imageMessage?.["content"] as Array<Record<string, unknown>>;
+      const imagePart = content.find((part) => part["type"] === "image_url");
+      const imageUrl = imagePart?.["image_url"] as Record<string, unknown> | undefined;
+
+      expect(turn.kind).toBe("final");
+      expect(String(imageUrl?.["url"] ?? "")).toBe(`data:image/png;base64,${imageBase64}`);
+      expect(JSON.stringify(content)).toContain("Attached image inputs for visual analysis");
+      await workbench.deleteTaskAttachment(uploaded.id);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -6164,15 +7916,16 @@ describe("OpenAIModelClient", () => {
         toolProvider: {
           listModelTools: async () => {
             toolListCall += 1;
-            const properties = toolListCall % 2 === 0
-              ? { beta: { type: "number" }, alpha: { type: "string" } }
+            const even = toolListCall % 2 === 0;
+            const properties = even
+              ? { beta: { type: "number", description: "Provider-specific beta value." }, alpha: { type: "string" } }
               : { alpha: { type: "string" }, beta: { type: "number" } };
             return [{
               type: "function",
               function: {
                 name: "cache_probe",
-                description: "Probe deterministic tool schemas.",
-                parameters: { type: "object", properties, required: ["alpha"] }
+                description: even ? "Probe deterministic tool schemas with an expanded beta requirement." : "Probe deterministic tool schemas.",
+                parameters: { type: "object", properties, required: even ? ["alpha", "beta"] : ["alpha"] }
               }
             }];
           }
@@ -6191,22 +7944,25 @@ describe("OpenAIModelClient", () => {
         updatedAt: nowIso(),
         approvals: [],
         pendingGuidance: [],
-        events: [{ id: `event_${id}`, taskId: id, type: "user_message", createdAt: nowIso(), summary: "probe", payload: {} }]
+        events: [{ id: `event_${id}`, taskId: id, type: "user_message", createdAt: nowIso(), summary: "Use the cache_probe tool to inspect deterministic cache behavior.", payload: {} }]
       });
 
       await client.next(task("task_cache_one", "folder_shared"));
       await client.next(task("task_cache_two", "folder_shared", equivalentCacheWorkRoot));
       await client.next(task("task_cache_three", "folder_other", `${cacheWorkRoot}/`));
+      await client.next(task("task_cache_four", "folder_other", resolve("workspace", "DifferentCacheRoot")));
 
       const keys = capturedRequests.map((request) => String(request["prompt_cache_key"] ?? ""));
       expect(keys[0]).toMatch(/^aw-[a-f0-9]{40}$/);
       expect(keys[1]).toBe(keys[0]);
       expect(keys[2]).toBe(keys[0]);
+      expect(keys[3]).toBe(keys[0]);
       expect(keys.join(" ")).not.toContain("task_cache");
       expect(keys.join(" ")).not.toContain("cache-secret-key");
       expect(keys.join(" ")).not.toContain("cache-provider-alias");
       expect(keys.join(" ")).not.toContain("private-endpoint");
-      expect(capturedRequests.map((request) => request["prompt_cache_retention"])).toEqual([undefined, undefined, undefined]);
+      expect(keys.join(" ")).not.toContain("DifferentCacheRoot");
+      expect(capturedRequests.map((request) => request["prompt_cache_retention"])).toEqual([undefined, undefined, undefined, undefined]);
       const toolNames = ((capturedRequests[0]?.["tools"] as Array<Record<string, unknown>>) ?? [])
         .map((tool) => String((tool["function"] as Record<string, unknown> | undefined)?.["name"] ?? ""));
       expect(toolNames).toEqual([...toolNames].sort((left, right) => left.localeCompare(right)));
@@ -6215,12 +7971,414 @@ describe("OpenAIModelClient", () => {
       const parameters = ((dynamicTool?.["function"] as Record<string, unknown>)["parameters"] as Record<string, unknown>);
       expect(Object.keys(parameters)).toEqual(["properties", "required", "type"]);
       expect(Object.keys(parameters["properties"] as Record<string, unknown>)).toEqual(["alpha", "beta"]);
+      const firstProbe = ((capturedRequests[0]?.["tools"] as Array<Record<string, unknown>>)
+        .find((tool) => (tool["function"] as Record<string, unknown> | undefined)?.["name"] === "cache_probe")?.["function"] as Record<string, unknown>);
+      const secondProbe = ((capturedRequests[1]?.["tools"] as Array<Record<string, unknown>>)
+        .find((tool) => (tool["function"] as Record<string, unknown> | undefined)?.["name"] === "cache_probe")?.["function"] as Record<string, unknown>);
+      expect(firstProbe["description"]).not.toBe(secondProbe["description"]);
+      expect(((secondProbe["parameters"] as Record<string, unknown>)["required"] as string[])).toEqual(["alpha", "beta"]);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 
-  it("replays reasoning_content for hidden plan_update history on the next MiMo request", async () => {
+  it("does not enumerate or send tools on final-answer-only OpenAI turns", async () => {
+    const capturedRequests: Array<Record<string, unknown>> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        capturedRequests.push(JSON.parse(body) as Record<string, unknown>);
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "final answer" } }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+        response.write("data: [DONE]\n\n");
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      let toolListCalls = 0;
+      const client = new OpenAIModelClient({
+        apiKey: "test-key",
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        model: "final-only-model",
+        toolProvider: {
+          listModelTools: async () => {
+            toolListCalls += 1;
+            return [{
+              type: "function",
+              function: {
+                name: "expensive_dynamic_tool",
+                description: "Should not be enumerated while finalizing.",
+                parameters: { type: "object", properties: {} }
+              }
+            }];
+          }
+        }
+      });
+      const task: TaskDetail = {
+        kind: "primary",
+        id: "task_final_only_openai",
+        title: "Finalize",
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [
+          { id: "event_user", taskId: "task_final_only_openai", type: "user_message", createdAt: nowIso(), summary: "Run checks and summarize.", payload: {} },
+          { id: "event_tool", taskId: "task_final_only_openai", type: "tool_result", createdAt: nowIso(), summary: "Tool completed", payload: { toolCallId: "call_check", toolName: "run_command", ok: true, output: "ok" } },
+          {
+            id: "event_finalizing",
+            taskId: "task_final_only_openai",
+            type: "model_no_progress",
+            createdAt: nowIso(),
+            summary: "Run limit reached after successful tool evidence; requesting a final answer without more tool calls.",
+            payload: { status: "finalizing", reason: "finalization_before_turn_limit" }
+          }
+        ]
+      };
+
+      const turn = await client.next(task);
+
+      expect(turn.kind).toBe("final");
+      expect(toolListCalls).toBe(0);
+      expect(capturedRequests).toHaveLength(1);
+      expect((capturedRequests[0]?.["tools"] as unknown[] | undefined)?.length).toBeGreaterThan(0);
+      expect(capturedRequests[0]?.["tool_choice"]).toBe("none");
+      expect(JSON.stringify(capturedRequests[0]?.["tools"])).not.toContain("expensive_dynamic_tool");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("serves repeated direct-answer finals from the local response cache", async () => {
+    let requestCount = 0;
+    let toolListCalls = 0;
+    const server = createServer((request, response) => {
+      requestCount += 1;
+      request.resume();
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "cached direct answer" } }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+      response.write("data: [DONE]\n\n");
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      const client = new OpenAIModelClient({
+        apiKey: "test-key",
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        model: "direct-cache-model",
+        contextAssembler: new ContextAssembler(store),
+        toolProvider: {
+          listModelTools: async () => {
+            toolListCalls += 1;
+            return [{
+              type: "function",
+              function: {
+                name: "should_not_load_for_direct_answer",
+                description: "Should not be loaded for direct-answer tasks.",
+                parameters: { type: "object", properties: {} }
+              }
+            }];
+          }
+        }
+      });
+      const makeTask = (id: string): TaskDetail => ({
+        kind: "primary",
+        id,
+        title: "Direct cache",
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [{
+          id: `event_${id}`,
+          taskId: id,
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "你可以帮我做些什么？请直接回答，不要读取文件、不要运行命令、不要检查项目结构。",
+          payload: {}
+        }]
+      });
+
+      const first = await client.next(makeTask("task_direct_cache_one"));
+      const second = await client.next(makeTask("task_direct_cache_two"));
+
+      expect(first.kind).toBe("final");
+      expect(second.kind).toBe("final");
+      expect(requestCount).toBe(1);
+      expect(toolListCalls).toBe(0);
+      expect(second.usage?.cacheSource).toBe("local_response");
+      expect(second.usage?.cachedTokens).toBe(second.usage?.inputTokens);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("serves repeated post-tool final summaries from the local response cache", async () => {
+    let requestCount = 0;
+    const capturedRequests: Array<Record<string, unknown>> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        requestCount += 1;
+        capturedRequests.push(JSON.parse(body) as Record<string, unknown>);
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "cached post-tool summary" } }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+        response.write("data: [DONE]\n\n");
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      const client = new OpenAIModelClient({
+        apiKey: "test-key",
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        model: "post-tool-cache-model",
+        contextAssembler: new ContextAssembler(store)
+      });
+      const makeTask = (id: string, callId: string): TaskDetail => ({
+        kind: "primary",
+        id,
+        title: "Post tool cache",
+        folderId: "default",
+        workRoot: resolve("workspace", "post-tool-cache"),
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [
+          {
+            id: `event_user_${id}`,
+            taskId: id,
+            type: "user_message",
+            createdAt: nowIso(),
+            summary: "Summarize the observed command result.",
+            payload: {}
+          },
+          {
+            id: `event_request_${id}`,
+            taskId: id,
+            type: "tool_requested",
+            createdAt: nowIso(),
+            summary: "run_command",
+            payload: { toolCallId: callId, toolName: "run_command", args: { command: "node --version" } }
+          },
+          {
+            id: `event_result_${id}`,
+            taskId: id,
+            type: "tool_result",
+            createdAt: nowIso(),
+            summary: "Tool completed",
+            payload: { toolCallId: callId, toolName: "run_command", args: { command: "node --version" }, ok: true, output: "v24.0.0" }
+          }
+        ]
+      });
+
+      const first = await client.next(makeTask("task_post_tool_cache_one", "call_original"));
+      const second = await client.next(makeTask("task_post_tool_cache_two", "call_different_id"));
+
+      expect(first.kind).toBe("final");
+      expect(second.kind).toBe("final");
+      expect(requestCount).toBe(1);
+      expect(capturedRequests[0]?.["messages"]).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: "tool", tool_call_id: "call_original", content: expect.stringContaining("v24.0.0") })
+      ]));
+      expect(second.usage?.cacheSource).toBe("local_response");
+      expect(second.usage?.cachedTokens).toBe(second.usage?.inputTokens);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("does not cache internal continuity notes as post-tool final summaries", async () => {
+    let requestCount = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      requestCount += 1;
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      const content = requestCount === 1
+        ? "Internal continuity note. Do not quote this note verbatim or use it as the final answer: I still need to summarize."
+        : "safe post-tool summary";
+      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content } }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+      response.write("data: [DONE]\n\n");
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      const client = new OpenAIModelClient({
+        apiKey: "test-key",
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        model: "post-tool-cache-model",
+        contextAssembler: new ContextAssembler(store)
+      });
+      const makeTask = (id: string, callId: string): TaskDetail => ({
+        kind: "primary",
+        id,
+        title: "Post tool cache",
+        folderId: "default",
+        workRoot: resolve("workspace", "post-tool-cache"),
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [
+          { id: `event_user_${id}`, taskId: id, type: "user_message", createdAt: nowIso(), summary: "Summarize the observed command result.", payload: {} },
+          { id: `event_request_${id}`, taskId: id, type: "tool_requested", createdAt: nowIso(), summary: "run_command", payload: { toolCallId: callId, toolName: "run_command", args: { command: "node --version" } } },
+          { id: `event_result_${id}`, taskId: id, type: "tool_result", createdAt: nowIso(), summary: "Tool completed", payload: { toolCallId: callId, toolName: "run_command", args: { command: "node --version" }, ok: true, output: "v24.0.0" } }
+        ]
+      });
+
+      const first = await client.next(makeTask("task_internal_cache_one", "call_internal_one"));
+      const second = await client.next(makeTask("task_internal_cache_two", "call_internal_two"));
+
+      expect(first.kind).toBe("final");
+      expect(second.kind).toBe("final");
+      expect(requestCount).toBe(2);
+      expect(second.kind === "final" ? second.message : "").toBe("safe post-tool summary");
+      expect(second.usage?.cacheSource).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("does not cache inline tool markup as post-tool final summaries", async () => {
+    let requestCount = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      requestCount += 1;
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      const content = requestCount === 1
+        ? "<tool_call>\n<function=read_file>\n<parameter=path>src/math.mjs</parameter>\n</function>\n</tool_call>"
+        : "safe post-tool summary after rejecting inline tool markup";
+      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content } }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+      response.write("data: [DONE]\n\n");
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      const client = new OpenAIModelClient({
+        apiKey: "test-key",
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        model: "post-tool-cache-model",
+        contextAssembler: new ContextAssembler(store)
+      });
+      const makeTask = (id: string, callId: string): TaskDetail => ({
+        kind: "primary",
+        id,
+        title: "Post tool cache",
+        folderId: "default",
+        workRoot: resolve("workspace", "post-tool-cache"),
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [
+          { id: `event_user_${id}`, taskId: id, type: "user_message", createdAt: nowIso(), summary: "Summarize the observed command result.", payload: {} },
+          { id: `event_request_${id}`, taskId: id, type: "tool_requested", createdAt: nowIso(), summary: "run_command", payload: { toolCallId: callId, toolName: "run_command", args: { command: "node --version" } } },
+          { id: `event_result_${id}`, taskId: id, type: "tool_result", createdAt: nowIso(), summary: "Tool completed", payload: { toolCallId: callId, toolName: "run_command", args: { command: "node --version" }, ok: true, output: "v24.0.0" } }
+        ]
+      });
+
+      const first = await client.next(makeTask("task_inline_cache_one", "call_inline_one"));
+      const second = await client.next(makeTask("task_inline_cache_two", "call_inline_two"));
+
+      expect(first.kind).toBe("final");
+      expect(second.kind).toBe("final");
+      expect(requestCount).toBe(2);
+      expect(second.kind === "final" ? second.message : "").toBe("safe post-tool summary after rejecting inline tool markup");
+      expect(second.usage?.cacheSource).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("bypasses the local response cache during no-progress retry turns", async () => {
+    let requestCount = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      requestCount += 1;
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: `fresh retry final ${requestCount}` } }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+      response.write("data: [DONE]\n\n");
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const store = new InMemoryWorkbenchStore();
+      const client = new OpenAIModelClient({
+        apiKey: "test-key",
+        baseURL: `http://127.0.0.1:${port}/v1`,
+        model: "post-tool-cache-model",
+        contextAssembler: new ContextAssembler(store)
+      });
+      const task: TaskDetail = {
+        kind: "primary",
+        id: "task_retry_cache_bypass",
+        title: "Retry cache bypass",
+        folderId: "default",
+        workRoot: resolve("workspace", "post-tool-cache"),
+        status: "running",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        approvals: [],
+        pendingGuidance: [],
+        events: [
+          { id: "event_user_retry", taskId: "task_retry_cache_bypass", type: "user_message", createdAt: nowIso(), summary: "Summarize the observed command result.", payload: {} },
+          { id: "event_request_retry", taskId: "task_retry_cache_bypass", type: "tool_requested", createdAt: nowIso(), summary: "run_command", payload: { toolCallId: "call_retry", toolName: "run_command", args: { command: "node --version" } } },
+          { id: "event_result_retry", taskId: "task_retry_cache_bypass", type: "tool_result", createdAt: nowIso(), summary: "Tool completed", payload: { toolCallId: "call_retry", toolName: "run_command", args: { command: "node --version" }, ok: true, output: "v24.0.0" } },
+          {
+            id: "event_retry_no_progress",
+            taskId: "task_retry_cache_bypass",
+            type: "model_no_progress",
+            createdAt: nowIso(),
+            summary: "Retrying after a weak final answer.",
+            payload: { status: "retrying", reason: "weak_final_answer_after_tool_evidence" }
+          }
+        ]
+      };
+
+      const first = await client.next(task);
+      const second = await client.next(task);
+
+      expect(first.kind === "final" ? first.message : "").toBe("fresh retry final 1");
+      expect(second.kind === "final" ? second.message : "").toBe("fresh retry final 2");
+      expect(requestCount).toBe(2);
+      expect(second.usage?.cacheSource).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("does not replay reasoning_content for hidden plan_update history by default", async () => {
     const capturedRequests: Array<Record<string, unknown>> = [];
     let requestCount = 0;
     const server = createServer((request, response) => {
@@ -6286,8 +8444,9 @@ describe("OpenAIModelClient", () => {
       expect(requestCount).toBe(2);
       expect(planResult?.payload["reasoningContent"]).toBe("I should update the visible plan before editing files.");
       expect(planMessage?.["content"]).toBe("");
-      expect(planMessage?.["reasoning_content"]).toBe("I should update the visible plan before editing files.");
-      expect(messages.some((message) => "reasoning_content" in message)).toBe(true);
+      expect(planMessage?.["reasoning_content"]).toBeUndefined();
+      expect(messages.some((message) => "reasoning_content" in message)).toBe(false);
+      expect(JSON.stringify(messages)).not.toContain("I should update the visible plan before editing files.");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -6459,7 +8618,9 @@ describe("OpenAIModelClient", () => {
       expect(turn.kind).toBe("final");
       expect(capturedRequests).toHaveLength(1);
       expect(request?.["max_tokens"]).toBe(16000);
-      expect(request?.["cache_control"]).toEqual({ type: "ephemeral" });
+      expect(request?.["cache_control"]).toBeUndefined();
+      const system = request?.["system"] as Array<Record<string, unknown>>;
+      expect(system[0]?.["cache_control"]).toEqual({ type: "ephemeral" });
       expect(turn.usage?.inputTokens).toBe(30);
       expect(turn.usage?.cachedTokens).toBe(7);
       expect(turn.usage?.raw?.["cache_creation_input_tokens"]).toBe(11);
@@ -7099,6 +9260,45 @@ describe("ShellToolExecutor", { timeout: 15_000 }, () => {
     expect(result.output.trim()).toContain("2,4,6");
   });
 
+  it("terminates the spawned process tree when a command times out on Windows", async () => {
+    if (process.platform !== "win32") return;
+    const workRoot = mkdtempSync(join(tmpdir(), "scc-command-timeout-tree-"));
+    let childPid = 0;
+    try {
+      writeFileSync(
+        join(workRoot, "spawn-child.cjs"),
+        [
+          "const { spawn } = require('node:child_process');",
+          "const { writeFileSync } = require('node:fs');",
+          "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+          "writeFileSync('child-pid.txt', String(child.pid));",
+          "setInterval(() => {}, 1000);"
+        ].join("\n")
+      );
+      const executor = new ShellToolExecutor(workRoot, 800);
+      const result = await executor.execute({
+        id: createId("tool_call"),
+        toolName: "run_command",
+        args: { command: "node spawn-child.cjs" }
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("timed out");
+      childPid = Number(readFileSync(join(workRoot, "child-pid.txt"), "utf8"));
+      expect(Number.isInteger(childPid)).toBe(true);
+      await waitFor(async () => !isProcessAlive(childPid), 4000);
+    } finally {
+      if (childPid && isProcessAlive(childPid)) {
+        try {
+          process.kill(childPid);
+        } catch {
+          // Best-effort cleanup for failed timeout-tree assertions.
+        }
+      }
+      rmSync(workRoot, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it("searches workspace files with OR terms and returns snippets rather than full file content", async () => {
     const workRoot = mkdtempSync(join(tmpdir(), "scc-search-files-"));
     try {
@@ -7114,11 +9314,15 @@ describe("ShellToolExecutor", { timeout: 15_000 }, () => {
         },
         { workRoot }
       );
-      const parsed = JSON.parse(result.output) as { kind: string; note: string; matches: Array<{ line?: number; text?: string; matchedTerm?: string }> };
+      const parsed = JSON.parse(result.output) as { kind: string; note: string; path: string; matches: Array<{ path?: string; line?: number; text?: string; matchedTerm?: string }> };
 
       expect(result.ok).toBe(true);
       expect(parsed.kind).toBe("workspace_file_search");
       expect(parsed.note).toContain("read_file");
+      expect(parsed.path).toBe("src");
+      expect(parsed.matches.map((match) => match.path)).toContain("src/copy.ts");
+      expect(result.output).not.toContain(workRoot.replace(/\\/g, "\\\\"));
+      expect(result.output).not.toContain(workRoot);
       expect(parsed.matches.map((match) => match.matchedTerm)).toContain("完全访问");
       expect(parsed.matches.map((match) => match.matchedTerm)).toContain("自动审批");
       expect(parsed.matches.every((match) => (match.text ?? "").length < 260)).toBe(true);
@@ -7144,7 +9348,10 @@ describe("ShellToolExecutor", { timeout: 15_000 }, () => {
         { workRoot }
       );
       expect(listed.ok).toBe(true);
-      expect(listed.output).toContain("inside.txt");
+      const listedJson = JSON.parse(listed.output) as { path: string; files: string[] };
+      expect(listedJson.path).toBe(".");
+      expect(listedJson.files).toEqual(["inside.txt"]);
+      expect(listed.output).not.toContain(workRoot);
 
       const read = await executor.execute(
         {
@@ -7155,7 +9362,10 @@ describe("ShellToolExecutor", { timeout: 15_000 }, () => {
         { workRoot }
       );
       expect(read.ok).toBe(true);
-      expect(read.output).toContain("inside");
+      const readJson = JSON.parse(read.output) as { path: string; content: string };
+      expect(readJson.path).toBe("inside.txt");
+      expect(readJson.content).toContain("inside");
+      expect(read.output).not.toContain(workRoot);
 
       const escaped = await executor.execute(
         {
@@ -7413,9 +9623,11 @@ describe("ShellToolExecutor", { timeout: 15_000 }, () => {
       expect(result.ok).toBe(true);
       expect(readFileSync(join(temp, "generated.txt"), "utf8")).toBe(content);
       const parsed = JSON.parse(result.output) as Record<string, unknown>;
-      expect(parsed["path"]).toContain("generated.txt");
+      expect(parsed["path"]).toBe("generated.txt");
+      expect((parsed["changes"] as Record<string, unknown>)["path"]).toBe("generated.txt");
       expect(parsed["changed"]).toBe(true);
       expect(result.output).not.toContain("chunk");
+      expect(result.output).not.toContain(temp);
       expect(readdirSync(temp).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
     } finally {
       rmSync(temp, { recursive: true, force: true });
@@ -7470,6 +9682,9 @@ describe("ShellToolExecutor", { timeout: 15_000 }, () => {
 
       expect(result.ok).toBe(true);
       const parsed = JSON.parse(result.output) as Record<string, unknown>;
+      expect(parsed["path"]).toBe("note.txt");
+      expect((parsed["changes"] as Record<string, unknown>)["path"]).toBe("note.txt");
+      expect(result.output).not.toContain(temp);
       const applied = Array.isArray(parsed["editsApplied"]) ? parsed["editsApplied"] as Array<Record<string, unknown>> : [];
       expect(applied).toHaveLength(1);
       expect(applied[0]?.["beforeText"]).toContain("numbers.length");

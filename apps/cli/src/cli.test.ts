@@ -8,6 +8,7 @@ import { parseArgs } from "./args.js";
 import { ApiClient } from "./http.js";
 import { renderValue } from "./render.js";
 import { runCli, type CliIO } from "./commands.js";
+import { readAttachmentPayload } from "./files.js";
 
 class StaticFinalModelClient implements ModelClient {
   async next(): Promise<ModelTurn> {
@@ -22,6 +23,22 @@ describe("CLI argv parser", () => {
     expect(parsed.options["api"]).toBe("http://127.0.0.1:5177");
     expect(parsed.options["json"]).toBe(true);
     expect(parsed.options["attach"]).toEqual(["a.md", "b.md"]);
+  });
+});
+
+describe("CLI file payloads", () => {
+  it("infers image MIME types for task attachments", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "aw-cli-image-"));
+    try {
+      const imagePath = join(tempDir, "agent-screenshot.png");
+      writeFileSync(imagePath, Buffer.from("iVBORw0KGgo=", "base64"));
+      const payload = readAttachmentPayload(imagePath);
+      expect(payload.fileName).toBe("agent-screenshot.png");
+      expect(payload.mimeType).toBe("image/png");
+      expect(payload.dataBase64).toBe("iVBORw0KGgo=");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -143,6 +160,53 @@ describe("CLI command contracts", () => {
 
     expect(code).toBe(0);
     expect(seenBody).toEqual({ decision: "allow_globally", reason: "trusted local read" });
+  });
+
+  it("sends explicit target limits for long-running task creation", async () => {
+    let seenBody: Record<string, unknown> | undefined;
+    const io = captureIo();
+    const code = await runCli([
+      "--api",
+      "http://local.test",
+      "--json",
+      "task",
+      "create",
+      "repair and verify the repo",
+      "--target",
+      "--max-model-turns",
+      "180",
+      "--max-tool-calls",
+      "1200",
+      "--max-wall-time-minutes",
+      "360"
+    ], {
+      io,
+      fetchImpl: async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/session/bootstrap")) return jsonResponse({ sessionToken: "session_cli_test" });
+        seenBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return jsonResponse({ id: "task_long", title: "Long task", status: "running" });
+      }
+    });
+
+    expect(code).toBe(0);
+    expect(seenBody).toMatchObject({
+      goal: "repair and verify the repo",
+      runMode: "target",
+      targetLimits: {
+        maxModelTurns: 180,
+        maxToolCalls: 1200,
+        maxWallTimeMs: 21_600_000
+      }
+    });
+  });
+
+  it("requires goal mode when long-task limits are provided", async () => {
+    const io = captureIo();
+    const code = await runCli(["task", "create", "repair", "--max-tool-calls", "1200"], { io });
+
+    expect(code).toBe(2);
+    expect(io.stderrText()).toContain("Long-task limits require --target");
   });
 
   it("requires url for knowledge model downloads and sends it to the API", async () => {

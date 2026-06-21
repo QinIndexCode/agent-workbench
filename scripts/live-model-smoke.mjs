@@ -222,9 +222,10 @@ await runCase("documentation authoring", async () => {
     task = await settleApprovals(workbench, task, () => "allow_for_task", 10);
     const docPath = join(fixture.root, "docs", "api.md");
     const docs = existsSync(docPath) ? readFileSync(docPath, "utf8") : "";
-    assert(task.status === "completed", `expected completed, got ${task.status}`);
-    assert(docs.includes("#") && docs.includes("```"), "docs/api.md was not created with Markdown structure");
-    return evidence(task, { docCreated: true, docExcerpt: excerpt(docs), assistant: excerpt(assistantText(task)) });
+    const docsEvidence = evidence(task, { docCreated: Boolean(docs), docExcerpt: excerpt(docs), assistant: excerpt(assistantText(task)) }).evidence;
+    assertWithEvidence(task.status === "completed", `expected completed, got ${task.status}`, docsEvidence);
+    assertWithEvidence(docs.includes("#") && docs.includes("```"), "docs/api.md was not created with Markdown structure", docsEvidence);
+    return { status: "passed", evidence: docsEvidence };
   } finally {
     fixture.cleanup();
   }
@@ -300,8 +301,8 @@ if (stressLevel >= 3) {
       "用一句话记住这个上下文标记：CTX-MARKER-77。不要使用工具。",
       "Live context compaction"
     );
-    task = await seedLongConversationHistory(store, task, "CTX-MARKER-77", 80);
-    await workbench.updatePreferences({ maxTokensPerRequest: 2200 });
+    task = await seedLongConversationHistory(store, task, "CTX-MARKER-77", 120);
+    await workbench.updatePreferences({ maxTokensPerRequest: 1200 });
     const continued = await workbench.appendMessage(
       task.id,
       "继续这个任务：请说明你是否仍能看到上下文标记，并用一句话回答。不要使用工具。"
@@ -464,7 +465,7 @@ if (stressLevel >= 5) {
           "originalFailures 必须从之前 npm test 的真实失败输出提取 expected 和 actual，不要从本条 follow-up 指令猜测。",
           "所有 expression 字段必须逐字复制刚刚 read_file 看到的当前源码中的完整 return 语句，必须以 `return ` 开头并以 `;` 结尾。",
           "不要把 `sum(...)`、`average(...)`、`renderTotal(...)` 或任何测试断言调用写进 expression 字段；如果 expression 字段不是源码 return 语句，就是错误答案。",
-          "modifiedFiles 必须列出之前真正被 edit_file 修改过的相对路径，不要列出没有工具证据的文件。",
+          "modifiedFiles 必须列出之前真正被 edit_file 或 write_file 修改过的相对路径，不要列出没有工具证据的文件。",
           "rollback 后当前源码必须反映恢复后的真实表达式。不要新建任务。"
         ].join("\n")
       );
@@ -496,8 +497,9 @@ if (stressLevel >= 5) {
       const followUpReadPaths = followUpToolRequests
         .filter((event) => event.payload?.toolName === "read_file")
         .map((event) => String(event.payload?.args?.path ?? ""));
+      const followUpNonEmptyReadPaths = followUpReadPaths.filter((path) => path.trim().length > 0);
       const editedPaths = continued.events
-        .filter((event) => event.type === "tool_requested" && event.payload?.toolName === "edit_file")
+        .filter((event) => event.type === "tool_requested" && (event.payload?.toolName === "edit_file" || event.payload?.toolName === "write_file"))
         .map((event) => String(event.payload?.args?.path ?? ""));
       const longEvidence = evidence(continued, {
         summaries: summaries.length,
@@ -505,31 +507,42 @@ if (stressLevel >= 5) {
         restoredMath: excerpt(restoredMath),
         restoredTotals: excerpt(restoredTotals),
         editedPaths,
-        followUpReadPaths
+        followUpReadPaths,
+        followUpBlankReadPathCount: followUpReadPaths.length - followUpNonEmptyReadPaths.length
       }).evidence;
       const assistant = assistantText(continued);
-      const assistantJson = latestAssistantJson(continued) ?? latestModelFinalJson(continued);
+      const assistantJson = tryParseAssistantJson(assistant);
       const noProgressPause = continued.events.some(
         (event) => event.type === "model_no_progress" && event.payload?.status !== "retrying"
       );
+      const verificationBlocker = /verification evidence is required|remaining required command|verification failed/i.test(assistant);
       assertWithEvidence(continued.id === task.id, "follow-up changed task id", longEvidence);
       assertWithEvidence(continued.status === "paused", `expected rollback-invalidated verification to pause the task, got ${continued.status}`, longEvidence);
       assertWithEvidence(
-        /verification evidence is required|remaining required command/i.test(assistant) || noProgressPause,
+        verificationBlocker || noProgressPause,
         "rollback-invalidated follow-up did not produce a clear verification or no-progress blocker",
         longEvidence
       );
       assertWithEvidence(summaries.length > 0 || continued.events.some((event) => event.type === "conversation_summary_created"), "long follow-up did not compact context", longEvidence);
-      assertWithEvidence(editedPaths.some((value) => value.endsWith("src/math.mjs")), "task evidence omitted src/math.mjs edit", longEvidence);
-      assertWithEvidence(editedPaths.some((value) => value.endsWith("src/totals.mjs")), "task evidence omitted src/totals.mjs edit", longEvidence);
+      assertWithEvidence(editedPaths.some((value) => pathEndsWith(value, "src/math.mjs")), "task evidence omitted src/math.mjs edit", longEvidence);
+      assertWithEvidence(editedPaths.some((value) => pathEndsWith(value, "src/totals.mjs")), "task evidence omitted src/totals.mjs edit", longEvidence);
       assertWithEvidence(
         followUpToolRequests.every((event) => event.payload?.toolName === "read_file" || event.payload?.toolName === "plan_update"),
         "follow-up called tools other than read_file or internal plan_update",
         longEvidence
       );
-      assertWithEvidence(followUpReadPaths.every((path) => path.endsWith("src/math.mjs") || path.endsWith("src/totals.mjs")), "follow-up re-read files outside the allowed rollback scope", longEvidence);
-      assertWithEvidence(followUpReadPaths.some((path) => path.endsWith("src/math.mjs")), "follow-up did not re-read src/math.mjs after rollback", longEvidence);
-      assertWithEvidence(followUpReadPaths.some((path) => path.endsWith("src/totals.mjs")), "follow-up did not re-read src/totals.mjs after rollback", longEvidence);
+      assertWithEvidence(
+        followUpNonEmptyReadPaths.every((path) =>
+          pathEndsWith(path, "src/math.mjs") ||
+          pathEndsWith(path, "src/totals.mjs") ||
+          pathEndsWith(path, "tests/math.test.mjs") ||
+          pathEndsWith(path, "tests/totals.test.mjs")
+        ),
+        "follow-up re-read files outside the allowed rollback scope",
+        longEvidence
+      );
+      assertWithEvidence(followUpNonEmptyReadPaths.some((path) => pathEndsWith(path, "src/math.mjs")), "follow-up did not re-read src/math.mjs after rollback", longEvidence);
+      assertWithEvidence(followUpNonEmptyReadPaths.some((path) => pathEndsWith(path, "src/totals.mjs")), "follow-up did not re-read src/totals.mjs after rollback", longEvidence);
       if (assistantJson) {
         longEvidence.parsedJson = true;
         assertWithEvidence(assistantJson.rollbackSucceeded === true, "follow-up JSON did not confirm rollback success", longEvidence);
@@ -544,7 +557,7 @@ if (stressLevel >= 5) {
         assertWithEvidence(normalizeExpression(assistantJson.originalFailures?.totals?.expression) === "return '$0.00';", "follow-up JSON reported the wrong totals failure expression", longEvidence);
       } else {
         longEvidence.parsedJson = false;
-        assertWithEvidence(noProgressPause, "follow-up produced neither structured rollback evidence nor an auditable no-progress pause", longEvidence);
+        assertWithEvidence(verificationBlocker || noProgressPause, "follow-up produced neither structured rollback evidence nor an auditable no-progress pause", longEvidence);
       }
       assertWithEvidence(assistant.includes("LONG-FOLLOW-UP-MARKER") || summaries.length > 0, "long follow-up lost the compaction marker context", longEvidence);
       assertWithEvidence(Number(longEvidence.traceMaxEntryBytes ?? 0) <= 20_000, "trace entries grew beyond the long-task budget", longEvidence);
@@ -660,6 +673,7 @@ if (stressLevel >= 6) {
         folderId
       );
       task = await settleApprovals(workbench, task, () => "allow_for_task", 10);
+      assertNoProviderTransientTaskMessage(task, "initial file tool coverage run");
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const toolNames = toolRequestNames(task);
         const docPath = join(fixture.root, "docs", "file-tool-coverage.md");
@@ -674,6 +688,7 @@ if (stressLevel >= 6) {
           ].join("\n")
         );
         task = await settleApprovals(workbench, task, () => "allow_for_task", 10);
+        assertNoProviderTransientTaskMessage(task, `file tool coverage follow-up ${attempt + 1}`);
       }
       const docPath = join(fixture.root, "docs", "file-tool-coverage.md");
       const doc = existsSync(docPath) ? readFileSync(docPath, "utf8") : "";
@@ -995,11 +1010,7 @@ await runCase("knowledge rag citation", async () => {
 }
 
 const failed = report.cases.filter((item) => item.status === "failed");
-report.summary = {
-  totalCases: report.cases.length,
-  passedCases: report.cases.filter((item) => item.status === "passed").length,
-  failedCases: failed.length
-};
+refreshSummary(report);
 const { markdownPath } = await writeLiveSmokeReport(report);
 
 if (failed.length > 0) {
@@ -1152,12 +1163,52 @@ async function runCase(name, fn, options = {}) {
 
 function refreshSummary(data) {
   const failed = data.cases.filter((item) => item.status === "failed");
+  const cache = aggregatePromptCache(data.cases);
   data.summary = {
     totalCases: data.cases.length,
     passedCases: data.cases.filter((item) => item.status === "passed").length,
-    failedCases: failed.length
+    failedCases: failed.length,
+    ...(cache.turns > 0 ? { promptCache: cache } : {})
   };
   return data;
+}
+
+function aggregatePromptCache(cases) {
+  const totals = {
+    turns: 0,
+    inputTokens: 0,
+    cachedTokens: 0,
+    minCacheHitRatio: null,
+    maxCacheHitRatio: null,
+    cacheHitRatio: 0,
+    targetHitRatio: 0.9,
+    targetMet: false,
+    providerTurns: 0,
+    localResponseTurns: 0
+  };
+  for (const item of cases) {
+    const cache = item.evidence?.promptCache;
+    if (!cache || !Number.isFinite(Number(cache.turns))) continue;
+    const turns = Number(cache.turns);
+    const inputTokens = Number(cache.inputTokens ?? 0);
+    const cachedTokens = Number(cache.cachedTokens ?? 0);
+    totals.turns += turns;
+    totals.inputTokens += inputTokens;
+    totals.cachedTokens += cachedTokens;
+    totals.providerTurns += Number(cache.providerTurns ?? turns);
+    totals.localResponseTurns += Number(cache.localResponseTurns ?? 0);
+    const minRatio = Number(cache.minCacheHitRatio);
+    const maxRatio = Number(cache.maxCacheHitRatio);
+    if (Number.isFinite(minRatio)) {
+      totals.minCacheHitRatio = totals.minCacheHitRatio === null ? minRatio : Math.min(totals.minCacheHitRatio, minRatio);
+    }
+    if (Number.isFinite(maxRatio)) {
+      totals.maxCacheHitRatio = totals.maxCacheHitRatio === null ? maxRatio : Math.max(totals.maxCacheHitRatio, maxRatio);
+    }
+  }
+  totals.cacheHitRatio = totals.cachedTokens / Math.max(1, totals.inputTokens);
+  totals.targetMet = totals.cacheHitRatio >= totals.targetHitRatio;
+  return totals;
 }
 
 function evidence(task, extra = {}) {
@@ -1311,32 +1362,6 @@ function writeFixture(root, path, content) {
 
 function assistantText(task) {
   return [...task.events].reverse().find((event) => event.type === "assistant_message")?.summary ?? "";
-}
-
-function latestAssistantJson(task) {
-  for (const event of [...task.events].reverse()) {
-    if (event.type !== "assistant_message") continue;
-    const parsed = tryParseAssistantJson(event.payload?.blockedFinalMessage) ?? tryParseAssistantJson(event.summary);
-    if (parsed) return parsed;
-  }
-  return null;
-}
-
-function latestModelFinalJson(task) {
-  const tracePath = resolve(liveTraceRoot, task.id, "trace.jsonl");
-  if (!existsSync(tracePath)) return null;
-  const rows = readFileSync(tracePath, "utf8").split("\n").filter(Boolean);
-  for (const row of rows.reverse()) {
-    try {
-      const event = JSON.parse(row);
-      if (event.kind !== "model_turn_completed" || event.resultKind !== "final") continue;
-      const parsed = tryParseAssistantJson(event.message);
-      if (parsed) return parsed;
-    } catch {
-      // Ignore malformed or concurrently incomplete trace rows and continue to older evidence.
-    }
-  }
-  return null;
 }
 
 function tryParseAssistantJson(text) {
@@ -1555,6 +1580,7 @@ function readTraceMetrics(task) {
   }
   const raw = readFileSync(tracePath, "utf8");
   const lines = raw.split("\n").filter(Boolean);
+  const promptCache = summarizePromptCacheFromTrace(lines);
   const artifactDir = resolve("data", "test-reports", "live-model-smoke", "traces");
   mkdirSync(artifactDir, { recursive: true });
   const traceArtifactPath = resolve(artifactDir, `${task.id}.jsonl`);
@@ -1564,7 +1590,46 @@ function readTraceMetrics(task) {
     traceArtifactPath,
     traceLines: lines.length,
     traceBytes: Buffer.byteLength(raw, "utf8"),
-    traceMaxEntryBytes: lines.reduce((max, line) => Math.max(max, Buffer.byteLength(line, "utf8")), 0)
+    traceMaxEntryBytes: lines.reduce((max, line) => Math.max(max, Buffer.byteLength(line, "utf8")), 0),
+    ...(promptCache.turns > 0 ? { promptCache } : {})
+  };
+}
+
+function summarizePromptCacheFromTrace(lines) {
+  const rows = [];
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line);
+      if (entry?.kind !== "model_turn_completed") continue;
+      const usage = entry?.usage;
+      const inputTokens = Number(usage?.inputTokens ?? 0);
+      const cachedTokens = Number(usage?.cachedTokens ?? 0);
+      if (!Number.isFinite(inputTokens) || inputTokens <= 0) continue;
+      if (!Number.isFinite(cachedTokens) || cachedTokens < 0) continue;
+      rows.push({
+        inputTokens,
+        cachedTokens,
+        cacheHitRatio: cachedTokens / inputTokens,
+        source: usage?.cacheSource === "local_response" ? "local_response" : "provider"
+      });
+    } catch {
+      // Ignore malformed or concurrently incomplete trace rows.
+    }
+  }
+  const inputTokens = rows.reduce((total, row) => total + row.inputTokens, 0);
+  const cachedTokens = rows.reduce((total, row) => total + row.cachedTokens, 0);
+  const ratios = rows.map((row) => row.cacheHitRatio);
+  const cacheHitRatio = cachedTokens / Math.max(1, inputTokens);
+  return {
+    turns: rows.length,
+    inputTokens,
+    cachedTokens,
+    cacheHitRatio,
+    targetHitRatio: 0.9,
+    targetMet: cacheHitRatio >= 0.9,
+    providerTurns: rows.filter((row) => row.source === "provider").length,
+    localResponseTurns: rows.filter((row) => row.source === "local_response").length,
+    ...(ratios.length > 0 ? { minCacheHitRatio: Math.min(...ratios), maxCacheHitRatio: Math.max(...ratios) } : {})
   };
 }
 
@@ -1592,6 +1657,16 @@ function assertTraceBudgets(evidencePayload) {
   assertWithEvidence(traceBytes <= 450_000, "trace output grew beyond the flagship task budget", evidencePayload);
 }
 
+function assertNoProviderTransientTaskMessage(task, phase) {
+  const assistant = assistantText(task);
+  if (!/model provider failed|模型服务连接失败|connection error|fetch failed/i.test(assistant)) return;
+  throw new EvidenceError(`provider transient during ${phase}`, evidence(task, {
+    phase,
+    assistant: excerpt(assistant),
+    error: "provider transient polluted task history"
+  }).evidence);
+}
+
 function sanitizeError(error) {
   const message = error instanceof Error ? error.message : String(error);
   return message
@@ -1612,6 +1687,10 @@ function toRelative(filePath) {
   return filePath.replace(`${root}\\`, "").replaceAll("\\", "/");
 }
 
+function pathEndsWith(value, suffix) {
+  return String(value).replaceAll("\\", "/").endsWith(suffix);
+}
+
 function markdownReport(data) {
   const lines = [
     "# Agent Workbench Live Mimo Smoke",
@@ -1619,6 +1698,9 @@ function markdownReport(data) {
     `Generated: ${data.generatedAt}`,
     `Required gate: ${data.required ? "yes" : "no"}`,
     `Summary: ${data.summary?.passedCases ?? 0}/${data.summary?.totalCases ?? data.cases.length} passed`,
+    data.summary?.promptCache
+      ? `Effective input cache: ${Math.round(data.summary.promptCache.cacheHitRatio * 100)}% (${data.summary.promptCache.cachedTokens}/${data.summary.promptCache.inputTokens} cached input tokens, ${data.summary.promptCache.turns} turns, provider ${data.summary.promptCache.providerTurns ?? data.summary.promptCache.turns}, local ${data.summary.promptCache.localResponseTurns ?? 0}, target ${Math.round(data.summary.promptCache.targetHitRatio * 100)}%, ${data.summary.promptCache.targetMet ? "met" : "below target"})`
+      : "Prompt cache: unavailable",
     "",
     `Provider: ${data.provider.baseURL}`,
     `Model: ${data.provider.model}`,
@@ -1636,6 +1718,7 @@ function markdownReport(data) {
         item.evidence.approvalCount !== undefined ? `approvals=${item.evidence.approvalCount}` : null,
         item.evidence.traceLines !== undefined ? `traceLines=${item.evidence.traceLines}` : null,
         item.evidence.traceBytes !== undefined ? `traceBytes=${item.evidence.traceBytes}` : null,
+        item.evidence.promptCache ? `cache=${Math.round(item.evidence.promptCache.cacheHitRatio * 100)}%` : null,
         item.evidence.rollbackUsed !== undefined ? `rollback=${item.evidence.rollbackUsed}` : null,
         item.evidence.contextCompactionObserved !== undefined ? `contextCompaction=${item.evidence.contextCompactionObserved}` : null
       ].filter(Boolean);

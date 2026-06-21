@@ -122,6 +122,46 @@ test("uploads, attaches, lists, and deletes task attachments through public HTTP
   expect(await afterDelete.json()).toEqual([]);
 });
 
+test("renders uploaded image attachments in the task timeline", async ({ page, request }, testInfo) => {
+  const suffix = `${testInfo.project.name}-${Date.now().toString(36)}`;
+  const fileName = `agent-screenshot-${suffix}.png`;
+  const imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+  const imageBytes = Buffer.from(imageBase64, "base64");
+  const upload = await request.post(`${apiBase}/api/task-attachments`, {
+    headers: sessionHeaders,
+    data: {
+      fileName,
+      mimeType: "image/png",
+      size: imageBytes.byteLength,
+      dataBase64: imageBase64
+    }
+  });
+  expect(upload.status()).toBe(201);
+  const attachment = await upload.json() as { id: string; fileName: string; kind: string };
+  expect(attachment.kind).toBe("image");
+
+  const taskResponse = await request.post(`${apiBase}/api/tasks`, {
+    headers: sessionHeaders,
+    data: {
+      goal: `Show uploaded image attachment ${suffix}`,
+      title: `Image attachment ${suffix}`,
+      attachmentIds: [attachment.id]
+    }
+  });
+  expect(taskResponse.status()).toBe(201);
+  const task = await taskResponse.json() as { id: string };
+
+  await page.goto(`/tasks/${task.id}`);
+  const preview = page.getByAltText(new RegExp(fileName));
+  await expect(preview).toBeVisible();
+  await expect(preview).toHaveJSProperty("naturalWidth", 1);
+  await expect(preview).toHaveJSProperty("naturalHeight", 1);
+  await testInfo.attach("timeline-image-attachment-preview", {
+    body: await page.locator(".attachmentImagePreview").screenshot(),
+    contentType: "image/png"
+  });
+});
+
 test("covers support, docs, settings subpages, and visual overflow probes", async ({ page }, testInfo) => {
   await page.goto("/");
   await openUtilityItem(page, "Support");

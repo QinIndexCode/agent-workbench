@@ -3,9 +3,11 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createId, nowIso } from "./ids.js";
+import { LocalSecretBox } from "./secrets.js";
 import type { WorkbenchStore } from "./store.js";
 import {
   buildTaskGraphSystemLayer,
+  isDirectAnswerGoal,
   taskGraphEvidenceRefs,
   taskGraphFromEvents,
   type AttentionPacket
@@ -17,6 +19,7 @@ const RESPONSE_TOKEN_RATIO = 0.15;
 const FILE_LAYER_BUDGET_RATIO = 0.2;
 const MIN_HISTORY_TOKENS = 160;
 const MIN_INPUT_TOKENS = 120;
+const MESSAGE_OVERHEAD_SAFETY_TOKENS = 640;
 const MAX_SKILL_LOADS = 3;
 const SKILL_CONTENT_TRUNCATE = 1200;
 const MAX_PROJECT_MEMORIES = 5;
@@ -38,6 +41,8 @@ const SUMMARY_HIGH_PRESSURE_RECENT = 12;
 const SUMMARY_NORMAL_RECENT = 18;
 const SUMMARY_MIN_EVENTS = 12;
 const SUMMARY_FORCE_MIN_EVENTS = 1;
+const SUMMARY_EVENT_WINDOW_THRESHOLD = 72;
+const SUMMARY_EVENT_WINDOW_REFRESH_GAP = 36;
 const MAX_RETAINED_FACTS = 24;
 const MAX_RECENT_USER_MESSAGES = 2;
 const MAX_RECENT_USER_TRUNCATE = 4000;
@@ -54,10 +59,11 @@ const MAX_READ_FILE_CONTENT = 64000;
 const MAX_READ_FILE_HEAD = 16000;
 const MAX_READ_FILE_TAIL = 6000;
 const MAX_READ_FILE_FULL_LINES = 900;
-const MAX_READ_FILE_ROLE_INLINE_CONTENT = 2000;
 const TRACKED_FILE_HEAD_LINES = 140;
 const TRACKED_FILE_TAIL_LINES = 80;
 const MAX_ATTACHMENT_PREVIEW = 1200;
+const MAX_IMAGE_ATTACHMENTS = 6;
+const MAX_IMAGE_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const PROTECTED_BUDGET_RATIO = 0.5;
 const MIN_PROTECTED_BUDGET = 96;
 const MIN_PROTECTED_BLOCK_BUDGET = 24;
@@ -69,6 +75,8 @@ const EXTRA_TOKEN_BUFFER = 8;
 
 const MEMORY_LIMITS_COMPACT = { user: 3000, global: 5000, project: 5000 };
 const MEMORY_LIMITS_NORMAL = { user: 6000, global: 12000, project: 12000 };
+const COMPACT_MEMORY_TOTAL_BUDGET_THRESHOLD = 16000;
+const COMPACT_MEMORY_INPUT_BUDGET_THRESHOLD = 12000;
 
 const AGENT_WORKFLOW_HEURISTICS = [
   "## Agent Workflow Heuristics",
@@ -98,9 +106,18 @@ export interface AssembledContext {
 
 export type CanonicalModelMessage =
   | { role: "system"; content: string }
-  | { role: "user"; content: string; eventId?: string }
+  | { role: "user"; content: string; eventId?: string; imageAttachments?: CanonicalImageAttachment[] }
   | { role: "assistant"; content?: string; toolCalls?: ToolCall[]; reasoningContent?: string; eventId?: string }
   | { role: "tool"; toolCallId: string; toolName: string; content: string; reasoningContent?: string; eventId?: string };
+
+export interface CanonicalImageAttachment {
+  attachmentId: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  contentHash: string;
+  dataBase64: string;
+}
 
 export interface LoadedSkillSession {
   loadedSkills: Set<string>;
@@ -115,6 +132,7 @@ export class ContextAssembler {
   private readonly trackers = new Map<string, FileStateTracker>();
   private readonly skillSessions = new Map<string, LoadedSkillSession>();
   private readonly pendingSummaries = new Map<string, ConversationSummary[]>();
+  private readonly secretBox = new LocalSecretBox();
 
   constructor(private readonly store: WorkbenchStore) {}
 
@@ -123,83 +141,126 @@ export class ContextAssembler {
     const maxTotal = budget?.maxTotal ?? preferences.maxTokensPerRequest;
     const reservedForResponse = budget?.reservedForResponse ?? Math.min(16000, Math.round(maxTotal * 0.15));
     const tokenBudget = { maxTotal, reservedForResponse };
-    const systemLayers: string[] = [];
+    const stableSystemLayers: string[] = [];
+    const stableTaskPrefixLayers: string[] = [];
+    const volatileContextLayers: string[] = [];
     const inputLayers: string[] = [];
     let usedTokens = 0;
 
     const systemLayer = this.buildSystemLayer(preferences);
-    systemLayers.push(systemLayer);
+    stableSystemLayers.push(systemLayer);
     usedTokens += estimateTokens(systemLayer);
 
-    systemLayers.push(AGENT_WORKFLOW_HEURISTICS);
+    stableSystemLayers.push(AGENT_WORKFLOW_HEURISTICS);
     usedTokens += estimateTokens(AGENT_WORKFLOW_HEURISTICS);
 
-    const memoryFileLayer = await this.buildMemoryFileLayer(task, { compact: false });
-    if (memoryFileLayer) {
-      systemLayers.push(memoryFileLayer);
-      usedTokens += estimateTokens(memoryFileLayer);
-    }
-
-    const runtimeLayer = await this.buildRuntimeMetadataLayer(preferences);
-    if (runtimeLayer) {
-      systemLayers.push(runtimeLayer);
-      usedTokens += estimateTokens(runtimeLayer);
-    }
-
-    const workingFolderLayer = this.buildWorkingFolderLayer(task);
-    systemLayers.push(workingFolderLayer);
-    usedTokens += estimateTokens(workingFolderLayer);
-
-    const currentTurnLayer = this.buildCurrentTurnLayer(task);
-    if (currentTurnLayer) {
-      inputLayers.push(currentTurnLayer);
-      usedTokens += estimateTokens(currentTurnLayer);
+    const latestUser = latestUserEvent(task);
+    if (
+      latestUser &&
+      isDirectAnswerGoal(latestUser.summary) &&
+      !(await this.hasInjectableKnowledge(task, preferences)) &&
+      !this.shouldPreserveLongContextForDirectAnswer(task, tokenBudget)
+    ) {
+      const systemPrompt = this.buildDirectAnswerSystemLayer(preferences);
+      const inputBudget = Math.max(MIN_INPUT_TOKENS, tokenBudget.maxTotal - tokenBudget.reservedForResponse - estimateTokens(systemPrompt) - MESSAGE_OVERHEAD_SAFETY_TOKENS);
+      const messages = buildCanonicalModelMessages(task, systemPrompt, {
+        maxTokens: inputBudget,
+        imageAttachments: await this.buildImageAttachments(task),
+        omitReasoningContent: true
+      });
+      const messageTokens = estimateCanonicalMessages(messages);
+      return {
+        systemPrompt,
+        input: buildHistoryLayer(task, inputBudget) || latestUser.summary,
+        messages,
+        attentionPacket: {
+          system: systemPrompt,
+          messages,
+          evidenceRefs: [],
+          tokenBudget: {
+            maxTotal: tokenBudget.maxTotal,
+            reservedForResponse: tokenBudget.reservedForResponse,
+            usedTokens: messageTokens
+          }
+        },
+        usedTokens: messageTokens
+      };
     }
 
     const skillLayer = await this.buildSkillMetaLayer(preferences);
     if (skillLayer) {
-      systemLayers.push(skillLayer);
+      stableSystemLayers.push(skillLayer);
       usedTokens += estimateTokens(skillLayer);
+    }
+
+    const compactMemoryLayers = shouldCompactMemoryLayers(tokenBudget);
+    const stableMemoryFileLayer = await this.buildStableMemoryFileLayer({ compact: compactMemoryLayers });
+    if (stableMemoryFileLayer) {
+      stableSystemLayers.push(stableMemoryFileLayer);
+      usedTokens += estimateTokens(stableMemoryFileLayer);
+    }
+
+    const projectMemoryFileLayer = await this.buildProjectMemoryFileLayer(task, { compact: compactMemoryLayers });
+    if (projectMemoryFileLayer) {
+      stableTaskPrefixLayers.push(projectMemoryFileLayer);
+      usedTokens += estimateTokens(projectMemoryFileLayer);
+    }
+
+    const runtimeLayer = await this.buildRuntimeMetadataLayer(preferences);
+    if (runtimeLayer) {
+      stableSystemLayers.push(runtimeLayer);
+      usedTokens += estimateTokens(runtimeLayer);
+    }
+
+    const workingFolderLayer = this.buildWorkingFolderLayer(task);
+    stableTaskPrefixLayers.push(workingFolderLayer);
+    usedTokens += estimateTokens(workingFolderLayer);
+
+    const currentTurnLayer = this.buildCurrentTurnLayer(task);
+    if (currentTurnLayer) {
+      stableTaskPrefixLayers.push(currentTurnLayer);
+      inputLayers.push(currentTurnLayer);
+      usedTokens += estimateTokens(currentTurnLayer);
     }
 
     const projectLayer = await this.buildProjectLayer(task);
     if (projectLayer) {
-      systemLayers.push(projectLayer);
+      stableTaskPrefixLayers.push(projectLayer);
       usedTokens += estimateTokens(projectLayer);
     }
 
     const knowledgeBriefLayer = await this.buildKnowledgeBriefLayer(task, preferences);
     if (knowledgeBriefLayer) {
-      systemLayers.push(knowledgeBriefLayer);
+      stableTaskPrefixLayers.push(knowledgeBriefLayer);
       usedTokens += estimateTokens(knowledgeBriefLayer);
     }
 
     const loadedSkills = this.loadedSkillPrompt(task.id);
     if (loadedSkills) {
-      systemLayers.push(loadedSkills);
+      stableTaskPrefixLayers.push(loadedSkills);
       usedTokens += estimateTokens(loadedSkills);
     }
 
     const targetModeLayer = this.buildTargetModeLayer(task);
     if (targetModeLayer) {
-      systemLayers.push(targetModeLayer);
+      stableTaskPrefixLayers.push(targetModeLayer);
       usedTokens += estimateTokens(targetModeLayer);
     }
 
     const taskGraph = taskGraphFromEvents(task);
     const taskGraphLayer = buildTaskGraphSystemLayer(taskGraph);
     if (taskGraphLayer) {
-      systemLayers.push(taskGraphLayer);
+      stableTaskPrefixLayers.push(taskGraphLayer);
       usedTokens += estimateTokens(taskGraphLayer);
     }
 
     const continuityLayer = this.buildTaskContinuityLayer(task);
-    systemLayers.push(continuityLayer);
+    volatileContextLayers.push(continuityLayer);
     usedTokens += estimateTokens(continuityLayer);
 
     const attachmentLayer = await this.buildAttachmentLayer(task.id);
     if (attachmentLayer) {
-      systemLayers.push(attachmentLayer);
+      stableTaskPrefixLayers.push(attachmentLayer);
       usedTokens += estimateTokens(attachmentLayer);
     }
 
@@ -223,27 +284,34 @@ export class ContextAssembler {
     });
     if (summary) {
       const summaryLayer = `## Conversation Summary\n${summary.summary}`;
-      systemLayers.push(summaryLayer);
+      stableTaskPrefixLayers.push(summaryLayer);
       usedTokens += estimateTokens(summaryLayer);
     }
-    if (fileLayerIncluded) systemLayers.push(fileLayer);
+    if (fileLayerIncluded) volatileContextLayers.push(fileLayer);
 
     const remaining = tokenBudget.maxTotal - usedTokens - tokenBudget.reservedForResponse;
     const historyLayer = buildHistoryLayer(task, Math.max(160, remaining), fileLayerIncluded ? tracker : undefined, summary?.rangeEndEventId);
     if (historyLayer) inputLayers.push(historyLayer);
 
-    const systemPrompt = systemLayers.filter((layer) => layer.trim().length > 0).join("\n\n");
+    const volatileContextPrompt = volatileContextLayers.filter((layer) => layer.trim().length > 0).join("\n\n");
+    const stableTaskPrefixPrompt = stableTaskPrefixLayers.filter((layer) => layer.trim().length > 0).join("\n\n");
+    const stableSystemPrompt = stableSystemLayers.filter((layer) => layer.trim().length > 0).join("\n\n");
+    const systemPrompt = [stableSystemPrompt, stableTaskPrefixPrompt, volatileContextPrompt].filter((layer) => layer.trim().length > 0).join("\n\n");
     const rawInput = inputLayers.filter((layer) => layer.trim().length > 0).join("\n\n");
-    const inputBudget = Math.max(120, tokenBudget.maxTotal - tokenBudget.reservedForResponse - estimateTokens(systemPrompt));
+    const inputBudget = Math.max(MIN_INPUT_TOKENS, tokenBudget.maxTotal - tokenBudget.reservedForResponse - estimateTokens(systemPrompt) - MESSAGE_OVERHEAD_SAFETY_TOKENS);
     const protectedLayers = [
       currentTurnLayer,
       buildRecentUserContextLayer(task, summary?.rangeEndEventId),
     ].filter(Boolean);
     const input = trimMiddleToTokenBudget(rawInput, inputBudget, protectedLayers);
-    const messages = buildCanonicalModelMessages(task, systemPrompt, {
+    const messages = buildCanonicalModelMessages(task, stableSystemPrompt || systemPrompt, {
       afterEventId: summary?.rangeEndEventId,
       maxTokens: inputBudget,
-      tracker: fileLayerIncluded ? tracker : undefined
+      tracker: fileLayerIncluded ? tracker : undefined,
+      imageAttachments: await this.buildImageAttachments(task),
+      prefixContext: stableTaskPrefixPrompt,
+      tailContext: volatileContextPrompt,
+      omitReasoningContent: !shouldReplayReasoningHistory()
     });
     const activeNode = taskGraph?.nodes.find((node) => node.id === taskGraph.activeNodeId);
     const messageTokens = estimateCanonicalMessages(messages);
@@ -407,17 +475,23 @@ export class ContextAssembler {
       "Use USER.md and MEMORY.md tools only for durable memories the user wants kept; do not store transient task outputs, secrets, or speculative guesses.",
       "Use skill_create or skill_delete only when the user explicitly asks or when a reviewed reusable pattern is ready; normal task completion should create memory, not a skill.",
       "When using side-effect-free state tools such as plan_update or use_skill, do not narrate the tool mechanics, tool JSON, or success status to the user; continue with the actual task.",
+      "After a requested use_skill call succeeds, apply the loaded guidance to the current user request; do not ask what task to perform next when the user already provided the task or answer constraints.",
       "Role-ordered assistant/tool history is Agent Workbench's own execution record. Treat prior tool results as the agent's evidence, not as user-provided examples.",
       "Internal continuity notes and retained thinking are private execution context. Never quote them verbatim, and never answer with a note that says you will continue instead of actually taking the next required action.",
       "When current tool evidence is enough to answer or explain the user's request, return the final answer directly; do not call ask_user to ask how to interpret, phrase, or confirm that evidence.",
+      "When the user explicitly asks to create, write, generate, or update a file, do not ask whether to create it. Use write_file with expectedHash=\"__new__\" for new files, or edit_file/write_file with the observed hash for existing files. Parent directories may be created by the write tools.",
       "For greetings, thanks, simple chat, and capability questions, answer directly without calling tools or loading more context.",
       "When asked to test or list tools, treat it as a safe capability check; do not create files, edit memory, edit skills, or run persistent side-effect tools unless the user explicitly authorizes that scope.",
       "When the user asks what you can do, answer directly from your general capabilities; do not inspect files first.",
       "Do not claim the project name, stack, files, or runtime state until you have verified them with tool evidence.",
       "If you need a file but are unsure it exists, list or search first instead of guessing paths such as README.md.",
       "When the user gives exact allowed tools, paths, commands, or counts, obey that scope literally; do not call tools with blank arguments, extra paths, or exploratory follow-up calls after the requested evidence is collected.",
+      "For file tools, prefer workspace-relative paths exactly as returned by list_files, search_files, read_file, edit_file, and write_file. Do not pass the absolute workRoot path back into file tools when a relative path works.",
+      "If a tool result, test failure, stack trace, or user message already names exact files, inspect those files directly with read_file or targeted search_files. Avoid broad recursive listings unless the relevant path is genuinely unknown.",
+      "Do not call list_files on the same directory more than once unless the directory contents may have changed or the previous listing was incomplete.",
       "Tool distinction: search_files searches the live workspace and returns path/line snippets only; read_file returns live file content; knowledge_search searches the saved Knowledge library and is not proof of current files.",
       "Do not use run_command for workspace file-body reads or code search when list_files, search_files, or read_file can answer the question more directly and with less context cost.",
+      "When editing source code, make syntactically complete edits. If replacing a function or block, include the opening line through its matching closing delimiter so the edit cannot leave duplicate or dangling braces.",
       "When you quote or report source code, command output, JSON values, hashes, paths, or return expressions from tool evidence, copy the observed text exactly; do not rewrite it into an equivalent expression.",
       "When reporting a debug fix, base the root cause and final summary only on observed tool output and source code; do not speculate about code you did not see.",
       "After debugging or editing code, the final answer should include the observed failure, exact root cause expression or file location when known, changed files, and verification result.",
@@ -429,6 +503,22 @@ export class ContextAssembler {
     if (preferences.language === "zh-CN") lines.push("Respond in Chinese unless the user asks otherwise.");
     if (preferences.responseDetail === "brief") lines.push("Prefer concise answers unless the task requires detail.");
     if (preferences.responseDetail === "detailed") lines.push("Provide enough detail for a careful user to audit the reasoning and result.");
+    lines.push(`User language preference: ${preferences.language}`);
+    return lines.join("\n");
+  }
+
+  private buildDirectAnswerSystemLayer(preferences: UserPreferences): string {
+    const lines = [
+      "You are the Agent Workbench agent.",
+      "## Direct Answer Mode",
+      "This is a simple chat or capability question.",
+      "Answer directly from general capabilities without inspecting files, loading skills, using tools, or injecting workspace/runtime context.",
+      "Do not claim the project name, stack, files, or runtime state.",
+      "Keep the answer concise, useful, and matched to the user's tone.",
+      `User preferred tone: ${preferences.agentTone || "balanced"}.`,
+      `User preferred response detail: ${preferences.responseDetail || "normal"}.`
+    ];
+    if (preferences.language === "zh-CN") lines.push("Respond in Chinese unless the user asks otherwise.");
     lines.push(`User language preference: ${preferences.language}`);
     return lines.join("\n");
   }
@@ -457,23 +547,30 @@ export class ContextAssembler {
     ].filter(Boolean).join("\n");
   }
 
-  private async buildMemoryFileLayer(task: TaskDetail, options: { compact?: boolean } = {}): Promise<string> {
+  private async buildStableMemoryFileLayer(options: { compact?: boolean } = {}): Promise<string> {
     const baseDir = memoryBaseDir();
-    const limits = options.compact
-      ? { user: 3000, global: 5000, project: 5000 }
-      : { user: 6000, global: 12000, project: 12000 };
+    const limits = options.compact ? MEMORY_LIMITS_COMPACT : MEMORY_LIMITS_NORMAL;
     const user = await readMemoryFile(resolve(baseDir, "USER.md"), limits.user, defaultUserMemoryContent());
     const globalMemory = await readMemoryFile(resolve(baseDir, "MEMORY.md"), limits.global, defaultGlobalMemoryContent());
+    return [
+      "## Stable Memory Files",
+      "These are durable, user-managed memory notes from Agent Workbench's internal memory store. Treat them as preferences and long-lived context, not proof of current file contents. Do not read USER.md or MEMORY.md from the workRoot; the content below is the authoritative injected memory snapshot.",
+      `### Global USER.md\n${user}`,
+      `### Global MEMORY.md\n${globalMemory}`
+    ].filter(Boolean).join("\n\n");
+  }
+
+  private async buildProjectMemoryFileLayer(task: TaskDetail, options: { compact?: boolean } = {}): Promise<string> {
+    const baseDir = memoryBaseDir();
+    const limits = options.compact ? MEMORY_LIMITS_COMPACT : MEMORY_LIMITS_NORMAL;
     const project = await readMemoryFile(
       resolve(baseDir, "projects", memoryPathHash(task.workRoot || defaultTaskWorkRoot()), "MEMORY.md"),
       limits.project,
       defaultProjectMemoryContent(task.workRoot || defaultTaskWorkRoot())
     );
     return [
-      "## Stable Memory Files",
-      "These are durable, user-managed memory notes from Agent Workbench's internal memory store. Treat them as preferences and project context, not proof of current file contents. Do not read USER.md or MEMORY.md from the workRoot; the content below is the authoritative injected memory snapshot.",
-      `### Global USER.md\n${user}`,
-      `### Global MEMORY.md\n${globalMemory}`,
+      "## Project Memory File",
+      "This durable memory is scoped to the current task work root. Treat it as project context, not proof of current file contents.",
       `### Project MEMORY.md\n${project}`
     ].filter(Boolean).join("\n\n");
   }
@@ -490,6 +587,7 @@ export class ContextAssembler {
         ? `Active model: ${active.label} / ${active.defaultModelId} (${active.vendor}, ${active.protocol}, context ${formatContextWindow(active)})`
         : `Active model: ${preferences.llmProvider || "not configured"} / ${preferences.defaultModel || "not configured"}`
     );
+    lines.push(runtimeShellGuidance());
     const fallbackProviderIds = preferences.modelRoute?.fallbackProviderIds ?? [];
     if (fallbackProviderIds.length > 0) {
       lines.push(`Model fallbacks configured: ${fallbackProviderIds.join(", ")}`);
@@ -546,7 +644,6 @@ export class ContextAssembler {
     const latestPlan = [...task.events].reverse().find((event) => event.type.startsWith("plan_") && !event.reverted);
     return [
       "## Active Task Continuity",
-      `Task ID: ${task.id}`,
       `Task status: ${task.status}`,
       latestPlan ? `Latest visible plan state: ${truncate(latestPlan.summary, 1000)}` : "",
       "Use the role-ordered conversation below for the active objective. The latest user request is authoritative."
@@ -580,6 +677,14 @@ export class ContextAssembler {
     ].join("\n");
   }
 
+  private async hasInjectableKnowledge(task: TaskDetail, preferences: UserPreferences): Promise<boolean> {
+    if (!preferences.knowledgeActiveInjection || preferences.maxInjectedKnowledgeItems <= 0) return false;
+    const projectId = task.folderId || "default";
+    const projectItems = await this.store.listKnowledgeItems(projectId);
+    if (projectItems.length > 0) return true;
+    return projectId !== "default" && (await this.store.listKnowledgeItems("default")).length > 0;
+  }
+
   private async buildAttachmentLayer(taskId: string): Promise<string> {
     const attachments = await this.store.listTaskAttachments(taskId);
     if (attachments.length === 0) return "";
@@ -588,6 +693,33 @@ export class ContextAssembler {
       "Use attachment references as evidence. Large or binary files may require explicit read/analysis tools before claiming details.",
       ...attachments.map(formatAttachmentForContext)
     ].join("\n");
+  }
+
+  private async buildImageAttachments(task: TaskDetail): Promise<CanonicalImageAttachment[]> {
+    if (!shouldInjectImageAttachments(task)) return [];
+    const attachments = (await this.store.listTaskAttachments(task.id))
+      .filter((attachment) => attachment.kind === "image" && attachment.size <= MAX_IMAGE_ATTACHMENT_BYTES)
+      .slice(0, MAX_IMAGE_ATTACHMENTS);
+    const images: CanonicalImageAttachment[] = [];
+    for (const attachment of attachments) {
+      const bytes = await readLocalFilePayload(this.secretBox, attachment.storagePath).catch(() => null);
+      if (!bytes || bytes.byteLength === 0 || bytes.byteLength > MAX_IMAGE_ATTACHMENT_BYTES) continue;
+      images.push({
+        attachmentId: attachment.id,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+        contentHash: attachment.contentHash,
+        dataBase64: bytes.toString("base64")
+      });
+    }
+    return images;
+  }
+
+  private shouldPreserveLongContextForDirectAnswer(task: TaskDetail, tokenBudget: TokenBudget): boolean {
+    const inputBudget = Math.max(1, tokenBudget.maxTotal - tokenBudget.reservedForResponse);
+    if (tokenBudget.maxTotal > LOW_BUDGET_THRESHOLD && inputBudget > LOW_BUDGET_THRESHOLD) return false;
+    return task.events.filter(isSummarizableContextEvent).length >= LOW_BUDGET_EVENT_THRESHOLD;
   }
 
   private async ensureConversationSummary(
@@ -602,15 +734,18 @@ export class ContextAssembler {
       : Number.POSITIVE_INFINITY;
     const historyPressure = estimateEventsForSummary(visibleEvents) + (options.usedBefore ?? 0);
     const highPressure = historyPressure > maxPromptInput * 0.9;
+    const eventWindowPressure = visibleEvents.length >= SUMMARY_EVENT_WINDOW_THRESHOLD;
     const lowBudgetPressure = Boolean(options.tokenBudget && options.tokenBudget.maxTotal <= 3000 && visibleEvents.length >= 60);
-    if (!options.force && !highPressure && !lowBudgetPressure) return latest;
+    if (!options.force && !highPressure && !eventWindowPressure && !lowBudgetPressure) return latest;
     const latestCoveredIndex = latest ? visibleEvents.findIndex((event) => event.id === latest.rangeEndEventId) : -1;
-    if (!options.force && latest && !highPressure && !lowBudgetPressure && visibleEvents.length - latestCoveredIndex < 60) return latest;
+    const uncoveredEventCount = latestCoveredIndex >= 0 ? visibleEvents.length - latestCoveredIndex - 1 : visibleEvents.length;
+    if (!options.force && latest && eventWindowPressure && !highPressure && !lowBudgetPressure && uncoveredEventCount < SUMMARY_EVENT_WINDOW_REFRESH_GAP) return latest;
+    if (!options.force && latest && !highPressure && !eventWindowPressure && !lowBudgetPressure && visibleEvents.length - latestCoveredIndex < 60) return latest;
     const startIndex = latestCoveredIndex >= 0 ? latestCoveredIndex + 1 : 0;
-    const keepRecent = options.force ? 6 : highPressure || lowBudgetPressure ? 12 : 18;
+    const keepRecent = options.force ? SUMMARY_FORCE_RECENT : highPressure || lowBudgetPressure ? SUMMARY_HIGH_PRESSURE_RECENT : SUMMARY_NORMAL_RECENT;
     const endIndex = Math.max(startIndex, visibleEvents.length - keepRecent);
     const slice = visibleEvents.slice(startIndex, endIndex);
-    if (slice.length < (options.force || highPressure || lowBudgetPressure ? 1 : 12)) return latest;
+    if (slice.length < (options.force || highPressure || lowBudgetPressure ? SUMMARY_FORCE_MIN_EVENTS : SUMMARY_MIN_EVENTS)) return latest;
     const now = nowIso();
     const retainedFacts = mergeRetainedFacts([
       ...existing.flatMap((summary) => summary.retainedFacts ?? []),
@@ -826,11 +961,38 @@ function buildRecentUserContextLayer(task: TaskDetail, afterEventId?: string): s
 function buildCanonicalModelMessages(
   task: TaskDetail,
   systemPrompt: string,
-  options: { afterEventId?: string | undefined; maxTokens: number; tracker?: FileStateTracker | undefined }
+  options: {
+    afterEventId?: string | undefined;
+    maxTokens: number;
+    tracker?: FileStateTracker | undefined;
+    imageAttachments?: CanonicalImageAttachment[] | undefined;
+    prefixContext?: string | undefined;
+    tailContext?: string | undefined;
+    omitReasoningContent?: boolean | undefined;
+  }
 ): CanonicalModelMessage[] {
   const messages: CanonicalModelMessage[] = [];
   if (systemPrompt.trim()) messages.push({ role: "system", content: systemPrompt });
   messages.push(...buildCanonicalHistoryMessages(task, options));
+  const prefixContext = formatPrefixContextMessage(options.prefixContext);
+  if (prefixContext) insertPrefixContextMessage(messages, prefixContext);
+  if (options.imageAttachments && options.imageAttachments.length > 0) {
+    messages.push({
+      role: "user",
+      content: [
+        "Attached image inputs for visual analysis:",
+        ...options.imageAttachments.map((image) => `- ${image.fileName} (${image.mimeType}, ${image.size} bytes, hash ${image.contentHash})`)
+      ].join("\n"),
+      imageAttachments: options.imageAttachments
+    });
+  }
+  const tailContext = formatTailContextMessage(options.tailContext);
+  if (tailContext) {
+    messages.push({
+      role: "user",
+      content: tailContext
+    });
+  }
   if (messages.length === 1) {
     const latestUser = latestUserEvent(task);
     if (latestUser) messages.push({ role: "user", content: latestUser.summary, eventId: latestUser.id });
@@ -838,9 +1000,56 @@ function buildCanonicalModelMessages(
   return messages;
 }
 
+function formatPrefixContextMessage(context: string | undefined): string {
+  const trimmed = context?.trim();
+  if (!trimmed) return "";
+  return [
+    "## Stable Task Context",
+    "This private context is stable for the current task and should be reused across tool turns.",
+    trimmed
+  ].join("\n");
+}
+
+function insertPrefixContextMessage(messages: CanonicalModelMessage[], content: string): void {
+  const insertIndex = messages[0]?.role === "system" ? 1 : 0;
+  messages.splice(insertIndex, 0, { role: "user", content });
+}
+
+function formatTailContextMessage(context: string | undefined): string {
+  const trimmed = context?.trim();
+  if (!trimmed) return "";
+  return [
+    "## Current Workbench Context",
+    "Use this private execution context for the next action. It may change as tools run; the prior conversation and latest user request remain authoritative.",
+    trimmed
+  ].join("\n");
+}
+
+function shouldReplayReasoningHistory(): boolean {
+  const value =
+    process.env["AGENT_WORKBENCH_REASONING_HISTORY_REPLAY"] ??
+    process.env["AGENT_WORKBENCH_OPENAI_COMPAT_REASONING_REPLAY"] ??
+    process.env["SCC_REASONING_HISTORY_REPLAY"] ??
+    process.env["SCC_OPENAI_COMPAT_REASONING_REPLAY"];
+  return isEnabledFlag(value);
+}
+
+function shouldCompactMemoryLayers(tokenBudget: TokenBudget): boolean {
+  const inputCapacity = tokenBudget.maxTotal - tokenBudget.reservedForResponse;
+  return (
+    tokenBudget.maxTotal <= COMPACT_MEMORY_TOTAL_BUDGET_THRESHOLD ||
+    inputCapacity <= COMPACT_MEMORY_INPUT_BUDGET_THRESHOLD
+  );
+}
+
+function isEnabledFlag(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on" || normalized === "enabled" || normalized === "enable";
+}
+
 function buildCanonicalHistoryMessages(
   task: TaskDetail,
-  options: { afterEventId?: string | undefined; maxTokens: number; tracker?: FileStateTracker | undefined }
+  options: { afterEventId?: string | undefined; maxTokens: number; tracker?: FileStateTracker | undefined; omitReasoningContent?: boolean | undefined }
 ): CanonicalModelMessage[] {
   const events = task.events.filter(isModelHistoryEvent);
   const startIndex = options.afterEventId ? events.findIndex((event) => event.id === options.afterEventId) + 1 : 0;
@@ -886,11 +1095,12 @@ function buildCanonicalHistoryMessages(
       case "assistant_message":
         discardPendingToolCalls();
         {
-          const reasoningContent = reasoningContentFromEvent(event);
+          const reasoningContent = options.omitReasoningContent ? undefined : reasoningContentFromEvent(event);
           if (reasoningContent) {
             messages.push({
               role: "assistant",
               content: formatReasoningHistoryText(reasoningContent),
+              reasoningContent,
               eventId: `${event.id}:reasoning`
             });
           }
@@ -904,13 +1114,13 @@ function buildCanonicalHistoryMessages(
         break;
       case "tool_requested": {
         const call = toolCallFromRequestedEvent(event);
-        const reasoningContent = reasoningContentFromEvent(event);
+        const reasoningContent = options.omitReasoningContent ? undefined : reasoningContentFromEvent(event);
         if (call) pendingToolCalls.push({ call, ...(reasoningContent ? { reasoningContent } : {}), eventId: event.id });
         break;
       }
       case "tool_result": {
         const call = toolCallFromResultEvent(event);
-        const reasoningContent = reasoningContentFromEvent(event);
+        const reasoningContent = options.omitReasoningContent ? undefined : reasoningContentFromEvent(event);
         if (!emittedToolCallIds.has(call.id)) {
           const hasPendingCall = pendingToolCalls.some((pending) => pending.call.id === call.id);
           if (hasPendingCall) flushToolCalls();
@@ -1012,6 +1222,8 @@ function toolResultContentForRole(event: TaskEvent, tracker?: FileStateTracker):
   if (tracker && isFileContentInTracker(event, tracker)) {
     return trackedReadFileRoleContent(event, ok, status, toolName);
   }
+  const compact = compactStructuredToolResult(toolName, output, ok, status);
+  if (compact) return compact;
   return stableJson({
     ok,
     status,
@@ -1022,11 +1234,6 @@ function toolResultContentForRole(event: TaskEvent, tracker?: FileStateTracker):
 
 function trackedReadFileRoleContent(event: TaskEvent, ok: boolean, status: string, toolName: string): string {
   const parsed = parseJson(String(event.payload["output"] ?? ""));
-  const content = typeof parsed["content"] === "string" ? parsed["content"] : "";
-  const includeContent =
-    content.length > 0 &&
-    content.length <= MAX_READ_FILE_ROLE_INLINE_CONTENT &&
-    parsed["partial"] !== true;
   return stableJson({
     ok,
     status,
@@ -1036,11 +1243,68 @@ function trackedReadFileRoleContent(event: TaskEvent, ok: boolean, status: strin
     partial: Boolean(parsed["partial"]),
     mode: parsed["mode"],
     totalLines: parsed["totalLines"],
-    output: includeContent
-      ? "Current read_file content is included below and also recorded in Known Files. Treat this as live file evidence."
-      : "read_file content is recorded in Known Files when context budget allows. If the visible Known Files excerpt does not include the exact lines needed, call search_files for line hits or read_file with offset/limit for the target range.",
-    ...(includeContent ? { content } : {})
+    output: "read_file content is recorded in Known Files in the current workbench context. If exact omitted lines are needed, call search_files for line hits or read_file with offset/limit for the target range."
   });
+}
+
+function compactStructuredToolResult(toolName: string, output: string, ok: boolean, status: string): string | null {
+  const parsed = parseJson(output);
+  if (Object.keys(parsed).length === 0) return null;
+  if (toolName === "edit_file" || toolName === "write_file") {
+    const changes = parsed["changes"] && typeof parsed["changes"] === "object" && !Array.isArray(parsed["changes"])
+      ? parsed["changes"] as Record<string, unknown>
+      : undefined;
+    const editsApplied = Array.isArray(parsed["editsApplied"]) ? parsed["editsApplied"] : undefined;
+    return stableJson({
+      ok,
+      status,
+      toolName,
+      path: parsed["path"],
+      changed: parsed["changed"],
+      hash: parsed["hash"] ?? changes?.["hash"],
+      changes: changes ? {
+        path: changes["path"],
+        changed: changes["changed"],
+        hash: changes["hash"]
+      } : undefined,
+      editsApplied: editsApplied ? editsApplied.length : undefined,
+      output: "File mutation metadata recorded. Re-read the file before making dependent edits or quoting changed content."
+    });
+  }
+  if (toolName === "search_files") {
+    const matches = Array.isArray(parsed["matches"]) ? parsed["matches"] as Array<Record<string, unknown>> : [];
+    return stableJson({
+      ok,
+      status,
+      toolName,
+      path: parsed["path"],
+      totalMatches: matches.length,
+      matches: matches.slice(0, 12).map((match) => ({
+        path: match["path"],
+        line: match["line"],
+        matchedTerm: match["matchedTerm"],
+        text: typeof match["text"] === "string" ? truncate(match["text"], 220) : match["text"]
+      })),
+      output: matches.length > 12
+        ? "search_files returned more matches than shown here; run a narrower search_files query or read_file on the target path for exact context."
+        : "search_files returned path/line snippets; use read_file for exact file content before editing."
+    });
+  }
+  if (toolName === "list_files") {
+    const files = Array.isArray(parsed["files"]) ? parsed["files"] : [];
+    const directories = Array.isArray(parsed["directories"]) ? parsed["directories"] : [];
+    return stableJson({
+      ok,
+      status,
+      toolName,
+      path: parsed["path"],
+      files: files.slice(0, 80),
+      directories: directories.slice(0, 80),
+      omittedFiles: Math.max(0, files.length - 80),
+      omittedDirectories: Math.max(0, directories.length - 80)
+    });
+  }
+  return null;
 }
 
 function inferToolFailureStatus(output: string): "denied" | "cancelled" | "failed" {
@@ -1084,11 +1348,12 @@ function repairOrphanToolMessages(messages: CanonicalModelMessage[]): CanonicalM
 
 function estimateCanonicalMessages(messages: CanonicalModelMessage[]): number {
   return messages.reduce((sum, message) => {
+    const imageTokens = message.role === "user" && message.imageAttachments ? message.imageAttachments.length * 1024 : 0;
     if (message.role === "assistant" && message.toolCalls?.length) {
-      return sum + estimateTokens(JSON.stringify(message.toolCalls));
+      return sum + imageTokens + estimateTokens(JSON.stringify(message.toolCalls));
     }
     const content = "content" in message && typeof message.content === "string" ? message.content : "";
-    return sum + estimateTokens(content);
+    return sum + imageTokens + estimateTokens(content);
   }, 0);
 }
 
@@ -1177,6 +1442,62 @@ function estimateEventsForSummary(events: TaskEvent[]): number {
 function formatAttachmentForContext(attachment: TaskAttachment): string {
   const preview = attachment.textPreview ? `\nPreview:\n${attachment.textPreview.slice(0, 1200)}` : "";
   return `- ${attachment.id}: ${attachment.fileName} (${attachment.kind}, ${attachment.mimeType}, ${attachment.size} bytes, hash ${attachment.contentHash})${preview}`;
+}
+
+function shouldInjectImageAttachments(task: TaskDetail): boolean {
+  const imageAttachmentEvents = task.events.filter((event) =>
+    !event.reverted &&
+    event.type === "attachment_added" &&
+    event.payload["kind"] === "image"
+  );
+  if (imageAttachmentEvents.length === 0) return false;
+  const latestRequest = latestUserEvent(task)?.summary ?? "";
+  if (disablesImageAttachmentInjection(latestRequest)) return false;
+  if (requestsImageAttachmentInjection(latestRequest)) return true;
+
+  const latestAssistantIndex = latestIndex(task.events, (event) =>
+    !event.reverted &&
+    (event.type === "assistant_message" || event.type === "model_no_progress" || event.type === "status_changed" && event.summary === "completed")
+  );
+  const recentImageAttachment = imageAttachmentEvents.some((event) => task.events.indexOf(event) > latestAssistantIndex);
+  return recentImageAttachment;
+}
+
+function requestsImageAttachmentInjection(text: string): boolean {
+  return /\b(image|images|picture|photo|screenshot|visual|vision|uploaded file|attachment|look at|what is in|describe|ocr)\b|图片|图像|照片|截图|视觉|看图|查看.{0,8}附件|识别|上传.{0,8}(图|图片|附件)|附件.{0,8}(分析|识别|查看|内容)/iu.test(text);
+}
+
+function disablesImageAttachmentInjection(text: string): boolean {
+  return /\b(do not|don't|dont|no need to|without)\s+(?:inspect|view|read|analy[sz]e|use|include|send).{0,24}\b(?:image|picture|photo|screenshot|attachment)\b|不要.{0,8}(看图|读取图片|分析图片|使用图片|发送图片|查看附件)|不需要.{0,8}(看图|读取图片|分析图片|使用图片|发送图片|查看附件)/iu.test(text);
+}
+
+function latestIndex<T>(items: T[], predicate: (item: T) => boolean): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (predicate(items[index]!)) return index;
+  }
+  return -1;
+}
+
+async function readLocalFilePayload(secretBox: LocalSecretBox, path: string): Promise<Buffer> {
+  const raw = await readFile(path);
+  const text = raw.toString("utf8");
+  const decrypted = decryptLocalFilePayload(secretBox, text);
+  return decrypted ?? raw;
+}
+
+function decryptLocalFilePayload(secretBox: LocalSecretBox, text: string): Buffer | undefined {
+  try {
+    const parsed = JSON.parse(text) as {
+      __agentWorkbenchEncryptedFile?: unknown;
+      __agentWorkbenchEncryptedAttachment?: unknown;
+      payload?: unknown;
+    };
+    if (parsed.__agentWorkbenchEncryptedFile !== true && parsed.__agentWorkbenchEncryptedAttachment !== true) return undefined;
+    const payload = parsed.payload as Parameters<LocalSecretBox["decrypt"]>[0];
+    return Buffer.from(secretBox.decrypt(payload), "base64");
+  } catch {
+    return undefined;
+  }
 }
 
 function buildRollingConversationSummary(task: TaskDetail, events: TaskEvent[], retainedFacts: string[] = []): string {
@@ -1852,6 +2173,13 @@ function formatContextWindow(provider: ModelProviderRecord): string {
   if (model.contextWindow >= 1_000_000) return `${Math.round(model.contextWindow / 10_000) / 100}M`;
   if (model.contextWindow >= 1000) return `${Math.round(model.contextWindow / 1000)}K`;
   return String(model.contextWindow);
+}
+
+function runtimeShellGuidance(): string {
+  if (process.platform === "win32") {
+    return "Host shell: Windows PowerShell. Use PowerShell-native commands such as Get-ChildItem -Force instead of ls -la, and Select-Object -First instead of head. Prefer npm.cmd over bare npm in generated Windows commands when the command is not user-specified exactly.";
+  }
+  return "Host shell: POSIX-like shell. Use portable shell syntax and avoid Windows-only PowerShell cmdlets unless the user requests them.";
 }
 
 function memoryPathHash(path: string): string {

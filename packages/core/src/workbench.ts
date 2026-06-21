@@ -93,6 +93,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, relative, resolve } from "node:path";
 import { ContextAssembler } from "./context-assembler.js";
+import { DEFAULT_SKILL_FACTORIES } from "./default-skills.js";
 import {
   createExperience,
   createTaskMemory,
@@ -680,6 +681,15 @@ export class AgentWorkbench {
     return this.store.listTaskAttachments(taskId);
   }
 
+  async readTaskAttachmentContent(taskId: string, attachmentId: string): Promise<{ attachment: TaskAttachment; bytes: Buffer }> {
+    const attachment = await this.store.getTaskAttachment(attachmentId);
+    if (!attachment || attachment.taskId !== taskId) throw new Error(`Task attachment not found: ${attachmentId}`);
+    return {
+      attachment,
+      bytes: await readLocalFilePayload(this.secretBox, attachment.storagePath)
+    };
+  }
+
   async deleteTaskAttachment(attachmentId: string): Promise<void> {
     const attachment = await this.store.getTaskAttachment(attachmentId);
     if (!attachment) return;
@@ -1066,6 +1076,11 @@ export class AgentWorkbench {
           output: "Tool request denied by user. Explain the limitation, ask for a different approval, or choose a non-denied path."
         });
         this.setStatus(task, "running");
+        if (hasPendingApprovals(task)) {
+          this.setStatus(task, "waiting_approval");
+          await this.store.saveTask(task);
+          return task;
+        }
         await this.store.saveTask(task);
         if (continuation === "background") {
           this.scheduleTaskStep(task.id);
@@ -1089,6 +1104,11 @@ export class AgentWorkbench {
       await this.addToolResultEvent(latest, approval.toolCall, result);
       await this.store.saveTask(latest);
       if (latest.status !== "running") return latest;
+      if (hasPendingApprovals(latest)) {
+        this.setStatus(latest, "waiting_approval");
+        await this.store.saveTask(latest);
+        return latest;
+      }
       return this.step(latest.id);
     });
   }
@@ -1270,6 +1290,23 @@ export class AgentWorkbench {
 
   async getSkill(skillId: string): Promise<SkillRecord | undefined> {
     return this.store.getSkill(skillId);
+  }
+
+  async ensureDefaultSkills(): Promise<SkillRecord[]> {
+    const existing = (await this.store.listSkills()).map(normalizeSkillRecord);
+    const ensured: SkillRecord[] = [];
+    for (const createDefaultSkill of DEFAULT_SKILL_FACTORIES) {
+      const defaultSkill = createDefaultSkill();
+      const existingSkill = existing.find((skill) => skill.title.trim().toLowerCase() === defaultSkill.title.toLowerCase());
+      if (existingSkill) {
+        ensured.push(existingSkill);
+        continue;
+      }
+      const saved = await this.saveSkillWithConflicts(defaultSkill);
+      existing.push(saved);
+      ensured.push(saved);
+    }
+    return ensured;
   }
 
   async createSkill(input: SkillCreateRequest): Promise<SkillRecord> {
@@ -2379,13 +2416,70 @@ export class AgentWorkbench {
     let emptyResponseRetries = 0;
     let internalContinuationRetries = 0;
     let claimedToolEvidenceRetries = 0;
+    let weakFinalAnswerRetries = 0;
+    let finalizationBeforeLimitAttempted = false;
+    let internalContinuationFinalizationAttempted = false;
+    let finalOnlyTurnRequested = false;
+    let stateOnlyRecoveryAttempted = false;
+    let toolFailureRecoveryBeforeLimitAttempted = false;
+    let setupContinuationBeforeLimitAttempted = false;
     const startedAt = Date.now();
 
     while (task.status === "running") {
       const modelTurnLimit = task.runMode === "target" ? normalizeTargetLimits(task.targetLimits).maxModelTurns : MAX_MODEL_TURNS_PER_TASK;
       if (modelTurns >= modelTurnLimit) {
-        await this.pauseTaskForLoop(task, `Paused after ${modelTurnLimit} model turns in one task run. Ask for guidance or continue with a narrower step.`);
-        return task;
+        if (!toolFailureRecoveryBeforeLimitAttempted && hasUnresolvedRecentDirectToolFailure(task)) {
+          toolFailureRecoveryBeforeLimitAttempted = true;
+          this.addEvent(task, "model_no_progress", "Run limit reached with unresolved failed tool evidence; retrying once so the model can repair the failing operation before finalization.", {
+            status: "retrying",
+            reason: "repair_after_tool_failure_before_turn_limit",
+            modelTurnLimit
+          });
+          await this.safeAppendTaskTrace(task, {
+            kind: "model_no_progress",
+            timestamp: nowIso(),
+            reason: "repair_after_tool_failure_before_turn_limit",
+            status: "retrying",
+            message: "Run limit reached with unresolved failed tool evidence; retrying once before finalization.",
+            modelTurnLimit
+          });
+          await this.store.saveTask(task);
+        } else if (!setupContinuationBeforeLimitAttempted && hasRecentSuccessfulSetupOnlyToolEvidence(task)) {
+          setupContinuationBeforeLimitAttempted = true;
+          this.addEvent(task, "model_no_progress", "Run limit reached after setup-only tool evidence; continuing once so the model can produce task artifacts or verification evidence before finalization.", {
+            status: "retrying",
+            reason: "continue_after_setup_before_turn_limit",
+            modelTurnLimit
+          });
+          await this.safeAppendTaskTrace(task, {
+            kind: "model_no_progress",
+            timestamp: nowIso(),
+            reason: "continue_after_setup_before_turn_limit",
+            status: "retrying",
+            message: "Run limit reached after setup-only tool evidence; continuing once for artifact or verification evidence.",
+            modelTurnLimit
+          });
+          await this.store.saveTask(task);
+        } else if (!finalizationBeforeLimitAttempted && hasRecentSuccessfulDirectToolEvidence(task)) {
+          finalizationBeforeLimitAttempted = true;
+          finalOnlyTurnRequested = true;
+          this.addEvent(task, "model_no_progress", "Run limit reached after successful tool evidence; requesting a final answer without more tool calls.", {
+            status: "finalizing",
+            reason: "finalization_before_turn_limit",
+            modelTurnLimit
+          });
+          await this.safeAppendTaskTrace(task, {
+            kind: "model_no_progress",
+            timestamp: nowIso(),
+            reason: "finalization_before_turn_limit",
+            status: "finalizing",
+            message: "Run limit reached after successful tool evidence; requesting a final answer without more tool calls."
+          });
+          await this.store.saveTask(task);
+        } else {
+          await this.pauseTaskForLoop(task, `Paused after ${modelTurnLimit} model turns in one task run. Ask for guidance or continue with a narrower step.`);
+          return task;
+        }
       }
       const targetLimitReason = targetLimitReached(task, modelTurns, countToolResultEvents(task), startedAt);
       if (targetLimitReason) {
@@ -2413,7 +2507,9 @@ export class AgentWorkbench {
       emptyResponseRetries = 0;
       const turnReasoning = turn.reasoningContent ?? (turn.streamId ? collectThinkingForStream(task, turn.streamId) : undefined);
       if (turn.kind === "final") {
-        if (isInternalContinuationFinal(turn.message)) {
+        const visibleFinalMessage = extractVisibleFinalAfterLeakedInternalContinuation(turn.message) ?? turn.message;
+        if (visibleFinalMessage !== turn.message && turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId, true);
+        if (isInternalContinuationFinal(visibleFinalMessage)) {
           if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId, true);
           const shouldRetry = internalContinuationRetries < 1;
           internalContinuationRetries += 1;
@@ -2439,25 +2535,86 @@ export class AgentWorkbench {
             ...(turn.streamId ? { streamId: turn.streamId } : {})
           });
           if (shouldRetry) {
-            await this.store.saveTask(task);
-            continue;
-          }
-          this.setStatus(task, "paused");
           await this.store.saveTask(task);
-          if (task.kind === "subagent") await this.projectSubagentStatusToParent(task);
+          continue;
+        }
+        if (!internalContinuationFinalizationAttempted && hasRecentSuccessfulDirectToolEvidence(task)) {
+          internalContinuationFinalizationAttempted = true;
+          finalOnlyTurnRequested = true;
+          this.addEvent(task, "model_no_progress", "Model returned repeated internal continuation notes after successful tool evidence; requesting a final answer without more tool calls.", {
+            status: "finalizing",
+            reason: "finalization_after_internal_continuation",
+            blockedFinalMessage: turn.message,
+            ...(turn.streamId ? { streamId: turn.streamId } : {}),
+            ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
+          });
+          await this.safeAppendTaskTrace(task, {
+            kind: "model_no_progress",
+            timestamp: nowIso(),
+            reason: "finalization_after_internal_continuation",
+            status: "finalizing",
+            message: turn.message,
+            ...(turn.streamId ? { streamId: turn.streamId } : {})
+          });
+          await this.store.saveTask(task);
+          continue;
+        }
+        this.setStatus(task, "paused");
+        await this.store.saveTask(task);
+        if (task.kind === "subagent") await this.projectSubagentStatusToParent(task);
           return task;
         }
         internalContinuationRetries = 0;
-        await this.maybeAutoRenameTask(task, { reason: "assistant_output", text: turn.message });
-        const blocker = completionBlocker(task, turn.message);
+        await this.maybeAutoRenameTask(task, { reason: "assistant_output", text: visibleFinalMessage });
+        const weakFinalBlocker = weakToolEvidenceFinalAnswerBlocker(task, visibleFinalMessage);
+        if (weakFinalBlocker && weakFinalAnswerRetries < 1) {
+          weakFinalAnswerRetries += 1;
+          if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId, true);
+          this.addEvent(task, "model_no_progress", `${weakFinalBlocker} Retrying once with a usable final answer grounded in the completed tool evidence.`, {
+            status: "retrying",
+            reason: "weak_final_answer_after_tool_evidence",
+            blockedFinalMessage: visibleFinalMessage,
+            ...(turn.streamId ? { streamId: turn.streamId } : {}),
+            ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
+          });
+          await this.safeAppendTaskTrace(task, {
+            kind: "model_no_progress",
+            timestamp: nowIso(),
+            reason: "weak_final_answer_after_tool_evidence",
+            status: "retrying",
+            message: visibleFinalMessage,
+            ...(turn.streamId ? { streamId: turn.streamId } : {})
+          });
+          await this.store.saveTask(task);
+          continue;
+        }
+        const blocker = weakFinalBlocker ?? completionBlocker(task, visibleFinalMessage);
         if (blocker) {
+          if (weakFinalBlocker) {
+            const evidenceBackedFinal = evidenceBackedFinalAnswerFromToolEvidence(task);
+            if (evidenceBackedFinal) {
+              if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId, true);
+              this.addEvent(task, "assistant_message", evidenceBackedFinal, {
+                ...(turn.streamId ? { streamId: turn.streamId } : {}),
+                synthesizedFromToolEvidence: true,
+                blockedFinalMessage: visibleFinalMessage,
+                blocker: weakFinalBlocker,
+                ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
+              });
+              this.setStatus(task, "completed");
+              await this.recordExperience(task);
+              await this.store.saveTask(task);
+              if (task.kind === "subagent") await this.projectSubagentCompletionToParent(task, "completed");
+              return task;
+            }
+          }
           if (isClaimedToolEvidenceBlocker(blocker) && claimedToolEvidenceRetries < CLAIMED_TOOL_EVIDENCE_MAX_RETRIES) {
             claimedToolEvidenceRetries += 1;
             if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId, true);
             this.addEvent(task, "model_no_progress", `${blocker} Retrying with a stricter evidence requirement: only claim a tool if a matching tool result exists; if the tool was denied or unavailable, answer without claiming tool evidence.`, {
               status: "retrying",
               reason: "claimed_tool_evidence_without_result",
-              blockedFinalMessage: turn.message,
+              blockedFinalMessage: visibleFinalMessage,
               ...(turn.streamId ? { streamId: turn.streamId } : {}),
               ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
             });
@@ -2466,7 +2623,7 @@ export class AgentWorkbench {
               timestamp: nowIso(),
               reason: "claimed_tool_evidence_without_result",
               status: "retrying",
-              message: turn.message,
+              message: visibleFinalMessage,
               ...(turn.streamId ? { streamId: turn.streamId } : {})
             });
             await this.store.saveTask(task);
@@ -2475,7 +2632,7 @@ export class AgentWorkbench {
           this.addEvent(task, "assistant_message", blocker, {
             ...(turn.streamId ? { streamId: turn.streamId } : {}),
             completionBlocked: true,
-            blockedFinalMessage: turn.message,
+            blockedFinalMessage: visibleFinalMessage,
             ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
           });
           this.setStatus(task, "paused");
@@ -2483,7 +2640,7 @@ export class AgentWorkbench {
           if (task.kind === "subagent") await this.projectSubagentStatusToParent(task);
           return task;
         }
-        this.addEvent(task, "assistant_message", turn.message, {
+        this.addEvent(task, "assistant_message", visibleFinalMessage, {
           ...(turn.streamId ? { streamId: turn.streamId } : {}),
           ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
         });
@@ -2496,6 +2653,26 @@ export class AgentWorkbench {
       if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId);
       internalContinuationRetries = 0;
       claimedToolEvidenceRetries = 0;
+      weakFinalAnswerRetries = 0;
+
+      if (finalOnlyTurnRequested) {
+        this.addEvent(task, "model_no_progress", "Model requested more tools during the finalization turn after successful evidence; paused instead of executing additional work.", {
+          status: "paused",
+          reason: "tool_call_during_finalization",
+          toolNames: turn.calls.map((call) => call.toolName)
+        });
+        await this.safeAppendTaskTrace(task, {
+          kind: "model_no_progress",
+          timestamp: nowIso(),
+          reason: "tool_call_during_finalization",
+          status: "paused",
+          message: "Model requested more tools during the finalization turn after successful evidence."
+        });
+        this.setStatus(task, "paused");
+        await this.store.saveTask(task);
+        if (task.kind === "subagent") await this.projectSubagentStatusToParent(task);
+        return task;
+      }
 
       const { executable, skipped } = limitToolCallsPerTurn(turn.calls);
       for (const skippedCall of skipped) {
@@ -2506,6 +2683,27 @@ export class AgentWorkbench {
       const stateOnlyBatch = executable.length > 0 && executable.every((call) => isManagedStateTool(call.toolName));
       stateOnlyTurns = stateOnlyBatch ? stateOnlyTurns + 1 : 0;
       if (stateOnlyTurns > MAX_STATE_ONLY_TOOL_TURNS) {
+        if (!stateOnlyRecoveryAttempted) {
+          stateOnlyRecoveryAttempted = true;
+          stateOnlyTurns = 0;
+          const toolNames = executable.map((call) => call.toolName);
+          this.addEvent(task, "model_no_progress", "Repeated state-only tool turns did not produce task evidence; retrying once with a requirement to either call a substantive tool or return a clear blocker/final answer.", {
+            status: "retrying",
+            reason: "state_only_tools_without_task_evidence",
+            stateOnlyToolCount: MAX_STATE_ONLY_TOOL_TURNS,
+            toolNames
+          });
+          await this.safeAppendTaskTrace(task, {
+            kind: "model_no_progress",
+            timestamp: nowIso(),
+            reason: "state_only_tools_without_task_evidence",
+            status: "retrying",
+            message: "Repeated state-only tool turns did not produce task evidence; the next turn must call a substantive tool or return a clear blocker/final answer.",
+            toolNames
+          });
+          await this.store.saveTask(task);
+          continue;
+        }
         await this.pauseTaskForLoop(task, `Paused after ${MAX_STATE_ONLY_TOOL_TURNS} repeated state-only tool turns to avoid a no-progress loop.`);
         return task;
       }
@@ -2522,6 +2720,13 @@ export class AgentWorkbench {
     if (turn.kind !== "final") return turn;
     const calls = extractInlineToolCallsFromMessage(turn.message);
     if (calls.length === 0) return turn;
+    if (turn.inlineToolCallsAllowed === false) {
+      if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId, true);
+      return {
+        ...turn,
+        message: finalMessageFromSuppressedInlineToolMarkup(turn.message, calls)
+      };
+    }
     if (turn.streamId) this.hideAssistantStreamDeltas(task, turn.streamId);
     return {
       kind: "tool_calls",
@@ -2576,6 +2781,7 @@ export class AgentWorkbench {
     const preferences = await this.store.getPreferences();
     const globalGrants = await this.store.listGlobalPermissions();
     const prepared: PreparedToolCall[] = [];
+    let pendingApprovalCreated = false;
 
     for (const call of calls) {
       const stoppedBeforeTool = await this.stoppedTask(task.id);
@@ -2801,9 +3007,8 @@ export class AgentWorkbench {
             approvalId: approval.id,
             riskCategory: assessment.category
           });
-          this.setStatus(task, "waiting_approval");
-          await this.store.saveTask(task);
-          return task;
+          pendingApprovalCreated = true;
+          continue;
         }
       }
 
@@ -2811,6 +3016,11 @@ export class AgentWorkbench {
     }
 
     await this.store.saveTask(task);
+    if (prepared.length === 0 && pendingApprovalCreated) {
+      this.setStatus(task, "waiting_approval");
+      await this.store.saveTask(task);
+      return task;
+    }
     const canRunInParallel =
       prepared.length > 1 &&
       prepared.every(({ call, assessment }) => isParallelSafeToolCall(call, assessment.category));
@@ -2829,7 +3039,12 @@ export class AgentWorkbench {
         await this.store.saveTask(latest);
         if (latest.status !== "running") return latest;
       }
-      return this.requiredTask(task.id);
+      const latest = await this.requiredTask(task.id);
+      if (pendingApprovalCreated && latest.status === "running") {
+        this.setStatus(latest, "waiting_approval");
+        await this.store.saveTask(latest);
+      }
+      return latest;
     }
 
     for (const item of prepared) {
@@ -2847,6 +3062,10 @@ export class AgentWorkbench {
       Object.assign(task, latest);
     }
 
+    if (pendingApprovalCreated && task.status === "running") {
+      this.setStatus(task, "waiting_approval");
+      await this.store.saveTask(task);
+    }
     return task;
   }
 
@@ -2927,7 +3146,9 @@ export class AgentWorkbench {
     const outputTokens = usage.outputTokens ?? 0;
     const cachedTokens = usage.cachedTokens ?? 0;
     const totalTokens = inputTokens + outputTokens;
+    const statsSource = usage.cacheSource === "local_response" ? "estimated" : "provider";
     const rolling = await this.calculatePromptCacheRollingStats({
+      source: statsSource,
       providerId: provider?.providerId,
       model: provider?.model ?? "local-fallback",
       inputTokens,
@@ -2939,7 +3160,7 @@ export class AgentWorkbench {
       providerId: provider?.providerId,
       model: provider?.model ?? "local-fallback",
       policy: "auto_savings",
-      source: "provider",
+      source: statsSource,
       inputTokens,
       outputTokens,
       totalTokens,
@@ -2956,12 +3177,15 @@ export class AgentWorkbench {
       createdAt: nowIso()
     };
     await this.store.savePromptCacheStats(stats);
+    const sourcePrefix = statsSource === "estimated" && usage.cacheSource === "local_response"
+      ? "Local response cache usage estimated"
+      : "Provider token usage recorded";
     const targetSuffix = stats.cacheTargetMet === undefined
       ? "warming prompt cache."
       : stats.cacheTargetMet
         ? `rolling cache hit target met (${Math.round(rolling.cacheHitRatio * 100)}%).`
         : `rolling cache hit below 90% (${Math.round(rolling.cacheHitRatio * 100)}%).`;
-    this.addEvent(task, "token_usage_recorded", `Provider token usage recorded: ${totalTokens} total; ${targetSuffix}`, {
+    this.addEvent(task, "token_usage_recorded", `${sourcePrefix}: ${totalTokens} total; ${targetSuffix}`, {
       statsId: stats.id,
       providerId: stats.providerId,
       model: stats.model,
@@ -2979,6 +3203,7 @@ export class AgentWorkbench {
   }
 
   private async calculatePromptCacheRollingStats(input: {
+    source: PromptCacheStats["source"];
     providerId?: string | undefined;
     model: string;
     inputTokens: number;
@@ -2986,7 +3211,7 @@ export class AgentWorkbench {
   }): Promise<{ inputTokens: number; cachedTokens: number; cacheHitRatio: number; windowSize: number }> {
     const previous = (await this.store.listPromptCacheStats())
       .filter((record) =>
-        record.source === "provider" &&
+        record.source === input.source &&
         record.model === input.model &&
         record.providerId === input.providerId &&
         record.inputTokens > 0
@@ -3216,6 +3441,11 @@ export class AgentWorkbench {
       }
       await this.store.saveTask(latest);
       if (latest.status !== "running") return latest;
+      if (hasPendingApprovals(latest)) {
+        this.setStatus(latest, "waiting_approval");
+        await this.store.saveTask(latest);
+        return latest;
+      }
       return this.step(latest.id);
     }).catch((error) => {
       this.safeBackgroundCatch(taskId, error);
@@ -3427,6 +3657,8 @@ export class AgentWorkbench {
           return this.executePlanUpdateTool(task, call);
         case "spawn_subagent":
           return await this.executeSpawnSubagentTool(task, call);
+        case "attach_task_file":
+          return await this.executeAttachTaskFileTool(task, call);
         default:
           return undefined;
       }
@@ -3668,6 +3900,57 @@ export class AgentWorkbench {
         status: child.status,
         goal,
         expectedOutput
+      })
+    );
+  }
+
+  private async executeAttachTaskFileTool(task: TaskDetail, call: ToolCall): Promise<ToolResult> {
+    const inputPath = String(call.args["path"] ?? "").trim();
+    if (!inputPath) throw new Error("path is required.");
+    await this.addManagedToolProgressEvent(task, call, {
+      status: "running",
+      operation: "attach_task_file",
+      message: `Preparing task attachment from ${inputPath}.`,
+      progress: { processed: 0, total: 1, unit: "items" }
+    });
+    const fullPath = await resolveTaskPath(task.workRoot || defaultTaskWorkRoot(), inputPath);
+    const info = await stat(fullPath);
+    if (!info.isFile()) throw new Error(`Attachment source is not a file: ${inputPath}`);
+    const limits = taskAttachmentLimits();
+    if (info.size > limits.maxFileBytes) {
+      throw new Error(`Attachment exceeds ${Math.round(limits.maxFileBytes / 1024 / 1024)}MB limit.`);
+    }
+    const requestedName = typeof call.args["fileName"] === "string" ? String(call.args["fileName"]).trim() : "";
+    const fileName = sanitizeFileName(requestedName || basename(fullPath));
+    const mimeType = normalizeAttachmentMimeType(
+      typeof call.args["mimeType"] === "string" ? String(call.args["mimeType"]).trim() : "",
+      fileName
+    );
+    const bytes = await readFile(fullPath);
+    const uploaded = await this.uploadTaskAttachment({
+      fileName,
+      mimeType,
+      size: bytes.byteLength,
+      dataBase64: bytes.toString("base64")
+    });
+    await this.attachUploadedFiles(task, [uploaded.id]);
+    await this.addManagedToolProgressEvent(task, call, {
+      status: "completed",
+      operation: "attach_task_file",
+      message: `Attached ${fileName} to the task timeline.`,
+      progress: { processed: 1, total: 1, unit: "items" }
+    });
+    return managedToolResult(
+      call,
+      true,
+      JSON.stringify({
+        action: "attached",
+        attachmentId: uploaded.id,
+        fileName: uploaded.fileName,
+        mimeType: uploaded.mimeType,
+        kind: uploaded.kind,
+        size: uploaded.size,
+        contentHash: uploaded.contentHash
       })
     );
   }
@@ -5191,7 +5474,7 @@ function taskAttachmentLimits(): { maxFileBytes: number; maxTaskBytes: number } 
 
 function classifyAttachment(fileName: string, mimeType: string): TaskAttachmentKind {
   const ext = extname(fileName).toLowerCase();
-  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("image/") || [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(ext)) return "image";
   if (mimeType.includes("pdf") || ext === ".pdf") return "pdf";
   if (/word|excel|powerpoint|officedocument/i.test(mimeType) || [".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"].includes(ext)) return "office";
   if (mimeType.includes("json") || [".json", ".csv", ".tsv"].includes(ext)) return "data";
@@ -5199,6 +5482,45 @@ function classifyAttachment(fileName: string, mimeType: string): TaskAttachmentK
   if (mimeType.startsWith("text/") || [".txt", ".log"].includes(ext)) return "text";
   if ([".js", ".jsx", ".ts", ".tsx", ".css", ".html", ".py", ".rs", ".go", ".java", ".cs", ".cpp", ".c", ".h", ".yaml", ".yml", ".toml"].includes(ext)) return "code";
   return "binary";
+}
+
+function normalizeAttachmentMimeType(mimeType: string, fileName: string): string {
+  const trimmed = mimeType.trim().toLowerCase();
+  if (trimmed && trimmed !== "application/octet-stream") return trimmed;
+  switch (extname(fileName).toLowerCase()) {
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".svg":
+      return "image/svg+xml";
+    case ".pdf":
+      return "application/pdf";
+    case ".md":
+      return "text/markdown";
+    case ".txt":
+    case ".log":
+      return "text/plain";
+    case ".json":
+      return "application/json";
+    case ".csv":
+      return "text/csv";
+    case ".html":
+      return "text/html";
+    case ".docx":
+      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case ".pptx":
+      return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    case ".xlsx":
+      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    default:
+      return trimmed || "application/octet-stream";
+  }
 }
 
 function sanitizeFileName(fileName: string): string {
@@ -5599,6 +5921,10 @@ function isSubagentActiveStatus(status: TaskDetail["status"]): boolean {
   return status === "running" || status === "waiting_approval" || status === "waiting_for_user";
 }
 
+function hasPendingApprovals(task: TaskDetail): boolean {
+  return task.approvals.some((approval) => approval.status === "pending");
+}
+
 function latestVisibleAssistantSummary(task: TaskDetail): string {
   const event = [...task.events]
     .reverse()
@@ -5688,7 +6014,8 @@ function isManagedStateTool(toolName: string): boolean {
     toolName === "skill_edit" ||
     toolName === "skill_delete" ||
     toolName === "plan_update" ||
-    toolName === "spawn_subagent"
+    toolName === "spawn_subagent" ||
+    toolName === "attach_task_file"
   );
 }
 
@@ -5730,8 +6057,26 @@ async function runWithConcurrency<T, R>(
 }
 
 function extractInlineToolCallsFromMessage(message: string): ToolCall[] {
-  if (!/<function_calls\b|<invoke\b|<tool_invocation\b/i.test(message)) return [];
+  if (!/<function_calls\b|<invoke\b|<tool_invocation\b|<tool_call\b/i.test(message)) return [];
   const calls: ToolCall[] = [];
+  const legacyToolCallPattern = /<tool_call\b[^>]*>\s*<function=(?<name>[a-zA-Z0-9_-]+)\s*>(?<body>[\s\S]*?)<\/function>\s*<\/tool_call>/gi;
+  for (const match of message.matchAll(legacyToolCallPattern)) {
+    const toolName = match.groups?.["name"]?.trim();
+    if (!toolName) continue;
+    const args: Record<string, unknown> = {};
+    const body = match.groups?.["body"] ?? "";
+    const parameterPattern = /<parameter=(?<name>[a-zA-Z0-9_-]+)\s*>(?<value>[\s\S]*?)<\/parameter>/gi;
+    for (const parameter of body.matchAll(parameterPattern)) {
+      const name = parameter.groups?.["name"]?.trim();
+      if (!name) continue;
+      args[name] = decodeXmlText((parameter.groups?.["value"] ?? "").trim());
+    }
+    calls.push({
+      id: createId("tool_call"),
+      toolName,
+      args
+    });
+  }
   const invokePattern = /<invoke\s+name=(["'])(?<name>[^"']+)\1\s*>(?<body>[\s\S]*?)<\/invoke>/gi;
   for (const match of message.matchAll(invokePattern)) {
     const toolName = match.groups?.["name"]?.trim();
@@ -5762,6 +6107,39 @@ function extractInlineToolCallsFromMessage(message: string): ToolCall[] {
     });
   }
   return calls;
+}
+
+function finalMessageFromSuppressedInlineToolMarkup(message: string, calls: ToolCall[]): string {
+  const visible = stripInlineToolMarkup(message).trim();
+  if (visible) return visible;
+  const stateCall = calls.find((call) => isManagedStateTool(call.toolName));
+  if (stateCall) {
+    const evidence = stringArg(stateCall.args, "evidence") || stringArg(stateCall.args, "summary") || stringArg(stateCall.args, "task") || stringArg(stateCall.args, "goal");
+    const status = stringArg(stateCall.args, "status");
+    if (evidence && status) return `${evidence}\n\nStatus: ${status}`;
+    if (evidence) return evidence;
+  }
+  const firstCall = calls[0];
+  if (firstCall) {
+    const values = Object.values(firstCall.args)
+      .filter((value) => typeof value === "string" && value.trim())
+      .map(String);
+    if (values.length > 0) return values.slice(0, 3).join("\n\n");
+  }
+  return "Completed based on the available tool evidence.";
+}
+
+function stripInlineToolMarkup(message: string): string {
+  return message
+    .replace(/<function_calls\b[\s\S]*?<\/function_calls>/giu, "")
+    .replace(/<tool_call\b[\s\S]*?<\/tool_call>/giu, "")
+    .replace(/<tool_invocation\b[\s\S]*?(?:\/>|>\s*<\/tool_invocation>)/giu, "")
+    .trim();
+}
+
+function stringArg(args: Record<string, unknown>, key: string): string {
+  const value = args[key];
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function readInlineMarkupAttribute(attributes: string, name: string): string | undefined {
@@ -5831,18 +6209,34 @@ function decodeXmlText(value: string): string {
 }
 
 function nonBlockingAskUserResolution(task: TaskDetail, args: Record<string, unknown>): string | null {
-  if (isOptionalFollowUpAsk(args) && hasRecentSuccessfulVerificationEvidence(task)) {
-    return JSON.stringify({
-      status: "not_required",
-      reason: "optional_follow_up_after_verified_progress",
-      instruction: "Continue with the final answer based on the completed tool evidence."
-    });
+  if (isOptionalFollowUpAsk(args)) {
+    if (hasRecentSuccessfulVerificationEvidence(task)) {
+      return JSON.stringify({
+        status: "not_required",
+        reason: "optional_follow_up_after_verified_progress",
+        instruction: "Continue with the final answer based on the completed tool evidence."
+      });
+    }
+    if (hasRecentSuccessfulDirectToolEvidence(task)) {
+      return JSON.stringify({
+        status: "not_required",
+        reason: "optional_follow_up_after_completed_progress",
+        instruction: "Continue with the final answer based on the completed tool evidence; do not ask whether to make optional refinements."
+      });
+    }
   }
   if (isEvidenceInterpretationAsk(args) && hasRecentDirectToolEvidence(task)) {
     return JSON.stringify({
       status: "not_required",
       reason: "answer_from_current_tool_evidence",
       instruction: "Continue with the final answer based on the current tool evidence; do not ask the user how to interpret or phrase it."
+    });
+  }
+  if (isTaskContinuationAsk(args) && hasRecentDirectToolEvidence(task)) {
+    return JSON.stringify({
+      status: "not_required",
+      reason: "current_task_already_specified",
+      instruction: "Continue with the final answer for the current user request based on the completed tool evidence; do not ask what task to perform next."
     });
   }
   return null;
@@ -5863,6 +6257,14 @@ function isEvidenceInterpretationAsk(args: Record<string, unknown>): boolean {
   return /(?:如何解释|怎么解释|怎样解释|是否直接说明|应该如何说明|我应该如何|how should i explain|how should i describe|should i explain|should i say)/iu.test(text);
 }
 
+function isTaskContinuationAsk(args: Record<string, unknown>): boolean {
+  const question = String(args["question"] ?? args["prompt"] ?? args["message"] ?? "").trim();
+  const details = String(args["details"] ?? "").trim();
+  const text = `${question}\n${details}`;
+  if (!question) return false;
+  return /(?:希望执行哪个具体任务|哪个具体任务|具体要执行什么任务|下一步要执行什么|what specific task|which specific task|what task should i perform|which task should i perform)/iu.test(text);
+}
+
 function hasRecentDirectToolEvidence(task: TaskDetail): boolean {
   const events = task.events.filter((event) => !event.reverted);
   const latestUserIndex = latestIndex(events, (event) => event.type === "user_message" || event.type === "guidance_consumed");
@@ -5872,6 +6274,190 @@ function hasRecentDirectToolEvidence(task: TaskDetail): boolean {
     String(event.payload["output"] ?? "").trim().length > 0
   );
   return relevant.length > 0;
+}
+
+function hasRecentSuccessfulDirectToolEvidence(task: TaskDetail): boolean {
+  const events = task.events.filter((event) => !event.reverted);
+  const latestUserIndex = latestIndex(events, (event) => event.type === "user_message" || event.type === "guidance_consumed");
+  const relevant = events.slice(latestUserIndex + 1);
+  const latestFailureIndex = latestIndex(relevant, isFailedDirectToolResult);
+  const latestSuccessIndex = latestIndex(relevant, isMeaningfulSuccessfulDirectToolResult);
+  return latestSuccessIndex >= 0 && latestSuccessIndex > latestFailureIndex;
+}
+
+function weakToolEvidenceFinalAnswerBlocker(task: TaskDetail, message: string): string | null {
+  if (!hasRecentSuccessfulDirectToolEvidence(task)) return null;
+  if (!hasRecentSuccessfulVerificationEvidence(task) && recentDirectToolResultCount(task) < 2) return null;
+  const text = message.replace(/\s+/g, " ").trim();
+  if (!text) return "The final answer was empty after successful tool evidence.";
+  if (/^(?:completed|done|fixed|ok|okay|success|passed|verified|完成|已完成|好了|通过|已通过)[.!。！]*$/iu.test(text)) {
+    return "The final answer only stated completion after successful tool evidence.";
+  }
+  if (looksLikePathOrLineOnlyFinal(text)) {
+    return "The final answer only contained a path, line number, or edit location after successful tool evidence.";
+  }
+  const taskText = `${task.title}\n${latestUserText(task)}`;
+  if (taskRequiresRootCauseFinal(taskText) && !finalStatesRequestedRootCause(text, taskText)) {
+    return "The final answer did not state the requested root cause from the completed tool evidence.";
+  }
+  const semanticChars = (text.match(/[\p{L}\p{N}]/gu) ?? []).length;
+  if (semanticChars < 18) return "The final answer was too terse after successful tool evidence.";
+  return null;
+}
+
+function taskRequiresRootCauseFinal(taskText: string): boolean {
+  return /\b(?:root cause|cause|failure reason|failing expression|original implementation|observed implementation|why it failed)\b|根因|失败原因|失败.*表达式|原始.*(?:实现|表达式|语句)|明确写出.*(?:根因|原因|表达式)/iu.test(taskText);
+}
+
+function finalStatesRequestedRootCause(message: string, taskText: string): boolean {
+  const mentionsCause = /\b(?:root cause|cause|because|due to|instead of|returned|returns|bug|failure|failed|wrong)\b|根因|原因|因为|由于|而不是|返回|错误|失败|数组长度|长度/iu.test(message);
+  if (!mentionsCause) return false;
+  const requiresExpression = /\b(?:expression|original implementation|observed implementation)\b|表达式|原始.*(?:实现|表达式|语句)|明确写出.*表达式/iu.test(taskText);
+  if (!requiresExpression) return true;
+  return /`[^`]+`|\breturn\b|=>|===?|!==?|[\w$]+\.[\w$]+|\blength\b|数组长度|表达式|原始实现/iu.test(message);
+}
+
+function evidenceBackedFinalAnswerFromToolEvidence(task: TaskDetail): string | null {
+  const events = task.events.filter((event) => !event.reverted);
+  const latestUserIndex = latestIndex(events, (event) => event.type === "user_message" || event.type === "guidance_consumed");
+  const relevant = events.slice(latestUserIndex + 1);
+  const mutationIndex = latestIndex(relevant, isSuccessfulFileMutationEvent);
+  if (mutationIndex < 0) return null;
+  const mutation = relevant[mutationIndex]!;
+  const verification = relevant.slice(mutationIndex + 1).find((event) =>
+    event.type === "tool_result" &&
+    event.payload["toolName"] === "run_command" &&
+    event.payload["ok"] !== false &&
+    looksLikeSuccessfulVerification(String(event.payload["output"] ?? ""))
+  );
+  if (!verification) return null;
+  const mutationSummary = mutationEvidenceSummary(mutation);
+  if (!mutationSummary) return null;
+  const command = toolEventCommand(verification) || "verification command";
+  const output = compactEvidenceLine(String(verification.payload["output"] ?? ""));
+  return [
+    `Root cause: the original implementation used \`${mutationSummary.before}\`; it was changed to \`${mutationSummary.after}\`.`,
+    `Changed file: ${mutationSummary.path}.`,
+    `Verification: \`${command}\` passed${output ? ` with output: ${output}` : ""}.`
+  ].join("\n");
+}
+
+function isSuccessfulFileMutationEvent(event: TaskEvent): boolean {
+  return event.type === "tool_result" &&
+    event.payload["ok"] !== false &&
+    (event.payload["toolName"] === "edit_file" || event.payload["toolName"] === "write_file");
+}
+
+function mutationEvidenceSummary(event: TaskEvent): { path: string; before: string; after: string } | null {
+  const output = parseFirstJsonObject(String(event.payload["output"] ?? ""));
+  const editsApplied = Array.isArray(output?.["editsApplied"]) ? output["editsApplied"] : [];
+  for (const edit of editsApplied) {
+    const record = recordFromUnknown(edit);
+    const changed = firstChangedMeaningfulCodeLine(String(record["beforeText"] ?? ""), String(record["afterText"] ?? ""));
+    if (changed) return { path: toolEventPathFromPayload(event), ...changed };
+  }
+  const changed = firstChangedMeaningfulCodeLine(String(output?.["beforeText"] ?? ""), String(output?.["afterText"] ?? ""));
+  if (changed) return { path: toolEventPathFromPayload(event), ...changed };
+  return null;
+}
+
+function firstChangedMeaningfulCodeLine(beforeText: string, afterText: string): { before: string; after: string } | null {
+  const beforeLines = meaningfulCodeLines(beforeText);
+  const afterLines = meaningfulCodeLines(afterText);
+  const length = Math.max(beforeLines.length, afterLines.length);
+  for (let index = 0; index < length; index += 1) {
+    const before = beforeLines[index] ?? "";
+    const after = afterLines[index] ?? "";
+    if (before && after && before !== after) return { before, after };
+  }
+  return null;
+}
+
+function meaningfulCodeLines(text: string): string[] {
+  return text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !/^[{}()[\];,]+$/u.test(line));
+}
+
+function toolEventPathFromPayload(event: TaskEvent): string {
+  const args = recordFromUnknown(event.payload["args"]);
+  const path = String(args["path"] ?? event.payload["path"] ?? "");
+  return path || "changed file";
+}
+
+function toolEventCommand(event: TaskEvent): string {
+  const args = recordFromUnknown(event.payload["args"]);
+  return String(args["command"] ?? event.payload["command"] ?? "").trim();
+}
+
+function compactEvidenceLine(text: string): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length <= 160) return compact;
+  return `${compact.slice(0, 157)}...`;
+}
+
+function recentDirectToolResultCount(task: TaskDetail): number {
+  const events = task.events.filter((event) => !event.reverted);
+  const latestUserIndex = latestIndex(events, (event) => event.type === "user_message" || event.type === "guidance_consumed");
+  return events.slice(latestUserIndex + 1).filter((event) =>
+    event.type === "tool_result" &&
+    event.payload["toolName"] !== "ask_user" &&
+    !isManagedStateTool(String(event.payload["toolName"] ?? ""))
+  ).length;
+}
+
+function looksLikePathOrLineOnlyFinal(text: string): boolean {
+  if (text.length > 120) return false;
+  if (/^(?:[\w .:/\\-]+\.(?:[cm]?[jt]sx?|mjs|json|md|txt|css|html|py|go|rs|java|kt|swift|docx?|pptx?|xlsx?|pdf))(?:\s*[:#]?\s*\d+)?(?:\s+\d+){0,3}$/iu.test(text)) return true;
+  return /^[\w .:/\\-]+\s+\d+(?:\s+\d+){1,3}$/u.test(text) && /[./\\]/u.test(text);
+}
+
+function hasRecentSuccessfulSetupOnlyToolEvidence(task: TaskDetail): boolean {
+  const events = task.events.filter((event) => !event.reverted);
+  const latestUserIndex = latestIndex(events, (event) => event.type === "user_message" || event.type === "guidance_consumed");
+  const relevant = events.slice(latestUserIndex + 1);
+  const latestFailureIndex = latestIndex(relevant, isFailedDirectToolResult);
+  const latestSetupIndex = latestIndex(relevant, isSuccessfulDirectToolResult);
+  const latestCompletionIndex = latestIndex(relevant, isMeaningfulSuccessfulDirectToolResult);
+  return latestSetupIndex >= 0 && latestSetupIndex > latestFailureIndex && latestCompletionIndex < latestSetupIndex;
+}
+
+function hasUnresolvedRecentDirectToolFailure(task: TaskDetail): boolean {
+  const events = task.events.filter((event) => !event.reverted);
+  const latestUserIndex = latestIndex(events, (event) => event.type === "user_message" || event.type === "guidance_consumed");
+  const relevant = events.slice(latestUserIndex + 1);
+  const latestFailureIndex = latestIndex(relevant, isFailedDirectToolResult);
+  if (latestFailureIndex < 0) return false;
+  const latestSuccessIndex = latestIndex(relevant, isMeaningfulSuccessfulDirectToolResult);
+  return latestSuccessIndex < latestFailureIndex;
+}
+
+function isSuccessfulDirectToolResult(event: TaskEvent): boolean {
+  return event.type === "tool_result" &&
+    event.payload["ok"] !== false &&
+    event.payload["toolName"] !== "ask_user" &&
+    !isManagedStateTool(String(event.payload["toolName"] ?? "")) &&
+    String(event.payload["output"] ?? "").trim().length > 0;
+}
+
+function isMeaningfulSuccessfulDirectToolResult(event: TaskEvent): boolean {
+  return isSuccessfulDirectToolResult(event) && looksLikeTaskCompletionEvidence(String(event.payload["output"] ?? ""));
+}
+
+function isFailedDirectToolResult(event: TaskEvent): boolean {
+  return event.type === "tool_result" &&
+    event.payload["ok"] === false &&
+    event.payload["toolName"] !== "ask_user" &&
+    !isManagedStateTool(String(event.payload["toolName"] ?? ""));
+}
+
+function looksLikeTaskCompletionEvidence(output: string): boolean {
+  const text = output.trim();
+  if (!text) return false;
+  if (looksLikeFailedVerification(text)) return false;
+  return /(?:\b(?:created|generated|wrote|saved|updated|exported|rendered|verified|validated|passed|fixed|built|compiled|completed)\b|[\w .-]+\.(?:docx|pptx|xlsx|pdf|png|jpe?g|md|html|csv|json|txt)\b)/iu.test(text);
 }
 
 function hasRecentSuccessfulVerificationEvidence(task: TaskDetail): boolean {
@@ -5907,7 +6493,7 @@ function looksLikeSuccessfulVerification(output: string): boolean {
 }
 
 function looksLikeFailedVerification(output: string): boolean {
-  return /\b(?:assertionerror|err_assertion|npm\s+err!|tests?\s+failed|failed\s+tests?|build\s+failed)\b/iu.test(output);
+  return /\b(?:assertionerror|err_assertion|npm\s+err!|\d+\s+tests?\s+failed|tests?\s+failed|failed\s+tests?|build\s+failed)\b/iu.test(output);
 }
 
 function managedToolResult(call: ToolCall, ok: boolean, output: string): ToolResult {
@@ -6025,11 +6611,24 @@ function isInternalContinuationFinal(message: string): boolean {
   );
 }
 
+function extractVisibleFinalAfterLeakedInternalContinuation(message: string): string | undefined {
+  const text = message.trim();
+  if (!/^Internal continuity note\b/i.test(text)) return undefined;
+  const marker = "</think>";
+  const markerIndex = text.lastIndexOf(marker);
+  if (markerIndex < 0) return undefined;
+  const visible = text.slice(markerIndex + marker.length).trim();
+  if (!visible) return undefined;
+  if (/^Internal continuity note\b/i.test(visible) || /Do not quote this note verbatim/i.test(visible)) return undefined;
+  if (visible.length > 1200) return undefined;
+  return visible;
+}
+
 function isToolIntentOnlyFinal(text: string): boolean {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (normalized.length > 600) return false;
   if (/\b(?:completed|done|passed|created|wrote|finished|已完成|完成|通过|已创建|已写入)\b/iu.test(normalized)) return false;
-  if (!/\b(?:read_file|write_file|edit_file|run_command|list_files|search_files|web_search|knowledge_search|use_skill)\b/iu.test(normalized)) return false;
+  if (!/\b(?:read_file|write_file|edit_file|run_command|list_files|search_files|web_search|knowledge_search|use_skill|attach_task_file)\b/iu.test(normalized)) return false;
   if (!/^(?:now\b|next\b|step\s*\d+\b|i(?:'m| am| will|'ll| need to| should| must)\b|let me\b|接下来|现在|下一步)/iu.test(normalized)) return false;
   return /\b(?:call|use|run|execute|create|write|read|edit|search|调用|运行|读取|写入|创建|编辑|搜索)\b/iu.test(normalized);
 }

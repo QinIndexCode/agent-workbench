@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { TaskDetail } from "@agent-workbench/shared";
+import type { TaskDetail, ToolCall } from "@agent-workbench/shared";
 import {
   AgentWorkbench,
   ContextAssembler,
@@ -201,6 +201,68 @@ describe("stress matrix", () => {
       usedTokens: assembled.usedTokens
     });
   });
+
+  it("completes a single high-volume repository audit with more than 1000 tool dispatches", async () => {
+    const root = mkdtempSync(join(tmpdir(), "scc-stress-tool-dispatch-"));
+    const shardCount = 336;
+    const targetToolResults = shardCount * 3;
+    const startedAt = Date.now();
+    try {
+      await createHighVolumeAuditFixture(root, shardCount);
+      const store = new InMemoryWorkbenchStore();
+      const workbench = new AgentWorkbench({
+        store,
+        model: new HighVolumeAuditModel(targetToolResults),
+        tools: new ShellToolExecutor(root)
+      });
+      const folder = await workbench.createTaskFolder({ name: "High volume audit root", rootPath: root });
+      await workbench.grantGlobalPermission("workspace_read", "1000+ read-only dispatch stress");
+      await workbench.grantGlobalPermission("shell", "final high-volume dispatch verification");
+
+      const task = await workbench.createTask(
+        "Audit every shard by listing its directory, reading its manifest, and searching for the shard evidence token before summarizing.",
+        "1000+ tool dispatch audit",
+        folder.id,
+        [],
+        {
+          runMode: "target",
+          targetLimits: {
+            maxModelTurns: 180,
+            maxToolCalls: 1200,
+            maxWallTimeMs: 600_000
+          }
+        }
+      );
+
+      const toolResults = task.events.filter((event) => event.type === "tool_result" && !event.reverted);
+      const requested = task.events.filter((event) => event.type === "tool_requested" && !event.reverted);
+      const progress = task.events.filter((event) => event.type === "tool_progress" && !event.reverted);
+      const failed = toolResults.filter((event) => event.payload["ok"] !== true);
+      const output = toolResults.map((event) => String(event.payload["output"] ?? "")).join("\n");
+
+      expect(task.status).toBe("completed");
+      expect(toolResults).toHaveLength(targetToolResults + 1);
+      expect(toolResults.filter((event) => event.payload["toolName"] !== "run_command")).toHaveLength(targetToolResults);
+      expect(requested).toHaveLength(targetToolResults + 1);
+      expect(failed).toHaveLength(0);
+      expect(progress.length).toBeGreaterThanOrEqual(targetToolResults);
+      expect(task.events.some((event) => event.type === "model_no_progress")).toBe(false);
+      expect(output).toContain("TOKEN_0000");
+      expect(output).toContain(`TOKEN_${String(shardCount - 1).padStart(4, "0")}`);
+
+      recordPass("1000+ single-task tool dispatch audit", task, {
+        durationMs: Date.now() - startedAt,
+        shardCount,
+        readOnlyToolResults: targetToolResults,
+        toolResults: toolResults.length,
+        toolRequests: requested.length,
+        progressEvents: progress.length,
+        modelTurns: task.events.filter((event) => event.type === "token_usage_recorded").length || "local-model"
+      });
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  }, 240_000);
 });
 
 class TurnFileEditModel implements ModelClient {
@@ -265,6 +327,89 @@ class ConcurrentFileSoakModel implements ModelClient {
         }
       ]
     };
+  }
+}
+
+class HighVolumeAuditModel implements ModelClient {
+  constructor(private readonly targetToolResults: number) {}
+
+  async next(task: TaskDetail): Promise<ModelTurn> {
+    const completedReadOnly = task.events.filter((event) =>
+      event.type === "tool_result" &&
+      !event.reverted &&
+      event.payload["toolName"] !== "run_command"
+    ).length;
+    const verified = task.events.some((event) =>
+      event.type === "verification_result_recorded" &&
+      !event.reverted &&
+      event.payload["status"] === "passed"
+    );
+    if (completedReadOnly >= this.targetToolResults && verified) {
+      return {
+        kind: "final",
+        message: `Completed high-volume shard audit with ${completedReadOnly} read-only dispatches and a passing verification command.`
+      };
+    }
+
+    if (completedReadOnly >= this.targetToolResults) {
+      return {
+        kind: "tool_calls",
+        calls: [{
+          id: createId("tool_call"),
+          toolName: "run_command",
+          args: { command: `node -e "console.log('stress tests passed after ${this.targetToolResults} tool dispatches')"` }
+        }]
+      };
+    }
+
+    const remaining = this.targetToolResults - completedReadOnly;
+    const batch = Array.from({ length: Math.min(8, remaining) }, (_, offset) => auditToolCall(completedReadOnly + offset));
+    return { kind: "tool_calls", calls: batch };
+  }
+}
+
+function auditToolCall(index: number): ToolCall {
+  const shard = Math.floor(index / 3);
+  const shardName = `shard-${String(shard).padStart(4, "0")}`;
+  const token = `TOKEN_${String(shard).padStart(4, "0")}`;
+  const phase = index % 3;
+  if (phase === 0) {
+    return {
+      id: createId("tool_call"),
+      toolName: "list_files",
+      args: { path: shardName }
+    };
+  }
+  if (phase === 1) {
+    return {
+      id: createId("tool_call"),
+      toolName: "read_file",
+      args: { path: `${shardName}/manifest.md` }
+    };
+  }
+  return {
+    id: createId("tool_call"),
+    toolName: "search_files",
+    args: { path: shardName, query: token }
+  };
+}
+
+async function createHighVolumeAuditFixture(root: string, shardCount: number): Promise<void> {
+  for (let index = 0; index < shardCount; index += 1) {
+    const shard = String(index).padStart(4, "0");
+    const dir = join(root, `shard-${shard}`);
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "manifest.md"),
+      [
+        `# Shard ${shard}`,
+        "",
+        `Evidence token: TOKEN_${shard}`,
+        `Expected action sequence: list_files -> read_file -> search_files.`,
+        "This fixture is intentionally small per shard so the pressure comes from scheduling, permissioning, state, and event durability rather than raw I/O volume."
+      ].join("\n"),
+      "utf8"
+    );
   }
 }
 

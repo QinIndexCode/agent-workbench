@@ -567,6 +567,7 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
   const closeRuntime = "close" in runtime ? runtime.close : undefined;
   app.addHook("onClose", async () => closeRuntime?.());
   if (!options.workbench) await bootstrapMimoProviderFromApiKeyDoc(workbench);
+  await workbench.ensureDefaultSkills();
   await workbench.ensureDefaultScheduledTasks();
   await workbench.recoverInterruptedTasks();
   const scheduler = options.workbench
@@ -720,6 +721,21 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const task = await workbench.getTask(id);
     return task ? workbench.listTaskAttachments(id) : reply.code(404).send({ error: "Task not found" });
+  });
+
+  app.get("/api/tasks/:id/attachments/:attachmentId/content", async (request, reply) => {
+    const { id, attachmentId } = z.object({ id: z.string(), attachmentId: z.string() }).parse(request.params);
+    try {
+      const { attachment, bytes } = await workbench.readTaskAttachmentContent(id, attachmentId);
+      return reply
+        .header("content-type", attachment.mimeType || "application/octet-stream")
+        .header("content-length", String(bytes.byteLength))
+        .header("x-content-type-options", "nosniff")
+        .send(bytes);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message.includes("not found") ? 404 : 400).send({ error: message });
+    }
   });
 
   app.get("/api/tasks/:id/summaries", async (request, reply) => {

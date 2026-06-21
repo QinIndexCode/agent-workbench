@@ -53,9 +53,8 @@ The connection test sends one minimal model request through the server. The web 
 
 ## Prompt caching
 
-Agent Workbench keeps stable instructions, project context, and deterministic
-tool schemas at the front of model requests so providers can reuse prompt
-prefixes across turns.
+Agent Workbench keeps stable instructions and project context at the front of
+model requests so providers can reuse prompt prefixes across turns.
 
 Anthropic Messages enables automatic prompt caching by default. Official OpenAI,
 official Kimi, and MiMo Token Plan OpenAI-compatible endpoints receive a stable
@@ -65,8 +64,12 @@ support for `prompt_cache_key`. Use `off` to disable explicit cache hints.
 Provider usage records expose cached-token counts when the provider returns them.
 
 Cache-hit quality is tracked with a rolling window. The first request is usually
-a warmup; later requests with the same workspace, provider, model, endpoint, and
-sorted tool schema reuse a stable `prompt_cache_key`. For production cost
+a warmup; later requests with the same provider, model, endpoint, and sorted
+tool-name family reuse a stable `prompt_cache_key`. Full tool schemas are still
+sent in each request, so cache routing does not remove capabilities or weaken
+task quality. Agent Workbench also keeps a short in-memory response cache for
+initial direct-answer final replies. It is not used for tool calls, file
+evidence, image inputs, or tasks with existing history. For production cost
 control, the rolling `cachedTokens / inputTokens` target is at least 90%. If the
-ratio stays below target, first check for frequent model, Base URL, tool-set,
-workspace, or provider-cache-mode changes.
+ratio stays below target, first check for frequent model, Base URL, tool-set, or
+provider-cache-mode changes.

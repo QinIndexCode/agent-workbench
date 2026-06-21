@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import type { ApprovalDecision, TaskDetail, TaskEvent, TaskRollbackPreview, TaskRollbackRequest, TaskRollbackResult, ToolApproval } from "@agent-workbench/shared";
 import { ArrowDown, BookOpen, ChevronDown, Copy, Eye, FileText, Globe2, List as ListIcon, PencilLine, Plug, Search, Sparkles, Terminal, Wrench } from "lucide-react";
 import { getUiCopy } from "../i18n.js";
+import { api } from "../api.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import { MarkdownText } from "./MarkdownText.js";
 import { describeSkillSource, describeSkillStatus, parseLoadedSkillEvent } from "./skillUx.js";
@@ -749,6 +750,14 @@ function TimelineEvent({
         <MessageActions alwaysShow={alwaysShowActions} copied={copied} language={language} onCopy={() => onCopy(event.summary)} />
         <small>{zh ? "附件" : "attachment"}</small>
         <TimelineText content={`${event.summary}\n\n${formatBytes(Number(event.payload["size"] ?? 0))} · ${String(event.payload["kind"] ?? "file")}`} language={language} />
+        {event.payload["kind"] === "image" && typeof event.payload["attachmentId"] === "string" ? (
+          <AttachmentImagePreview
+            attachmentId={event.payload["attachmentId"]}
+            fileName={String(event.payload["fileName"] ?? event.summary)}
+            language={language ?? null}
+            taskId={event.taskId}
+          />
+        ) : null}
       </article>
     );
   }
@@ -1430,6 +1439,56 @@ function limitTimelineItems(items: TimelineItem[], language?: string | null, vis
       ? `较早 ${hidden} 条助手/工具信息暂未渲染，完整历史仍保留。`
       : `${hidden} older assistant/tool items are not rendered yet. Full history is retained.`
   }, ...ordered];
+}
+
+function AttachmentImagePreview({
+  attachmentId,
+  fileName,
+  language,
+  taskId
+}: {
+  attachmentId: string;
+  fileName: string;
+  language?: string | null;
+  taskId: string;
+}) {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const zh = language === "zh-CN";
+
+  useEffect(() => {
+    let cancelled = false;
+    let url: string | null = null;
+    setObjectUrl(null);
+    setError(null);
+    void api.getTaskAttachmentContent(taskId, attachmentId)
+      .then((blob) => {
+        if (cancelled) return;
+        url = URL.createObjectURL(blob);
+        setObjectUrl(url);
+      })
+      .catch((caught) => {
+        if (cancelled) return;
+        setError(caught instanceof Error ? caught.message : String(caught));
+      });
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [attachmentId, taskId]);
+
+  if (error) {
+    return <p className="attachmentPreviewState">{zh ? "图片预览加载失败" : "Image preview failed"}</p>;
+  }
+  if (!objectUrl) {
+    return <p className="attachmentPreviewState">{zh ? "正在加载图片预览..." : "Loading image preview..."}</p>;
+  }
+  return (
+    <figure className="attachmentImagePreview">
+      <img alt={zh ? `附件图片预览：${fileName}` : `Attachment image preview: ${fileName}`} src={objectUrl} />
+      <figcaption>{fileName}</figcaption>
+    </figure>
+  );
 }
 
 function isPreservedTimelineAnchor(item: TimelineItem): boolean {

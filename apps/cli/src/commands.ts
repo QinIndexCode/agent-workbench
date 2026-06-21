@@ -137,6 +137,7 @@ async function task(args: ParsedArgs, client: ApiClient, options: RunCliOptions)
       title: optionString(args, "title"),
       folderId: optionString(args, "folder"),
       runMode: optionBoolean(args, "target") ? "target" : undefined,
+      targetLimits: targetLimitsFromOptions(args),
       attachmentIds
     });
     const created = await client.request<TaskDetail>("/api/tasks", jsonRequest("POST", body));
@@ -557,7 +558,9 @@ Health:
 Tasks:
   aw task list [--include-children]
   aw task show <taskId> [--events <n>]
-  aw task create "<goal>" [--title <title>] [--folder <id>] [--target] [--attach <path>]... [--watch]
+  aw task create "<goal>" [--title <title>] [--folder <id>] [--target]
+                 [--max-model-turns <n>] [--max-tool-calls <n>] [--max-wall-time-minutes <n>]
+                 [--attach <path>]... [--watch]
   aw task send <taskId> "<message>" [--attach <path>]... [--watch]
   aw task watch <taskId> [--interval 1000]
   aw task control <taskId> pause|resume|cancel
@@ -571,6 +574,8 @@ Tasks:
 
 Tip:
   Use --watch for human event streams, or --json for raw structured output. They are intentionally separate.
+  Goal mode accepts explicit long-task limits, for example:
+  aw task create "repair and verify the repo" --target --max-tool-calls 1200 --max-wall-time-minutes 360
 `;
   }
   if (group === "knowledge") {
@@ -645,6 +650,30 @@ function formatUsageError(error: CliUsageError, parsed: ParsedArgs | undefined):
   const group = parsed?.command[0];
   const hint = group && COMMAND_ACTIONS[group] ? `\n\nRun "aw ${group} --help" for ${group} examples.` : "\n\nRun \"aw --help\" for available commands.";
   return `${error.message}${hint}\n\n${shortUsage()}`;
+}
+
+function targetLimitsFromOptions(args: ParsedArgs): Record<string, number> | undefined {
+  const maxModelTurns = positiveIntegerOption(args, "max-model-turns");
+  const maxToolCalls = positiveIntegerOption(args, "max-tool-calls");
+  const maxWallTimeMinutes = positiveIntegerOption(args, "max-wall-time-minutes");
+  if (maxModelTurns === undefined && maxToolCalls === undefined && maxWallTimeMinutes === undefined) return undefined;
+  if (!optionBoolean(args, "target")) {
+    throw new CliUsageError("Long-task limits require --target so the server can apply explicit goal-mode safeguards.");
+  }
+  return {
+    ...(maxModelTurns !== undefined ? { maxModelTurns } : {}),
+    ...(maxToolCalls !== undefined ? { maxToolCalls } : {}),
+    ...(maxWallTimeMinutes !== undefined ? { maxWallTimeMs: maxWallTimeMinutes * 60_000 } : {})
+  };
+}
+
+function positiveIntegerOption(args: ParsedArgs, name: string): number | undefined {
+  if (!hasOption(args, name)) return undefined;
+  const value = optionNumber(args, name);
+  if (value === undefined || !Number.isInteger(value) || value <= 0) {
+    throw new CliUsageError(`--${name} must be a positive integer.`);
+  }
+  return value;
 }
 
 function formatApiError(error: ApiError, json: boolean): string {

@@ -853,13 +853,23 @@ export function useWorkbenchData(loadProfile: WorkbenchLoadProfile = defaultLoad
       } else if (events.length > 0) {
         queueSelectedTranscriptEvents(taskId, events);
       }
+      maybeRefreshTerminalRealtimeTask(taskId, events);
       return;
     }
     if (payload["type"] === "event" && isRecord(payload["event"])) {
       const event = payload["event"] as TaskEvent;
       applyRealtimeTaskShellEvents(taskId, [event]);
       queueSelectedTranscriptEvents(taskId, [event]);
+      maybeRefreshTerminalRealtimeTask(taskId, [event]);
     }
+  }
+
+  function maybeRefreshTerminalRealtimeTask(taskId: string, events: TaskEvent[]) {
+    if (!hasTerminalStatusEvent(events)) return;
+    window.setTimeout(() => {
+      if (selectedIdRef.current !== taskId) return;
+      void syncRunningSelection(taskId).catch(recordBackgroundSyncFailure);
+    }, 0);
   }
 
   function applyRealtimeTaskShellEvents(taskId: string, events: TaskEvent[]) {
@@ -1040,6 +1050,18 @@ function hasSubagentLifecycleMarker(events: TaskEvent[]): boolean {
 
 function isRealtimeDrivenTaskStatus(status: TaskDetail["status"]): boolean {
   return status === "running" || status === "waiting_for_user" || status === "waiting_approval";
+}
+
+function isTerminalTaskStatus(status: TaskDetail["status"]): boolean {
+  return status === "completed" || status === "paused" || status === "failed" || status === "cancelled";
+}
+
+export function hasTerminalStatusEvent(events: TaskEvent[]): boolean {
+  return events.some((event) => {
+    if (event.type !== "status_changed") return false;
+    const status = taskStatusFromUnknown(event.summary || event.payload["status"]);
+    return Boolean(status && isTerminalTaskStatus(status));
+  });
 }
 
 function stringFromUnknown(value: unknown): string {

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
@@ -33,6 +33,7 @@ const steps = [
 ];
 
 mkdirSync(outDir, { recursive: true });
+cleanupGeneratedDocsReports();
 
 const results = [];
 let previousFailed = false;
@@ -237,4 +238,13 @@ function localDateStamp(date) {
     month: "2-digit",
     day: "2-digit"
   }).format(date);
+}
+
+function cleanupGeneratedDocsReports() {
+  const reportsDir = resolve(root, "docs", "reports");
+  if (!existsSync(reportsDir)) return;
+  for (const entry of readdirSync(reportsDir, { withFileTypes: true })) {
+    if (!entry.isFile() || entry.name === "README.md" || !entry.name.endsWith(".md")) continue;
+    rmSync(resolve(reportsDir, entry.name), { force: true });
+  }
 }

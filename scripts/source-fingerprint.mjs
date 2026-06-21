@@ -5,12 +5,13 @@ import { spawnSync } from "node:child_process";
 
 const excludedPrefixes = [
   "node_modules/",
+  "data/",
+  "workspace/",
   "apps/web/dist/",
   "apps/web/dist-types/",
   "apps/server/dist/",
   "packages/core/dist/",
   "packages/shared/dist/",
-  "data/test-reports/",
   "docs/reports/",
   "output/",
   "coverage/"

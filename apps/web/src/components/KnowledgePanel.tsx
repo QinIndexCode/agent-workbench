@@ -39,7 +39,7 @@ export function KnowledgePanel({
   onReindex?: (id: string) => Promise<void> | void;
   onSearch?: (input: KnowledgeSearchRequest) => Promise<KnowledgeSearchResult[]>;
   onUpdate: (id: string, input: KnowledgePatchRequest) => Promise<void> | void;
-  onUpload: (input: KnowledgeUploadRequest) => Promise<void> | void;
+  onUpload: (input: KnowledgeUploadRequest) => Promise<KnowledgeItem | void> | KnowledgeItem | void;
   preferences?: UserPreferences | null;
   onPreference?: (patch: PreferencesPatch) => Promise<void> | void;
   onLoadModels?: () => Promise<KnowledgeModelStatus>;
@@ -62,23 +62,37 @@ export function KnowledgePanel({
   const [modelUrl, setModelUrl] = useState("");
   const [modelFileName, setModelFileName] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [pendingUploads, setPendingUploads] = useState<KnowledgeItem[]>([]);
   const [kindFilter, setKindFilter] = useState<"all" | KnowledgeItem["kind"]>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | KnowledgeItem["indexStatus"]>("all");
-  const selected = selectedId ? items.find((item) => item.id === selectedId) ?? null : null;
+  const displayItems = useMemo(() => {
+    const persistedUploads = new Set(items.map((item) => `${item.projectId}:${item.fileName ?? item.title}`));
+    return [
+      ...pendingUploads.filter((item) => !persistedUploads.has(`${item.projectId}:${item.fileName ?? item.title}`)),
+      ...items
+    ];
+  }, [items, pendingUploads]);
+  const selected = selectedId ? displayItems.find((item) => item.id === selectedId) ?? null : null;
   const [draft, setDraft] = useState<KnowledgeDraft>(selected ? draftFromItem(selected) : emptyDraft());
   const searchText = `${query} ${localQuery}`.trim().toLowerCase();
   const filtered = useMemo(() => {
-    return items.filter((item) => {
+    return displayItems.filter((item) => {
       if (kindFilter !== "all" && item.kind !== kindFilter) return false;
       if (statusFilter !== "all" && item.indexStatus !== statusFilter) return false;
       if (!searchText) return true;
       return `${item.title} ${item.content} ${item.tags.join(" ")} ${item.fileName ?? ""}`.toLowerCase().includes(searchText);
     });
-  }, [items, kindFilter, searchText, statusFilter]);
+  }, [displayItems, kindFilter, searchText, statusFilter]);
 
   useEffect(() => {
-    if (selectedId && !items.some((item) => item.id === selectedId)) setSelectedId(items[0]?.id ?? null);
-  }, [items, selectedId]);
+    if (selectedId && !displayItems.some((item) => item.id === selectedId)) setSelectedId(displayItems[0]?.id ?? null);
+  }, [displayItems, selectedId]);
+
+  useEffect(() => {
+    if (pendingUploads.length === 0) return;
+    const persistedUploads = new Set(items.map((item) => `${item.projectId}:${item.fileName ?? item.title}`));
+    setPendingUploads((current) => current.filter((item) => !persistedUploads.has(`${item.projectId}:${item.fileName ?? item.title}`)));
+  }, [items, pendingUploads.length]);
 
   useEffect(() => {
     if (modalMode === "edit" && selected) setDraft(draftFromItem(selected));
@@ -105,11 +119,11 @@ export function KnowledgePanel({
 
   useEffect(() => {
     setSelectedIds((current) => {
-      const itemIds = new Set(items.map((item) => item.id));
+      const itemIds = new Set(displayItems.map((item) => item.id));
       const next = new Set([...current].filter((id) => itemIds.has(id)));
       return next.size === current.size ? current : next;
     });
-  }, [items]);
+  }, [displayItems]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
   const visibleItems = filtered.slice(page * pageSize, page * pageSize + pageSize);
@@ -466,19 +480,46 @@ export function KnowledgePanel({
 
   async function uploadFiles(files: FileList | null) {
     if (!files?.length) return;
-    for (const file of [...files].slice(0, 8)) {
+    for (const [index, file] of [...files].slice(0, 8).entries()) {
       const content = await readUploadContent(file);
-      await onUpload({
-        projectId,
-        title: file.name,
-        fileName: file.name,
-        mimeType: file.type || "application/octet-stream",
-        size: file.size,
-        content,
-        tags: []
-      });
+      const pending = pendingUploadItem(file, content, projectId, index);
+      setPendingUploads((current) => [pending, ...current]);
+      try {
+        await onUpload({
+          projectId,
+          title: file.name,
+          fileName: file.name,
+          mimeType: file.type || "application/octet-stream",
+          size: file.size,
+          content,
+          tags: []
+        });
+      } catch (error) {
+        setPendingUploads((current) => current.filter((item) => item.id !== pending.id));
+        throw error;
+      }
+      setPendingUploads((current) => current.filter((item) => item.id !== pending.id));
     }
     if (fileRef.current) fileRef.current.value = "";
+  }
+
+  function pendingUploadItem(file: File, content: string, itemProjectId: string, index: number): KnowledgeItem {
+    const now = new Date().toISOString();
+    return {
+      id: `pending_upload_${Date.now()}_${index}_${file.name.replace(/[^\w.-]+/g, "_")}`,
+      projectId: itemProjectId,
+      kind: "file",
+      title: file.name,
+      content,
+      tags: [],
+      fileName: file.name,
+      mimeType: file.type || "application/octet-stream",
+      size: file.size,
+      indexStatus: "pending",
+      chunkCount: 0,
+      createdAt: now,
+      updatedAt: now
+    };
   }
 
   async function runKnowledgeSearch() {

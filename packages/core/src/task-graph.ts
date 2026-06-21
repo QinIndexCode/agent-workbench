@@ -334,6 +334,11 @@ function claimsToolEvidence(message: string, toolName: string): boolean {
     "iu"
   );
   if (alternativeCapability.test(message)) return false;
+  const listedCapability = new RegExp(
+    `(?:still\\s+can|available|alternative|instead|options?|可以|还可以|仍然可以|能够|能|如果你愿意|需要我|替代|替代方案|可用|后续|方案|方式)[\\s\\S]{0,180}(?:^|[\\n\\r])\\s*(?:[-*]|\\d+[.)、])?\\s*(?:\\*\\*)?\\b${escaped}\\b(?:\\*\\*)?\\s*[-:：]`,
+    "imu"
+  );
+  if (listedCapability.test(message)) return false;
   const sameClause = "[^\\n。；;.!?]{0,80}";
   const toolBeforeClaim = new RegExp(`\\b${escaped}\\b${sameClause}(?:returned|found|retrieved|loaded|searched|queried|called|返回|找到|检索|查询|搜索|调用|加载|命中|用到)`, "iu");
   const claimBeforeTool = new RegExp(`(?:returned|found|retrieved|loaded|searched|queried|called|返回|找到|检索|查询|搜索|调用|加载|命中|用到)${sameClause}\\b${escaped}\\b`, "iu");
@@ -445,12 +450,18 @@ function latestUserGoal(task: TaskDetail): string {
   return String([...task.events].reverse().find((event) => event.type === "user_message" && !event.reverted)?.summary ?? "").trim();
 }
 
-function isDirectAnswerGoal(goal: string): boolean {
+export function isDirectAnswerGoal(goal: string): boolean {
   const normalized = goal.trim().toLowerCase();
   if (!normalized) return true;
   if (/^(hi|hello|hey|thanks?|thank you|你好|您好|谢谢|感谢|早上好|晚上好)[.!！。?\s]*$/iu.test(normalized)) return true;
-  if (/^(你是谁|你能做什么|what can you do|who are you|introduce yourself)[?？.!！。\s]*$/iu.test(normalized)) return true;
-  return normalized.length <= 18 && !/(修|改|写|查|审|测|验|debug|fix|test|build|review|audit|check|inspect|run|file|api|ui|cli)/iu.test(normalized);
+  if (/^(你是谁|你能做什么|你可以做什么|你可以帮我做什么|what can you do|what could you do|how can you help|who are you|introduce yourself|please introduce yourself)[?？.!！。\s]*$/iu.test(normalized)) return true;
+  if (/^(你|您)[\s\S]{0,8}(能|可以)[\s\S]{0,8}(做|帮我)[\s\S]{0,8}什么[?？.!！。\s]*$/iu.test(normalized)) return true;
+  if (/^(你|您)[\s\S]{0,12}(能|可以)[\s\S]{0,12}(做|帮我)[\s\S]{0,12}什么[\s\S]{0,120}(请直接回答|不要读取|不要运行|不要检查|不用读取|不用运行|不用检查)/iu.test(normalized)) return true;
+  if (/^(what can you do|what could you do|how can you help)[\s\S]{0,120}(answer directly|do not read|do not run|do not inspect|no tools)/iu.test(normalized)) return true;
+  if (/^(介绍一下你自己|自我介绍|请介绍一下你自己)[?？.!！。\s]*$/iu.test(normalized)) return true;
+  if (/(不要|不用|不需要|请勿).{0,10}(使用|调用)?工具|no tools?|without tools?|do not use tools?|don't use tools?/iu.test(normalized) &&
+    /(一句话|只用|只需|只补充|简短|直接回答|answer directly|one sentence|briefly)/iu.test(normalized)) return true;
+  return normalized.length <= 18 && !/(继续|处理|修|改|写|查|审|测|验|debug|fix|test|build|review|audit|check|inspect|run|file|api|ui|cli)/iu.test(normalized);
 }
 
 function hasImplementationIntent(goal: string): boolean {
@@ -517,7 +528,7 @@ function toolClassesForName(toolName: string, description: string): TaskToolClas
   if (toolName === "read_file" || toolName === "search_files" || toolName === "list_files" || toolName === "knowledge_search") return ["workspace_read"];
   if (toolName === "web_search") return ["network"];
   if (toolName === "edit_file" || toolName === "write_file") return ["workspace_write"];
-  if (toolName === "plan_update" || toolName === "use_skill" || toolName === "ask_user" || toolName === "spawn_subagent") return ["state"];
+  if (toolName === "plan_update" || toolName === "use_skill" || toolName === "ask_user" || toolName === "spawn_subagent" || toolName === "attach_task_file") return ["state"];
   if (/(memory|skill_(create|edit|delete))/i.test(toolName)) return ["memory"];
   return [];
 }
