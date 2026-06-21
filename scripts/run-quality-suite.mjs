@@ -106,6 +106,27 @@ if (!previousFailed && requireLiveSmoke) {
   previousFailed = outcome.exitCode !== 0;
 }
 
+if (!previousFailed && requireLiveSmoke) {
+  const step = { name: "swe-bench-style-agent", command: ["node", "scripts/swe-bench-style-agent-eval.mjs"] };
+  const logPath = resolve(outDir, `${step.name}.log`);
+  const started = Date.now();
+  const outcome = await runCommand(step.command, logPath, {
+    AGENT_WORKBENCH_SWE_BENCH_STYLE: "1",
+    AGENT_WORKBENCH_SWE_BENCH_STYLE_REQUIRED: "1",
+    AGENT_WORKBENCH_LIVE_MODEL_REQUIRED: "1"
+  }, 1_800_000);
+  results.push({
+    name: step.name,
+    status: outcome.exitCode === 0 ? "passed" : "failed",
+    durationMs: Date.now() - started,
+    command: step.command.join(" "),
+    exitCode: outcome.exitCode,
+    ...(outcome.timedOut ? { timedOut: true } : {}),
+    logPath
+  });
+  previousFailed = outcome.exitCode !== 0;
+}
+
 const currentSourceFingerprint = sourceFingerprint(root);
 const payload = {
   generatedAt: new Date().toISOString(),

@@ -2683,6 +2683,35 @@ export class AgentWorkbench {
       const stateOnlyBatch = executable.length > 0 && executable.every((call) => isManagedStateTool(call.toolName));
       stateOnlyTurns = stateOnlyBatch ? stateOnlyTurns + 1 : 0;
       if (stateOnlyTurns > MAX_STATE_ONLY_TOOL_TURNS) {
+        const evidenceBackedFinal = hasRecentSuccessfulDirectToolEvidence(task)
+          ? evidenceBackedFinalAnswerFromToolEvidence(task)
+          : null;
+        if (evidenceBackedFinal) {
+          const toolNames = executable.map((call) => call.toolName);
+          this.addEvent(task, "model_no_progress", "Repeated state-only tool turns followed successful edit and verification evidence; completing from the completed tool evidence instead of pausing.", {
+            status: "completed",
+            reason: "finalization_after_state_only_tools",
+            stateOnlyToolCount: MAX_STATE_ONLY_TOOL_TURNS,
+            toolNames
+          });
+          await this.safeAppendTaskTrace(task, {
+            kind: "model_no_progress",
+            timestamp: nowIso(),
+            reason: "finalization_after_state_only_tools",
+            status: "completed",
+            message: "Repeated state-only tool turns followed successful edit and verification evidence; completing from tool evidence.",
+            toolNames
+          });
+          this.addEvent(task, "assistant_message", evidenceBackedFinal, {
+            synthesizedFromToolEvidence: true,
+            blocker: "finalization_after_state_only_tools"
+          });
+          this.setStatus(task, "completed");
+          await this.recordExperience(task);
+          await this.store.saveTask(task);
+          if (task.kind === "subagent") await this.projectSubagentCompletionToParent(task, "completed");
+          return task;
+        }
         if (!stateOnlyRecoveryAttempted) {
           stateOnlyRecoveryAttempted = true;
           stateOnlyTurns = 0;

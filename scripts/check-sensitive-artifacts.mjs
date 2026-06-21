@@ -21,6 +21,7 @@ const artifactRoots = [
   resolve(root, "data", "test-reports", "flagship-quality"),
   resolve(root, "data", "test-reports", "live-model-smoke"),
   resolve(root, "data", "test-reports", "live-agent-http-resume"),
+  resolve(root, "data", "test-reports", "swe-bench-style"),
   resolve(root, "docs", "reports", `${localDateStamp()}-flagship-revalidation.md`)
 ];
 

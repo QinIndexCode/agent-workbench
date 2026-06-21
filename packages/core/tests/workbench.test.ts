@@ -963,6 +963,7 @@ describe("ContextAssembler", () => {
     expect(context.systemPrompt).toContain("## Goal Mode");
     expect(context.systemPrompt).toContain("explicitly started /goal");
     expect(context.systemPrompt).toContain("visible acceptance criteria");
+    expect(context.systemPrompt).toContain("representative contract edges");
     expect(context.systemPrompt).toContain("plan_update");
     expect(context.systemPrompt).toContain("Run limits: 160 model turns, 500 tool results, 240 minutes.");
   });
@@ -1266,10 +1267,69 @@ describe("ContextAssembler", () => {
     expect(roleMessages[2]?.role).toBe("tool");
     expect(roleMessages[3]?.role).toBe("tool");
     expect(roleMessages[3]?.role === "tool" ? roleMessages[3].content : "").toContain("\"status\":\"denied\"");
-    expect(roleMessages[4]?.role).toBe("assistant");
-    expect(roleMessages[4]?.role === "assistant" ? roleMessages[4].toolCalls?.[0]?.toolName : "").toBe("plan_update");
-    expect(roleMessages[5]?.role).toBe("tool");
-    expect(roleMessages[5]?.role === "tool" ? roleMessages[5].content : "").toContain("plan_updated");
+    expect(roleMessages).toHaveLength(4);
+    expect(JSON.stringify(roleMessages)).not.toContain("plan_update");
+    expect(JSON.stringify(roleMessages)).not.toContain("plan_updated");
+  });
+
+  it("keeps only recent structured tool role messages while retaining older evidence in context text", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const events: TaskDetail["events"] = [
+      { id: "event_user_compact_tools", taskId: "task_compact_tool_roles", type: "user_message", createdAt: nowIso(), summary: "修复一组连续失败。", payload: {} }
+    ];
+    for (let index = 1; index <= 10; index += 1) {
+      events.push({
+        id: `event_request_${index}`,
+        taskId: "task_compact_tool_roles",
+        type: "tool_requested",
+        createdAt: nowIso(),
+        summary: "run_command",
+        payload: { toolCallId: `call_${index}`, toolName: "run_command", args: { command: `node check-${index}.mjs` } }
+      });
+      events.push({
+        id: `event_result_${index}`,
+        taskId: "task_compact_tool_roles",
+        type: "tool_result",
+        createdAt: nowIso(),
+        summary: "Tool completed",
+        payload: { toolCallId: `call_${index}`, toolName: "run_command", args: { command: `node check-${index}.mjs` }, ok: true, output: `old-output-${index}` }
+      });
+    }
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_compact_tool_roles",
+      title: "Compact tool role messages",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events
+    };
+
+    const context = await assembler.assemble(task);
+    const structured = context.messages.filter((message) =>
+      message.role === "tool" ||
+      message.role === "assistant" && (message.toolCalls?.length ?? 0) > 0
+    );
+    const structuredCallIds = structured.flatMap((message) => {
+      if (message.role === "assistant") return message.toolCalls?.map((call) => call.id) ?? [];
+      return [message.toolCallId];
+    });
+    const structuredOutputs = structured.flatMap((message) => {
+      if (message.role !== "tool") return [];
+      const parsed = JSON.parse(message.content) as { output?: string };
+      return parsed.output ? [parsed.output] : [];
+    });
+    const compactEvidence = context.messages.find((message) =>
+      message.role === "user" && message.content.startsWith("## Earlier Tool Evidence")
+    );
+
+    expect(structuredCallIds).not.toContain("call_1");
+    expect(structuredOutputs).not.toContain("old-output-1");
+    expect(structuredCallIds).toContain("call_10");
+    expect(structuredOutputs).toContain("old-output-10");
+    expect(compactEvidence?.content).toContain("old-output-1");
   });
 
   it("keeps web search evidence in the tool result without adding a summary-only assistant turn", async () => {
@@ -2863,7 +2923,8 @@ class ContextAwarePlanModel implements ModelClient {
   async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
     this.calls += 1;
     const context = await this.assembler.assemble(task);
-    if (context.input.includes("Tool Result plan_update") && context.input.includes("plan_updated")) {
+    const combinedContext = `${context.systemPrompt}\n${context.input}`;
+    if (combinedContext.includes("Latest visible plan state") && combinedContext.includes("Planning visible progress.")) {
       return { kind: "final", message: "Saw the plan update result and continued." };
     }
     return {
@@ -3468,6 +3529,49 @@ class RepeatedWeakFinalAfterCompleteDebugEvidenceModel implements ModelClient {
       };
     }
     return { kind: "final", message: "src/math.mjs" };
+  }
+}
+
+class StateOnlyAfterCompleteDebugEvidenceModel implements ModelClient {
+  async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
+    const toolResults = task.events.filter((event) => event.type === "tool_result");
+    const runResults = toolResults.filter((event) => event.payload["toolName"] === "run_command");
+    if (runResults.length === 0) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "run_command", args: { command: "node tests/math.test.mjs" } }]
+      };
+    }
+    if (!toolResults.some((event) => event.payload["toolName"] === "read_file")) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "read_file", args: { path: "src/math.mjs" } }]
+      };
+    }
+    if (!toolResults.some((event) => event.payload["toolName"] === "edit_file")) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "edit_file", args: { path: "src/math.mjs", expectedHash: "hash_before", edits: [] } }]
+      };
+    }
+    if (runResults.length < 2) {
+      return {
+        kind: "tool_calls",
+        calls: [{ id: createId("tool_call"), toolName: "run_command", args: { command: "node tests/math.test.mjs" } }]
+      };
+    }
+    return {
+      kind: "tool_calls",
+      calls: [{
+        id: createId("tool_call"),
+        toolName: "plan_update",
+        args: {
+          context: "All tests passed after the source edit.",
+          status: "completed",
+          steps: [{ title: "Verified repair", status: "completed" }]
+        }
+      }]
+    };
   }
 }
 
@@ -4238,6 +4342,28 @@ describe("Attention-first task graph runtime", () => {
     expect(final?.summary).toContain("return numbers.length");
     expect(final?.summary).toContain("return numbers.reduce");
     expect(final?.summary).toContain("src/math.mjs");
+    expect(final?.summary).toContain("math tests passed");
+  });
+
+  it("synthesizes a final answer when repeated state-only turns follow successful edit and verification evidence", async () => {
+    const workbench = new AgentWorkbench({
+      store: new InMemoryWorkbenchStore(),
+      tools: new DebugRepairToolExecutor(),
+      model: new StateOnlyAfterCompleteDebugEvidenceModel()
+    });
+    await workbench.grantGlobalPermission("shell", "test commands");
+    await workbench.grantGlobalPermission("workspace_read", "source inspection");
+    await workbench.grantGlobalPermission("workspace_write", "source edits");
+
+    const task = await workbench.createTask("Run tests, inspect source, fix the failure, and close after verification.");
+    const finalization = task.events.find((event) => event.type === "model_no_progress" && event.payload["reason"] === "finalization_after_state_only_tools");
+    const final = [...task.events].reverse().find((event) => event.type === "assistant_message");
+
+    expect(task.status).toBe("completed");
+    expect(finalization?.payload["status"]).toBe("completed");
+    expect(final?.payload["synthesizedFromToolEvidence"]).toBe(true);
+    expect(final?.summary).toContain("return numbers.length");
+    expect(final?.summary).toContain("return numbers.reduce");
     expect(final?.summary).toContain("math tests passed");
   });
 
@@ -5426,7 +5552,7 @@ describe("AgentWorkbench", () => {
     expect(toolResult?.payload["uiHidden"]).toBe(true);
   });
 
-  it("keeps plan_update results visible to the next model turn even when hidden from UI", async () => {
+  it("keeps plan_update continuity visible to the next model turn even when hidden from UI", async () => {
     const store = new InMemoryWorkbenchStore();
     const assembler = new ContextAssembler(store);
     const model = new ContextAwarePlanModel(assembler);
@@ -7768,6 +7894,8 @@ describe("OpenAIModelClient", () => {
       expect(request?.["prompt_cache_key"]).toBeUndefined();
       expect(messages[0]?.["role"]).toBe("system");
       expect(String(messages[0]?.["content"] ?? "")).toContain("Stable Memory Files");
+      expect(String(messages[0]?.["content"] ?? "")).toContain("E2E prefers concise evidence");
+      expect(String(messages[0]?.["content"] ?? "")).not.toContain("Global durable memory shared across projects");
       expect(String(messages[0]?.["content"] ?? "")).toContain("copy the observed text exactly");
       expect(String(messages[0]?.["content"] ?? "")).not.toContain("Task title:");
       expect(messages.map((message) => message["role"])).toEqual(["system", "user", "user", "assistant", "user", "assistant", "tool", "user"]);
@@ -8443,7 +8571,9 @@ describe("OpenAIModelClient", () => {
       expect(completed.status).toBe("completed");
       expect(requestCount).toBe(2);
       expect(planResult?.payload["reasoningContent"]).toBe("I should update the visible plan before editing files.");
-      expect(planMessage?.["content"]).toBe("");
+      expect(planMessage).toBeUndefined();
+      expect(JSON.stringify(messages)).not.toContain("call_plan_hidden");
+      expect(JSON.stringify(messages)).not.toContain("plan_updated");
       expect(planMessage?.["reasoning_content"]).toBeUndefined();
       expect(messages.some((message) => "reasoning_content" in message)).toBe(false);
       expect(JSON.stringify(messages)).not.toContain("I should update the visible plan before editing files.");

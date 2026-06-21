@@ -16,6 +16,7 @@ const apiRouteCoverage = readJson(resolve(root, "data", "test-reports", "api-rou
 const sensitiveArtifacts = readJson(resolve(root, "data", "test-reports", "sensitive-artifacts", "report.json"));
 const liveSmoke = readJson(resolve(root, "data", "test-reports", "live-model-smoke", "report.json"));
 const liveHttpResume = readJson(resolve(root, "data", "test-reports", "live-agent-http-resume", "report.json"));
+const sweBenchStyle = readJson(resolve(root, "data", "test-reports", "swe-bench-style", "report.json"));
 const uiMetrics = readJson(resolve(root, "data", "test-reports", "flagship-ui", "metrics.json"));
 const routeSoakReports = {
   desktop: readJson(resolve(root, "data", "test-reports", "ui-route-soak", "desktop.json")),
@@ -31,6 +32,7 @@ if (!apiRouteCoverage) blockers.push("API route coverage report is missing.");
 if (!sensitiveArtifacts) blockers.push("Sensitive artifact report is missing.");
 if (!liveSmoke) blockers.push("Live model smoke report is missing.");
 if (!liveHttpResume) blockers.push("Live HTTP resume report is missing.");
+if (!sweBenchStyle) blockers.push("SWE-bench-style agent evaluation report is missing.");
 if (!uiMetrics) blockers.push("Flagship UI metrics are missing.");
 for (const project of ["desktop", "mobile"]) {
   if (!routeSoakReports[project]) blockers.push(`UI route soak report is missing for ${project}.`);
@@ -42,6 +44,7 @@ requireFreshArtifact(apiRouteCoverage, "API route coverage", blockers);
 requireFreshArtifact(sensitiveArtifacts, "sensitive artifacts", blockers);
 requireFreshArtifact(liveSmoke, "live smoke", blockers);
 requireFreshArtifact(liveHttpResume, "live HTTP resume", blockers);
+requireFreshArtifact(sweBenchStyle, "SWE-bench-style agent evaluation", blockers);
 requireFreshArtifact(uiMetrics, "flagship UI metrics", blockers);
 for (const [project, report] of Object.entries(routeSoakReports)) {
   requireFreshArtifact(report, `UI route soak ${project}`, blockers);
@@ -52,6 +55,7 @@ requireMatchingSource(apiRouteCoverage, "API route coverage", currentSourceFinge
 requireMatchingSource(sensitiveArtifacts, "sensitive artifacts", currentSourceFingerprint, blockers);
 requireMatchingSource(liveSmoke, "live smoke", currentSourceFingerprint, blockers);
 requireMatchingSource(liveHttpResume, "live HTTP resume", currentSourceFingerprint, blockers);
+requireMatchingSource(sweBenchStyle, "SWE-bench-style agent evaluation", currentSourceFingerprint, blockers);
 requireMatchingSource(uiMetrics, "flagship UI metrics", currentSourceFingerprint, blockers);
 for (const [project, report] of Object.entries(routeSoakReports)) {
   requireMatchingSource(report, `UI route soak ${project}`, currentSourceFingerprint, blockers);
@@ -104,6 +108,22 @@ if (liveHttpResume) {
   }
   if (!toolNames.has("read_file") && !toolNames.has("search_files")) blockers.push("Live HTTP resume report is missing file read/search evidence.");
 }
+if (sweBenchStyle) {
+  if (sweBenchStyle.status !== "passed") blockers.push(`SWE-bench-style agent evaluation is ${sweBenchStyle.status}: ${sweBenchStyle.reason ?? sweBenchStyle.error ?? "no reason"}.`);
+  if (sweBenchStyle.required !== true) blockers.push("SWE-bench-style agent evaluation was generated without AGENT_WORKBENCH_SWE_BENCH_STYLE_REQUIRED=1.");
+  if (Number(sweBenchStyle.summary?.totalCases ?? 0) < 3) blockers.push("SWE-bench-style agent evaluation has fewer than 3 repair cases.");
+  const failedCases = (sweBenchStyle.cases ?? []).filter((item) => item.status !== "passed");
+  for (const item of failedCases) blockers.push(`SWE-bench-style repair failed: ${item.name}${item.failureClass ? ` (${item.failureClass})` : ""}.`);
+  for (const item of sweBenchStyle.cases ?? []) {
+    const changedFiles = normalizeStringArray(item.evidence?.changedFiles);
+    if (item.status === "passed" && !changedFiles.some((file) => file.startsWith("src/"))) {
+      blockers.push(`SWE-bench-style repair ${item.name} did not record a source file change.`);
+    }
+    const toolNames = new Set((item.evidence?.toolRequests ?? []).map((tool) => String(tool.toolName ?? "")));
+    if (item.status === "passed" && !toolNames.has("run_command")) blockers.push(`SWE-bench-style repair ${item.name} is missing run_command evidence.`);
+    if (item.status === "passed" && !toolNames.has("edit_file") && !toolNames.has("write_file")) blockers.push(`SWE-bench-style repair ${item.name} is missing safe file edit evidence.`);
+  }
+}
 
 const overflowFailures = (uiMetrics?.views ?? []).filter((item) => Number(item.horizontalOverflow ?? 0) > 1);
 for (const item of overflowFailures) blockers.push(`UI overflow exceeded budget on ${item.project}/${item.view}.`);
@@ -124,6 +144,7 @@ writeFileSync(reportPath, renderMarkdown({
   sensitiveArtifacts,
   liveSmoke,
   liveHttpResume,
+  sweBenchStyle,
   uiMetrics,
   routeSoakReports,
   screenshots,
@@ -243,6 +264,29 @@ function renderMarkdown(context) {
     }
   } else {
     lines.push("- live HTTP resume: missing");
+  }
+  lines.push("");
+
+  lines.push("## SWE-bench-style Agent Evaluation", "");
+  if (context.sweBenchStyle) {
+    lines.push(`- status: ${context.sweBenchStyle.status}`);
+    lines.push(`- cases: ${context.sweBenchStyle.summary?.passedCases ?? 0}/${context.sweBenchStyle.summary?.totalCases ?? context.sweBenchStyle.cases?.length ?? 0}`);
+    if (context.sweBenchStyle.summary?.promptCache) {
+      const cache = context.sweBenchStyle.summary.promptCache;
+      lines.push(`- effective input cache: ${Math.round(Number(cache.cacheHitRatio ?? 0) * 100)}% (${cache.cachedTokens ?? 0}/${cache.inputTokens ?? 0} cached input tokens, provider=${cache.providerTurns ?? 0}, local=${cache.localResponseTurns ?? 0})`);
+    }
+    for (const item of context.sweBenchStyle.cases ?? []) {
+      const changedFiles = normalizeStringArray(item.evidence?.changedFiles).join(", ");
+      const metrics = [
+        item.evidence?.postTestExitCode !== undefined ? `testExit=${item.evidence.postTestExitCode}` : null,
+        item.evidence?.hiddenExitCode !== undefined ? `hiddenExit=${item.evidence.hiddenExitCode}` : null,
+        item.evidence?.toolRequestCount !== undefined ? `tools=${item.evidence.toolRequestCount}` : null,
+        changedFiles ? `changed=${changedFiles}` : null
+      ].filter(Boolean).join(" | ");
+      lines.push(`- ${item.name}: ${item.status}${item.failureClass ? ` (${item.failureClass})` : ""}${metrics ? ` | ${metrics}` : ""}`);
+    }
+  } else {
+    lines.push("- swe-bench-style agent evaluation: missing");
   }
   lines.push("");
 

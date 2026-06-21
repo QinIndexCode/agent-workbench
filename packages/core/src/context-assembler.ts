@@ -46,6 +46,9 @@ const SUMMARY_EVENT_WINDOW_REFRESH_GAP = 36;
 const MAX_RETAINED_FACTS = 24;
 const MAX_RECENT_USER_MESSAGES = 2;
 const MAX_RECENT_USER_TRUNCATE = 4000;
+const MAX_CANONICAL_TOOL_HISTORY_EVENTS = 4;
+const MAX_OMITTED_TOOL_EVIDENCE_RESULTS = 8;
+const MAX_OMITTED_TOOL_EVIDENCE_CHARS = 420;
 const COMPACT_HISTORY_LIMIT = 24;
 const COMPACT_LINE_TRUNCATE = 700;
 const MAX_LARGE_STRING_NORMAL = 180;
@@ -86,6 +89,8 @@ const AGENT_WORKFLOW_HEURISTICS = [
   "- Prefer real product surfaces when practical; avoid hidden fixture state when a real flow is available.",
   "- Escalate verification with risk and blast radius. A green command is evidence only when it covers the criteria.",
   "- Never hardcode behavior to satisfy a particular test prompt, fixture, route, date, or expected string. Implement the general business rule.",
+  "- When tests cover only part of a stated contract, check representative edge cases from the contract before treating visible green tests as complete.",
+  "- After the latest change has verification evidence that satisfies the acceptance criteria, return the final answer instead of continuing optional exploration or plan-only updates.",
   "- If ideal verification is unavailable or disproportionate, use the strongest practical proof and state residual risk.",
   "- For UI/CLI/API, verify rendered state, human output, and --json/raw structured output through real paths when practical.",
   "- Complete when current evidence supports the preserved acceptance criteria at a level proportional to risk; continue gathering evidence when proof is too weak."
@@ -534,6 +539,7 @@ export class ContextAssembler {
       "First establish visible acceptance criteria if they are not already clear. Keep the plan current with plan_update so the UI shows the active step, evidence gathered, implementation work, and verification status.",
       "Continue with evidence-driven exploration, implementation, and verification until the criteria are met or the system pauses on limits, permissions, provider failure, no-progress recovery, or user interruption.",
       "If verification fails, treat the failure as evidence for the next repair step. Do not complete with a promise to continue, a retained-thinking note, or a progress-only summary.",
+      "After the latest edit is verified against the required commands and representative contract edges, finalize with the result. Do not keep calling tools for optional inspection or status-only updates.",
       "If blocked by permissions or ambiguity, ask the user with ask_user and make the blocker explicit.",
       "Do not call ask_user merely to offer optional follow-up work, ask whether to continue, or confirm completion after successful evidence; return a final answer instead.",
       verificationCommands.length > 0
@@ -550,13 +556,14 @@ export class ContextAssembler {
   private async buildStableMemoryFileLayer(options: { compact?: boolean } = {}): Promise<string> {
     const baseDir = memoryBaseDir();
     const limits = options.compact ? MEMORY_LIMITS_COMPACT : MEMORY_LIMITS_NORMAL;
-    const user = await readMemoryFile(resolve(baseDir, "USER.md"), limits.user, defaultUserMemoryContent());
-    const globalMemory = await readMemoryFile(resolve(baseDir, "MEMORY.md"), limits.global, defaultGlobalMemoryContent());
+    const user = await readMemoryFile(resolve(baseDir, "USER.md"), limits.user);
+    const globalMemory = await readMemoryFile(resolve(baseDir, "MEMORY.md"), limits.global);
+    if (!user && !globalMemory) return "";
     return [
       "## Stable Memory Files",
       "These are durable, user-managed memory notes from Agent Workbench's internal memory store. Treat them as preferences and long-lived context, not proof of current file contents. Do not read USER.md or MEMORY.md from the workRoot; the content below is the authoritative injected memory snapshot.",
-      `### Global USER.md\n${user}`,
-      `### Global MEMORY.md\n${globalMemory}`
+      user ? `### Global USER.md\n${user}` : "",
+      globalMemory ? `### Global MEMORY.md\n${globalMemory}` : ""
     ].filter(Boolean).join("\n\n");
   }
 
@@ -565,9 +572,9 @@ export class ContextAssembler {
     const limits = options.compact ? MEMORY_LIMITS_COMPACT : MEMORY_LIMITS_NORMAL;
     const project = await readMemoryFile(
       resolve(baseDir, "projects", memoryPathHash(task.workRoot || defaultTaskWorkRoot()), "MEMORY.md"),
-      limits.project,
-      defaultProjectMemoryContent(task.workRoot || defaultTaskWorkRoot())
+      limits.project
     );
+    if (!project) return "";
     return [
       "## Project Memory File",
       "This durable memory is scoped to the current task work root. Treat it as project context, not proof of current file contents.",
@@ -1054,9 +1061,19 @@ function buildCanonicalHistoryMessages(
   const events = task.events.filter(isModelHistoryEvent);
   const startIndex = options.afterEventId ? events.findIndex((event) => event.id === options.afterEventId) + 1 : 0;
   const visibleEvents = startIndex > 0 ? events.slice(startIndex) : events;
+  const recentStructuredToolEventIds = recentCanonicalToolEventIds(visibleEvents);
+  const omittedToolEvidenceLayer = buildOmittedToolEvidenceLayer(visibleEvents, recentStructuredToolEventIds, options.tracker);
   const messages: CanonicalModelMessage[] = [];
   let pendingToolCalls: Array<{ call: ToolCall; reasoningContent?: string; eventId?: string }> = [];
   const emittedToolCallIds = new Set<string>();
+  let omittedToolEvidenceEmitted = false;
+
+  const emitOmittedToolEvidence = (): void => {
+    if (omittedToolEvidenceEmitted || !omittedToolEvidenceLayer) return;
+    discardPendingToolCalls();
+    messages.push({ role: "user", content: omittedToolEvidenceLayer });
+    omittedToolEvidenceEmitted = true;
+  };
 
   const flushToolCalls = (): void => {
     if (pendingToolCalls.length === 0) return;
@@ -1113,12 +1130,22 @@ function buildCanonicalHistoryMessages(
         }
         break;
       case "tool_requested": {
+        if (isContextOnlyStateToolEvent(event)) break;
+        if (!recentStructuredToolEventIds.has(event.id)) {
+          emitOmittedToolEvidence();
+          break;
+        }
         const call = toolCallFromRequestedEvent(event);
         const reasoningContent = options.omitReasoningContent ? undefined : reasoningContentFromEvent(event);
         if (call) pendingToolCalls.push({ call, ...(reasoningContent ? { reasoningContent } : {}), eventId: event.id });
         break;
       }
       case "tool_result": {
+        if (isContextOnlyStateToolEvent(event)) break;
+        if (!recentStructuredToolEventIds.has(event.id)) {
+          emitOmittedToolEvidence();
+          break;
+        }
         const call = toolCallFromResultEvent(event);
         const reasoningContent = options.omitReasoningContent ? undefined : reasoningContentFromEvent(event);
         if (!emittedToolCallIds.has(call.id)) {
@@ -1170,6 +1197,49 @@ function buildCanonicalHistoryMessages(
   }
 
   return trimCanonicalHistoryMessages(messages, options.maxTokens);
+}
+
+function buildOmittedToolEvidenceLayer(events: TaskEvent[], recentStructuredToolEventIds: Set<string>, tracker?: FileStateTracker): string {
+  const omittedResults = events
+    .filter((event) => event.type === "tool_result" && !isContextOnlyStateToolEvent(event) && !recentStructuredToolEventIds.has(event.id))
+    .slice(-MAX_OMITTED_TOOL_EVIDENCE_RESULTS);
+  if (omittedResults.length === 0) return "";
+  return [
+    "## Earlier Tool Evidence (compact)",
+    "Older structured tool role messages are compacted to improve prompt-cache reuse. Treat these rows as prior tool evidence; rerun a tool when exact current state matters.",
+    ...omittedResults.map((event) => {
+      const toolName = String(event.payload["toolName"] ?? "tool");
+      const status = event.payload["ok"] === false ? "failed" : "ok";
+      return `- ${toolName} ${status}: ${truncate(formatEvent(event, tracker).replace(/\s+/g, " "), MAX_OMITTED_TOOL_EVIDENCE_CHARS)}`;
+    })
+  ].join("\n");
+}
+
+function recentCanonicalToolEventIds(events: TaskEvent[]): Set<string> {
+  const toolEvents = events.filter((event) => (event.type === "tool_requested" || event.type === "tool_result") && !isContextOnlyStateToolEvent(event));
+  if (toolEvents.length <= MAX_CANONICAL_TOOL_HISTORY_EVENTS) return new Set(toolEvents.map((event) => event.id));
+  const kept = toolEvents.slice(-MAX_CANONICAL_TOOL_HISTORY_EVENTS);
+  const ids = new Set(kept.map((event) => event.id));
+  const callIds = new Set(kept.map(eventToolCallId).filter((id): id is string => Boolean(id)));
+  if (callIds.size === 0) return ids;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event || event.type !== "tool_requested" && event.type !== "tool_result") continue;
+    if (isContextOnlyStateToolEvent(event)) continue;
+    const callId = eventToolCallId(event);
+    if (callId && callIds.has(callId)) ids.add(event.id);
+  }
+  return ids;
+}
+
+function isContextOnlyStateToolEvent(event: TaskEvent): boolean {
+  const toolName = String(event.payload["toolName"] ?? "").trim();
+  return toolName === "plan_update";
+}
+
+function eventToolCallId(event: TaskEvent): string | undefined {
+  const value = String(event.payload["toolCallId"] ?? event.payload["id"] ?? "").trim();
+  return value || undefined;
 }
 
 function formatOperationalEventForContext(event: TaskEvent): string {
@@ -1970,50 +2040,6 @@ function countLines(content: string): number {
 async function readMemoryFile(path: string, maxChars: number, fallback = ""): Promise<string> {
   const content = await readFile(path, "utf8").catch(() => fallback);
   return content.trim().slice(0, maxChars);
-}
-
-function defaultUserMemoryContent(): string {
-  return [
-    "# USER.md",
-    "",
-    "Stable user preferences for Agent Workbench. Keep entries short, durable, and broadly useful.",
-    "",
-    "## Preferences",
-    "- Language: zh-CN unless the user asks otherwise.",
-    "- Style: direct, careful, evidence-backed.",
-    "",
-    "## Long-term Constraints",
-    "- Do not use scripted task quality gates or fixed report protocols to control ordinary agent work."
-  ].join("\n");
-}
-
-function defaultGlobalMemoryContent(): string {
-  return [
-    "# MEMORY.md",
-    "",
-    "Global durable memory shared across projects.",
-    "",
-    "## Key Facts",
-    "- Keep only stable facts that should apply across future Agent Workbench tasks.",
-    "",
-    "## Open Risks",
-    "- Add only cross-project risks that remain important."
-  ].join("\n");
-}
-
-function defaultProjectMemoryContent(workRoot: string): string {
-  return [
-    "# MEMORY.md",
-    "",
-    "Project durable memory scoped to the current task folder.",
-    `Work root: ${workRoot}`,
-    "",
-    "## Key Facts",
-    "- Keep only stable project facts, constraints, paths, and unresolved risks.",
-    "",
-    "## Open Risks",
-    "- Add risks only when they remain relevant across future tasks."
-  ].join("\n");
 }
 
 function rankKnowledgeBriefItems(items: KnowledgeItem[], task: TaskDetail): KnowledgeItem[] {

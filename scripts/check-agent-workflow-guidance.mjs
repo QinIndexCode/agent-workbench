@@ -11,6 +11,7 @@ const qualityPath = resolve(root, "scripts", "run-quality-suite.mjs");
 const reportWriterPath = resolve(root, "scripts", "write-flagship-report.mjs");
 const e2eRunnerPath = resolve(root, "scripts", "run-e2e.mjs");
 const liveHttpPath = resolve(root, "scripts", "live-agent-http-resume-verifier.mjs");
+const sweStylePath = resolve(root, "scripts", "swe-bench-style-agent-eval.mjs");
 const ciWorkflowPath = resolve(root, ".github", "workflows", "ci.yml");
 const liveQualityWorkflowPath = resolve(root, ".github", "workflows", "live-quality.yml");
 
@@ -23,6 +24,7 @@ const quality = readFileSync(qualityPath, "utf8");
 const reportWriter = readFileSync(reportWriterPath, "utf8");
 const e2eRunner = readFileSync(e2eRunnerPath, "utf8");
 const liveHttp = readFileSync(liveHttpPath, "utf8");
+const sweStyle = readFileSync(sweStylePath, "utf8");
 const ciWorkflow = readFileSync(ciWorkflowPath, "utf8");
 const liveQualityWorkflow = readFileSync(liveQualityWorkflowPath, "utf8");
 
@@ -53,6 +55,7 @@ assertIncludes(docs, [
   "Simple chat, greetings, and capability questions do not get a graph",
   "Verification Ladder",
   "Live HTTP resume verifier",
+  "SWE-bench-style agent evaluation",
   "Do not force tools, plans, tests",
   "Never hardcode behavior",
   "quality:full",
@@ -69,7 +72,7 @@ assertIncludes(matrix, [
   "auto approval with llm review"
 ], matrixPath);
 
-assertIncludes(quality, ["--flagship", "agent-workflow", "live-agent-http-resume", "localDateStamp", "hasFreshArtifact"], qualityPath);
+assertIncludes(quality, ["--flagship", "agent-workflow", "live-agent-http-resume", "swe-bench-style-agent", "AGENT_WORKBENCH_SWE_BENCH_STYLE", "localDateStamp", "hasFreshArtifact"], qualityPath);
 assertNotIncludes(quality, ["new Date().toISOString().slice(0, 10)"], qualityPath);
 assertIncludes(reportWriter, [
   "live-agent-http-resume",
@@ -77,6 +80,12 @@ assertIncludes(reportWriter, [
   "Live HTTP Resume",
   "rollback restored files",
   "Live HTTP resume verifier is"
+], reportWriterPath);
+assertIncludes(reportWriter, [
+  "swe-bench-style",
+  "SWE-bench-style agent evaluation report is missing",
+  "SWE-bench-style Agent Evaluation",
+  "SWE-bench-style repair failed"
 ], reportWriterPath);
 assertIncludes(e2eRunner, ["PLAYWRIGHT_EXTERNAL_SERVERS", "--project=desktop", "--project=mobile"], e2eRunnerPath);
 assertNotIncludes(e2eRunner, ["writeRunnerResults", "runner-passed", "scheduleCompletedProcessStop"], e2eRunnerPath);
@@ -91,6 +100,16 @@ assertIncludes(liveHttp, [
   "AGENT_WORKBENCH_DB_PATH",
   "AGENT_WORKBENCH_DEFAULT_TASK_ROOT"
 ], liveHttpPath);
+assertIncludes(sweStyle, [
+  "SWE-bench-style",
+  "AGENT_WORKBENCH_SWE_BENCH_STYLE",
+  "runMode: \"target\"",
+  "hidden behavior",
+  "Do not hardcode behavior for the visible test strings",
+  "edit_file",
+  "write_file",
+  "promptCache"
+], sweStylePath);
 assertIncludes(ciWorkflow, [
   "FORCE_JAVASCRIPT_ACTIONS_TO_NODE24",
   "actions/checkout@v6",

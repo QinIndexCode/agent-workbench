@@ -45,6 +45,7 @@
     "clean:release-artifacts": "node scripts/clean-release-artifacts.mjs",
     "smoke:live-model": "npm.cmd run build && node scripts/live-model-smoke.mjs",
     "smoke:live-http-agent": "npm.cmd run build && node scripts/live-agent-http-resume-verifier.mjs",
+    "smoke:swe-style-agent": "npm.cmd run build && node scripts/swe-bench-style-agent-eval.mjs",
     "test:e2e": "npm.cmd run build && node scripts/run-e2e.mjs && node scripts/check-playwright-results.mjs",
     "test:a11y": "npm.cmd run build && node scripts/run-e2e.mjs tests/e2e/accessibility.spec.ts",
     "typecheck": "tsc -b packages/shared packages/core apps/server apps/web apps/cli --force",

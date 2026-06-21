@@ -15,12 +15,15 @@ const artifactDirs = [
   "workspace/default/data/checkpoints",
   "workspace/default/data/attachments",
   "data/test-reports/live-model-smoke/traces",
+  "data/test-reports/swe-bench-style/traces",
   "data/test-tmp"
 ];
 
 const reportFiles = [
   "data/test-reports/live-model-smoke/report.json",
   "data/test-reports/live-model-smoke/report.md",
+  "data/test-reports/swe-bench-style/report.json",
+  "data/test-reports/swe-bench-style/report.md",
   "data/test-reports/flagship-quality/quality-results.json"
 ];
 

@@ -44,8 +44,9 @@ Match proof to risk:
 5. Rendered UI checks: screenshots, responsive viewport checks, interaction checks, and console health for user-facing UI.
 6. Live model or real-usage smoke: only when the feature depends on the model or an actual user flow that fixtures cannot prove.
 7. Live HTTP resume verifier: `scripts/live-agent-http-resume-verifier.mjs` for flagship-only proof that a real provider, built server, SQLite persistence, public HTTP task APIs, approvals, restart recovery, guidance consumption, checkpoints, and rollback work together.
-8. Non-live suite: `npm.cmd run quality:full` for the repeatable local gate across lint, typecheck, unit, matrix, stress, build, docs, API, E2E, UI, artifact hygiene, and workflow guidance.
-9. Flagship gate: `npm.cmd run quality:flagship` for release-level claims that require fresh live smoke, live HTTP resume proof, source-fingerprint-matched UI evidence, and a dated flagship report. The dated report is generated evidence under `docs/reports/`, not a hand-maintained source document.
+8. SWE-bench-style agent evaluation: `scripts/swe-bench-style-agent-eval.mjs` for flagship-only proof that a real provider can repair isolated issue-style repositories from failing tests, use safe file tools, rerun tests, and satisfy hidden behavior checks without special-casing visible assertions.
+9. Non-live suite: `npm.cmd run quality:full` for the repeatable local gate across lint, typecheck, unit, matrix, stress, build, docs, API, E2E, UI, artifact hygiene, and workflow guidance.
+10. Flagship gate: `npm.cmd run quality:flagship` for release-level claims that require fresh live smoke, live HTTP resume proof, SWE-bench-style repair proof, source-fingerprint-matched UI evidence, and a dated flagship report. The dated report is generated evidence under `docs/reports/`, not a hand-maintained source document.
 
 ## What Counts As Evidence
 
