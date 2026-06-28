@@ -1,4 +1,4 @@
-import { BookOpen, BrainCircuit, Cpu, Database, HelpCircle, Layers, MessageSquare, Settings, Shield, Sparkles, WandSparkles, Zap } from "lucide-react";
+import { BookOpen, BrainCircuit, Cpu, Database, HelpCircle, Layers, MessageSquare, Network, Settings, Shield, Sparkles, WandSparkles, Zap } from "lucide-react";
 import type { ComponentType } from "react";
 
 export type DocsSection =
@@ -14,6 +14,7 @@ export type DocsSection =
   | "providers"
   | "permissions"
   | "mcp"
+  | "protocols"
   | "integrations"
   | "scheduled"
   | "search"
@@ -135,6 +136,15 @@ export const docMetas: DocMeta[] = [
       zh: "连接外部工具服务器，并理解工具发现、审批链和风险覆盖的作用范围。"
     },
     icon: Layers
+  },
+  {
+    id: "protocols",
+    title: { en: "Agent Protocols", zh: "Agent 通用协议" },
+    summary: {
+      en: "Understand Loop Engineering, MCP, A2A, and where Agent Workbench is implemented versus only aligned.",
+      zh: "理解 Loop Engineering、MCP、A2A，以及 Agent Workbench 哪些已实现、哪些只是协议对齐。"
+    },
+    icon: Network
   },
   {
     id: "integrations",

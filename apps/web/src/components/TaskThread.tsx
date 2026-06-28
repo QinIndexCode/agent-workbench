@@ -427,7 +427,7 @@ function TaskPlanPanel({
   const taskEvents = useMemo(() => (Array.isArray(task.events) ? task.events : []), [task.events]);
   const steps = derivePlanSteps(task);
   const rollbackPoints = useMemo(() => deriveRollbackTimelinePoints(taskEvents, language), [language, taskEvents]);
-  const hasAudit = taskEvents.some((event) => event.type === "conversation_summary_created" || event.type === "context_overflow_recovered" || event.type === "provider_fallback");
+  const hasAudit = taskEvents.some((event) => event.type === "conversation_summary_created" || event.type === "context_overflow_recovered" || event.type === "provider_fallback" || event.type === "token_usage_recorded");
   const skillAudit = summarizeTaskSkills(task);
   const [activeCheckpointId, setActiveCheckpointId] = useState<string | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
@@ -639,6 +639,7 @@ function ContextAuditView({ language, summaries, task }: { language?: string | n
     try { return b.createdAt.localeCompare(a.createdAt); } catch { return 0; }
   })[0];
   const fallbackEvents = safeEvents.filter((event) => event?.type === "provider_fallback");
+  const tokenEvents = safeEvents.filter((event) => event?.type === "token_usage_recorded");
   return (
     <section className="contextAuditPanel" aria-label={zh ? "上下文审计" : "Context audit"}>
       {latestSummary ? (
@@ -662,8 +663,73 @@ function ContextAuditView({ language, summaries, task }: { language?: string | n
           ))}
         </details>
       ) : null}
+      {tokenEvents.length > 0 ? (
+        <details open>
+          <summary>{zh ? "Token 与缓存" : "Token usage and cache"}</summary>
+          <div className="compactList">
+            {tokenEvents.slice(-5).map((event) => (
+              <article className="providerRow" key={event.id}>
+                <div>
+                  <strong>{formatTokenUsageTitle(event, language)}</strong>
+                  <small>{formatTokenUsageDetail(event, language)}</small>
+                  <small>{formatTokenUsageTarget(event, language)}</small>
+                </div>
+              </article>
+            ))}
+          </div>
+        </details>
+      ) : null}
     </section>
   );
+}
+
+function formatTokenUsageTitle(event: TaskEvent, language?: string | null): string {
+  const zh = language === "zh-CN";
+  const total = numericPayload(event, "totalTokens");
+  const input = numericPayload(event, "inputTokens");
+  const output = numericPayload(event, "outputTokens");
+  if (total !== undefined) return zh ? `总消耗 ${formatInteger(total)} tokens` : `${formatInteger(total)} total tokens`;
+  if (input !== undefined || output !== undefined) {
+    return zh
+      ? `输入 ${formatInteger(input ?? 0)} / 输出 ${formatInteger(output ?? 0)} tokens`
+      : `${formatInteger(input ?? 0)} input / ${formatInteger(output ?? 0)} output tokens`;
+  }
+  return event.summary || (zh ? "Token 用量记录" : "Token usage recorded");
+}
+
+function formatTokenUsageDetail(event: TaskEvent, language?: string | null): string {
+  const zh = language === "zh-CN";
+  const cached = numericPayload(event, "cachedTokens") ?? 0;
+  const hit = numericPayload(event, "cacheHitRatio");
+  const rolling = numericPayload(event, "rollingCacheHitRatio");
+  const parts = [
+    zh ? `命中缓存 ${formatInteger(cached)} tokens` : `cached ${formatInteger(cached)} tokens`,
+    hit === undefined ? null : (zh ? `本次 ${formatPercent(hit)}` : `turn ${formatPercent(hit)}`),
+    rolling === undefined ? null : (zh ? `滚动 ${formatPercent(rolling)}` : `rolling ${formatPercent(rolling)}`)
+  ].filter((item): item is string => Boolean(item));
+  return parts.join(" · ");
+}
+
+function formatTokenUsageTarget(event: TaskEvent, language?: string | null): string {
+  const zh = language === "zh-CN";
+  const target = numericPayload(event, "cacheTargetHitRatio") ?? 0.9;
+  const met = event.payload["cacheTargetMet"];
+  if (met === true) return zh ? `已达到 ${formatPercent(target)} 缓存命中目标` : `${formatPercent(target)} cache target met`;
+  if (met === false) return zh ? `低于 ${formatPercent(target)} 缓存命中目标` : `below ${formatPercent(target)} cache target`;
+  return zh ? `正在预热 ${formatPercent(target)} 缓存命中目标` : `warming ${formatPercent(target)} cache target`;
+}
+
+function numericPayload(event: TaskEvent, key: string): number | undefined {
+  const value = event.payload[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function formatInteger(value: number): string {
+  return Math.round(value).toLocaleString("en-US");
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
 }
 
 function deriveRollbackTimelinePoints(events: TaskEvent[], language?: string | null): RollbackTimelinePoint[] {

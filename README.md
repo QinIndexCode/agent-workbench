@@ -27,6 +27,10 @@ inside those boundaries.
 - Knowledge search, task memory, skills, reflection, and curation workflows.
 - Web UI for desktop and mobile-sized screens.
 - `aw` / `agent-workbench` CLI using the same public server APIs as the Web UI.
+- Loop Engineering guidance for evidence-driven observe, act, verify, reflect,
+  persist, and cache-aware execution.
+- MCP tool integration today, with A2A/Agent2Agent tracked as an explicit future
+  interoperability boundary rather than a claimed shipped adapter.
 
 ## Requirements
 
@@ -159,6 +163,7 @@ boundary. Historical research and vision documents are not delivery promises.
 - [Documentation map](docs/README.md)
 - [CLI reference](docs/cli.md)
 - [Agent workflow and verification](docs/agent-workflow.md)
+- [Architecture and protocol boundaries](docs/architecture.md)
 
 Generated flagship reports are validation artifacts, not hand-written product
 documentation. See [docs/reports/README.md](docs/reports/README.md) for the

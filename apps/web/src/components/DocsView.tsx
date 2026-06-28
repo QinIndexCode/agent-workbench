@@ -20,7 +20,7 @@ const LEGACY_DOCS_LANG_KEY = "scc-docs-language";
 const docGroups: Array<{ id: string; label: Record<"en" | "zh", string>; docs: DocsSection[] }> = [
   { id: "start", label: { en: "Start here", zh: "入门" }, docs: ["overview", "input", "task-management"] },
   { id: "library", label: { en: "Library and learning", zh: "资料与学习" }, docs: ["library", "skills", "curator", "knowledge", "memory"] },
-  { id: "settings", label: { en: "Settings and operations", zh: "设置与运维" }, docs: ["settings", "providers", "permissions", "mcp", "integrations", "scheduled", "search", "preferences", "troubleshooting"] }
+  { id: "settings", label: { en: "Settings and operations", zh: "设置与运维" }, docs: ["settings", "providers", "permissions", "mcp", "protocols", "integrations", "scheduled", "search", "preferences", "troubleshooting"] }
 ];
 
 function getDocsLanguage(globalLanguage: string | null | undefined): string {

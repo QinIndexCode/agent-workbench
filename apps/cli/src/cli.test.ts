@@ -145,6 +145,60 @@ describe("CLI command contracts", () => {
     expect(io.stdoutText()).toContain("provider_configuration");
   });
 
+  it("reads prompt-cache telemetry through the server API", async () => {
+    const seen: string[] = [];
+    const io = captureIo();
+    const code = await runCli(["--api", "http://local.test", "provider", "cache", "--task", "task_1"], {
+      io,
+      fetchImpl: async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/session/bootstrap")) return jsonResponse({ sessionToken: "session_cli_test" });
+        seen.push(url);
+        return jsonResponse([{
+          id: "cache_1",
+          taskId: "task_1",
+          model: "mimo-v2.5-pro",
+          policy: "auto_savings",
+          source: "provider",
+          inputTokens: 1000,
+          outputTokens: 80,
+          totalTokens: 1080,
+          cachedTokens: 900,
+          cacheHitRatio: 0.9,
+          cacheTargetHitRatio: 0.9,
+          cacheTargetMet: true,
+          rollingInputTokens: 2000,
+          rollingCachedTokens: 1800,
+          rollingCacheHitRatio: 0.9,
+          rollingWindowSize: 2,
+          estimatedSavings: 0,
+          createdAt: "2026-06-28T12:00:00.000Z"
+        }]);
+      }
+    });
+
+    expect(code).toBe(0);
+    expect(seen).toEqual(["http://local.test/api/prompt-cache-stats?taskId=task_1"]);
+    expect(io.stdoutText()).toContain("mimo-v2.5-pro");
+    expect(io.stdoutText()).toContain("90%");
+    expect(io.stdoutText()).toContain("met");
+  });
+
+  it("preserves raw prompt-cache telemetry under --json", async () => {
+    const io = captureIo();
+    const code = await runCli(["--api", "http://local.test", "--json", "provider", "cache"], {
+      io,
+      fetchImpl: async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/session/bootstrap")) return jsonResponse({ sessionToken: "session_cli_test" });
+        return jsonResponse([{ id: "cache_1", model: "mimo-v2.5-pro", source: "provider", inputTokens: 1000, cachedTokens: 900, cacheHitRatio: 0.9 }]);
+      }
+    });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(io.stdoutText())[0]).toMatchObject({ id: "cache_1", cacheHitRatio: 0.9 });
+  });
+
   it("sends approval reasons through the task approval API", async () => {
     let seenBody: Record<string, unknown> | undefined;
     const io = captureIo();

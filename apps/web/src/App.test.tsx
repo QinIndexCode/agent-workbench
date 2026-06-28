@@ -702,7 +702,16 @@ describe("Workbench components", () => {
           type: "token_usage_recorded",
           createdAt: now,
           summary: "Provider token usage recorded.",
-          payload: { inputTokens: 999999, outputTokens: 999999, totalTokens: 1999998 }
+          payload: {
+            inputTokens: 999999,
+            outputTokens: 999999,
+            totalTokens: 1999998,
+            cachedTokens: 900000,
+            cacheHitRatio: 0.9,
+            rollingCacheHitRatio: 0.91,
+            cacheTargetHitRatio: 0.9,
+            cacheTargetMet: true
+          }
         }
       ],
       approvals: [],
@@ -753,6 +762,12 @@ describe("Workbench components", () => {
       expect(screen.queryByRole("button", { name: /Files/i })).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /Revert turn/i })).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /Rollback selected files/i })).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Context audit" }));
+      expect(screen.getByText("Token usage and cache")).toBeInTheDocument();
+      expect(screen.getByText("1,999,998 total tokens")).toBeInTheDocument();
+      expect(screen.getByText("cached 900,000 tokens · turn 90% · rolling 91%")).toBeInTheDocument();
+      expect(screen.getByText("90% cache target met")).toBeInTheDocument();
 
       const sidebarPoint = container.querySelector(".rollbackCheckpointMain");
       expect(sidebarPoint).not.toBeNull();

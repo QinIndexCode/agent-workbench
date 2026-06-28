@@ -2,6 +2,8 @@
 
 The MCP page connects external tool servers into Agent Workbench and keeps those tools inside the same approval, evidence, and timeline system as built-in tools.
 
+MCP is the **agent-to-tool** boundary, not the full agent-to-agent interoperability protocol. For A2A, AGENTS.md, and future adapter boundaries, read the **Agent Protocols** docs page.
+
 ## Supported transport types
 
 ### stdio

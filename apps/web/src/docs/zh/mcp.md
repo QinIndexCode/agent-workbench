@@ -2,6 +2,8 @@
 
 MCP 页用于把外部工具服务器接入 Agent Workbench，并让这些工具和内置工具一样进入审批、证据和时间线体系。
 
+MCP 是 **Agent 到工具** 的协议边界，不是 Agent 到 Agent 的完整互操作协议。需要理解 A2A、AGENTS.md 和未来 adapter 边界时，请阅读 **Agent 通用协议** 文档页。
+
 ## 支持的接入方式
 
 ### stdio

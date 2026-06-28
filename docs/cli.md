@@ -105,6 +105,8 @@ npm.cmd run cli -- profile get
 npm.cmd run cli -- permission list
 npm.cmd run cli -- provider list
 npm.cmd run cli -- provider test provider_123
+npm.cmd run cli -- provider cache
+npm.cmd run cli -- provider cache --task task_123
 npm.cmd run cli -- mcp server list
 npm.cmd run cli -- mcp tools
 npm.cmd run cli -- knowledge search "rollback policy"
@@ -130,6 +132,12 @@ against the saved provider secret and returns only a redacted status, HTTP code,
 failure class, model, and base URL. It is the quickest way to distinguish an
 Agent/runtime regression from an invalid key, expired token, rate limit, or
 provider outage.
+
+`provider cache [--task <taskId>]` reads server-side prompt-cache telemetry from
+`/api/prompt-cache-stats`. The default table keeps the cache health visible in
+CLI workflows; `--json` preserves the raw records for dashboards or cost
+analysis. After the first warmup request, the operational target remains a
+rolling `cachedTokens / inputTokens` ratio of 90% or better.
 
 ## Uploads
 

@@ -77,3 +77,5 @@ Workbench 还会为初始直答类 final 回复保留短期内存响应缓存；
 图片输入或已有历史的任务不会使用这层缓存。达到生产成本目标时，滚动
 `cachedTokens / inputTokens` 应不低于 90%；如果低于目标，优先检查是否频繁切换模型、
 Base URL、工具集合或禁用了 provider 侧缓存。
+
+在 Web 端，任务侧栏的“上下文审计”会显示最近的 Token 与缓存命中记录，主时间线默认不展示这些运营噪音。CLI 可用 `aw provider cache` 或 `aw provider cache --task <taskId>` 查看同一批服务端记录。

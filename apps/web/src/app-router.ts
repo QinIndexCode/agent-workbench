@@ -27,6 +27,7 @@ const docsSections = new Set<DocsSection>([
   "providers",
   "permissions",
   "mcp",
+  "protocols",
   "integrations",
   "scheduled",
   "search",

@@ -1,4 +1,4 @@
-import type { TaskDetail, TaskEvent, TaskTranscriptItem } from "@agent-workbench/shared";
+import type { PromptCacheStats, TaskDetail, TaskEvent, TaskTranscriptItem } from "@agent-workbench/shared";
 
 export function renderValue(value: unknown, json: boolean): string {
   if (json) return `${JSON.stringify(value, null, 2)}\n`;
@@ -40,6 +40,7 @@ export function renderWatchEvent(event: TaskEvent): string {
   const text = typeof event.payload["text"] === "string" ? event.payload["text"] : "";
   const approvalId = typeof event.payload["approvalId"] === "string" ? event.payload["approvalId"] : "";
   if (event.type === "approval_pending" && approvalId) return `approval pending: ${approvalId}`;
+  if (event.type === "token_usage_recorded") return renderTokenUsageEvent(event);
   if (text) return `${event.type}: ${text}`;
   return event.type;
 }
@@ -47,6 +48,7 @@ export function renderWatchEvent(event: TaskEvent): string {
 function renderArray(values: unknown[]): string {
   if (values.length === 0) return "No records.\n";
   if (!values.every(isRecord)) return `${values.map((item) => String(item)).join("\n")}\n`;
+  if (values.every(isPromptCacheStats)) return renderPromptCacheStats(values);
   const columns = ["id", "title", "name", "label", "kind", "riskCategory", "status", "enabled", "updatedAt"].filter((column) =>
     values.some((item) => isScalar(item[column]))
   );
@@ -55,6 +57,40 @@ function renderArray(values: unknown[]): string {
   const header = columns.map((column, index) => column.padEnd(widths[index] ?? column.length)).join("  ");
   const rows = values.map((item) => columns.map((column, index) => printable(item[column]).padEnd(widths[index] ?? column.length)).join("  "));
   return `${[header, ...rows].join("\n")}\n`;
+}
+
+function renderPromptCacheStats(values: PromptCacheStats[]): string {
+  const columns = ["createdAt", "model", "source", "input", "cached", "hit", "rolling", "target"];
+  const rows = values.map((item) => ({
+    createdAt: shortDateTime(item.createdAt),
+    model: item.model,
+    source: item.source,
+    input: String(item.inputTokens),
+    cached: String(item.cachedTokens),
+    hit: formatPercent(item.cacheHitRatio),
+    rolling: item.rollingCacheHitRatio === undefined ? "" : formatPercent(item.rollingCacheHitRatio),
+    target: item.cacheTargetMet === undefined ? "warmup" : item.cacheTargetMet ? "met" : "below"
+  }));
+  const widths = columns.map((column) => Math.max(column.length, ...rows.map((item) => item[column as keyof typeof item].length)));
+  const header = columns.map((column, index) => column.padEnd(widths[index] ?? column.length)).join("  ");
+  const renderedRows = rows.map((item) => columns.map((column, index) => item[column as keyof typeof item].padEnd(widths[index] ?? column.length)).join("  "));
+  return `${[header, ...renderedRows].join("\n")}\n`;
+}
+
+function renderTokenUsageEvent(event: TaskEvent): string {
+  const input = numericPayload(event, "inputTokens");
+  const cached = numericPayload(event, "cachedTokens");
+  const hit = numericPayload(event, "cacheHitRatio");
+  const rolling = numericPayload(event, "rollingCacheHitRatio");
+  const target = typeof event.payload["cacheTargetMet"] === "boolean" ? (event.payload["cacheTargetMet"] ? "met" : "below") : "warmup";
+  const parts = [
+    input === undefined ? undefined : `input=${input}`,
+    cached === undefined ? undefined : `cached=${cached}`,
+    hit === undefined ? undefined : `hit=${formatPercent(hit)}`,
+    rolling === undefined ? undefined : `rolling=${formatPercent(rolling)}`,
+    `target=${target}`
+  ].filter(Boolean);
+  return parts.length > 0 ? `token usage: ${parts.join(" ")}` : `token usage: ${event.summary}`;
 }
 
 function renderRecord(value: Record<string, unknown>): string {
@@ -86,6 +122,31 @@ function printable(value: unknown): string {
   if (typeof value === "boolean") return value ? "yes" : "no";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function shortDateTime(value: string): string {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toISOString().replace("T", " ").slice(0, 16);
+}
+
+function numericPayload(event: TaskEvent, key: string): number | undefined {
+  const value = event.payload[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return value;
+}
+
+function isPromptCacheStats(value: Record<string, unknown>): value is PromptCacheStats {
+  return typeof value["model"] === "string" &&
+    typeof value["source"] === "string" &&
+    typeof value["inputTokens"] === "number" &&
+    typeof value["cachedTokens"] === "number" &&
+    typeof value["cacheHitRatio"] === "number";
 }
 
 function isScalar(value: unknown): boolean {

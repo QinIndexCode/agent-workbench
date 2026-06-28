@@ -42,7 +42,7 @@ const COMMAND_ACTIONS: Record<string, string[]> = {
   prefs: ["get", "set"],
   profile: ["get", "set"],
   permission: ["list", "grant", "revoke"],
-  provider: ["list", "add", "update", "delete", "activate"],
+  provider: ["list", "add", "update", "delete", "activate", "test", "cache"],
   mcp: ["server", "tools"],
   knowledge: ["list", "add", "upload", "search", "reindex", "update", "delete", "models", "download-model"],
   skill: ["list", "show", "create", "update", "delete", "export", "merge", "duplicates", "cleanup-duplicates", "conflicts", "curator"],
@@ -243,6 +243,7 @@ async function provider(args: ParsedArgs, client: ApiClient): Promise<unknown> {
   if (action === "delete") return client.request(`/api/model-providers/${encodeURIComponent(requirePosition(args, 2, "provider id"))}`, { method: "DELETE" });
   if (action === "activate") return client.request(`/api/model-providers/${encodeURIComponent(requirePosition(args, 2, "provider id"))}`, jsonRequest("PATCH", { enabled: true, makeActive: true }));
   if (action === "test") return client.request(`/api/model-providers/${encodeURIComponent(requirePosition(args, 2, "provider id"))}/test`, { method: "POST" });
+  if (action === "cache") return client.request(`/api/prompt-cache-stats${query({ taskId: optionString(args, "task") })}`);
   throw new CliUsageError(`Unknown provider action: ${action}`);
 }
 
@@ -614,7 +615,11 @@ Model providers:
   aw provider update <providerId> [--label <label>] [--api-key <key>] [--clear-api-key]
   aw provider activate <providerId>
   aw provider test <providerId>
+  aw provider cache [--task <taskId>]
   aw provider delete <providerId>
+
+Cache:
+  Reads the server-side prompt-cache telemetry. The rolling target is 90% cachedTokens / inputTokens after warmup.
 `;
   }
   if (group === "mcp") {

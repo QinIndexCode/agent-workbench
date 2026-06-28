@@ -73,3 +73,8 @@ evidence, image inputs, or tasks with existing history. For production cost
 control, the rolling `cachedTokens / inputTokens` target is at least 90%. If the
 ratio stays below target, first check for frequent model, Base URL, tool-set, or
 provider-cache-mode changes.
+
+In the Web UI, the task side panel's context audit shows recent token and cache
+records while keeping the main timeline quiet. In the CLI, use
+`aw provider cache` or `aw provider cache --task <taskId>` to inspect the same
+server-side telemetry.

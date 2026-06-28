@@ -18,9 +18,11 @@ Agent Workbench 当前实现的是本地 Agent Workbench，而不是脚本门禁
 
 - 不用 scenario pack、quality gate、固定 JSON、固定报告模板判断普通任务是否完成。
 - 不把工程测试或脚本输出当作任务完成判官。
-- 不声称当前已完成 Python SDK、OpenTelemetry 全量兼容或多消息平台网关。MCP 当前覆盖已配置的 stdio 与 streamable HTTP 工具发现/调用，不等同于完整远程 auth 或资源模板平台。
+- 不声称当前已完成 Python SDK、OpenTelemetry 全量兼容、多消息平台网关或 A2A agent-to-agent adapter。MCP 当前覆盖已配置的 stdio 与 streamable HTTP 工具发现/调用，不等同于完整远程 auth、资源模板平台或 Agent2Agent 互操作端点。
 
-## Runtime Loop
+## Runtime Loop And Loop Engineering
+
+Loop Engineering is the runtime discipline behind Agent Workbench: observe current state, plan the smallest responsible path, act through approved tools, verify with evidence, reflect into learning records, then persist or stop with a clear result. It is intentionally not a rigid script and must not turn ordinary tasks into fixed-output benchmark prompts.
 
 ```mermaid
 flowchart LR
@@ -42,7 +44,15 @@ flowchart LR
   X --> E["tool_result evidence"]
   E --> F["FileStateTracker update"]
   F --> C
+  R --> L["Task Memory / Experience"]
 ```
+
+Cache-aware loop constraints:
+
+- Stable system instructions, skill metadata, project memory, and tool-name families should remain early in the prompt to improve provider-side prompt-cache reuse.
+- Task-specific evidence, recent messages, file excerpts, screenshots, and tool results should stay later in context so they can change without fragmenting the stable prefix more than necessary.
+- Prompt-cache optimization must not remove full tool schemas, hide current evidence, skip verification, or downgrade model capability. The target is a rolling cached-token hit ratio of at least 90% for cache-capable providers after warmup while preserving task quality.
+- Token/cache usage is recorded as task telemetry and prompt-cache stats; it is not injected back into model context as task evidence.
 
 ## Main Components
 
@@ -114,6 +124,24 @@ Known limitations:
 Current implementation discovers configured MCP servers over stdio or streamable HTTP, converts `tools/list` schemas into model tool definitions, routes `tools/call` through risk approval, and records results as normal `tool_result` evidence.
 
 Still partial: resource templates, remote auth negotiation, marketplace-style discovery, and broader server lifecycle management are not product-complete.
+
+## Agent Protocol Boundary
+
+MCP and A2A solve different interoperability problems:
+
+| Protocol | Boundary | Current Agent Workbench status |
+| --- | --- | --- |
+| MCP | Agent-to-tool and agent-to-context connection | Implemented for configured stdio and streamable HTTP tool discovery/calls, with existing approval and evidence handling |
+| A2A / Agent2Agent | Agent-to-agent discovery, delegation, status, message, and artifact exchange | Ecosystem-aligned only; no shipped A2A server or full A2A client is claimed |
+| AGENTS.md | Repository-local operating instructions for coding agents | Accepted as project guidance, not treated as a network protocol |
+
+Current external facts checked for this boundary:
+
+- Google announced A2A on 2025-04-09 as an open protocol for agent interoperability.
+- Google later transferred A2A specification, SDKs, and tooling to the Linux Foundation Agent2Agent project, with participants including AWS, Cisco, Google, Microsoft, Salesforce, SAP, and ServiceNow.
+- Microsoft publicly announced A2A support plans for Azure AI Foundry and Copilot Studio and documents A2A endpoint connection flows in Foundry Agent Service.
+
+A future A2A adapter would need Agent Card discovery, authenticated task lifecycle mapping, message/artifact mapping, approval mapping, audit logs, and timeline evidence. Until those exist in code and tests, docs should say "aligned with A2A" rather than "supports A2A".
 
 ## Validation
 
