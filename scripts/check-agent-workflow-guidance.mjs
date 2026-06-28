@@ -8,7 +8,7 @@ const workbenchPath = resolve(root, "packages", "core", "src", "workbench.ts");
 const docsPath = resolve(root, "docs", "agent-workflow.md");
 const matrixPath = resolve(root, "tests", "real-task-matrix", "matrix.test.ts");
 const qualityPath = resolve(root, "scripts", "run-quality-suite.mjs");
-const reportWriterPath = resolve(root, "scripts", "write-flagship-report.mjs");
+const reportWriterPath = resolve(root, "scripts", "write-release-report.mjs");
 const e2eRunnerPath = resolve(root, "scripts", "run-e2e.mjs");
 const liveHttpPath = resolve(root, "scripts", "live-agent-http-resume-verifier.mjs");
 const sweStylePath = resolve(root, "scripts", "swe-bench-style-agent-eval.mjs");
@@ -59,7 +59,7 @@ assertIncludes(docs, [
   "Do not force tools, plans, tests",
   "Never hardcode behavior",
   "quality:full",
-  "quality:flagship",
+  "quality:release",
   "Anti-Overconstraint Guardrails"
 ], docsPath);
 
@@ -72,7 +72,7 @@ assertIncludes(matrix, [
   "auto approval with llm review"
 ], matrixPath);
 
-assertIncludes(quality, ["--flagship", "agent-workflow", "live-agent-http-resume", "swe-bench-style-agent", "AGENT_WORKBENCH_SWE_BENCH_STYLE", "localDateStamp", "hasFreshArtifact"], qualityPath);
+assertIncludes(quality, ["--release", "agent-workflow", "live-agent-http-resume", "swe-bench-style-agent", "AGENT_WORKBENCH_SWE_BENCH_STYLE", "AGENT_WORKBENCH_RELEASE_REPORT_REQUIRED", "localDateStamp", "hasFreshArtifact"], qualityPath);
 assertNotIncludes(quality, ["new Date().toISOString().slice(0, 10)"], qualityPath);
 assertIncludes(reportWriter, [
   "live-agent-http-resume",

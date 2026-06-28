@@ -36,7 +36,7 @@ afterAll(async () => {
       "",
       `Generated: ${nowIso()}`,
       "",
-      "## Flagship Agent Scorecard",
+      "## Release Agent Scorecard",
       "",
       ...Object.entries(scorecard).map(([key, value]) => `- ${value ? "PASS" : "FAIL"} ${key}`),
       "",

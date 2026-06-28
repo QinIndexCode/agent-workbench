@@ -164,14 +164,14 @@ server and exercise the real HTTP API rather than bypassing server routes.
 Large live-model validation runs can generate model traces, tool-output
 materializations, checkpoints, and attachment files under `data/` and
 `workspace/default/data/`. Clean those raw artifacts and remove stale
-machine-readable live/flagship summary reports with:
+machine-readable live/release summary reports with:
 
 ```bash
 npm.cmd run clean:model-artifacts
 ```
 
 Generated markdown reports under `docs/reports/` are ignored release artifacts;
-rerun `quality:full` or `quality:flagship` to refresh a current dated report.
+rerun `quality:full` or `quality:release` to refresh a current dated report.
 Pass `-- --keep-reports` only when the machine-readable summary reports must be
 preserved for manual inspection:
 

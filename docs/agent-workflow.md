@@ -43,10 +43,10 @@ Match proof to risk:
 4. Contract tests: public HTTP API, CLI calls, store behavior, permissions, persistence, and cross-package integration.
 5. Rendered UI checks: screenshots, responsive viewport checks, interaction checks, and console health for user-facing UI.
 6. Live model or real-usage smoke: only when the feature depends on the model or an actual user flow that fixtures cannot prove.
-7. Live HTTP resume verifier: `scripts/live-agent-http-resume-verifier.mjs` for flagship-only proof that a real provider, built server, SQLite persistence, public HTTP task APIs, approvals, restart recovery, guidance consumption, checkpoints, and rollback work together.
-8. SWE-bench-style agent evaluation: `scripts/swe-bench-style-agent-eval.mjs` for flagship-only proof that a real provider can repair isolated issue-style repositories from failing tests, use safe file tools, rerun tests, and satisfy hidden behavior checks without special-casing visible assertions.
+7. Live HTTP resume verifier: `scripts/live-agent-http-resume-verifier.mjs` for release-only proof that a real provider, built server, SQLite persistence, public HTTP task APIs, approvals, restart recovery, guidance consumption, checkpoints, and rollback work together.
+8. SWE-bench-style agent evaluation: `scripts/swe-bench-style-agent-eval.mjs` for release-only proof that a real provider can repair isolated issue-style repositories from failing tests, use safe file tools, rerun tests, and satisfy hidden behavior checks without special-casing visible assertions.
 9. Non-live suite: `npm.cmd run quality:full` for the repeatable local gate across lint, typecheck, unit, matrix, stress, build, docs, API, E2E, UI, artifact hygiene, and workflow guidance.
-10. Flagship gate: `npm.cmd run quality:flagship` for release-level claims that require fresh live smoke, live HTTP resume proof, SWE-bench-style repair proof, source-fingerprint-matched UI evidence, and a dated flagship report. The dated report is generated evidence under `docs/reports/`, not a hand-maintained source document.
+10. Release gate: `npm.cmd run quality:release` for release-level claims that require fresh live smoke, live HTTP resume proof, SWE-bench-style repair proof, source-fingerprint-matched UI evidence, and a dated release report. The dated report is generated evidence under `docs/reports/`, not a hand-maintained source document.
 
 ## What Counts As Evidence
 
@@ -59,7 +59,7 @@ Good evidence examples:
 - A screenshot or browser check showing the actual rendered UI state at the relevant viewport.
 - A live HTTP verifier run that creates a natural task through the public API, approves tools through the API, restarts the server against the same SQLite database, appends guidance, and verifies checkpoints plus rollback.
 - A quality report whose source fingerprint matches the current worktree.
-- A generated flagship report whose JSON inputs all match the same current source fingerprint.
+- A generated release report whose JSON inputs all match the same current source fingerprint.
 
 Weak evidence examples:
 
@@ -77,6 +77,6 @@ The model should not be punished for choosing a lighter path when it is appropri
 - The system prompt starts forcing tools, plans, tests, screenshots, or live flows for every request.
 - The verification guidance stops distinguishing low-risk answers from high-risk product changes.
 - The quality suite stops covering real product surfaces that are already available.
-- The non-live gate starts requiring live provider credentials for routine development instead of reserving that requirement for explicit flagship validation.
+- The non-live gate starts requiring live provider credentials for routine development instead of reserving that requirement for explicit release validation.
 
 If ideal verification is unavailable or disproportionate, use the strongest practical proof and state the remaining risk plainly.

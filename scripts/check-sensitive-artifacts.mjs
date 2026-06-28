@@ -18,11 +18,11 @@ const artifactRoots = [
   resolve(root, "data", "checkpoints"),
   resolve(root, "data", "logs"),
   resolve(root, "apps", "server", "data"),
-  resolve(root, "data", "test-reports", "flagship-quality"),
+  resolve(root, "data", "test-reports", "release-quality"),
   resolve(root, "data", "test-reports", "live-model-smoke"),
   resolve(root, "data", "test-reports", "live-agent-http-resume"),
   resolve(root, "data", "test-reports", "swe-bench-style"),
-  resolve(root, "docs", "reports", `${localDateStamp()}-flagship-revalidation.md`)
+  resolve(root, "docs", "reports", `${localDateStamp()}-release-revalidation.md`)
 ];
 
 const tmpRoots = [

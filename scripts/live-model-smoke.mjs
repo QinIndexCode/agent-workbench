@@ -1653,8 +1653,8 @@ function assertTraceBudgets(evidencePayload) {
     assertWithEvidence(Number(evidencePayload.traceLines ?? 0) > 0, "trace output was not captured for a model-backed live smoke case", evidencePayload);
     assertWithEvidence(typeof evidencePayload.traceArtifactPath === "string" && evidencePayload.traceArtifactPath.length > 0, "trace artifact was not copied for a model-backed live smoke case", evidencePayload);
   }
-  assertWithEvidence(traceMaxEntryBytes <= 20_000, "trace entries grew beyond the flagship per-entry budget", evidencePayload);
-  assertWithEvidence(traceBytes <= 450_000, "trace output grew beyond the flagship task budget", evidencePayload);
+  assertWithEvidence(traceMaxEntryBytes <= 20_000, "trace entries grew beyond the release per-entry budget", evidencePayload);
+  assertWithEvidence(traceBytes <= 450_000, "trace output grew beyond the release task budget", evidencePayload);
 }
 
 function assertNoProviderTransientTaskMessage(task, phase) {

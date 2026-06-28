@@ -66,13 +66,13 @@ export class ShellToolExecutor implements ToolExecutor {
   private readonly defaultTimeoutMs: number;
 
   constructor(workspaceRoot = defaultTaskWorkRoot(), defaultTimeoutMs = DEFAULT_COMMAND_TIMEOUT_MS) {
-    this.workspaceRoot = workspaceRoot;
+    this.workspaceRoot = resolve(workspaceRoot);
     this.defaultTimeoutMs = defaultTimeoutMs;
   }
 
   async execute(call: ToolCall, options: ToolExecutionOptions = {}): Promise<ToolResult> {
     const scopedRoot = this.rootFor(options);
-    if (scopedRoot !== this.workspaceRoot) {
+    if (!sameResolvedPath(scopedRoot, this.workspaceRoot)) {
       const scopedExecutor = new ShellToolExecutor(scopedRoot, this.defaultTimeoutMs);
       const { workRoot: _workRoot, ...scopedOptions } = options;
       return scopedExecutor.execute(call, scopedOptions);
@@ -688,6 +688,12 @@ function workspaceRelativePath(root: string, path: string): string {
   if (!relativePath) return ".";
   if (relativePath === ".." || relativePath.startsWith("../") || isAbsolute(relativePath)) return resolvedPath;
   return relativePath;
+}
+
+function sameResolvedPath(left: string, right: string): boolean {
+  const resolvedLeft = resolve(left);
+  const resolvedRight = resolve(right);
+  return process.platform === "win32" ? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase() : resolvedLeft === resolvedRight;
 }
 
 function hash(content: string): string {

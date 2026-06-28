@@ -1,11 +1,11 @@
 import { expect, test } from "@playwright/test";
-import { bootstrapSession, horizontalOverflow, persistFlagshipMetric, screenshotPath, submitInput } from "./helpers.js";
+import { bootstrapSession, horizontalOverflow, persistReleaseUiMetric, screenshotPath, submitInput } from "./helpers.js";
 
 test.beforeEach(async ({ request }) => {
   await bootstrapSession(request);
 });
 
-test("captures flagship UI screenshots and layout metrics", async ({ page }, testInfo) => {
+test("captures release UI screenshots and layout metrics", async ({ page }, testInfo) => {
   test.setTimeout(60_000);
   const captures: Array<{ view: string; ready: () => Promise<void> }> = [
     {
@@ -59,7 +59,7 @@ test("captures flagship UI screenshots and layout metrics", async ({ page }, tes
     const overflow = await horizontalOverflow(page);
     expect(overflow).toBeLessThanOrEqual(1);
     await page.screenshot({ path: screenshot, fullPage: false });
-    await persistFlagshipMetric({
+    await persistReleaseUiMetric({
       project: testInfo.project.name,
       view: capture.view,
       horizontalOverflow: overflow,

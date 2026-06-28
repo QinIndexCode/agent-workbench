@@ -22,7 +22,7 @@ try {
     ? playwrightArgs
     : [
         "tests/e2e/workbench.spec.ts",
-        "tests/e2e/flagship-ui.spec.ts",
+        "tests/e2e/release-ui.spec.ts",
         "tests/e2e/responsiveness.spec.ts",
         "tests/e2e/side-capabilities.spec.ts"
       ];

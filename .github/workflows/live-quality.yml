@@ -53,12 +53,12 @@ jobs:
         if: steps.live_smoke.outputs.configured == 'true'
         run: npm.cmd ci
 
-      - name: Run flagship quality suite with live model evidence
+      - name: Run release quality suite with live model evidence
         if: steps.live_smoke.outputs.configured == 'true'
         env:
           AGENT_WORKBENCH_LIVE_MODEL_SMOKE: "1"
           AGENT_WORKBENCH_LIVE_MODEL_REQUIRED: "1"
-          AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED: "1"
+          AGENT_WORKBENCH_RELEASE_REPORT_REQUIRED: "1"
         run: npm.cmd run quality:full
 
       - name: Upload live quality artifacts
@@ -69,5 +69,5 @@ jobs:
           path: |
             data/test-reports/**
             data/test-reports/live-model-smoke/**
-            docs/reports/*flagship-revalidation.md
+            docs/reports/*.md
           if-no-files-found: warn

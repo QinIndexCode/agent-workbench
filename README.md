@@ -133,7 +133,7 @@ npm run quality:full
 documentation checks, API route coverage, Web E2E, accessibility, artifact
 hygiene, release-source hygiene, and workflow guidance.
 
-To remove generated UI/test output and dated flagship Markdown reports while
+To remove generated UI/test output and dated release Markdown reports while
 leaving source docs and real local data intact:
 
 ```bash
@@ -165,7 +165,7 @@ boundary. Historical research and vision documents are not delivery promises.
 - [Agent workflow and verification](docs/agent-workflow.md)
 - [Architecture and protocol boundaries](docs/architecture.md)
 
-Generated flagship reports are validation artifacts, not hand-written product
+Generated release reports are validation artifacts, not hand-written product
 documentation. See [docs/reports/README.md](docs/reports/README.md) for the
 report boundary.
 

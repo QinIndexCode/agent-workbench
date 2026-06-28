@@ -51,6 +51,7 @@
     "typecheck": "tsc -b packages/shared packages/core apps/server apps/web apps/cli --force",
     "check:no-old-control": "node scripts/check-no-old-control.mjs",
     "quality:full": "node scripts/run-quality-suite.mjs",
+    "quality:release": "node scripts/run-quality-suite.mjs --release",
     "quality:flagship": "node scripts/run-quality-suite.mjs --flagship",
     "ci:local": "npm run quality:full"
   },

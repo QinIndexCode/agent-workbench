@@ -4,13 +4,16 @@ import { spawn } from "node:child_process";
 import { sourceFingerprint } from "./source-fingerprint.mjs";
 
 const root = resolve(process.cwd());
-const outDir = resolve(root, "data", "test-reports", "flagship-quality");
+const outDir = resolve(root, "data", "test-reports", "release-quality");
 const resultsPath = resolve(outDir, "quality-results.json");
 const summaryPath = resolve(outDir, "summary.md");
 const args = new Set(process.argv.slice(2));
-const requireFlagshipReport = args.has("--flagship") || (process.env["AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED"] ?? process.env["SCC_FLAGSHIP_REPORT_REQUIRED"]) === "1";
-const requireLiveSmoke = (process.env["AGENT_WORKBENCH_LIVE_MODEL_REQUIRED"] ?? process.env["SCC_LIVE_MODEL_REQUIRED"]) === "1" || requireFlagshipReport;
-const flagshipLiveSmokeStressLevel = process.env["AGENT_WORKBENCH_STRESS_LEVEL"] ?? process.env["SCC_STRESS_LEVEL"] ?? "8";
+const requireReleaseReport =
+  args.has("--release") ||
+  args.has("--flagship") ||
+  (process.env["AGENT_WORKBENCH_RELEASE_REPORT_REQUIRED"] ?? process.env["AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED"] ?? process.env["SCC_FLAGSHIP_REPORT_REQUIRED"]) === "1";
+const requireLiveSmoke = (process.env["AGENT_WORKBENCH_LIVE_MODEL_REQUIRED"] ?? process.env["SCC_LIVE_MODEL_REQUIRED"]) === "1" || requireReleaseReport;
+const releaseLiveSmokeStressLevel = process.env["AGENT_WORKBENCH_STRESS_LEVEL"] ?? process.env["SCC_STRESS_LEVEL"] ?? "8";
 const defaultStepTimeoutMs = 120_000;
 
 const steps = [
@@ -71,7 +74,7 @@ if (!previousFailed && requireLiveSmoke) {
   const outcome = await runCommand(step.command, logPath, {
     AGENT_WORKBENCH_LIVE_MODEL_SMOKE: "1",
     AGENT_WORKBENCH_LIVE_MODEL_REQUIRED: "1",
-    AGENT_WORKBENCH_STRESS_LEVEL: flagshipLiveSmokeStressLevel
+    AGENT_WORKBENCH_STRESS_LEVEL: releaseLiveSmokeStressLevel
   }, 1_200_000);
   results.push({
     name: step.name,
@@ -140,13 +143,13 @@ writeFileSync(summaryPath, renderSummary(payload), "utf8");
 
 const liveSmokeFresh = hasFreshArtifact(resolve(root, "data", "test-reports", "live-model-smoke", "report.json"), currentSourceFingerprint);
 let reportStatus = "skipped";
-if (liveSmokeFresh || requireFlagshipReport) {
-  const outcome = await runCommand(["node", "scripts/write-flagship-report.mjs"], resolve(outDir, "report-write.log"), {
-    AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED: requireFlagshipReport ? "1" : process.env["AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED"] ?? process.env["SCC_FLAGSHIP_REPORT_REQUIRED"]
+if (liveSmokeFresh || requireReleaseReport) {
+  const outcome = await runCommand(["node", "scripts/write-release-report.mjs"], resolve(outDir, "report-write.log"), {
+    AGENT_WORKBENCH_RELEASE_REPORT_REQUIRED: requireReleaseReport ? "1" : process.env["AGENT_WORKBENCH_RELEASE_REPORT_REQUIRED"] ?? process.env["AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED"] ?? process.env["SCC_FLAGSHIP_REPORT_REQUIRED"]
   });
   reportStatus = outcome.exitCode === 0 ? "written" : "failed";
   if (outcome.exitCode !== 0) {
-    console.error("Flagship report generation failed. See data/test-reports/flagship-quality/report-write.log");
+    console.error("Release report generation failed. See data/test-reports/release-quality/report-write.log");
     process.exit(outcome.exitCode);
   }
 }
@@ -158,9 +161,9 @@ if (failed) {
 }
 
 if (reportStatus === "skipped") {
-  console.log("Non-live quality suite passed. Skipped flagship report because no fresh live smoke artifact is available.");
+  console.log("Non-live quality suite passed. Skipped release report because no fresh live smoke artifact is available.");
 } else {
-  console.log("Non-live quality suite passed and flagship report was refreshed.");
+  console.log("Non-live quality suite passed and release report was refreshed.");
 }
 console.log(`Results: ${resultsPath}`);
 

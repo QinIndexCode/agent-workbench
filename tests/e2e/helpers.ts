@@ -62,14 +62,14 @@ export async function horizontalOverflow(page: Page): Promise<number> {
   );
 }
 
-export async function persistFlagshipMetric(metric: {
+export async function persistReleaseUiMetric(metric: {
   project: string;
   view: string;
   horizontalOverflow: number;
   route: string;
   screenshotPath: string;
 }): Promise<void> {
-  const metricsPath = resolve(process.cwd(), "data", "test-reports", "flagship-ui", "metrics.json");
+  const metricsPath = resolve(process.cwd(), "data", "test-reports", "release-ui", "metrics.json");
   mkdirSync(dirname(metricsPath), { recursive: true });
   const existing = readJson(metricsPath) ?? { generatedAt: new Date().toISOString(), views: [] as typeof metric[] };
   const views = existing.views.filter((item: typeof metric) => !(item.project === metric.project && item.view === metric.view));
@@ -87,7 +87,7 @@ export async function currentSourceFingerprint(): Promise<SourceFingerprintSnaps
 }
 
 export function screenshotPath(project: string, view: string): string {
-  const dir = resolve(process.cwd(), "data", "test-reports", "flagship-ui", "screenshots");
+  const dir = resolve(process.cwd(), "data", "test-reports", "release-ui", "screenshots");
   mkdirSync(dir, { recursive: true });
   return resolve(dir, `${project}-${view}.png`);
 }

@@ -24,11 +24,11 @@
 | [design-memory-system.md](design-memory-system.md) | 组件实现标准 | 三层记忆模型、Skill生命周期、反思系统、冲突处理、MCP接入 | 实现记忆与学习系统的开发者 |
 | [DigDeeper.md](DigDeeper.md) | 历史愿景 | 早期设计哲学、研究假设和行业对标，不是交付清单 | 架构研究者 |
 | [experience.md](experience.md) | 行业参考 | 主流AI IDE设计经验总结、可复用工程化经验 | 全体开发者（可选阅读） |
-| [reports/README.md](reports/README.md) | 生成物说明 | 旗舰复验报告的生成位置、证据来源和发布边界 | 发布维护者 |
+| [reports/README.md](reports/README.md) | 生成物说明 | 发布复验报告的生成位置、证据来源和发布边界 | 发布维护者 |
 
 ## 生成物边界
 
-`docs/reports/*.md` 由 `scripts/write-flagship-report.mjs` 生成，属于验证
+`docs/reports/*.md` 由 `scripts/write-release-report.mjs` 生成，属于验证
 产物，不是手写源文档。迁移到新仓库或准备发布时，只保留
 `docs/reports/README.md`；需要证据快照时重新运行门禁生成当前日期报告。
 

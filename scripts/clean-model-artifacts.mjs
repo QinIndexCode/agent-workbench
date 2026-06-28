@@ -24,7 +24,7 @@ const reportFiles = [
   "data/test-reports/live-model-smoke/report.md",
   "data/test-reports/swe-bench-style/report.json",
   "data/test-reports/swe-bench-style/report.md",
-  "data/test-reports/flagship-quality/quality-results.json"
+  "data/test-reports/release-quality/quality-results.json"
 ];
 
 let deletedFiles = 0;

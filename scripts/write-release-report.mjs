@@ -5,24 +5,24 @@ import { sourceFingerprint } from "./source-fingerprint.mjs";
 const root = resolve(process.cwd());
 const reportsDir = resolve(root, "docs", "reports");
 const datePrefix = localDateStamp();
-const reportPath = resolve(reportsDir, `${datePrefix}-flagship-revalidation.md`);
-const requireVerdict = (process.env.AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED ?? process.env.SCC_FLAGSHIP_REPORT_REQUIRED) === "1";
+const reportPath = resolve(reportsDir, `${datePrefix}-release-revalidation.md`);
+const requireVerdict = (process.env.AGENT_WORKBENCH_RELEASE_REPORT_REQUIRED ?? process.env.AGENT_WORKBENCH_FLAGSHIP_REPORT_REQUIRED ?? process.env.SCC_FLAGSHIP_REPORT_REQUIRED) === "1";
 const currentSourceFingerprint = sourceFingerprint(root);
 const minimumLiveSmokeStressLevel = 8;
 
-const quality = readJson(resolve(root, "data", "test-reports", "flagship-quality", "quality-results.json"));
+const quality = readJson(resolve(root, "data", "test-reports", "release-quality", "quality-results.json"));
 const budgets = readJson(resolve(root, "data", "test-reports", "web-budgets", "report.json"));
 const apiRouteCoverage = readJson(resolve(root, "data", "test-reports", "api-route-coverage", "report.json"));
 const sensitiveArtifacts = readJson(resolve(root, "data", "test-reports", "sensitive-artifacts", "report.json"));
 const liveSmoke = readJson(resolve(root, "data", "test-reports", "live-model-smoke", "report.json"));
 const liveHttpResume = readJson(resolve(root, "data", "test-reports", "live-agent-http-resume", "report.json"));
 const sweBenchStyle = readJson(resolve(root, "data", "test-reports", "swe-bench-style", "report.json"));
-const uiMetrics = readJson(resolve(root, "data", "test-reports", "flagship-ui", "metrics.json"));
+const uiMetrics = readJson(resolve(root, "data", "test-reports", "release-ui", "metrics.json"));
 const routeSoakReports = {
   desktop: readJson(resolve(root, "data", "test-reports", "ui-route-soak", "desktop.json")),
   mobile: readJson(resolve(root, "data", "test-reports", "ui-route-soak", "mobile.json"))
 };
-const screenshotDir = resolve(root, "data", "test-reports", "flagship-ui", "screenshots");
+const screenshotDir = resolve(root, "data", "test-reports", "release-ui", "screenshots");
 const screenshots = existsSync(screenshotDir) ? readdirSync(screenshotDir).sort() : [];
 
 const blockers = [];
@@ -33,7 +33,7 @@ if (!sensitiveArtifacts) blockers.push("Sensitive artifact report is missing.");
 if (!liveSmoke) blockers.push("Live model smoke report is missing.");
 if (!liveHttpResume) blockers.push("Live HTTP resume report is missing.");
 if (!sweBenchStyle) blockers.push("SWE-bench-style agent evaluation report is missing.");
-if (!uiMetrics) blockers.push("Flagship UI metrics are missing.");
+if (!uiMetrics) blockers.push("Release UI metrics are missing.");
 for (const project of ["desktop", "mobile"]) {
   if (!routeSoakReports[project]) blockers.push(`UI route soak report is missing for ${project}.`);
 }
@@ -45,7 +45,7 @@ requireFreshArtifact(sensitiveArtifacts, "sensitive artifacts", blockers);
 requireFreshArtifact(liveSmoke, "live smoke", blockers);
 requireFreshArtifact(liveHttpResume, "live HTTP resume", blockers);
 requireFreshArtifact(sweBenchStyle, "SWE-bench-style agent evaluation", blockers);
-requireFreshArtifact(uiMetrics, "flagship UI metrics", blockers);
+requireFreshArtifact(uiMetrics, "release UI metrics", blockers);
 for (const [project, report] of Object.entries(routeSoakReports)) {
   requireFreshArtifact(report, `UI route soak ${project}`, blockers);
 }
@@ -56,7 +56,7 @@ requireMatchingSource(sensitiveArtifacts, "sensitive artifacts", currentSourceFi
 requireMatchingSource(liveSmoke, "live smoke", currentSourceFingerprint, blockers);
 requireMatchingSource(liveHttpResume, "live HTTP resume", currentSourceFingerprint, blockers);
 requireMatchingSource(sweBenchStyle, "SWE-bench-style agent evaluation", currentSourceFingerprint, blockers);
-requireMatchingSource(uiMetrics, "flagship UI metrics", currentSourceFingerprint, blockers);
+requireMatchingSource(uiMetrics, "release UI metrics", currentSourceFingerprint, blockers);
 for (const [project, report] of Object.entries(routeSoakReports)) {
   requireMatchingSource(report, `UI route soak ${project}`, currentSourceFingerprint, blockers);
 }
@@ -77,7 +77,7 @@ for (const item of liveFailed) {
   blockers.push(`Live smoke failed: ${item.name}${item.failureClass ? ` (${item.failureClass})` : ""}.${missingDetails}`);
 }
 if (liveSmoke && liveSmoke.required !== true) blockers.push("Live smoke report was generated without AGENT_WORKBENCH_LIVE_MODEL_REQUIRED=1.");
-if (Number(liveSmoke?.stressLevel ?? 0) < minimumLiveSmokeStressLevel) blockers.push(`Live smoke stress level is ${liveSmoke?.stressLevel ?? "unknown"}; flagship validation requires level ${minimumLiveSmokeStressLevel}.`);
+if (Number(liveSmoke?.stressLevel ?? 0) < minimumLiveSmokeStressLevel) blockers.push(`Live smoke stress level is ${liveSmoke?.stressLevel ?? "unknown"}; release validation requires level ${minimumLiveSmokeStressLevel}.`);
 for (const item of liveSmoke?.cases ?? []) {
   const traceBytes = Number(item.evidence?.traceBytes ?? 0);
   const traceMaxEntryBytes = Number(item.evidence?.traceMaxEntryBytes ?? 0);
@@ -131,7 +131,7 @@ for (const [project, report] of Object.entries(routeSoakReports)) {
   validateRouteSoak(report, project, blockers);
 }
 
-const verdict = blockers.length === 0 ? "旗舰水准达标" : "未达旗舰水准";
+const verdict = blockers.length === 0 ? "Release readiness passed" : "Release readiness blocked";
 
 mkdirSync(reportsDir, { recursive: true });
 writeFileSync(reportPath, renderMarkdown({
@@ -151,9 +151,9 @@ writeFileSync(reportPath, renderMarkdown({
   currentSourceFingerprint
 }), "utf8");
 
-console.log(`Flagship report written to ${reportPath}`);
+console.log(`Release report written to ${reportPath}`);
 if (requireVerdict && blockers.length > 0) {
-  console.error(`Flagship report has ${blockers.length} blocker(s).`);
+  console.error(`Release report has ${blockers.length} blocker(s).`);
   process.exit(1);
 }
 
@@ -171,7 +171,7 @@ function localDateStamp(date = new Date()) {
 
 function renderMarkdown(context) {
   const lines = [
-    `# ${context.datePrefix} Flagship Revalidation`,
+    `# ${context.datePrefix} Release Revalidation`,
     "",
     `结论：${context.verdict}`,
     ""
@@ -296,11 +296,11 @@ function renderMarkdown(context) {
       lines.push(`- ${item.project}/${item.view}: overflow=${item.horizontalOverflow}px, screenshot=${toRelative(item.screenshotPath)}`);
     }
   } else {
-    lines.push("- flagship UI metrics: missing");
+    lines.push("- release UI metrics: missing");
   }
   if (context.screenshots.length > 0) {
     lines.push("", "截图文件：", "");
-    for (const file of context.screenshots) lines.push(`- ${toRelative(resolve(root, "data", "test-reports", "flagship-ui", "screenshots", file))}`);
+    for (const file of context.screenshots) lines.push(`- ${toRelative(resolve(root, "data", "test-reports", "release-ui", "screenshots", file))}`);
   }
   lines.push("");
 
@@ -325,7 +325,7 @@ function renderMarkdown(context) {
   lines.push("");
 
   lines.push("## 说明", "");
-  lines.push("- 只有所有硬门禁通过、无阻断项、live smoke 与 UI 指标齐全时，才能判定为旗舰水准。");
+  lines.push("- 只有所有硬门禁通过、无阻断项、live smoke 与 UI 指标齐全时，才能判定为 release-ready。");
   return lines.join("\n");
 }
 
@@ -374,7 +374,7 @@ function validateRouteSoak(report, project, blockers) {
   const cycles = Number(report.cycles ?? 0);
   const timings = Array.isArray(report.timings) ? report.timings : [];
   if (report.project !== project) blockers.push(`UI route soak ${project} has mismatched project field: ${report.project ?? "missing"}.`);
-  if (cycles < 4) blockers.push(`UI route soak ${project} only ran ${cycles || "unknown"} cycle(s); flagship validation requires at least 4.`);
+  if (cycles < 4) blockers.push(`UI route soak ${project} only ran ${cycles || "unknown"} cycle(s); release validation requires at least 4.`);
   if (!Number.isFinite(routeBudgetMs) || routeBudgetMs <= 0 || routeBudgetMs > 2_500) blockers.push(`UI route soak ${project} has invalid route budget: ${report.routeBudgetMs ?? "missing"}.`);
   if (timings.length < expectedRoutes.length * Math.max(cycles, 1)) blockers.push(`UI route soak ${project} has insufficient route checks: ${timings.length}.`);
   const routeSet = new Set(timings.map((item) => String(item.path ?? "")));

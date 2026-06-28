@@ -1258,7 +1258,10 @@ describe("ContextAssembler", () => {
 
     const context = await assembler.assemble(task);
     const roleMessages = context.messages.filter(
-      (message) => message.role !== "system" && !(message.role === "user" && message.content.startsWith("## Stable Task Context"))
+      (message) =>
+        message.role !== "system" &&
+        !(message.role === "user" && message.content.startsWith("## Stable Task Context")) &&
+        !(message.role === "user" && message.content.startsWith("## Current Workbench Context"))
     );
 
     expect(roleMessages[0]?.role).toBe("user");

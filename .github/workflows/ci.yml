@@ -34,7 +34,7 @@ jobs:
           npm run check:release-source
           npm run build
 
-  flagship-quality:
+  release-quality:
     runs-on: windows-latest
     timeout-minutes: 120
     env:
@@ -59,15 +59,15 @@ jobs:
       - name: Audit production dependencies
         run: npm.cmd run audit:prod
 
-      - name: Run flagship quality suite
+      - name: Run release quality suite
         run: npm.cmd run quality:full
 
       - name: Upload quality artifacts
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: flagship-quality-artifacts
+          name: release-quality-artifacts
           path: |
             data/test-reports/**
-            docs/reports/*flagship-revalidation.md
+            docs/reports/*.md
           if-no-files-found: warn
