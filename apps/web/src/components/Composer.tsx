@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import { ArrowUp, ChevronDown, Eye, Folder, LoaderCircle, MessageCircle, Mic, MicOff, Paperclip, ShieldAlert, SlidersHorizontal, Square } from "lucide-react";
 import type { TaskAttachment } from "@agent-workbench/shared";
 import { getUiCopy } from "../i18n.js";
+import { filterSlashCommandMenuItems } from "../slash-commands.js";
 import { FileTypeIcon } from "./FileTypeIcon.js";
 
 function useClickOutside(ref: React.RefObject<HTMLElement | null>, handler: () => void, enabled: boolean) {
@@ -133,7 +134,10 @@ export function Composer({
   const canSubmit = text.trim().length > 0;
   const trimmedText = text.trimStart();
   const slashOpen = trimmedText.startsWith("/") && !trimmedText.includes("\n");
-  const goalActive = trimmedText.startsWith("/goal");
+  const slashQuery = slashOpen ? trimmedText : "";
+  const slashItems = slashOpen ? filterSlashCommandMenuItems(slashQuery, language) : [];
+  const activeSlashToken = /^\/([^\s]*)/.exec(trimmedText)?.[1]?.toLowerCase() ?? "";
+  const activeSlashCommand = activeSlashToken === "?" ? "help" : activeSlashToken;
   const canStop = running && !canSubmit;
   const labels = getUiCopy(language).composer;
   const modeCopy = labels.modes[mode];
@@ -177,19 +181,24 @@ export function Composer({
         />
         {slashOpen ? (
           <div className="slashCommandMenu" role="listbox" aria-label={language === "zh-CN" ? "可用指令" : "Available commands"}>
-            <button
-              type="button"
-              role="option"
-              aria-selected={goalActive}
-              onClick={() => updateText("/goal ")}
-            >
-              <strong>/goal</strong>
-              <span>{language === "zh-CN" ? "目标完成模式" : "Goal mode"}</span>
-            </button>
+            {slashItems.length > 0 ? slashItems.map((item) => (
+              <button
+                type="button"
+                role="option"
+                aria-selected={activeSlashCommand === item.name}
+                key={item.name}
+                onClick={() => updateText(item.insertText)}
+              >
+                <strong>{item.command}</strong>
+                <span>{item.title}</span>
+              </button>
+            )) : (
+              <span className="slashCommandEmpty">{language === "zh-CN" ? "没有匹配的指令" : "No matching command"}</span>
+            )}
             <p>
               {language === "zh-CN"
-                ? "/goal 会更主动地持续执行和验证，可能消耗更多模型额度、运行更久、读写文件、运行命令或访问网络。启动前会要求确认权限和后果。"
-                : "/goal pushes harder toward verified completion. It may use more quota, run longer, read/write files, run commands, or access the network. Confirmation is required."}
+                ? "可用：/goal 持续验证完成，/plan 先规划再确认，/help 打开说明。输入 // 可发送普通斜杠文本。"
+                : "Available: /goal for verified completion, /plan to plan first, /help for docs. Type // to send literal slash text."}
             </p>
           </div>
         ) : null}

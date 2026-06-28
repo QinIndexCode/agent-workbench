@@ -13,7 +13,7 @@ Agent Workbench is not release-ready until every required item below is complete
 
 - [ ] Working tree is clean and all intended CLI, Web, server, core, docs, and test files are committed.
 - [ ] No runtime databases, traces, attachments, checkpoints, plaintext secret notes, or generated reports are tracked.
-- [ ] `npm run clean:release-artifacts` has been run after the last E2E or flagship validation pass.
+- [ ] `npm run clean:release-artifacts` has been run after the last E2E or release validation pass.
 - [ ] `npm run check:release-source` passes. This is also part of `quality:full`.
 - [ ] `docs/reports/` contains only `README.md` before creating the release source snapshot.
 - [ ] README and quick start accurately describe the current product and supported platforms.
@@ -27,7 +27,7 @@ Agent Workbench is not release-ready until every required item below is complete
 - [ ] `npm audit` has no unresolved high or critical vulnerabilities.
 - [ ] `npm run quality:full` passes.
 - [ ] Required live model and live HTTP agent checks pass against the release source fingerprint.
-- [ ] The dated flagship report matches the release source fingerprint.
+- [ ] The dated release report matches the release source fingerprint.
 
 ## Distribution
 

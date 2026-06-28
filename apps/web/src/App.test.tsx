@@ -3755,6 +3755,54 @@ describe("Workbench components", () => {
     expect(screen.queryByRole("dialog", { name: /Start \/goal/ })).not.toBeInTheDocument();
   });
 
+  it("creates a plan-first task from /plan without entering goal mode", async () => {
+    const now = new Date().toISOString();
+    const created: TaskDetail = {
+      ...task,
+      id: "task_plan_first",
+      title: "Plan first",
+      status: "completed",
+      runMode: "normal",
+      approvals: [],
+      events: []
+    };
+    const createBodies: Array<{ goal: string; runMode?: string }> = [];
+
+    stubAuthedFetch(async (url, init) => {
+        const method = init?.method ?? "GET";
+        if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+        if (url === "/api/preferences") return jsonResponse(defaultPreferences("en-US"));
+        if (url === "/api/permissions/global") return jsonResponse([]);
+        if (url === "/api/tasks" && method === "POST") {
+          const body = JSON.parse(String(init?.body)) as { goal: string; runMode?: string };
+          createBodies.push(body);
+          return jsonResponse({
+            ...created,
+            events: [{ id: "event_plan_first", taskId: created.id, type: "user_message", createdAt: now, summary: body.goal, payload: {} }]
+          });
+        }
+        if (url === "/api/tasks") return jsonResponse(createBodies.length ? [created] : []);
+        if (url === "/api/tasks/task_plan_first" || url.startsWith("/api/tasks/task_plan_first?")) return jsonResponse(created);
+        if (url === "/api/tasks/task_plan_first/transcript") return jsonResponse(created.events);
+        if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+        return jsonResponse([]);
+      });
+
+    render(<App />);
+    expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "/" } });
+    expect(await screen.findByRole("option", { name: /\/plan/i })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "/plan improve CLI command help" } });
+    fireEvent.click(getSendButton());
+
+    await waitFor(() => expect(createBodies).toHaveLength(1));
+    expect(createBodies[0]?.runMode).toBeUndefined();
+    expect(createBodies[0]?.goal).toContain("Create a visible plan");
+    expect(createBodies[0]?.goal).toContain("improve CLI command help");
+    expect(screen.queryByRole("dialog", { name: /Start \/goal/ })).not.toBeInTheDocument();
+  });
+
   it("requires an extra acknowledgement before full risk goal mode", async () => {
     const now = new Date().toISOString();
     const created: TaskDetail = {

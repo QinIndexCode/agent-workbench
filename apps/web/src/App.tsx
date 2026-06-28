@@ -9,6 +9,7 @@ import type { ComposerMode, ComposerPermissionMode, PermissionPreset } from "./c
 import type { LibrarySection } from "./components/LibraryView.js";
 import type { SettingsSection } from "./components/SettingsView.js";
 import type { DocsSection } from "./docs/index.js";
+import { parseComposerSlashCommand } from "./slash-commands.js";
 import { useWorkbenchData } from "./useWorkbenchData.js";
 
 type PreloadableComponent<TProps extends object> = ComponentType<TProps> & {
@@ -618,20 +619,25 @@ export function App() {
   async function submitComposerAfterPermissionSync(mode: ComposerMode, text: string) {
     if (!(await waitForPermissionMutation())) return;
     const attachmentIds = pendingAttachments.map((attachment) => attachment.id);
-    const goalCommand = parseGoalCommand(text);
-    if (goalCommand.error) {
-      setCommandIssue(goalCommand.error);
+    const command = parseComposerSlashCommand(text, language);
+    if (command.kind === "error") {
+      setCommandIssue(command.message);
+      return;
+    }
+    if (command.kind === "open_help") {
+      setCommandIssue(null);
+      openDocs("task-management");
       return;
     }
     setCommandIssue(null);
-    if (goalCommand.runMode === "target") {
-      setGoalConfirmation({ goal: goalCommand.goal, attachmentIds });
+    if (command.runMode === "target") {
+      setGoalConfirmation({ goal: command.text, attachmentIds });
       return;
     }
     if (mode === "guidance" || mode === "continue") {
       setTitleIssue(null);
       void data.runTaskAction(async () => {
-        const task = activeTask ? await api.sendMessage(activeTask.id, text, attachmentIds) : await submitNewTaskAction(goalCommand.goal, false, attachmentIds, goalCommand.runMode);
+        const task = activeTask ? await api.sendMessage(activeTask.id, command.text, attachmentIds) : await submitNewTaskAction(command.text, false, attachmentIds, command.runMode);
         setPendingAttachments([]);
         return task;
       });
@@ -639,7 +645,7 @@ export function App() {
     }
     setTitleIssue(null);
     void data.runTaskAction(async () => {
-      const task = await submitNewTaskAction(goalCommand.goal, false, attachmentIds, goalCommand.runMode);
+      const task = await submitNewTaskAction(command.text, false, attachmentIds, command.runMode);
       setPendingAttachments([]);
       return task;
     });
@@ -990,25 +996,6 @@ function sameRoute(left: AppRoute, right: AppRoute): boolean {
   if (left.view === "library" && right.view === "library") return left.section === right.section;
   if (left.view === "docs" && right.view === "docs") return left.section === right.section;
   return true;
-}
-
-function parseGoalCommand(text: string): { goal: string; runMode: "normal" | "target"; error?: string } {
-  const trimmed = text.trim();
-  if (isSlashCommand(trimmed, "/target")) {
-    return {
-      goal: text,
-      runMode: "normal",
-      error: "The /target command has been removed; use /goal to start goal mode. /target 指令已移除，请使用 /goal。"
-    };
-  }
-  if (!isSlashCommand(trimmed, "/goal")) return { goal: text, runMode: "normal" };
-  const goal = trimmed.slice("/goal".length).trim();
-  return { goal: goal || trimmed, runMode: "target" };
-}
-
-function isSlashCommand(trimmed: string, command: string): boolean {
-  if (!trimmed.startsWith(command)) return false;
-  return trimmed.length === command.length || /\s/.test(trimmed.charAt(command.length));
 }
 
 function safeLocalStorageGet(key: string, legacyKey?: string): string | null {

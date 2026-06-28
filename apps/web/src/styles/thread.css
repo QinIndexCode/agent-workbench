@@ -2068,6 +2068,18 @@
   cursor: pointer;
 }
 
+.slashCommandMenu button[aria-selected="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-container-low));
+}
+
+.slashCommandEmpty {
+  display: block;
+  padding: 9px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .slashCommandMenu p {
   margin: 0;
   color: var(--muted);

@@ -44,7 +44,7 @@
 | **Pattern** | — | 从多个Task Memory中提取的通用方法（观察阶段） |
 | **Skill** | — | 经过验证的可靠模式（可注入上下文的固化能力） |
 | **MCP** | Model Context Protocol | 模型上下文协议，标准化的工具连接规范 |
-| **A2A** | Agent2Agent Protocol | Agent 到 Agent 的互操作协议；当前项目只做生态对齐说明，不声称已完整实现 adapter |
+| **A2A** | Agent2Agent Protocol | Agent 到 Agent 的互操作协议；当前项目已提供 Agent Card discovery，不声称已完整实现 adapter |
 | **Loop Engineering** | — | Observe、Plan、Act、Verify、Reflect、Persist/Stop 的运行时闭环工程约束 |
 | **Prompt Cache** | — | 通过稳定前缀和 provider 缓存能力降低重复输入 token 成本，目标是在不削弱任务质量的前提下提高命中率 |
 | **Reflection** | — | 从Task Memory中提取Pattern/Skill的异步分析过程 |

@@ -1,21 +1,6 @@
 # Agent Protocols
 
-This page explains how Agent Workbench treats **Loop Engineering**, MCP, and A2A. The rule is simple: document implemented behavior as implemented behavior, document protocol alignment as alignment, and do not present planned adapters as shipped product capability.
-
-## Loop Engineering
-
-Loop Engineering is the runtime discipline behind Agent Workbench. It is not a fixed script. A strong task should close these phases inside the same visible timeline:
-
-1. **Observe**: read the current goal, files, configuration, history, attachments, and tool evidence.
-2. **Plan**: choose the smallest responsible path without narrowing the user's real objective.
-3. **Act**: use built-in tools or discovered MCP tools; risky actions go through approval.
-4. **Verify**: confirm results through read-back, tests, screenshots, API queries, or real task evidence.
-5. **Reflect**: record useful outcomes and failures as Task Memory, Patterns, or candidate Skills.
-6. **Persist / Stop**: save state, attachments, checkpoints, and the final answer; if proof is incomplete, state the remaining risk.
-
-The loop does not force tool use for every simple answer, and it must never hardcode one benchmark prompt or expected string. Verification should scale with risk: a low-risk explanation can stay light, while code edits, external facts, GUI work, CLI behavior, permissions, model calls, and release judgments need current evidence.
-
-To control cost, Loop Engineering must also stay prompt-cache friendly: stable system instructions, Skill metadata, project context, and tool-name families should remain near the front of requests, while task-specific evidence stays later. Do not improve cache hit rate by dropping tool schemas, hiding evidence, or weakening verification. The target is cache efficiency and task quality together, not cheaper prompts that make the agent less capable.
+This page only explains Agent Workbench interoperability boundaries with external agent and tool ecosystems. The rule is simple: document implemented protocol behavior as implemented behavior, document ecosystem alignment as alignment, and do not present runtime workflow guidance or planned adapters as shipped protocol capability.
 
 ## MCP vs A2A
 
@@ -37,7 +22,7 @@ Short version: **MCP tells an agent what tools it can use. A2A lets independent 
 
 Google announced Agent2Agent (A2A) on 2025-04-09 as an open agent interoperability protocol. A2A was later donated to the Linux Foundation and is developed through the Agent2Agent project with participants including AWS, Cisco, Google, Microsoft, Salesforce, SAP, and ServiceNow. Microsoft has publicly announced A2A support for Azure AI Foundry and Copilot Studio directions.
 
-So project documentation should say "Agent Card discovery is available and the project is aligned with the A2A ecosystem for a future adapter boundary", not "Agent Workbench fully supports A2A today."
+So project documentation should say "Agent Card discovery is available and the project is aligned with the A2A ecosystem for a future adapter boundary" and avoid implying a complete A2A server/client is shipped today.
 
 ## Current Agent Card Discovery
 
@@ -60,7 +45,7 @@ If Agent Workbench later exposes an A2A endpoint, that adapter should satisfy at
 - **Messages and artifacts**: map A2A messages, parts, and artifacts to timeline events, attachments, and transcripts.
 - **Auth and audit**: require authentication, request ids, audit logging, and sensitive-field redaction for remote calls.
 - **Approval mapping**: remote requests for file, shell, network, MCP, or destructive actions still pass through the Agent Workbench permission engine.
-- **Loop evidence**: remote tasks should not return only final text; they must preserve readable evidence for user review.
+- **Evidence retention**: remote tasks should not return only final text; they must preserve readable evidence for user review.
 
 ## What not to conflate
 

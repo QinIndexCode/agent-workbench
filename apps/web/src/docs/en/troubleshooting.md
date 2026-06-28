@@ -27,6 +27,7 @@
 
 ## Data Storage
 
-- All data is stored locally in the browser
-- Clearing browser data will result in loss of task history
-- API keys are stored locally and are not uploaded to any server
+- Task state, provider/search/integration settings, attachments, checkpoints, memories, and skills are persisted by the local Agent Workbench server in SQLite on this machine.
+- Browser storage is used for UI-only state such as local view preferences. Clearing browser data can reset those UI preferences, but it does not delete the server SQLite task history.
+- API keys and integration secrets are submitted to the local server, stored as encrypted secret references, and shown back to the Web UI only as redacted metadata such as the last four characters.
+- The default server is intended for trusted local access. Do not expose it directly to an untrusted network.

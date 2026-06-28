@@ -141,8 +141,8 @@ export const docMetas: DocMeta[] = [
     id: "protocols",
     title: { en: "Agent Protocols", zh: "Agent 通用协议" },
     summary: {
-      en: "Understand Loop Engineering, MCP, A2A, and where Agent Workbench is implemented versus only aligned.",
-      zh: "理解 Loop Engineering、MCP、A2A，以及 Agent Workbench 哪些已实现、哪些只是协议对齐。"
+      en: "Understand MCP, A2A, Agent Card discovery, and which interoperability boundaries are implemented versus future-only.",
+      zh: "理解 MCP、A2A、Agent Card discovery，以及哪些互操作边界已实现、哪些只是未来边界。"
     },
     icon: Network
   },

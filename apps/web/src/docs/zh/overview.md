@@ -10,7 +10,7 @@ Agent Workbench 是一个面向 Agent 的工作台，用于组织任务上下文
 - **工具权限**：对工具调用进行风险分级，按配置策略执行确认或放行
 - **事件投影**：将 Agent 的执行过程以时间线形式呈现
 - **Loop Engineering**：让 Observe、Plan、Act、Verify、Reflect 和 Persist/Stop 在同一条任务时间线内闭合
-- **协议边界**：MCP 用于工具连接，A2A 用于 Agent 互操作；当前产品已实现 MCP 工具接入，A2A 作为后续 adapter 边界对齐
+- **协议边界**：MCP 用于工具连接，A2A 用于 Agent 互操作；当前产品已实现 MCP 工具接入和公开 Agent Card discovery，完整 A2A adapter 仍是后续边界
 
 ## 快速开始
 

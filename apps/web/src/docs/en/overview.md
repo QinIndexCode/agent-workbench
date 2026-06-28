@@ -10,7 +10,7 @@ The system consists of the following components:
 - **Tool Permissions**: Risk-grade tool calls and enforce confirmation or auto-execution per policy
 - **Event Projection**: Present Agent execution as a timeline
 - **Loop Engineering**: Close Observe, Plan, Act, Verify, Reflect, and Persist/Stop inside one visible task timeline
-- **Protocol Boundary**: MCP connects tools; A2A connects agents. The product currently implements MCP tool integration and treats A2A as a future adapter boundary.
+- **Protocol Boundary**: MCP connects tools; A2A connects agents. The product currently implements MCP tool integration and public Agent Card discovery; a full A2A adapter remains a future boundary.
 
 ## Quick Start
 

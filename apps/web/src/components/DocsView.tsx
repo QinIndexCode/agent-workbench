@@ -234,7 +234,7 @@ export function DocsView({
             {loading ? (
               <p style={{ color: "#9ca3af" }}>{zh ? "加载中…" : "Loading…"}</p>
             ) : (
-              <MarkdownText content={content} />
+              <MarkdownText content={stripLeadingMarkdownTitle(content)} />
             )}
           </div>
         </article>
@@ -270,4 +270,8 @@ function normalizeSearchText(value: string): string {
     .replace(/[`*_#[\](){}:;,.!?/\\|-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function stripLeadingMarkdownTitle(value: string): string {
+  return value.replace(/^\s*#\s+[^\r\n]+(?:\r?\n){1,2}/, "").trimStart();
 }
