@@ -29,8 +29,8 @@ inside those boundaries.
 - `aw` / `agent-workbench` CLI using the same public server APIs as the Web UI.
 - Loop Engineering guidance for evidence-driven observe, act, verify, reflect,
   persist, and cache-aware execution.
-- MCP tool integration today, with A2A/Agent2Agent tracked as an explicit future
-  interoperability boundary rather than a claimed shipped adapter.
+- MCP tool integration today, plus public Agent Card discovery for A2A/Agent2Agent
+  ecosystem alignment without claiming a full shipped A2A adapter.
 
 ## Requirements
 

@@ -58,6 +58,7 @@ async function createTestApp(options: Parameters<typeof createApp>[0] = {}): Pro
 function isPublicTestPath(pathname: string): boolean {
   return (
     pathname === "/health" ||
+    pathname === "/.well-known/agent-card.json" ||
     pathname === "/api/session/bootstrap" ||
     pathname === "/api/integrations/discord/interactions" ||
     pathname === "/api/integrations/feishu/events" ||
@@ -190,6 +191,58 @@ describe("server API", () => {
     expect(body.uptimeMs).toBeGreaterThanOrEqual(0);
     expect(body.version).toBe("0.1.0");
     expect(Number.isNaN(Date.parse(body.timestamp))).toBe(false);
+
+    await app.close();
+  });
+
+  it("exposes a public Agent Card for discovery without exposing local secrets", async () => {
+    const app = await createApp({ logger: false, workbench: new AgentWorkbench({ store: new InMemoryWorkbenchStore() }) });
+    const response = await app.inject({
+      method: "GET",
+      url: "/.well-known/agent-card.json",
+      headers: { host: "127.0.0.1:5177" }
+    });
+    const body = response.json<{
+      name: string;
+      description: string;
+      supportedInterfaces: Array<{ url: string; protocolBinding: string; protocolVersion: string }>;
+      capabilities: { streaming: boolean; pushNotifications: boolean; extendedAgentCard: boolean };
+      securitySchemes: Record<string, { apiKeySecurityScheme: { name: string; in: string; description: string } }>;
+      security: Array<Record<string, string[]>>;
+      skills: Array<{ id: string; inputModes: string[]; outputModes: string[] }>;
+    }>();
+    const rawBody = response.body;
+    const etag = response.headers.etag;
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("application/a2a+json");
+    expect(response.headers["cache-control"]).toContain("max-age=300");
+    expect(String(etag ?? "")).toMatch(/^".+"$/u);
+    expect(body.name).toBe("Agent Workbench");
+    expect(body.description).toContain("public card enables discovery");
+    expect(body.supportedInterfaces).toEqual([
+      {
+        url: "http://127.0.0.1:5177/api",
+        protocolBinding: "https://github.com/QinIndexCode/agent-workbench/protocols/local-http",
+        protocolVersion: "0.1.0"
+      }
+    ]);
+    expect(body.capabilities).toEqual({ streaming: true, pushNotifications: false, extendedAgentCard: false });
+    expect(body.securitySchemes.agentWorkbenchSession?.apiKeySecurityScheme.name).toBe(SESSION_HEADER);
+    expect(body.security[0]).toEqual({ agentWorkbenchSession: [] });
+    expect(body.skills.map((skill) => skill.id)).toEqual(["permissioned-task-workbench", "workspace-tool-execution", "memory-knowledge-skills"]);
+    expect(body.skills.every((skill) => skill.inputModes.includes("application/json") && skill.outputModes.includes("application/json"))).toBe(true);
+    expect(rawBody).not.toContain("sessionToken");
+    expect(rawBody).not.toContain("workbench.sqlite");
+    expect(rawBody).not.toMatch(/\bsk-[A-Za-z0-9_-]{8,}/u);
+
+    const cached = await app.inject({
+      method: "GET",
+      url: "/.well-known/agent-card.json",
+      headers: { host: "127.0.0.1:5177", "if-none-match": String(etag) }
+    });
+    expect(cached.statusCode).toBe(304);
+    expect(cached.body).toBe("");
 
     await app.close();
   });

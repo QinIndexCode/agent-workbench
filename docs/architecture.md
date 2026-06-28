@@ -18,7 +18,7 @@ Agent Workbench 当前实现的是本地 Agent Workbench，而不是脚本门禁
 
 - 不用 scenario pack、quality gate、固定 JSON、固定报告模板判断普通任务是否完成。
 - 不把工程测试或脚本输出当作任务完成判官。
-- 不声称当前已完成 Python SDK、OpenTelemetry 全量兼容、多消息平台网关或 A2A agent-to-agent adapter。MCP 当前覆盖已配置的 stdio 与 streamable HTTP 工具发现/调用，不等同于完整远程 auth、资源模板平台或 Agent2Agent 互操作端点。
+- 不声称当前已完成 Python SDK、OpenTelemetry 全量兼容、多消息平台网关或完整 A2A agent-to-agent adapter。MCP 当前覆盖已配置的 stdio 与 streamable HTTP 工具发现/调用；A2A 当前只提供公开 Agent Card discovery，不等同于完整远程 auth、资源模板平台或 Agent2Agent 互操作端点。
 
 ## Runtime Loop And Loop Engineering
 
@@ -132,7 +132,7 @@ MCP and A2A solve different interoperability problems:
 | Protocol | Boundary | Current Agent Workbench status |
 | --- | --- | --- |
 | MCP | Agent-to-tool and agent-to-context connection | Implemented for configured stdio and streamable HTTP tool discovery/calls, with existing approval and evidence handling |
-| A2A / Agent2Agent | Agent-to-agent discovery, delegation, status, message, and artifact exchange | Ecosystem-aligned only; no shipped A2A server or full A2A client is claimed |
+| A2A / Agent2Agent | Agent-to-agent discovery, delegation, status, message, and artifact exchange | Public Agent Card discovery is shipped; no full A2A server or full A2A client is claimed |
 | AGENTS.md | Repository-local operating instructions for coding agents | Accepted as project guidance, not treated as a network protocol |
 
 Current external facts checked for this boundary:
@@ -141,7 +141,7 @@ Current external facts checked for this boundary:
 - Google later transferred A2A specification, SDKs, and tooling to the Linux Foundation Agent2Agent project, with participants including AWS, Cisco, Google, Microsoft, Salesforce, SAP, and ServiceNow.
 - Microsoft publicly announced A2A support plans for Azure AI Foundry and Copilot Studio and documents A2A endpoint connection flows in Foundry Agent Service.
 
-A future A2A adapter would need Agent Card discovery, authenticated task lifecycle mapping, message/artifact mapping, approval mapping, audit logs, and timeline evidence. Until those exist in code and tests, docs should say "aligned with A2A" rather than "supports A2A".
+`/.well-known/agent-card.json` exposes only public identity, a custom Agent Workbench local HTTP interface, session-header authentication requirements, high-level skills, and cache headers. A future full A2A adapter would still need authenticated task lifecycle mapping, message/artifact mapping, approval mapping, audit logs, and timeline evidence. Until those exist in code and tests, docs should say "Agent Card discovery is available" rather than "supports A2A".
 
 ## Validation
 

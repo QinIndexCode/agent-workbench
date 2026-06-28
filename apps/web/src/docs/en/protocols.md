@@ -19,11 +19,17 @@ To control cost, Loop Engineering must also stay prompt-cache friendly: stable s
 
 ## MCP vs A2A
 
-| Protocol | Problem solved | Agent Workbench status |
-| --- | --- | --- |
-| MCP | Agent-to-tool, data-source, and workflow connection | Implemented for configured stdio and streamable HTTP discovery, `tools/list`, and `tools/call`, with the same approval and timeline evidence path as built-in tools |
-| A2A | Agent-to-agent discovery, delegation, messages, task state, and artifact exchange | Tracked as ecosystem alignment; Agent Workbench does not currently claim a shipped A2A server or full A2A client |
-| AGENTS.md | Repository-local guidance for coding agents | Useful as project instructions, but it is not a network interoperability protocol |
+**MCP**
+
+Solves agent-to-tool, data-source, and workflow connection. Agent Workbench implements configured stdio and streamable HTTP discovery, `tools/list`, and `tools/call`, with the same approval and timeline evidence path as built-in tools.
+
+**A2A**
+
+Solves agent-to-agent discovery, delegation, messages, task state, and artifact exchange. Public Agent Card discovery is implemented; Agent Workbench does not currently claim a full A2A server or full A2A client.
+
+**AGENTS.md**
+
+Provides repository-local guidance for coding agents. It is useful as project instructions, but it is not a network interoperability protocol.
 
 Short version: **MCP tells an agent what tools it can use. A2A lets independent agents from different vendors or frameworks discover and collaborate with each other.**
 
@@ -31,13 +37,25 @@ Short version: **MCP tells an agent what tools it can use. A2A lets independent 
 
 Google announced Agent2Agent (A2A) on 2025-04-09 as an open agent interoperability protocol. A2A was later donated to the Linux Foundation and is developed through the Agent2Agent project with participants including AWS, Cisco, Google, Microsoft, Salesforce, SAP, and ServiceNow. Microsoft has publicly announced A2A support for Azure AI Foundry and Copilot Studio directions.
 
-So project documentation should say "aligned with the A2A ecosystem and ready for a future adapter boundary", not "Agent Workbench fully supports A2A today."
+So project documentation should say "Agent Card discovery is available and the project is aligned with the A2A ecosystem for a future adapter boundary", not "Agent Workbench fully supports A2A today."
+
+## Current Agent Card Discovery
+
+The server exposes `/.well-known/agent-card.json` so other agents or orchestrators can discover the local Agent Workbench. The card contains only public information:
+
+- name, description, version, and documentation URL
+- a custom `local-http` supported interface that points to same-origin `/api`
+- the `x-agent-workbench-session` authentication requirement, with clients expected to call `/api/session/bootstrap` first
+- high-level task, workspace-tool, and memory/knowledge/skill capabilities
+- `Cache-Control` and `ETag` headers for discovery caching
+
+The discovery card does not include the real session token, API keys, SQLite paths, or local file paths. It also does not mean `/api` is a standard A2A JSON-RPC or HTTP+JSON task endpoint.
 
 ## Adapter acceptance boundary
 
 If Agent Workbench later exposes an A2A endpoint, that adapter should satisfy at least:
 
-- **Agent Card**: expose only public capabilities, input modes, authentication requirements, and service endpoints.
+- **Agent Card**: continue to expose only public capabilities, input modes, authentication requirements, and service endpoints.
 - **Task lifecycle**: map remote tasks to internal task status, pending approval, completed, failed, and cancelled states.
 - **Messages and artifacts**: map A2A messages, parts, and artifacts to timeline events, attachments, and transcripts.
 - **Auth and audit**: require authentication, request ids, audit logging, and sensitive-field redaction for remote calls.

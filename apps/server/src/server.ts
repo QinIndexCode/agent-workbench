@@ -1,7 +1,7 @@
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   AgentWorkbench,
   CompositeToolExecutor,
@@ -89,6 +89,7 @@ const MAX_TRANSCRIPT_STREAM_INLINE_CHARS = 4000;
 const TASK_WS_HEARTBEAT_MS = 10_000;
 const SESSION_HEADER = "x-agent-workbench-session";
 const LEGACY_SESSION_HEADER = "x-scc-session";
+const AGENT_CARD_CACHE_SECONDS = 300;
 const LOCALHOST_ALLOWED_ORIGINS = [
   "http://127.0.0.1:5173",
   "http://localhost:5173",
@@ -586,6 +587,18 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     version: "0.1.0",
     timestamp: new Date().toISOString()
   }));
+  app.get("/.well-known/agent-card.json", async (request, reply) => {
+    const card = buildAgentCard(request);
+    const serialized = JSON.stringify(card);
+    const etag = `"${createHash("sha256").update(serialized).digest("base64url").slice(0, 32)}"`;
+    reply.header("cache-control", `public, max-age=${AGENT_CARD_CACHE_SECONDS}`);
+    reply.header("etag", etag);
+    reply.type("application/a2a+json; charset=utf-8");
+    if (ifNoneMatchValues(request.headers["if-none-match"]).includes(etag)) {
+      return reply.code(304).send();
+    }
+    return reply.send(card);
+  });
   app.get("/api/session/bootstrap", async () => ({ sessionToken }));
 
   app.get("/api/tasks", async (request) => {
@@ -1559,6 +1572,131 @@ function createSessionToken(): string {
   return randomBytes(24).toString("hex");
 }
 
+interface AgentCard {
+  name: string;
+  description: string;
+  supportedInterfaces: Array<{ url: string; protocolBinding: string; protocolVersion: string }>;
+  provider: { organization: string; url: string };
+  version: string;
+  documentationUrl: string;
+  capabilities: { streaming: boolean; pushNotifications: boolean; extendedAgentCard: boolean };
+  securitySchemes: Record<string, { apiKeySecurityScheme: { name: string; in: "header"; description: string } }>;
+  security: Array<Record<string, string[]>>;
+  defaultInputModes: string[];
+  defaultOutputModes: string[];
+  skills: Array<{
+    id: string;
+    name: string;
+    description: string;
+    tags: string[];
+    examples: string[];
+    inputModes: string[];
+    outputModes: string[];
+  }>;
+}
+
+function buildAgentCard(request: FastifyRequest): AgentCard {
+  const baseUrl = publicBaseUrl(request);
+  return {
+    name: "Agent Workbench",
+    description:
+      "Local-first, permissioned agent workbench. This public card enables discovery; operational APIs are protected by a per-process local session token from /api/session/bootstrap.",
+    supportedInterfaces: [
+      {
+        url: new URL("/api", baseUrl).href,
+        protocolBinding: "https://github.com/QinIndexCode/agent-workbench/protocols/local-http",
+        protocolVersion: "0.1.0"
+      }
+    ],
+    provider: {
+      organization: "Agent Workbench",
+      url: "https://github.com/QinIndexCode/agent-workbench"
+    },
+    version: "0.1.0",
+    documentationUrl: "https://github.com/QinIndexCode/agent-workbench#readme",
+    capabilities: {
+      streaming: true,
+      pushNotifications: false,
+      extendedAgentCard: false
+    },
+    securitySchemes: {
+      agentWorkbenchSession: {
+        apiKeySecurityScheme: {
+          name: SESSION_HEADER,
+          in: "header",
+          description: "Fetch a transient session token from /api/session/bootstrap on the same local server process."
+        }
+      }
+    },
+    security: [{ agentWorkbenchSession: [] }],
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
+    skills: [
+      {
+        id: "permissioned-task-workbench",
+        name: "Permissioned Task Workbench",
+        description: "Create, inspect, continue, control, and review local agent tasks through protected HTTP APIs.",
+        tags: ["tasks", "approvals", "local-http", "agent-workbench"],
+        examples: ["Create a task from a goal, watch its events, then approve or deny pending tool requests."],
+        inputModes: ["text/plain", "application/json"],
+        outputModes: ["application/json", "text/plain"]
+      },
+      {
+        id: "workspace-tool-execution",
+        name: "Workspace Tool Execution",
+        description: "Run workspace-scoped file, shell, browser, and computer-control workflows behind explicit permission gates.",
+        tags: ["workspace", "tools", "permissions", "automation"],
+        examples: ["Inspect a repository, edit files through safe file tools, run focused tests, and return evidence."],
+        inputModes: ["text/plain", "application/json"],
+        outputModes: ["application/json", "text/plain"]
+      },
+      {
+        id: "memory-knowledge-skills",
+        name: "Memory, Knowledge, And Skills",
+        description: "Manage project memory, knowledge documents, reusable skills, curator runs, and reflection records through protected APIs.",
+        tags: ["memory", "knowledge", "skills", "reflection"],
+        examples: ["Search local knowledge, export a skill, or compact project memory for a workspace."],
+        inputModes: ["text/plain", "application/json"],
+        outputModes: ["application/json", "text/plain"]
+      }
+    ]
+  };
+}
+
+function publicBaseUrl(request: FastifyRequest): string {
+  const configured = process.env["AGENT_WORKBENCH_PUBLIC_BASE_URL"]?.trim();
+  if (configured) {
+    try {
+      const url = new URL(configured);
+      if (url.protocol === "http:" || url.protocol === "https:") return withoutTrailingSlash(url.href);
+    } catch {
+      // Invalid public URLs should not break local startup.
+    }
+  }
+  const proto = firstHeaderValue(request.headers["x-forwarded-proto"]);
+  const protocol = proto === "https" ? "https" : "http";
+  const host = sanitizePublicHost(firstHeaderValue(request.headers["x-forwarded-host"]) || firstHeaderValue(request.headers.host));
+  return `${protocol}://${host}`;
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string {
+  const raw = Array.isArray(value) ? value[0] ?? "" : value ?? "";
+  return raw.split(",")[0]?.trim().toLowerCase() ?? "";
+}
+
+function sanitizePublicHost(value: string): string {
+  return /^[a-z0-9.-]+(?::\d{1,5})?$/iu.test(value) ? value : "127.0.0.1:5177";
+}
+
+function withoutTrailingSlash(value: string): string {
+  return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function ifNoneMatchValues(value: string | string[] | undefined): string[] {
+  const raw = Array.isArray(value) ? value.join(",") : value ?? "";
+  return raw.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
 function resolveAllowedOrigins(): Set<string> {
   const configured = (process.env["AGENT_WORKBENCH_ALLOWED_ORIGINS"] ?? process.env["SCC_ALLOWED_ORIGINS"] ?? "")
     .split(",")
@@ -1595,6 +1733,7 @@ function readRequestQueryValue(request: FastifyRequest, key: string): string | n
 function isPublicPath(path: string): boolean {
   return (
     path === "/health" ||
+    path === "/.well-known/agent-card.json" ||
     path === "/api/session/bootstrap" ||
     path === "/api/integrations/discord/interactions" ||
     path === "/api/integrations/feishu/events" ||
