@@ -71,8 +71,8 @@ function getSupportCopy(language?: string | null) {
     permissionBody: zh ? "Agent Workbench 只在真实风险出现时请求授权；全局授权可在权限页撤销。" : "Agent Workbench asks only when real risk appears. Global grants can be revoked in Permissions.",
     shortcutTitle: zh ? "输入快捷键" : "Input shortcuts",
     shortcutBody: zh
-      ? "Enter 发送，Shift + Enter 换行。输入 / 可查看 /goal、/plan、/help；输入 // 可发送普通斜杠文本。"
-      : "Enter sends, Shift + Enter inserts a newline. Type / for /goal, /plan, and /help; type // to send literal slash text.",
+      ? "Enter 发送，Shift + Enter 换行。输入 / 可查看任务、知识库、设置和文档指令；输入 // 可发送普通斜杠文本。"
+      : "Enter sends, Shift + Enter inserts a newline. Type / for task, library, settings, and docs commands; type // to send literal slash text.",
     openDocs: zh ? "打开文档" : "Open Docs",
     close: zh ? "关闭" : "Close"
   };

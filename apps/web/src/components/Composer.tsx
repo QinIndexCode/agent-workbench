@@ -187,18 +187,22 @@ export function Composer({
                 role="option"
                 aria-selected={activeSlashCommand === item.name}
                 key={item.name}
+                title={item.detail}
                 onClick={() => updateText(item.insertText)}
               >
                 <strong>{item.command}</strong>
-                <span>{item.title}</span>
+                <span>
+                  <span>{item.title}</span>
+                  <small>{item.detail}</small>
+                </span>
               </button>
             )) : (
               <span className="slashCommandEmpty">{language === "zh-CN" ? "没有匹配的指令" : "No matching command"}</span>
             )}
             <p>
               {language === "zh-CN"
-                ? "可用：/goal 持续验证完成，/plan 先规划再确认，/help 打开说明。输入 // 可发送普通斜杠文本。"
-                : "Available: /goal for verified completion, /plan to plan first, /help for docs. Type // to send literal slash text."}
+                ? "输入命令名可过滤；无参数的资料库/设置类指令会打开对应页面。输入 // 可发送普通斜杠文本。"
+                : "Type a command name to filter. Library and settings commands without arguments open their page. Type // to send literal slash text."}
             </p>
           </div>
         ) : null}

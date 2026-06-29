@@ -2046,6 +2046,9 @@
   z-index: 30;
   display: grid;
   gap: 8px;
+  max-height: min(430px, calc(100vh - 220px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -2054,9 +2057,9 @@
 }
 
 .slashCommandMenu button {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(72px, 0.28fr) 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   width: 100%;
   padding: 9px 10px;
@@ -2066,6 +2069,24 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
+}
+
+.slashCommandMenu button > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.slashCommandMenu button small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.slashCommandMenu strong,
+.slashCommandMenu button span,
+.slashCommandMenu button small {
+  overflow-wrap: anywhere;
 }
 
 .slashCommandMenu button[aria-selected="true"] {
@@ -3098,6 +3119,18 @@
 
   .composerInputWrap {
     padding: 12px 8px 4px;
+  }
+
+  .slashCommandMenu {
+    left: 8px;
+    right: 8px;
+    max-height: min(52vh, 390px);
+  }
+
+  .slashCommandMenu button {
+    grid-template-columns: minmax(70px, 0.34fr) 1fr;
+    gap: 10px;
+    padding: 9px 8px;
   }
 
   .composerFooter {

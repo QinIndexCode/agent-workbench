@@ -40,21 +40,56 @@ describe("composer slash commands", () => {
     expect(parsed.text).toContain("wait for my confirmation");
   });
 
-  it("opens help and rejects removed or unknown commands", () => {
-    expect(parseComposerSlashCommand("/help")).toEqual({ kind: "open_help", command: "help" });
-    expect(parseComposerSlashCommand("/?")).toEqual({ kind: "open_help", command: "help" });
+  it("navigates to help, library, settings, and docs pages", () => {
+    expect(parseComposerSlashCommand("/help")).toEqual({ kind: "navigate", command: "help", target: { area: "docs", section: "task-management" } });
+    expect(parseComposerSlashCommand("/?")).toEqual({ kind: "navigate", command: "help", target: { area: "docs", section: "task-management" } });
+    expect(parseComposerSlashCommand("/knowledge")).toEqual({ kind: "navigate", command: "knowledge", target: { area: "library", section: "knowledge" } });
+    expect(parseComposerSlashCommand("/memory")).toEqual({ kind: "navigate", command: "memory", target: { area: "library", section: "memory" } });
+    expect(parseComposerSlashCommand("/skill")).toEqual({ kind: "navigate", command: "skill", target: { area: "library", section: "skills" } });
+    expect(parseComposerSlashCommand("/model")).toEqual({ kind: "navigate", command: "model", target: { area: "settings", section: "providers" } });
+    expect(parseComposerSlashCommand("/permissions")).toEqual({ kind: "navigate", command: "permissions", target: { area: "settings", section: "permissions" } });
+    expect(parseComposerSlashCommand("/search")).toEqual({ kind: "navigate", command: "search", target: { area: "settings", section: "search" } });
+    expect(parseComposerSlashCommand("/docs")).toEqual({ kind: "navigate", command: "docs", target: { area: "docs", section: "overview" } });
+  });
+
+  it("rejects removed or unknown commands", () => {
     expect(parseComposerSlashCommand("/target old mode").kind).toBe("error");
-    const unknown = parseComposerSlashCommand("/verify now", "zh-CN");
+    const unknown = parseComposerSlashCommand("/unknown now", "zh-CN");
     expect(unknown.kind).toBe("error");
     if (unknown.kind !== "error") throw new Error("Expected an error for unknown slash command.");
     expect(unknown.message).toContain("/goal");
+    expect(unknown.message).toContain("/knowledge");
     expect(unknown.message).toContain("//");
+  });
+
+  it("turns task-intent commands into explicit prompts", () => {
+    const cases = [
+      ["/review knowledge search UX", "strict code/product review", "knowledge search UX"],
+      ["/verify CLI command coverage", "Verify", "CLI command coverage"],
+      ["/debug stuck task status", "debugging loop", "stuck task status"],
+      ["/research current agent protocols", "Gather current reliable evidence", "current agent protocols"],
+      ["/doc sync command docs", "Create or update documentation", "sync command docs"],
+      ["/knowledge provider cache notes", "Knowledge library", "provider cache notes"],
+      ["/memory durable project facts", "durable memory", "durable project facts"],
+      ["/skill office document handling", "Skills", "office document handling"],
+      ["/cache", "cache hit rate", "recent tasks"]
+    ] as const;
+    for (const [input, expectedInstruction, expectedRequest] of cases) {
+      const parsed = parseComposerSlashCommand(input, "en-US");
+      expect(parsed.kind).toBe("submit");
+      if (parsed.kind !== "submit") continue;
+      expect(parsed.runMode).toBe("normal");
+      expect(parsed.text).toContain(expectedInstruction);
+      expect(parsed.text).toContain(expectedRequest);
+    }
   });
 
   it("exposes menu items for every supported command", () => {
     const names = slashCommandNames();
     expect(filterSlashCommandMenuItems("/", "en-US").map((item) => item.name)).toEqual(names);
     expect(filterSlashCommandMenuItems("/pl", "en-US").map((item) => item.name)).toEqual(["plan"]);
+    expect(filterSlashCommandMenuItems("/kn", "en-US").map((item) => item.name)).toEqual(["knowledge"]);
+    expect(filterSlashCommandMenuItems("cache", "en-US").map((item) => item.name)).toEqual(["cache"]);
     expect(buildPlanFirstPrompt("检查 CLI", "zh-CN")).toContain("等待我确认");
   });
 });

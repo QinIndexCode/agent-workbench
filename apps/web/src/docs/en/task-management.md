@@ -26,6 +26,55 @@ Creates a goal-mode task. Use it for repair-and-verify work, deep audits, featur
 
 Creates or appends a plan-first request. The agent should produce a visible plan, acceptance criteria, risks, and confirmation questions, then wait for you before implementation. It does not enter goal mode and does not automatically allow file writes, shell commands, or network access.
 
+### `/review <scope>`
+
+Submits the request as a strict review. The agent should lead with reproducible issues, risks, regressions, and missing tests, then fix confirmed issues.
+
+### `/verify <target>`
+
+Verifies the current state with evidence first. Use it to check whether a feature, fix, CLI command, or document is actually working, with residual risk called out.
+
+### `/debug <issue>`
+
+Runs a debugging loop: reproduce or localize the symptom, find the smallest root cause, fix it, and regression-test it.
+
+### `/research <question>`
+
+Use this for current external facts or local research. Time-sensitive information should be checked online; local project facts should cite real files, APIs, or test evidence.
+
+### `/doc <request>`
+
+Creates or updates documentation after checking the current implementation and existing doc boundaries. It should not present plans as shipped facts or overstate protocol/tool support.
+
+### `/knowledge [question]`
+
+Without arguments, opens **Library → Knowledge**. With a question, submits a Knowledge request that uses `knowledge_search` when saved background material is needed and verifies live source files separately.
+
+### `/memory [request]`
+
+Without arguments, opens **Library → Memory**. With a request, checks or organizes durable memory, keeping only stable, reusable, confirmed information.
+
+### `/skill [request]`
+
+Without arguments, opens **Library → Skills**. With a request, checks Skill duplicates, conflicts, applicability, and whether a skill should be created or merged.
+
+### `/cache [scope]`
+
+Checks LLM request cache hit rate, provider configuration, and request assembly. This must preserve task quality; do not remove necessary tools, context, or verification just to improve cache hits.
+
+### Navigation commands
+
+- `/docs` opens Docs
+- `/settings` opens Settings
+- `/model` opens Model Providers
+- `/permissions` opens Permissions
+- `/search` opens Web Search provider settings
+- `/mcp` opens MCP settings
+- `/integrations` opens Integrations
+- `/schedule` opens Scheduled Tasks
+- `/prefs` opens Preferences
+- `/curator` opens Curator
+
 ### `/help`
 
 Opens this task-management documentation with the current command list and boundaries.

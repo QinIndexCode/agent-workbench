@@ -50,8 +50,8 @@ assertNotIncludes("Chinese Agent Protocols doc", zhProtocols, ["Loop Engineering
 assertNotIncludes("English Agent Protocols doc", enProtocols, ["Loop Engineering", "Observe, Plan, Act", "Loop evidence"]);
 assertIncludes("Chinese Agent Protocols doc", zhProtocols, ["MCP 与 A2A 的区别", "当前 Agent Card discovery", "不表示 `/api` 已经是标准 A2A"]);
 assertIncludes("English Agent Protocols doc", enProtocols, ["MCP vs A2A", "Current Agent Card Discovery", "does not mean `/api` is a standard A2A"]);
-assertIncludes("Chinese task command docs", zhTaskManagement, ["## 输入指令", "`/goal <需求>`", "`/plan <需求>`", "`/help`", "`//`"]);
-assertIncludes("English task command docs", enTaskManagement, ["## Input Commands", "`/goal <request>`", "`/plan <request>`", "`/help`", "`//`"]);
+assertIncludes("Chinese task command docs", zhTaskManagement, ["## 输入指令", "`/goal <需求>`", "`/plan <需求>`", "`/review <范围>`", "`/verify <目标>`", "`/knowledge [问题]`", "`/cache [范围]`", "`/model` 打开模型配置", "`/help`", "`//`"]);
+assertIncludes("English task command docs", enTaskManagement, ["## Input Commands", "`/goal <request>`", "`/plan <request>`", "`/review <scope>`", "`/verify <target>`", "`/knowledge [question]`", "`/cache [scope]`", "`/model` opens Model Providers", "`/help`", "`//`"]);
 assertIncludes("Chinese localized doc headings", `${zhInput}\n${zhTaskManagement}\n${zhTroubleshooting}`, ["# 输入方式", "# 任务管理", "# 故障排除"]);
 assertNotIncludes("Chinese localized doc headings", `${zhInput}\n${zhTaskManagement}\n${zhTroubleshooting}`, ["# Input Methods", "# Task Management", "# Troubleshooting"]);
 assertNotIncludes("Docs index protocol summary", docsIndexSource, ["Understand Loop Engineering", "only aligned", "只是协议对齐"]);

@@ -3803,6 +3803,34 @@ describe("Workbench components", () => {
     expect(screen.queryByRole("dialog", { name: /Start \/goal/ })).not.toBeInTheDocument();
   });
 
+  it("opens library sections from slash navigation commands without creating tasks", async () => {
+    const createBodies: Array<{ goal: string; runMode?: string }> = [];
+
+    stubAuthedFetch(async (url, init) => {
+        const method = init?.method ?? "GET";
+        if (url === "/api/task-folders") return jsonResponse(defaultFolders());
+        if (url === "/api/preferences") return jsonResponse(defaultPreferences("en-US"));
+        if (url === "/api/permissions/global") return jsonResponse([]);
+        if (url === "/api/tasks" && method === "POST") {
+          createBodies.push(JSON.parse(String(init?.body)) as { goal: string; runMode?: string });
+          return jsonResponse(task);
+        }
+        if (url === "/api/tasks") return jsonResponse([]);
+        if (url.startsWith("/api/knowledge")) return jsonResponse(url === "/api/knowledge/models" ? { assets: [], presets: [], tinyRerankerEnabled: false } : []);
+        if (isWorkbenchCollectionEndpoint(url)) return jsonResponse([]);
+        return jsonResponse([]);
+      });
+
+    render(<App />);
+    expect(await screen.findByLabelText("Task input")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "/knowledge" } });
+    fireEvent.click(getSendButton());
+    expect(await screen.findByRole("heading", { name: "Knowledge" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/library/knowledge");
+    expect(createBodies).toEqual([]);
+  });
+
   it("requires an extra acknowledgement before full risk goal mode", async () => {
     const now = new Date().toISOString();
     const created: TaskDetail = {

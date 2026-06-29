@@ -510,10 +510,18 @@ Common commands:
   aw serve [--host 127.0.0.1] [--port 5177]
   aw health
   aw task list|show|create|send|watch|control|approve|transcript|attachments
+  aw folder list|create|rename|delete|clear
+  aw permission list|grant|revoke
+  aw prefs get|set
+  aw profile get|set
   aw provider list|add|update|delete|activate|test
   aw mcp server list|add|update|delete|connect|disconnect
   aw knowledge list|add|upload|search|reindex|update|delete|models|download-model
   aw skill list|show|create|update|delete|export|merge|duplicates|cleanup-duplicates|conflicts|curator
+  aw memory task-list|task-delete|project-list|project-create|project-update|project-delete|compact
+  aw curator runs|run|delete|clear
+  aw reflection runs|run|delete|clear
+  aw schedule list|create|update|delete
   aw search-provider list|add|update|delete
   aw integration list|add|update|delete|connect|disconnect
 
@@ -592,6 +600,59 @@ Knowledge:
   aw knowledge delete <knowledgeId>
   aw knowledge models
   aw knowledge download-model <kind> <url> [--file-name <name>]
+
+Notes:
+  knowledge search reads saved Library content, not live workspace files.
+  Use --project <id> when you need a specific task-folder scope.
+`;
+  }
+  if (group === "permission") {
+    return `${shortUsage()}
+
+Permissions:
+  aw permission list
+  aw permission grant <riskCategory> [--reason <text>]
+  aw permission revoke <riskCategory>
+
+Risk categories:
+  host_observation | workspace_read | workspace_write | shell | network | destructive
+`;
+  }
+  if (group === "memory") {
+    return `${shortUsage()}
+
+Memory:
+  aw memory task-list
+  aw memory task-delete <memoryId>
+  aw memory project-list
+  aw memory project-create "<title>" "<content>" [--category <name>] [--tag <tag>]... [--project <id>]
+  aw memory project-update <projectMemoryId> [--title <title>] [--content <content>] [--category <name>] [--tag <tag>]...
+  aw memory project-delete <projectMemoryId>
+  aw memory compact [--folder <id>]
+
+Notes:
+  Keep durable memory stable, reusable, and non-secret. Use project memory for confirmed project facts.
+`;
+  }
+  if (group === "schedule") {
+    return `${shortUsage()}
+
+Scheduled tasks:
+  aw schedule list
+  aw schedule create "<title>" "<prompt>" [--folder <id>] [--schedule-kind interval|daily|weekly]
+                     [--frequency <value>] [--time HH:mm] [--interval-hours <n>] [--interval-minutes <n>]
+  aw schedule update <scheduledTaskId> [--title <title>] [--prompt <prompt>] [--status active|paused]
+  aw schedule delete <scheduledTaskId>
+`;
+  }
+  if (group === "curator" || group === "reflection") {
+    return `${shortUsage()}
+
+${group === "curator" ? "Curator" : "Reflection"} runs:
+  aw ${group} runs
+  aw ${group} run
+  aw ${group} delete <runId>
+  aw ${group} clear
 `;
   }
   if (group === "search-provider") {

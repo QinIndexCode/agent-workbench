@@ -9,7 +9,7 @@ import type { ComposerMode, ComposerPermissionMode, PermissionPreset } from "./c
 import type { LibrarySection } from "./components/LibraryView.js";
 import type { SettingsSection } from "./components/SettingsView.js";
 import type { DocsSection } from "./docs/index.js";
-import { parseComposerSlashCommand } from "./slash-commands.js";
+import { parseComposerSlashCommand, type SlashNavigationTarget } from "./slash-commands.js";
 import { useWorkbenchData } from "./useWorkbenchData.js";
 
 type PreloadableComponent<TProps extends object> = ComponentType<TProps> & {
@@ -624,9 +624,9 @@ export function App() {
       setCommandIssue(command.message);
       return;
     }
-    if (command.kind === "open_help") {
+    if (command.kind === "navigate") {
       setCommandIssue(null);
-      openDocs("task-management");
+      openSlashNavigation(command.target);
       return;
     }
     setCommandIssue(null);
@@ -649,6 +649,20 @@ export function App() {
       setPendingAttachments([]);
       return task;
     });
+  }
+
+  function openSlashNavigation(target: SlashNavigationTarget) {
+    if (target.area === "docs") {
+      openDocs(target.section);
+      return;
+    }
+    if (target.area === "library") {
+      navigateRoute({ view: "library", section: target.section });
+      setTaskDrawerOpen(false);
+      return;
+    }
+    navigateRoute({ view: "settings", section: target.section });
+    setTaskDrawerOpen(false);
   }
 
   async function confirmGoalMode(preset: GoalPermissionPreset) {

@@ -98,6 +98,16 @@ describe("CLI command contracts", () => {
     expect(searchIo.stdoutText()).toContain("aw search-provider add");
     expect(searchIo.stdoutText()).toContain("{query}");
 
+    const mainIo = captureIo();
+    expect(await runCli(["--help"], { io: mainIo })).toBe(0);
+    expect(mainIo.stdoutText()).toContain("aw permission list|grant|revoke");
+    expect(mainIo.stdoutText()).toContain("aw memory task-list|task-delete|project-list");
+    expect(mainIo.stdoutText()).toContain("aw schedule list|create|update|delete");
+
+    const knowledgeIo = captureIo();
+    expect(await runCli(["knowledge", "--help"], { io: knowledgeIo })).toBe(0);
+    expect(knowledgeIo.stdoutText()).toContain("knowledge search reads saved Library content");
+
     const typoIo = captureIo();
     expect(await runCli(["tsk", "list"], { io: typoIo })).toBe(2);
     expect(typoIo.stderrText()).toContain('Did you mean "aw task"?');
