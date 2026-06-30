@@ -16,7 +16,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@agent-workbench/shared": "0.1.0",
-    "onnxruntime-node": "^1.26.0",
+    "onnxruntime-node": "^1.27.0",
     "openai": "^5.0.1"
   }
 }
