@@ -35,7 +35,8 @@ const visibleEventTypes = new Set<TaskEvent["type"]>([
   "web_search_result"
 ]);
 
-const FOLLOW_BOTTOM_DISTANCE = 120;
+const FOLLOW_BOTTOM_DISTANCE = 56;
+const USER_SCROLL_UP_RELEASE_DISTANCE = 8;
 const MAX_RENDERED_TIMELINE_ITEMS = 360;
 const LARGE_READ_FILE_SUMMARY_BYTES = 24 * 1024;
 const LARGE_READ_FILE_SUMMARY_LINES = 360;
@@ -47,6 +48,11 @@ const LONG_TEXT_PAGE_CHARS = 12 * 1024;
 const LIVE_TEXT_PREVIEW_CHARS = 12 * 1024;
 const LIVE_TEXT_HEAD_CHARS = 3 * 1024;
 const LIVE_TEXT_TAIL_CHARS = 9 * 1024;
+const LIVE_STREAM_SMOOTH_FRAME_MS = 26;
+const LIVE_STREAM_SMOOTH_MIN_CHARS = 22;
+const LIVE_STREAM_SMOOTH_MAX_CHARS = 96;
+const LIVE_STREAM_SMOOTH_MAX_LAG_CHARS = 1800;
+const LIVE_STREAM_BOUNDARY_CHARS = " \t\n\r.,;:!?，。！？；：、)]}）】》>\"'”’";
 
 export function Timeline({
   language,
@@ -79,6 +85,7 @@ export function Timeline({
   const scrollAnimationRef = useRef<number | null>(null);
   const resizeFollowFrameRef = useRef<number | null>(null);
   const scrollFollowUntilRef = useRef(0);
+  const lastObservedScrollTopRef = useRef(0);
   const taskIdRef = useRef<string | null>(null);
   const [atBottom, setAtBottom] = useState(true);
   const [jumpButtonPosition, setJumpButtonPosition] = useState<{ bottom: number; left: number } | null>(null);
@@ -126,8 +133,22 @@ export function Timeline({
   }, [taskId]);
 
   const updateBottomState = useCallback((node: HTMLDivElement) => {
+    const previousScrollTop = lastObservedScrollTopRef.current;
+    const scrollDelta = node.scrollTop - previousScrollTop;
+    lastObservedScrollTopRef.current = node.scrollTop;
     const isAtBottom = getDistanceFromBottom(node) <= FOLLOW_BOTTOM_DISTANCE;
     if (Date.now() < scrollFollowUntilRef.current) {
+      const userPulledAway = scrollDelta < -USER_SCROLL_UP_RELEASE_DISTANCE && !isAtBottom;
+      if (userPulledAway) {
+        if (scrollAnimationRef.current !== null) {
+          window.cancelAnimationFrame(scrollAnimationRef.current);
+          scrollAnimationRef.current = null;
+        }
+        scrollFollowUntilRef.current = 0;
+        followBottomRef.current = false;
+        setAtBottom(false);
+        return false;
+      }
       followBottomRef.current = true;
       if (isAtBottom) {
         scrollFollowUntilRef.current = 0;
@@ -150,6 +171,7 @@ export function Timeline({
     const smooth = behavior === "smooth" && !prefersReducedMotion();
     scrollFollowUntilRef.current = Date.now() + (smooth ? 360 : 80);
     animateScrollToBottom(node, smooth ? 220 : 0, scrollAnimationRef, () => {
+      lastObservedScrollTopRef.current = node.scrollTop;
       scrollFollowUntilRef.current = 0;
       setAtBottom(getDistanceFromBottom(node) <= FOLLOW_BOTTOM_DISTANCE);
     });
@@ -626,9 +648,12 @@ function TimelineEvent({
       );
     }
     return (
-      <article className="event assistant_delta" aria-live="polite">
+      <article className="event assistant_delta streaming" aria-live="polite" data-streaming="true">
         <MessageActions alwaysShow={alwaysShowActions} copied={copied} language={language} onCopy={() => onCopy(item.summary)} />
-        <TimelineText content={item.summary} language={language} live />
+        <div className="streamingAssistantBody">
+          <TimelineText content={item.summary} language={language} live smooth />
+          <span className="streamingCaret" aria-hidden="true" />
+        </div>
       </article>
     );
   }
@@ -1105,22 +1130,35 @@ function RunningStatus({ language }: { language?: string | null | undefined }) {
   const label = language === "zh-CN" ? "思考中..." : "Thinking...";
   return (
     <article className="event running_status" aria-live="polite" aria-label={label}>
+      <span className="runningStatusGlow" aria-hidden="true" />
       <span className="thinkingDots" aria-hidden="true">
         <span />
         <span />
         <span />
       </span>
+      <span className="runningStatusLabel">{label}</span>
     </article>
   );
 }
 
-function TimelineText({ content, language, live = false }: { content: string; language?: string | null | undefined; live?: boolean | undefined }) {
+function TimelineText({
+  content,
+  language,
+  live = false,
+  smooth = false
+}: {
+  content: string;
+  language?: string | null | undefined;
+  live?: boolean | undefined;
+  smooth?: boolean | undefined;
+}) {
   const [visibleChars, setVisibleChars] = useState(LONG_TEXT_PAGE_CHARS);
   const zh = language === "zh-CN";
+  const visibleContent = useSmoothLiveText(content, live && smooth);
   if (live) {
-    const livePreview = liveTextPreview(content, zh);
+    const livePreview = liveTextPreview(visibleContent, zh);
     return (
-      <div className="timelineLongText live">
+      <div className={`timelineLongText live${smooth ? " smooth" : ""}`}>
         <pre className="timelineLongTextBody live">
           {livePreview}
         </pre>
@@ -1149,6 +1187,65 @@ function TimelineText({ content, language, live = false }: { content: string; la
       ) : null}
     </div>
   );
+}
+
+function useSmoothLiveText(content: string, enabled: boolean): string {
+  const [visible, setVisible] = useState(content);
+  const visibleRef = useRef(content);
+
+  useEffect(() => {
+    if (!enabled || prefersReducedMotion()) {
+      visibleRef.current = content;
+      setVisible(content);
+      return;
+    }
+    if (!content.startsWith(visibleRef.current) || visibleRef.current.length > content.length) {
+      visibleRef.current = content;
+      setVisible(content);
+      return;
+    }
+    if (visibleRef.current === content) return;
+
+    let cancelled = false;
+    let timer: number | null = null;
+    const tick = () => {
+      if (cancelled) return;
+      let current = visibleRef.current;
+      if (!content.startsWith(current) || current.length > content.length) {
+        visibleRef.current = content;
+        setVisible(content);
+        return;
+      }
+      const lag = content.length - current.length;
+      if (lag <= 0) return;
+      if (lag > LIVE_STREAM_SMOOTH_MAX_LAG_CHARS) {
+        current = content.slice(0, Math.max(0, content.length - LIVE_STREAM_SMOOTH_MAX_LAG_CHARS));
+      }
+      const next = current + nextSmoothLiveTextChunk(content.slice(current.length));
+      visibleRef.current = next;
+      setVisible(next);
+      if (next.length < content.length) timer = window.setTimeout(tick, LIVE_STREAM_SMOOTH_FRAME_MS);
+    };
+
+    timer = window.setTimeout(tick, 12);
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [content, enabled]);
+
+  return enabled ? visible : content;
+}
+
+function nextSmoothLiveTextChunk(remaining: string): string {
+  if (remaining.length <= LIVE_STREAM_SMOOTH_MAX_CHARS) return remaining;
+  const minIndex = Math.min(LIVE_STREAM_SMOOTH_MIN_CHARS, remaining.length);
+  const maxIndex = Math.min(LIVE_STREAM_SMOOTH_MAX_CHARS, remaining.length);
+  for (let index = minIndex; index < maxIndex; index += 1) {
+    const char = remaining[index];
+    if (char && LIVE_STREAM_BOUNDARY_CHARS.includes(char)) return remaining.slice(0, index + 1);
+  }
+  return remaining.slice(0, maxIndex);
 }
 
 function liveTextPreview(content: string, zh: boolean): string {

@@ -1592,9 +1592,9 @@ function localResponseCacheKey(
     endpoint: promptCacheEndpointScope(baseURL),
     scope,
     toolUseMode,
-    tools,
+    toolFamily: promptCacheToolFamily(tools, toolUseMode),
     messages: normalizedMessages,
-    version: 3
+    version: 4
   });
   return `local-aw-${createHash("sha256").update(fingerprint).digest("hex").slice(0, 40)}`;
 }
@@ -1671,7 +1671,7 @@ function normalizeMessagesForLocalResponseCache(
           if (!isRecord(call) || !isRecord(call["function"])) return null;
           const id = typeof call["id"] === "string" ? call["id"] : "";
           const name = typeof call["function"]["name"] === "string" ? call["function"]["name"] : "";
-          const args = typeof call["function"]["arguments"] === "string" ? call["function"]["arguments"] : "";
+          const args = typeof call["function"]["arguments"] === "string" ? normalizeToolCallArgumentsForLocalResponseCache(call["function"]["arguments"]) : "";
           if (!id || !name) return null;
           calls.push({
             id: normalizeToolCallId(id),
@@ -1693,6 +1693,16 @@ function normalizeMessagesForLocalResponseCache(
     return null;
   }
   return normalized;
+}
+
+function normalizeToolCallArgumentsForLocalResponseCache(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    return stableJson(JSON.parse(trimmed));
+  } catch {
+    return trimmed;
+  }
 }
 
 function normalizeDirectAnswerCacheText(value: string): string {

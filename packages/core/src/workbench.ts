@@ -4588,25 +4588,10 @@ export class AgentWorkbench {
     if (preferences.llmApprovalMode !== "non_destructive") return { evaluated: false, allowed: false, reason: "LLM approval disabled." };
     if (assessment.category === "destructive") return { evaluated: true, allowed: false, reason: "Destructive tools cannot be approved by LLM policy." };
 
-    const prompt = [
-      "Decide whether this tool call can be auto-approved without asking the user.",
-      "Return only compact JSON: {\"allow\": boolean, \"reason\": string}.",
-      "Allow only if the risk, arguments, and task context are clear and non-destructive.",
-      "Deny when the action is ambiguous, destructive, credential-sensitive, or broader than the recorded task need.",
-      "",
-      stableStringify({
-        taskId: task.id,
-        taskStatus: task.status,
-        workRoot: task.workRoot,
-        toolName: call.toolName,
-        riskCategory: assessment.category,
-        riskReason: assessment.reason,
-        args: this.sanitizeForPreferences(call.args, preferences),
-        metadata: this.sanitizeForPreferences(metadata, preferences)
-      })
-    ].join("\n");
+    const prompt = buildLlmApprovalReviewPrompt(task, call, assessment, metadata, preferences);
+    const approvalTaskId = `${task.id}:llm_approval:${call.id}`;
     const approvalTask: TaskDetail = {
-      id: `${task.id}:llm_approval:${call.id}`,
+      id: approvalTaskId,
       title: "LLM tool approval review",
       kind: "primary",
       folderId: task.folderId,
@@ -4619,11 +4604,19 @@ export class AgentWorkbench {
       events: [
         {
           id: createId("event"),
-          taskId: `${task.id}:llm_approval:${call.id}`,
+          taskId: approvalTaskId,
           type: "user_message",
           createdAt: nowIso(),
           summary: prompt,
           payload: {}
+        },
+        {
+          id: createId("event"),
+          taskId: approvalTaskId,
+          type: "model_no_progress",
+          createdAt: nowIso(),
+          summary: "Finalize LLM approval decision without tools.",
+          payload: { status: "finalizing", reason: "finalization_before_turn_limit", uiHidden: true }
         }
       ]
     };
@@ -5073,6 +5066,61 @@ function parseApprovalDecision(message: string): { allow: boolean; reason: strin
       ? "LLM approval review allowed the non-destructive tool."
       : "LLM approval review denied the tool.";
   return { allow, reason };
+}
+
+const LLM_APPROVAL_REVIEW_INSTRUCTIONS = [
+  "Decide whether this tool call can be auto-approved without asking the user.",
+  "Return only compact JSON: {\"allow\": boolean, \"reason\": string}.",
+  "This is a permission decision, not task completion. Do not claim that the tool ran.",
+  "Allow only when the recorded task need, risk category, arguments, and metadata are clear, bounded, and non-destructive.",
+  "Deny when the action is ambiguous, destructive, credential-sensitive, broader than the task need, or likely to mutate state unexpectedly.",
+  "Never approve destructive operations; the application should ask the user for those."
+].join("\n");
+
+function buildLlmApprovalReviewPrompt(
+  task: TaskDetail,
+  call: ToolCall,
+  assessment: RiskAssessment,
+  metadata: Record<string, unknown>,
+  preferences: UserPreferences
+): string {
+  const payload = {
+    taskNeed: compactLlmApprovalText(latestUserText(task), preferences),
+    tool: {
+      name: call.toolName,
+      riskCategory: assessment.category,
+      riskReason: compactLlmApprovalText(assessment.reason, preferences),
+      args: sanitizeLlmApprovalValue(call.args, preferences),
+      metadata: filterLlmApprovalMetadata(metadata, preferences)
+    }
+  };
+  return [
+    LLM_APPROVAL_REVIEW_INSTRUCTIONS,
+    "",
+    "Decision payload:",
+    stableStringify(payload)
+  ].join("\n");
+}
+
+function filterLlmApprovalMetadata(metadata: Record<string, unknown>, preferences: UserPreferences): Record<string, unknown> {
+  const allowedKeys = ["command", "cwd", "path", "query", "url", "method", "riskCategory", "toolName"];
+  const filtered: Record<string, unknown> = {};
+  for (const key of allowedKeys) {
+    if (metadata[key] === undefined) continue;
+    filtered[key] = sanitizeLlmApprovalValue(metadata[key], preferences);
+  }
+  return filtered;
+}
+
+function sanitizeLlmApprovalValue<T>(value: T, preferences: UserPreferences): T {
+  return preferences.sanitizeSensitiveData ? sanitizeSensitiveValue(value) : value;
+}
+
+function compactLlmApprovalText(value: string, preferences: UserPreferences): string {
+  const sanitized = preferences.sanitizeSensitiveData ? sanitizeSensitiveText(value) : value;
+  const normalized = sanitized.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 900) return normalized;
+  return `${normalized.slice(0, 420)} ... ${normalized.slice(-420)}`;
 }
 
 function parseFirstJsonObject(value: string): Record<string, unknown> | null {

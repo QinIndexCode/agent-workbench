@@ -192,6 +192,8 @@ describe("CLI command contracts", () => {
     expect(io.stdoutText()).toContain("mimo-v2.5-pro");
     expect(io.stdoutText()).toContain("90%");
     expect(io.stdoutText()).toContain("met");
+    expect(io.stdoutText()).toContain("cache guidance:");
+    expect(io.stdoutText()).toContain("cache target met; avoid unnecessary model, API base, and tool-set changes");
   });
 
   it("preserves raw prompt-cache telemetry under --json", async () => {

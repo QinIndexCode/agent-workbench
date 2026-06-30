@@ -68,11 +68,13 @@ a warmup; later requests with the same provider, model, endpoint, and sorted
 tool-name family reuse a stable `prompt_cache_key`. Full tool schemas are still
 sent in each request, so cache routing does not remove capabilities or weaken
 task quality. Agent Workbench also keeps a short in-memory response cache for
-initial direct-answer final replies. It is not used for tool calls, file
-evidence, image inputs, or tasks with existing history. For production cost
-control, the rolling `cachedTokens / inputTokens` target is at least 90%. If the
-ratio stays below target, first check for frequent model, Base URL, tool-set, or
-provider-cache-mode changes.
+initial direct-answer final replies and repeated final summaries after the same
+tool evidence. That cache normalizes tool-call ids, JSON argument order, and
+tool-schema wording changes while still scoping by model, endpoint, task shape,
+tool-name family, and message content so unrelated tasks cannot be mixed. For
+production cost control, the rolling `cachedTokens / inputTokens` target is at
+least 90%. If the ratio stays below target, first check for frequent model, Base
+URL, tool-set, system-prompt, knowledge-summary, or provider-cache-mode changes.
 
 In the Web UI, the task side panel's context audit shows recent token and cache
 records while keeping the main timeline quiet. In the CLI, use

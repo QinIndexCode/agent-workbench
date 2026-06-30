@@ -2900,8 +2900,13 @@ class ChatteryProgressToolExecutor {
 }
 
 class LlmApprovalDecisionModel implements ModelClient {
+  approvalTasks: TaskDetail[] = [];
+  approvalPrompts: string[] = [];
+
   async next(task: Parameters<ModelClient["next"]>[0]): Promise<ModelTurn> {
     if (task.id.includes(":llm_approval:")) {
+      this.approvalTasks.push(task);
+      this.approvalPrompts.push(task.events.map((event) => event.summary).join("\n"));
       return {
         kind: "final",
         message: JSON.stringify({ allow: true, reason: "Read-only evidence is safe for this task." }),
@@ -4678,9 +4683,10 @@ describe("AgentWorkbench", () => {
     try {
       writeFileSync(join(root, "note.txt"), "approval evidence\n", "utf8");
       const store = new InMemoryWorkbenchStore();
+      const model = new LlmApprovalDecisionModel();
       const workbench = new AgentWorkbench({
         store,
-        model: new LlmApprovalDecisionModel()
+        model
       });
       const folder = await workbench.createTaskFolder({ name: "approval-root", rootPath: root });
       await workbench.updatePreferences({
@@ -4699,6 +4705,14 @@ describe("AgentWorkbench", () => {
       expect(result?.payload["ok"]).toBe(true);
       expect(completed.events.some((event) => event.type === "token_usage_recorded")).toBe(true);
       expect(completed.approvals).toHaveLength(0);
+      expect(model.approvalTasks[0]?.events.some((event) => event.type === "model_no_progress" && event.payload["status"] === "finalizing")).toBe(true);
+      expect(model.approvalPrompts[0]).toContain("Decision payload:");
+      expect(model.approvalPrompts[0]).toContain('"taskNeed": "read the note file"');
+      expect(model.approvalPrompts[0]).not.toContain(root);
+      expect(model.approvalPrompts[0]).not.toContain("workRoot");
+      expect(model.approvalPrompts[0]).not.toContain("resolvedCwd");
+      expect(model.approvalPrompts[0]).not.toContain("argsPreview");
+      expect(model.approvalPrompts[0]).not.toContain("taskId");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -8288,6 +8302,7 @@ describe("OpenAIModelClient", () => {
 
   it("serves repeated post-tool final summaries from the local response cache", async () => {
     let requestCount = 0;
+    let toolListCalls = 0;
     const capturedRequests: Array<Record<string, unknown>> = [];
     const server = createServer((request, response) => {
       let body = "";
@@ -8313,9 +8328,29 @@ describe("OpenAIModelClient", () => {
         apiKey: "test-key",
         baseURL: `http://127.0.0.1:${port}/v1`,
         model: "post-tool-cache-model",
-        contextAssembler: new ContextAssembler(store)
+        contextAssembler: new ContextAssembler(store),
+        toolProvider: {
+          listModelTools: async () => {
+            toolListCalls += 1;
+            const even = toolListCalls % 2 === 0;
+            return [{
+              type: "function",
+              function: {
+                name: "cache_probe",
+                description: even ? "Probe cache summaries with provider-expanded wording." : "Probe cache summaries.",
+                parameters: {
+                  type: "object",
+                  properties: even
+                    ? { beta: { type: "number" }, alpha: { type: "string" } }
+                    : { alpha: { type: "string" }, beta: { type: "number" } },
+                  required: even ? ["alpha", "beta"] : ["alpha"]
+                }
+              }
+            }];
+          }
+        }
       });
-      const makeTask = (id: string, callId: string): TaskDetail => ({
+      const makeTask = (id: string, callId: string, args: Record<string, unknown>): TaskDetail => ({
         kind: "primary",
         id,
         title: "Post tool cache",
@@ -8332,7 +8367,7 @@ describe("OpenAIModelClient", () => {
             taskId: id,
             type: "user_message",
             createdAt: nowIso(),
-            summary: "Summarize the observed command result.",
+            summary: "Use cache_probe, then summarize the observed result.",
             payload: {}
           },
           {
@@ -8340,8 +8375,8 @@ describe("OpenAIModelClient", () => {
             taskId: id,
             type: "tool_requested",
             createdAt: nowIso(),
-            summary: "run_command",
-            payload: { toolCallId: callId, toolName: "run_command", args: { command: "node --version" } }
+            summary: "cache_probe",
+            payload: { toolCallId: callId, toolName: "cache_probe", args }
           },
           {
             id: `event_result_${id}`,
@@ -8349,19 +8384,20 @@ describe("OpenAIModelClient", () => {
             type: "tool_result",
             createdAt: nowIso(),
             summary: "Tool completed",
-            payload: { toolCallId: callId, toolName: "run_command", args: { command: "node --version" }, ok: true, output: "v24.0.0" }
+            payload: { toolCallId: callId, toolName: "cache_probe", args, ok: true, output: "stable observation" }
           }
         ]
       });
 
-      const first = await client.next(makeTask("task_post_tool_cache_one", "call_original"));
-      const second = await client.next(makeTask("task_post_tool_cache_two", "call_different_id"));
+      const first = await client.next(makeTask("task_post_tool_cache_one", "call_original", { alpha: "same", beta: 2 }));
+      const second = await client.next(makeTask("task_post_tool_cache_two", "call_different_id", { beta: 2, alpha: "same" }));
 
       expect(first.kind).toBe("final");
       expect(second.kind).toBe("final");
+      expect(toolListCalls).toBe(2);
       expect(requestCount).toBe(1);
       expect(capturedRequests[0]?.["messages"]).toEqual(expect.arrayContaining([
-        expect.objectContaining({ role: "tool", tool_call_id: "call_original", content: expect.stringContaining("v24.0.0") })
+        expect.objectContaining({ role: "tool", tool_call_id: "call_original", content: expect.stringContaining("stable observation") })
       ]));
       expect(second.usage?.cacheSource).toBe("local_response");
       expect(second.usage?.cachedTokens).toBe(second.usage?.inputTokens);

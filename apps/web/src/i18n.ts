@@ -260,7 +260,7 @@ const copy = {
       mcpApprovalMode: "MCP 审批模式",
       mcpApprovalHelp: "仅影响 MCP 工具；仍以工具风险和显式授权为边界。",
       llmApprovalMode: "LLM 自动审批（实验）",
-      llmApprovalHelp: "仅在规则仍需审批时触发，最多批准非破坏性工具；会额外消耗 token。",
+      llmApprovalHelp: "仅在自动审批规则没有覆盖时触发，用短审查请求判断非破坏性工具；破坏性操作永远需要人工确认。",
       llmApprovalAutoOnly: "仅在自动审批模式下可启用；其他模式按风险列表和用户审批执行。",
       fullAccessTitle: "确认完全访问",
       fullAccessBody: "完全访问会全局允许所有风险类别，包括删除、覆盖、终止进程等破坏性操作。只有在你确定当前工作区和任务边界可信时才启用。",
@@ -275,7 +275,7 @@ const copy = {
       },
       llmApprovalOptions: {
         off: "关闭",
-        non_destructive: "仅非破坏性"
+        non_destructive: "审查非破坏性"
       },
       permissionModes: {
         ask: {
@@ -582,7 +582,7 @@ const copy = {
       mcpApprovalMode: "MCP approval mode",
       mcpApprovalHelp: "Only affects MCP tools, still bounded by tool risk and explicit grants.",
       llmApprovalMode: "LLM auto approval (experimental)",
-      llmApprovalHelp: "Runs only when rules still require approval, can approve non-destructive tools only, and uses extra tokens.",
+      llmApprovalHelp: "Runs only when auto-approval rules do not cover the request; uses a short no-tool review for non-destructive tools. Destructive actions always ask.",
       llmApprovalAutoOnly: "Available only in Auto approval mode; other modes follow the risk list and user approval.",
       fullAccessTitle: "Confirm full access",
       fullAccessBody: "Full access globally allows every risk class, including delete, overwrite, process termination, and other destructive operations. Enable it only when this workspace and task boundary are trusted.",
@@ -597,7 +597,7 @@ const copy = {
       },
       llmApprovalOptions: {
         off: "Off",
-        non_destructive: "Non-destructive only"
+        non_destructive: "Review non-destructive"
       },
       permissionModes: {
         ask: {

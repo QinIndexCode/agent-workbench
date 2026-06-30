@@ -51,6 +51,7 @@ describe("Composer", () => {
   it("keeps the running primary action as stop instead of a loader", () => {
     const { container } = render(<Composer busy={true} running={true} mode="guidance" onSubmit={vi.fn()} onStop={vi.fn()} />);
 
+    expect(container.querySelector(".composer.composerRunning")).not.toBeNull();
     expect(screen.getByLabelText("Stop")).toBeDisabled();
     expect(container.querySelector(".composerPrimaryButton .spin")).toBeNull();
   });
@@ -768,6 +769,7 @@ describe("Workbench components", () => {
       expect(screen.getByText("1,999,998 total tokens")).toBeInTheDocument();
       expect(screen.getByText("cached 900,000 tokens · turn 90% · rolling 91%")).toBeInTheDocument();
       expect(screen.getByText("90% cache target met")).toBeInTheDocument();
+      expect(screen.getByText("Cache performance is on target; avoid needless model, base URL, and tool-set churn.")).toBeInTheDocument();
 
       const sidebarPoint = container.querySelector(".rollbackCheckpointMain");
       expect(sidebarPoint).not.toBeNull();
@@ -1175,8 +1177,58 @@ describe("Workbench components", () => {
     expect(screen.getByText("Now let me read the file.")).toBeInTheDocument();
     expect(screen.getByText("Thinking")).toBeInTheDocument();
     expect(screen.getAllByText("Need to inspect the file first.").length).toBeGreaterThan(0);
-    expect(container.querySelector(".event.assistant_delta")).not.toBeNull();
+    expect(container.querySelector(".event.assistant_delta.streaming")).not.toBeNull();
+    expect(container.querySelector(".streamingCaret")).not.toBeNull();
     expect(container.querySelectorAll(".event.tool_result")).toHaveLength(1);
+  });
+
+  it("smooths newly arriving assistant stream text instead of flashing the full tail immediately", async () => {
+    vi.useFakeTimers();
+    const initialEvent: TaskEvent = {
+      id: "event_smooth_delta",
+      taskId: "task_1",
+      type: "assistant_delta",
+      createdAt: new Date().toISOString(),
+      summary: "Start ",
+      payload: { streamId: "stream_smooth", delta: "Start " }
+    };
+    const longTail = `${"word ".repeat(80)}SMOOTH-STREAM-END`;
+    try {
+      const { rerender } = render(
+        <Timeline
+          task={{
+            ...task,
+            events: [initialEvent]
+          }}
+          onApprovalDecision={vi.fn()}
+        />
+      );
+      expect(screen.getByText("Start")).toBeInTheDocument();
+
+      rerender(
+        <Timeline
+          task={{
+            ...task,
+            events: [
+              {
+                ...initialEvent,
+                summary: `Start ${longTail}`,
+                payload: { streamId: "stream_smooth", delta: `Start ${longTail}` }
+              }
+            ]
+          }}
+          onApprovalDecision={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByText(/SMOOTH-STREAM-END/)).not.toBeInTheDocument();
+      await act(async () => {
+        vi.advanceTimersByTime(2200);
+      });
+      expect(screen.getByText(/SMOOTH-STREAM-END/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("merges running tool progress and final results into one path-focused card", () => {
@@ -2014,7 +2066,69 @@ describe("Workbench components", () => {
     );
 
     expect(screen.getByLabelText("Thinking...")).toBeInTheDocument();
+    expect(screen.getByText("Thinking...")).toBeInTheDocument();
     expect(container.querySelector(".event.running_status .thinkingDots")).not.toBeNull();
+    expect(container.querySelector(".event.running_status .runningStatusGlow")).not.toBeNull();
+  });
+
+  it("does not pull the reader back to the bottom after a manual upward scroll", () => {
+    const scrollHost = document.createElement("div");
+    let scrollHeight = 1000;
+    Object.defineProperty(scrollHost, "clientHeight", { configurable: true, get: () => 400 });
+    Object.defineProperty(scrollHost, "scrollHeight", { configurable: true, get: () => scrollHeight });
+    scrollHost.scrollTop = 600;
+    const scrollContainerRef = { current: scrollHost };
+    const runningTask: TaskDetail = {
+      ...task,
+      status: "running",
+      events: [
+        {
+          id: "event_user_scroll_lock",
+          taskId: "task_1",
+          type: "user_message",
+          createdAt: new Date().toISOString(),
+          summary: "Please stream progress",
+          payload: {}
+        }
+      ]
+    };
+
+    const { rerender } = render(
+      <Timeline
+        task={runningTask}
+        scrollContainerRef={scrollContainerRef}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+    expect(scrollHost.scrollTop).toBe(600);
+
+    scrollHost.scrollTop = 430;
+    fireEvent.scroll(scrollHost);
+    expect(screen.getByRole("button", { name: "Jump to latest" })).toBeInTheDocument();
+
+    scrollHeight = 1300;
+    rerender(
+      <Timeline
+        task={{
+          ...runningTask,
+          events: [
+            ...runningTask.events,
+            {
+              id: "event_stream_after_user_scroll",
+              taskId: "task_1",
+              type: "assistant_delta",
+              createdAt: new Date().toISOString(),
+              summary: "new streamed text",
+              payload: { streamId: "stream_after_scroll", delta: "new streamed text" }
+            }
+          ]
+        }}
+        scrollContainerRef={scrollContainerRef}
+        onApprovalDecision={vi.fn()}
+      />
+    );
+
+    expect(scrollHost.scrollTop).toBe(430);
   });
 
   it("coalesces burst streaming deltas before rendering transcript state", () => {
@@ -2434,8 +2548,9 @@ describe("Workbench components", () => {
     fireEvent.click(within(fullAccessDialog).getByText("取消"));
     fireEvent.click(screen.getByRole("radio", { name: /自动审批/ }));
     expect(onMode).toHaveBeenCalledWith("auto_approval", ["host_observation", "workspace_read", "network"]);
+    expect(screen.getByText("仅在自动审批规则没有覆盖时触发，用短审查请求判断非破坏性工具；破坏性操作永远需要人工确认。")).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("LLM 自动审批（实验）"));
-    fireEvent.click(screen.getByRole("option", { name: "仅非破坏性" }));
+    fireEvent.click(screen.getByRole("option", { name: "审查非破坏性" }));
     expect(onPreference).toHaveBeenCalledWith(expect.objectContaining({ llmApprovalMode: "non_destructive" }));
 
     rerender(
@@ -3533,6 +3648,7 @@ describe("Workbench components", () => {
     expect(await screen.findByText(/VISIBLE-TAIL-MARKER/)).toBeInTheDocument();
     expect(screen.queryByText(/OMITTED-MIDDLE-MARKER/)).not.toBeInTheDocument();
     expect(container.querySelectorAll(".event.assistant_delta")).toHaveLength(1);
+    expect(container.querySelector(".event.assistant_delta.streaming")).not.toBeNull();
     expect(container.querySelector(".timelineLongText.live")).not.toBeNull();
     fireEvent.change(screen.getByLabelText("Task input"), { target: { value: "still responsive" } });
     expect(screen.getByLabelText("Task input")).toHaveValue("still responsive");

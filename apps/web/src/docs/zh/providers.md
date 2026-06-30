@@ -73,9 +73,10 @@ Provider 返回缓存 Token 数据时，Workbench 会记录实际命中量。
 缓存命中率目标按滚动窗口计算。第一轮请求通常是 warmup，后续同一
 provider/model/endpoint 和同一组工具名称族会复用稳定 `prompt_cache_key`。
 完整工具 Schema 仍会随每次请求发送，因此缓存路由不会削弱可用工具能力或任务质量。
-Workbench 还会为初始直答类 final 回复保留短期内存响应缓存；涉及工具调用、文件证据、
-图片输入或已有历史的任务不会使用这层缓存。达到生产成本目标时，滚动
-`cachedTokens / inputTokens` 应不低于 90%；如果低于目标，优先检查是否频繁切换模型、
-Base URL、工具集合或禁用了 provider 侧缓存。
+Workbench 还会为初始直答类 final 回复，以及相同工具证据后的 final 摘要保留短期内存响应缓存。
+这层缓存会归一化工具调用 ID、JSON 参数顺序和工具 Schema 文案差异，但仍按模型、
+endpoint、任务形态、工具名称族和消息内容隔离，避免把不同任务混用。达到生产成本目标时，
+滚动 `cachedTokens / inputTokens` 应不低于 90%；如果低于目标，优先检查是否频繁切换模型、
+Base URL、工具集合、系统提示、知识摘要或禁用了 provider 侧缓存。
 
 在 Web 端，任务侧栏的“上下文审计”会显示最近的 Token 与缓存命中记录，主时间线默认不展示这些运营噪音。CLI 可用 `aw provider cache` 或 `aw provider cache --task <taskId>` 查看同一批服务端记录。

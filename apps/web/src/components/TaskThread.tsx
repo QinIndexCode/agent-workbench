@@ -666,13 +666,14 @@ function ContextAuditView({ language, summaries, task }: { language?: string | n
       {tokenEvents.length > 0 ? (
         <details open>
           <summary>{zh ? "Token 与缓存" : "Token usage and cache"}</summary>
-          <div className="compactList">
+          <div className="cacheUsageList">
             {tokenEvents.slice(-5).map((event) => (
-              <article className="providerRow" key={event.id}>
+              <article className={`cacheUsageRow ${tokenUsageCacheStatus(event)}`} key={event.id}>
                 <div>
                   <strong>{formatTokenUsageTitle(event, language)}</strong>
                   <small>{formatTokenUsageDetail(event, language)}</small>
                   <small>{formatTokenUsageTarget(event, language)}</small>
+                  <small className="cacheUsageAdvice">{formatTokenUsageAdvice(event, language)}</small>
                 </div>
               </article>
             ))}
@@ -697,6 +698,13 @@ function formatTokenUsageTitle(event: TaskEvent, language?: string | null): stri
   return event.summary || (zh ? "Token 用量记录" : "Token usage recorded");
 }
 
+function tokenUsageCacheStatus(event: TaskEvent): "met" | "below" | "warming" {
+  const met = event.payload["cacheTargetMet"];
+  if (met === true) return "met";
+  if (met === false) return "below";
+  return "warming";
+}
+
 function formatTokenUsageDetail(event: TaskEvent, language?: string | null): string {
   const zh = language === "zh-CN";
   const cached = numericPayload(event, "cachedTokens") ?? 0;
@@ -717,6 +725,37 @@ function formatTokenUsageTarget(event: TaskEvent, language?: string | null): str
   if (met === true) return zh ? `已达到 ${formatPercent(target)} 缓存命中目标` : `${formatPercent(target)} cache target met`;
   if (met === false) return zh ? `低于 ${formatPercent(target)} 缓存命中目标` : `below ${formatPercent(target)} cache target`;
   return zh ? `正在预热 ${formatPercent(target)} 缓存命中目标` : `warming ${formatPercent(target)} cache target`;
+}
+
+function formatTokenUsageAdvice(event: TaskEvent, language?: string | null): string {
+  const zh = language === "zh-CN";
+  const source = String(event.payload["source"] ?? "");
+  const cached = numericPayload(event, "cachedTokens") ?? 0;
+  const hit = numericPayload(event, "cacheHitRatio");
+  const met = event.payload["cacheTargetMet"];
+  if (source === "local_response") {
+    return zh
+      ? "本地响应缓存已复用最终回复；保持相同模型、API Base 与工具结果可继续降低重复请求。"
+      : "Local response cache reused the final answer; keep the same model, API base, and tool evidence to reduce repeat calls.";
+  }
+  if (met === true) {
+    return zh
+      ? "缓存表现达标；继续减少模型、Base URL 与工具集合切换，避免无谓打散上下文。"
+      : "Cache performance is on target; avoid needless model, base URL, and tool-set churn.";
+  }
+  if (cached === 0) {
+    return zh
+      ? "未看到 provider 缓存命中；检查当前厂商是否支持 prompt cache，并保持长前缀稳定。"
+      : "No provider cache hit yet; confirm this provider supports prompt cache and keep long prefixes stable.";
+  }
+  if (met === false || (hit !== undefined && hit < 0.9)) {
+    return zh
+      ? "命中率偏低；优先稳定系统提示、知识摘要、模型与工具集合，不要削减完成任务所需上下文。"
+      : "Hit rate is low; stabilize system prompts, knowledge summaries, model, and tools without removing needed context.";
+  }
+  return zh
+    ? "缓存仍在预热；相同任务形态重复运行后会更接近真实命中率。"
+    : "Cache is still warming; repeated similar task shapes will make the hit rate more representative.";
 }
 
 function numericPayload(event: TaskEvent, key: string): number | undefined {

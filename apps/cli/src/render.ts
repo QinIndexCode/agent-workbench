@@ -74,7 +74,10 @@ function renderPromptCacheStats(values: PromptCacheStats[]): string {
   const widths = columns.map((column) => Math.max(column.length, ...rows.map((item) => item[column as keyof typeof item].length)));
   const header = columns.map((column, index) => column.padEnd(widths[index] ?? column.length)).join("  ");
   const renderedRows = rows.map((item) => columns.map((column, index) => item[column as keyof typeof item].padEnd(widths[index] ?? column.length)).join("  "));
-  return `${[header, ...renderedRows].join("\n")}\n`;
+  const guidance = values.map((item) =>
+    `- ${shortDateTime(item.createdAt)} ${item.model}: ${promptCacheAdvice(item.source, item.cachedTokens, item.cacheHitRatio, item.cacheTargetMet)}`
+  );
+  return `${[header, ...renderedRows].join("\n")}\n\ncache guidance:\n${guidance.join("\n")}\n`;
 }
 
 function renderTokenUsageEvent(event: TaskEvent): string {
@@ -88,9 +91,26 @@ function renderTokenUsageEvent(event: TaskEvent): string {
     cached === undefined ? undefined : `cached=${cached}`,
     hit === undefined ? undefined : `hit=${formatPercent(hit)}`,
     rolling === undefined ? undefined : `rolling=${formatPercent(rolling)}`,
-    `target=${target}`
+    `target=${target}`,
+    `next="${promptCacheAdvice(String(event.payload["source"] ?? ""), cached, hit, event.payload["cacheTargetMet"])}"`
   ].filter(Boolean);
   return parts.length > 0 ? `token usage: ${parts.join(" ")}` : `token usage: ${event.summary}`;
+}
+
+function promptCacheAdvice(source: string, cachedTokens: number | undefined, hitRatio: number | undefined, targetMet: unknown): string {
+  if (source === "local_response") {
+    return "local response cache reused the final answer; keep the same model, API base, and tool evidence stable";
+  }
+  if (targetMet === true) {
+    return "cache target met; avoid unnecessary model, API base, and tool-set changes";
+  }
+  if ((cachedTokens ?? 0) === 0) {
+    return "no provider cache hit yet; confirm provider support and keep long prompt prefixes stable";
+  }
+  if (targetMet === false || (hitRatio !== undefined && hitRatio < 0.9)) {
+    return "hit rate is low; stabilize system prompts, knowledge summaries, model, and tools without dropping needed context";
+  }
+  return "cache is warming; repeated similar task shapes will make the hit rate more representative";
 }
 
 function renderRecord(value: Record<string, unknown>): string {
