@@ -6,6 +6,7 @@ import { Composer, type ComposerMode, type ComposerPermissionMode, type Permissi
 import type { EngineStatus } from "./TaskList.js";
 import type { ConversationSummary, TaskRollbackPreview, TaskRollbackRequest, TaskRollbackResult } from "@agent-workbench/shared";
 import { describeSkillSource, describeSkillStatus, summarizeTaskSkills } from "./skillUx.js";
+import "../styles/thread.css";
 
 const PLAN_PANEL_COLLAPSED_KEY = "agent-workbench.planPanel.collapsed";
 const LEGACY_PLAN_PANEL_COLLAPSED_KEY = "scc.planPanel.collapsed";

@@ -35,7 +35,13 @@ When content changes, files are uploaded, or content is cleared, Agent Workbench
 
 ## Retrieval-quality checks
 
-Use the page's **Search test** or `aw knowledge search "<query>" --json` to inspect actual hits, snippets, and matched fields. If recall is poor, first improve titles, tags, source names, and stable keywords in the body, then consider local model assets.
+Use the page's **Search test** or `aw knowledge search "<query>" --json` to inspect actual hits, snippets, matched fields, retrieval grade, and confidence. If recall is poor, first improve titles, tags, source names, and stable keywords in the body, then consider local model assets.
+
+## Intelligent retrieval
+
+The retrieval layer builds a local query plan before using the same index and rerank pipeline. The default `auto` mode keeps the original question and adds normalized queries, code identifier splitting, common domain aliases, and step-back queries. For example, Chinese permission and approval questions can recall English `approval`, `permission`, and `grant` notes, and `load knowledge index` can match `loadKnowledgeIndex`.
+
+These upgrades are deterministic local logic and do not add LLM calls, so they do not lower prompt-cache hit rates. When you need to debug recall, run `aw knowledge search "<query>" --diagnostics --json` to inspect query variants, the matched query, retrieval grade, and confidence. Use `--mode keyword` when you need stricter keyword matching.
 
 ## Advanced retrieval
 

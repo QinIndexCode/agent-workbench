@@ -789,70 +789,6 @@
   cursor: default;
 }
 
-.taskDeleteConfirm {
-  display: grid;
-  grid-column: 1 / -1;
-  gap: 8px;
-  margin-top: 7px;
-  padding: 10px;
-  color: var(--muted-strong);
-  background: var(--surface-container-low);
-  border: 1px solid var(--danger-border);
-  border-radius: var(--radius-sm);
-  cursor: default;
-}
-
-.taskDeleteConfirmHeader,
-.taskDeleteActions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.taskDeleteConfirmHeader strong {
-  color: var(--text);
-  font-size: 13px;
-}
-
-.taskDeleteConfirmHeader button {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  color: var(--muted);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.taskDeleteConfirm p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.taskDeleteConfirm label {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.taskDeleteConfirm input {
-  margin: 2px 0 0;
-}
-
-.taskDeleteConfirm .disabledOption {
-  color: var(--muted);
-  opacity: 0.55;
-}
-
 .deleteOptions {
   display: grid;
   gap: 10px;
@@ -881,31 +817,6 @@
 .deleteOptions .disabledOption {
   color: var(--muted);
   opacity: 0.55;
-}
-
-.taskDeleteActions {
-  justify-content: end;
-}
-
-.taskDeleteActions button {
-  min-height: 28px;
-  padding: 0 9px;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.taskDeleteActions .dangerButton {
-  color: var(--danger);
-  background: var(--danger-bg);
-  border-color: var(--danger-border);
-}
-
-.sidebarEmpty {
-  margin: 14px 6px;
-  font-size: 13px;
 }
 
 .sidebarUtility {

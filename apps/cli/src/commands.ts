@@ -280,7 +280,13 @@ async function knowledge(args: ParsedArgs, client: ApiClient): Promise<unknown> 
       ...readKnowledgePayload(requirePosition(args, 2, "file path"))
     })));
   }
-  if (action === "search") return client.request("/api/knowledge/search", jsonRequest("POST", bodyFrom(args, { query: requirePosition(args, 2, "query"), projectId: optionString(args, "project"), limit: optionNumber(args, "limit") })));
+  if (action === "search") return client.request("/api/knowledge/search", jsonRequest("POST", bodyFrom(args, {
+    query: requirePosition(args, 2, "query"),
+    projectId: optionString(args, "project"),
+    limit: optionNumber(args, "limit"),
+    mode: optionString(args, "mode"),
+    includeDiagnostics: hasOption(args, "diagnostics") ? optionBoolean(args, "diagnostics") : undefined
+  })));
   if (action === "reindex") return client.request(`/api/knowledge/${encodeURIComponent(requirePosition(args, 2, "knowledge id"))}/reindex`, { method: "POST" });
   if (action === "update") return client.request(`/api/knowledge/${encodeURIComponent(requirePosition(args, 2, "knowledge id"))}`, jsonRequest("PATCH", bodyFrom(args, { title: optionString(args, "title"), content: optionString(args, "content"), tags: optionList(args, "tag"), sourceUri: optionString(args, "source-uri") })));
   if (action === "delete") return client.request(`/api/knowledge/${encodeURIComponent(requirePosition(args, 2, "knowledge id"))}`, { method: "DELETE" });
@@ -594,7 +600,7 @@ Knowledge:
   aw knowledge list [--project <id>]
   aw knowledge add "<title>" "<content>" [--project <id>] [--tag <tag>]...
   aw knowledge upload <path> [--title <title>] [--project <id>] [--tag <tag>]...
-  aw knowledge search "<query>" [--project <id>] [--limit <n>]
+  aw knowledge search "<query>" [--project <id>] [--limit <n>] [--mode auto|keyword|hybrid] [--diagnostics]
   aw knowledge reindex <knowledgeId>
   aw knowledge update <knowledgeId> [--title <title>] [--content <content>] [--tag <tag>]...
   aw knowledge delete <knowledgeId>
@@ -604,6 +610,7 @@ Knowledge:
 Notes:
   knowledge search reads saved Library content, not live workspace files.
   Use --project <id> when you need a specific task-folder scope.
+  Use --diagnostics to show query rewrites, matched query variants, grades, and confidence in --json output.
 `;
   }
   if (group === "permission") {

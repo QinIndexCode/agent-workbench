@@ -47,7 +47,8 @@ export function KnowledgePanel({
 }) {
   const text = getKnowledgeCopy(language);
   const fileRef = useRef<HTMLInputElement>(null);
-  const [localQuery, setLocalQuery] = useState("");
+  const [filterQuery, setFilterQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(items[0]?.id ?? null);
   const [page, setPage] = useState(0);
   const [modalMode, setModalMode] = useState<"create" | "edit" | null>(null);
@@ -74,7 +75,7 @@ export function KnowledgePanel({
   }, [items, pendingUploads]);
   const selected = selectedId ? displayItems.find((item) => item.id === selectedId) ?? null : null;
   const [draft, setDraft] = useState<KnowledgeDraft>(selected ? draftFromItem(selected) : emptyDraft());
-  const searchText = `${query} ${localQuery}`.trim().toLowerCase();
+  const searchText = `${query} ${filterQuery}`.trim().toLowerCase();
   const filtered = useMemo(() => {
     return displayItems.filter((item) => {
       if (kindFilter !== "all" && item.kind !== kindFilter) return false;
@@ -163,7 +164,7 @@ export function KnowledgePanel({
         <div aria-label={text.title} className="knowledgeListPane" role="region">
           <label className="skillSearch">
             <Search size={15} />
-            <input aria-label={text.search} placeholder={text.search} value={localQuery} onChange={(event) => setLocalQuery(event.target.value)} />
+            <input aria-label={text.search} placeholder={text.search} value={filterQuery} onChange={(event) => setFilterQuery(event.target.value)} />
           </label>
           <div className="knowledgeFilters">
             <select aria-label={text.kindFilter} value={kindFilter} onChange={(event) => setKindFilter(event.target.value as "all" | KnowledgeItem["kind"])}>
@@ -280,8 +281,8 @@ export function KnowledgePanel({
                       void runKnowledgeSearch();
                     }}
                   >
-                    <input aria-label={text.searchTest} value={localQuery} onChange={(event) => setLocalQuery(event.target.value)} placeholder={text.searchPlaceholder} />
-                    <button className="subtleButton" disabled={searchBusy || !localQuery.trim()} type="submit">
+                    <input aria-label={text.searchTest} value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder={text.searchPlaceholder} />
+                    <button className="subtleButton" disabled={searchBusy || !searchQuery.trim()} type="submit">
                       <Search size={14} /> {text.searchAction}
                     </button>
                   </form>
@@ -296,10 +297,20 @@ export function KnowledgePanel({
                               {Math.round(result.score * 100)}% · {text.rerank}: {result.rerankStatus ?? "skipped"}
                               {typeof result.rerankScore === "number" ? ` · ${Math.round(result.rerankScore * 100)}%` : ""}
                               {typeof result.semanticScore === "number" ? ` · fastText ${Math.round(result.semanticScore * 100)}%` : ""}
+                              {result.retrievalGrade ? ` · ${text.grade}: ${text.gradeLabels[result.retrievalGrade]}` : ""}
+                              {typeof result.confidence === "number" ? ` · ${text.confidence} ${Math.round(result.confidence * 100)}%` : ""}
                             </small>
                             {result.matchedFields?.length ? (
                               <div className="knowledgeHitFields">
                                 {result.matchedFields.map((field) => <span key={field}>{field}</span>)}
+                              </div>
+                            ) : null}
+                            {result.matchedQuery && result.matchedQuery.trim() !== searchQuery.trim() ? (
+                              <small>{text.matchedQuery}: {result.matchedQuery}</small>
+                            ) : null}
+                            {result.queryPlan?.signals.length ? (
+                              <div className="knowledgeHitFields">
+                                {result.queryPlan.signals.slice(0, 4).map((signal) => <span key={signal}>{signal.replace(/_/g, " ")}</span>)}
                               </div>
                             ) : null}
                             {result.highlights?.length ? (
@@ -523,10 +534,10 @@ export function KnowledgePanel({
   }
 
   async function runKnowledgeSearch() {
-    if (!onSearch || !localQuery.trim()) return;
+    if (!onSearch || !searchQuery.trim()) return;
     setSearchBusy(true);
     try {
-      setSearchResults(await onSearch({ query: localQuery.trim(), projectId, limit: 5 }));
+      setSearchResults(await onSearch({ query: searchQuery.trim(), projectId, limit: 5, includeDiagnostics: true }));
     } finally {
       setSearchBusy(false);
     }
@@ -708,6 +719,14 @@ function getKnowledgeCopy(language?: string | null) {
     searchPlaceholder: zh ? "输入要查找的知识..." : "Search stored knowledge...",
     searchAction: zh ? "检索" : "Search",
     rerank: zh ? "重排" : "Rerank",
+    grade: zh ? "等级" : "Grade",
+    gradeLabels: {
+      strong: zh ? "强" : "strong",
+      partial: zh ? "部分" : "partial",
+      weak: zh ? "弱" : "weak"
+    },
+    confidence: zh ? "置信度" : "confidence",
+    matchedQuery: zh ? "命中查询" : "Matched query",
     snippet: zh ? "片段" : "Snippet",
     modelTitle: zh ? "本地小模型" : "Local small models",
     modelSubtitle: zh ? "下载 fastText 向量与 TinyBERT/MobileBERT ONNX 重排器，下载后自动配置到资料库检索。" : "Download fastText vectors and TinyBERT/MobileBERT ONNX rerankers. Downloads are configured automatically for knowledge search.",

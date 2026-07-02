@@ -2749,9 +2749,19 @@ describe("Workbench components", () => {
         score: 0.86,
         matchedFields: ["title", "content"],
         highlights: [{ field: "content", text: "Use approvals for runtime changes." }],
-        rankReason: "Matched title, content; lexical score 0.86.",
+        rankReason: "Matched title, content; strong retrieval via original; lexical score 0.86.",
         rerankStatus: "applied",
-        rerankScore: 0.9
+        rerankScore: 0.9,
+        retrievalGrade: "strong",
+        confidence: 0.92,
+        matchedQuery: "approval permissions",
+        queryPlan: {
+          originalQuery: "approval",
+          normalizedQuery: "approval",
+          strategy: "hybrid",
+          variants: [{ kind: "alias", query: "approval permissions", weight: 0.84 }],
+          signals: ["permission_aliases"]
+        }
       }
     ]);
 
@@ -2775,6 +2785,10 @@ describe("Workbench components", () => {
     fireEvent.click(screen.getByRole("button", { name: /Search/ }));
     await waitFor(() => expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({ query: "approval", projectId: "folder_ops" })));
     await waitFor(() => expect(screen.getAllByText("content").length).toBeGreaterThan(0));
+    expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({ includeDiagnostics: true }));
+    expect(screen.getByText(/Grade: strong/i)).toBeInTheDocument();
+    expect(screen.getByText(/Matched query: approval permissions/i)).toBeInTheDocument();
+    expect(screen.getByText(/permission aliases/i)).toBeInTheDocument();
     expect(screen.getByText(/Local structured|lexical score/i)).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Select item Runtime notes"));
     fireEvent.click(screen.getByText("Reindex selected"));

@@ -92,8 +92,10 @@ Use `//` when you want to send ordinary text that begins with `/`. Agent Workben
 ## Execution Flow
 
 1. User sends a message
-2. System assembles context (history + current input + attachments)
+2. System preflights context size, then assembles core rules, durable memory, recent session history, and immediate work context
 3. Model generates a response
 4. If the response includes tool calls, the system handles them per the permission policy
 5. Tool results are returned to the model for continued generation
 6. Final result is presented to the user
+
+Large tasks are compacted before a request is sent, not after a provider error. The runtime trims low-value raw detail near 70% of the context window, updates the session summary near 85%, and bounds large tool logs near 95% while preserving the latest user request and decisive evidence.

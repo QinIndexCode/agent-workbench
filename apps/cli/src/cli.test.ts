@@ -352,6 +352,7 @@ describe("CLI integration against the local server API", () => {
     const knowledge = await expectCli(["--api", api, "knowledge", "add", "CLI Knowledge", "runtime approvals are searchable", "--tag", "cli", "--json"], /CLI Knowledge/);
     const knowledgeId = JSON.parse(knowledge.stdoutText()).id as string;
     await expectCli(["--api", api, "knowledge", "search", "runtime approvals", "--json"], /CLI Knowledge/);
+    await expectCli(["--api", api, "knowledge", "search", "权限审批", "--diagnostics", "--json"], /permission_aliases/);
     await runOk(["--api", api, "knowledge", "delete", knowledgeId, "--json"]);
     const knowledgeList = await expectCli(["--api", api, "knowledge", "list", "--json"], /\[/);
     expect(knowledgeList.stdoutText()).not.toContain("CLI Knowledge");
@@ -383,14 +384,14 @@ describe("CLI integration against the local server API", () => {
 async function runOk(argv: string[]): Promise<ReturnType<typeof captureIo>> {
   const io = captureIo();
   const code = await runCli(argv, { io });
-  expect(code).toBe(0);
+  expect(code, io.stderrText()).toBe(0);
   return io;
 }
 
 async function expectCli(argv: string[], pattern: RegExp): Promise<ReturnType<typeof captureIo>> {
   const io = captureIo();
   const code = await runCli(argv, { io });
-  expect(code).toBe(0);
+  expect(code, io.stderrText()).toBe(0);
   expect(io.stdoutText()).toMatch(pattern);
   return io;
 }

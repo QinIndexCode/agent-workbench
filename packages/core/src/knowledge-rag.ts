@@ -46,7 +46,7 @@ export class KnowledgeSearchToolExecutor implements ToolExecutorDelegate {
     const limit = clamp(Number(call.args["limit"] ?? 5), 1, 12);
     try {
       await options.onProgress?.({ status: "running", operation: "knowledge_search", message: `Searching knowledge for "${query}".`, progress: { processed: 0, total: limit, unit: "items" } });
-      const matches = await searchKnowledge(this.store, { query, projectId, limit });
+      const matches = await searchKnowledge(this.store, { query, projectId, limit, includeDiagnostics: true });
       if (options.signal?.aborted) return result(call, false, "Knowledge search cancelled by user.");
       await options.onProgress?.({ status: "running", operation: "knowledge_search", message: `Ranked ${matches.length} knowledge result(s).`, progress: { processed: matches.length, total: limit, unit: "items" } });
       return result(
@@ -56,8 +56,12 @@ export class KnowledgeSearchToolExecutor implements ToolExecutorDelegate {
           {
             query,
             projectId,
+            ...(matches[0]?.queryPlan ? { queryPlan: matches[0].queryPlan } : {}),
             results: matches.map((match) => ({
               score: Number(match.score.toFixed(4)),
+              confidence: match.confidence === undefined ? undefined : Number(match.confidence.toFixed(4)),
+              retrievalGrade: match.retrievalGrade,
+              matchedQuery: match.matchedQuery,
               knowledgeId: match.item.id,
               title: match.item.title,
               chunkId: match.chunk.id,
@@ -131,10 +135,14 @@ export async function indexKnowledgeItem(store: WorkbenchStore, item: KnowledgeI
 
 export async function searchKnowledge(store: WorkbenchStore, request: KnowledgeSearchRequest): Promise<KnowledgeSearchResult[]> {
   const preferences = await store.getPreferences();
-  const chunks = (await store.listKnowledgeChunks()).filter((chunk) => chunk.projectId === request.projectId);
+  const projectId = request.projectId ?? "default";
+  const limit = clamp(Number(request.limit ?? 5), 1, 12);
+  const includeDiagnostics = request.includeDiagnostics === true;
+  const plan = buildKnowledgeQueryPlan(request.query, request.mode ?? "auto");
+  const chunks = (await store.listKnowledgeChunks()).filter((chunk) => chunk.projectId === projectId);
   if (chunks.length === 0) return [];
-  const items = new Map((await store.listKnowledgeItems(request.projectId)).map((item) => [item.id, item]));
-  const queryTerms = unique(tokenize(request.query));
+  const items = new Map((await store.listKnowledgeItems(projectId)).map((item) => [item.id, item]));
+  const queryTerms = unique(plan.variants.flatMap((variant) => variant.terms));
   if (queryTerms.length === 0) return [];
   const chunkIds = chunks.map((chunk) => chunk.id);
   const persistedEntries = await store.listKnowledgeSearchIndexEntries(chunkIds);
@@ -148,24 +156,28 @@ export async function searchKnowledge(store: WorkbenchStore, request: KnowledgeS
   if (indexEntries.length === 0) return [];
 
   const querySet = new Set(queryTerms);
+  const weightedTerms = buildWeightedQueryTerms(plan.variants);
   const chunkById = new Map(chunks.map((chunk) => [chunk.id, chunk]));
   const documentFrequency = buildDocumentFrequency(indexEntries, querySet);
   const averageLength = chunks.reduce((sum, chunk) => sum + Math.max(1, chunk.tokenEstimate), 0) / chunks.length;
   const rawScores = new Map<string, number>();
-  const semanticScores = await scoreFastTextSemanticMatches(preferences.knowledgeFastTextVectorPath, request.query, chunks);
+  const semanticScores = plan.strategy === "hybrid"
+    ? await scoreFastTextSemanticMatches(preferences.knowledgeFastTextVectorPath, semanticQueryForPlan(plan), chunks)
+    : new Map<string, number>();
   const matchedFields = new Map<string, Set<KnowledgeSearchField>>();
   const coveredTerms = new Map<string, Set<string>>();
   const k1 = 1.2;
 
   for (const entry of indexEntries) {
-    if (!querySet.has(entry.term)) continue;
+    const termWeight = weightedTerms.get(entry.term);
+    if (termWeight === undefined) continue;
     const chunk = chunkById.get(entry.chunkId);
     if (!chunk) continue;
     const df = documentFrequency.get(entry.term)?.size ?? 0;
     const idf = Math.max(0.01, Math.log(1 + (chunks.length - df + 0.5) / (df + 0.5)));
     const lengthNorm = 0.25 + 0.75 * (Math.max(1, chunk.tokenEstimate) / Math.max(1, averageLength));
     const tf = (entry.frequency * (k1 + 1)) / (entry.frequency + k1 * lengthNorm);
-    rawScores.set(entry.chunkId, (rawScores.get(entry.chunkId) ?? 0) + idf * tf * fieldWeights[entry.field]);
+    rawScores.set(entry.chunkId, (rawScores.get(entry.chunkId) ?? 0) + idf * tf * fieldWeights[entry.field] * termWeight);
     getOrCreateSet(matchedFields, entry.chunkId).add(entry.field);
     getOrCreateSet(coveredTerms, entry.chunkId).add(entry.term);
   }
@@ -184,21 +196,28 @@ export async function searchKnowledge(store: WorkbenchStore, request: KnowledgeS
     const item = items.get(chunk.knowledgeId);
     if (!item) continue;
     const fields = sortFields(matchedFields.get(chunkId) ?? (semanticScore ? new Set<KnowledgeSearchField>(["content"]) : new Set()));
-    const highlights = buildHighlights(item, chunk, fields, request.query, queryTerms);
+    const variantMatch = bestVariantMatch(item, chunk, coveredTerms.get(chunkId) ?? new Set(), plan.variants);
+    const highlights = buildHighlights(item, chunk, fields, variantMatch.matchedQuery || request.query, queryTerms);
     const lexicalScore = normalizeLexicalScore(rawScore, maxRawScore);
     const score = combineSearchScores(lexicalScore, semanticScore);
-    const coverageRatio = (coveredTerms.get(chunkId)?.size ?? 0) / querySet.size;
-    const phraseMatch = hasPhraseMatch(item, chunk, request.query);
+    const coverageRatio = variantMatch.coverageRatio;
+    const phraseMatch = variantMatch.phraseMatch;
     const titleTagMatch = fields.includes("title") || fields.includes("tags");
+    const retrievalGrade = gradeRetrieval(score, coverageRatio, fields, semanticScore, phraseMatch);
+    const confidence = scoreRetrievalConfidence(score, coverageRatio, semanticScore, phraseMatch, titleTagMatch, retrievalGrade);
     candidates.push({
       item,
       chunk,
       score,
       ...(semanticScore !== undefined ? { semanticScore } : {}),
-      rankReason: formatRankReason(fields, score, coverageRatio, semanticScore),
+      rankReason: formatRankReason(fields, score, coverageRatio, semanticScore, variantMatch.kind, retrievalGrade),
       highlights,
       matchedFields: fields,
       rerankStatus: "skipped",
+      retrievalGrade,
+      confidence,
+      ...(variantMatch.matchedQuery ? { matchedQuery: variantMatch.matchedQuery } : {}),
+      ...(includeDiagnostics ? { queryPlan: publicQueryPlan(plan) } : {}),
       coverageRatio,
       phraseMatch,
       titleTagMatch,
@@ -216,9 +235,9 @@ export async function searchKnowledge(store: WorkbenchStore, request: KnowledgeS
 
   const recalled = candidates
     .sort(compareLocalCandidates)
-    .slice(0, Math.max(request.limit, maxLocalRecall));
+    .slice(0, Math.max(limit, maxLocalRecall));
   return (await applyRerank(preferences, request.query, recalled))
-    .slice(0, request.limit)
+    .slice(0, limit)
     .map(({ coverageRatio: _coverageRatio, phraseMatch: _phraseMatch, titleTagMatch: _titleTagMatch, ...result }) => result);
 }
 
@@ -310,17 +329,34 @@ export function embedText(text: string): number[] {
 
 function tokenize(text: string): string[] {
   const tokens: string[] = [];
-  for (const match of text.toLowerCase().matchAll(/[\p{Script=Han}]+|[a-z0-9_]{2,}/gu)) {
-    const token = match[0];
-    if (!token) continue;
-    if (/^[\p{Script=Han}]+$/u.test(token)) {
-      for (const char of token) tokens.push(char);
-      for (let index = 0; index < token.length - 1; index += 1) tokens.push(token.slice(index, index + 2));
+  for (const match of text.matchAll(/[\p{Script=Han}]+|[A-Za-z0-9_]{2,}/gu)) {
+    const rawToken = match[0];
+    if (!rawToken) continue;
+    if (/^[\p{Script=Han}]+$/u.test(rawToken)) {
+      for (const char of rawToken) tokens.push(char);
+      for (let index = 0; index < rawToken.length - 1; index += 1) tokens.push(rawToken.slice(index, index + 2));
       continue;
     }
-    tokens.push(token);
+    for (const token of unique([...lexicalForms(rawToken), ...identifierSubtokens(rawToken)])) tokens.push(token);
   }
   return tokens;
+}
+
+function identifierSubtokens(token: string): string[] {
+  const spaced = token
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_$-]+/g, " ");
+  return unique(spaced.split(/\s+/).flatMap((part) => lexicalForms(part))).filter((part) => part.length >= 2);
+}
+
+function lexicalForms(token: string): string[] {
+  const lower = token.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (lower.length < 2) return [];
+  const forms = [lower];
+  if (lower.length > 4 && lower.endsWith("ies")) forms.push(`${lower.slice(0, -3)}y`);
+  else if (lower.length > 4 && lower.endsWith("s") && !lower.endsWith("ss")) forms.push(lower.slice(0, -1));
+  return unique(forms);
 }
 
 function hashToken(token: string): number {
@@ -352,6 +388,263 @@ type RankedKnowledgeResult = KnowledgeSearchResult & {
   phraseMatch: boolean;
   titleTagMatch: boolean;
 };
+
+type KnowledgeSearchMode = NonNullable<KnowledgeSearchRequest["mode"]>;
+type KnowledgeQueryVariantKind = "original" | "normalized" | "identifier" | "alias" | "step_back";
+type KnowledgeSearchStrategy = "keyword" | "hybrid";
+
+type KnowledgeQueryVariant = {
+  kind: KnowledgeQueryVariantKind;
+  query: string;
+  weight: number;
+  terms: string[];
+};
+
+type KnowledgeQueryPlan = {
+  originalQuery: string;
+  normalizedQuery: string;
+  strategy: KnowledgeSearchStrategy;
+  variants: KnowledgeQueryVariant[];
+  signals: string[];
+};
+
+const maxQueryVariants = 5;
+const stopTerms = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "by",
+  "for",
+  "from",
+  "how",
+  "in",
+  "is",
+  "of",
+  "on",
+  "or",
+  "the",
+  "to",
+  "with",
+  "what",
+  "why",
+  "怎么",
+  "什么",
+  "如何",
+  "是否",
+  "需要"
+]);
+
+const aliasGroups: Array<{ signal: string; pattern: RegExp; terms: string[] }> = [
+  {
+    signal: "permission_aliases",
+    pattern: /权限|审批|批准|许可|授权|approval|approve|permission|grant|allow|policy|risk/iu,
+    terms: ["approval", "approvals", "approve", "permission", "permissions", "grant", "grants", "allow", "policy", "policies", "risk", "risky"]
+  },
+  {
+    signal: "knowledge_aliases",
+    pattern: /知识库|资料库|检索|搜索|搜素|召回|重排|向量|语义|rag|knowledge|retrieval|search|rerank|vector|semantic/iu,
+    terms: ["knowledge", "rag", "retrieval", "retrieve", "search", "index", "chunk", "citation", "rerank", "semantic", "vector"]
+  },
+  {
+    signal: "cache_aliases",
+    pattern: /缓存|命中|token|上下文|cache|cached|hit.?rate|prompt/iu,
+    terms: ["cache", "cached", "prompt", "token", "tokens", "hit", "rate", "ratio", "context", "stable"]
+  },
+  {
+    signal: "agent_tool_aliases",
+    pattern: /工具|调用|能力|agent|代理|mcp|tool|skill|memory|browser|computer/iu,
+    terms: ["agent", "tool", "tools", "mcp", "skill", "skills", "memory", "browser", "computer", "capability"]
+  },
+  {
+    signal: "provider_aliases",
+    pattern: /模型|厂商|供应商|apikey|api key|provider|model|endpoint|base.?url/iu,
+    terms: ["provider", "providers", "model", "models", "endpoint", "baseurl", "api", "key", "apikey"]
+  }
+];
+
+function buildKnowledgeQueryPlan(query: string, mode: KnowledgeSearchMode): KnowledgeQueryPlan {
+  const originalQuery = query.trim();
+  const normalizedQuery = normalizeQueryText(originalQuery);
+  const strategy: KnowledgeSearchStrategy = mode === "keyword" ? "keyword" : "hybrid";
+  const variants: KnowledgeQueryVariant[] = [];
+  const signals: string[] = [];
+  addQueryVariant(variants, "original", originalQuery, 1);
+  if (normalizedQuery && normalizedQuery.toLowerCase() !== originalQuery.toLowerCase()) {
+    addQueryVariant(variants, "normalized", normalizedQuery, 0.96);
+    signals.push("normalized_query");
+  }
+  const identifierQuery = identifierQueryFor(originalQuery);
+  if (identifierQuery) {
+    addQueryVariant(variants, "identifier", identifierQuery, 0.9);
+    signals.push("identifier_split");
+  }
+  if (strategy === "hybrid") {
+    const alias = aliasQueryFor(originalQuery, normalizedQuery);
+    if (alias.query) {
+      addQueryVariant(variants, "alias", alias.query, 0.84);
+      signals.push(...alias.signals);
+    }
+  }
+  const stepBackQuery = stepBackQueryFor(variants);
+  if (stepBackQuery) {
+    addQueryVariant(variants, "step_back", stepBackQuery, 0.78);
+    signals.push("step_back_query");
+  }
+  return {
+    originalQuery,
+    normalizedQuery: normalizedQuery || originalQuery,
+    strategy,
+    variants: variants.slice(0, maxQueryVariants),
+    signals: unique(signals)
+  };
+}
+
+function addQueryVariant(variants: KnowledgeQueryVariant[], kind: KnowledgeQueryVariantKind, query: string, weight: number): void {
+  const compact = compactQuery(query);
+  if (!compact) return;
+  const terms = searchTerms(compact);
+  if (terms.length === 0) return;
+  const duplicate = variants.find((variant) => sameTermSet(variant.terms, terms));
+  if (duplicate) {
+    duplicate.weight = Math.max(duplicate.weight, weight);
+    return;
+  }
+  variants.push({ kind, query: compact, weight, terms });
+}
+
+function normalizeQueryText(query: string): string {
+  return compactQuery(query)
+    .replace(/搜素/gu, "搜索")
+    .replace(/[“”]/gu, "\"")
+    .replace(/[‘’]/gu, "'")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_./\\:-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function compactQuery(query: string): string {
+  return query.replace(/\s+/g, " ").trim();
+}
+
+function identifierQueryFor(query: string): string {
+  const terms = unique([...query.matchAll(/[A-Za-z][A-Za-z0-9_$-]{2,}/g)].flatMap((match) => identifierSubtokens(match[0] ?? "")))
+    .filter((term) => term.length > 1 && !stopTerms.has(term))
+    .slice(0, 12);
+  return terms.length >= 2 ? terms.join(" ") : "";
+}
+
+function aliasQueryFor(originalQuery: string, normalizedQuery: string): { query: string; signals: string[] } {
+  const source = `${originalQuery} ${normalizedQuery}`.toLowerCase();
+  const existingTerms = new Set(searchTerms(source));
+  const terms: string[] = [];
+  const signals: string[] = [];
+  for (const group of aliasGroups) {
+    if (!group.pattern.test(source)) continue;
+    signals.push(group.signal);
+    for (const term of group.terms) {
+      for (const form of lexicalForms(term)) {
+        if (!existingTerms.has(form)) terms.push(form);
+      }
+    }
+  }
+  return { query: unique(terms).slice(0, 14).join(" "), signals };
+}
+
+function stepBackQueryFor(variants: KnowledgeQueryVariant[]): string {
+  const preferred = unique(
+    variants
+      .flatMap((variant) => variant.terms)
+      .filter((term) => term.length > 2 && !stopTerms.has(term) && !/^\d+$/u.test(term))
+  );
+  if (preferred.length < 2) return "";
+  const original = variants[0]?.terms ?? [];
+  const stepBackTerms = preferred.slice(0, 10);
+  return sameTermSet(original, stepBackTerms) ? "" : stepBackTerms.join(" ");
+}
+
+function buildWeightedQueryTerms(variants: KnowledgeQueryVariant[]): Map<string, number> {
+  const weights = new Map<string, number>();
+  for (const variant of variants) {
+    for (const term of variant.terms) {
+      weights.set(term, Math.max(weights.get(term) ?? 0, variant.weight));
+    }
+  }
+  return weights;
+}
+
+function semanticQueryForPlan(plan: KnowledgeQueryPlan): string {
+  return unique([plan.originalQuery, plan.normalizedQuery, ...plan.variants.filter((variant) => variant.kind === "alias").map((variant) => variant.query)])
+    .filter(Boolean)
+    .join(" ");
+}
+
+function publicQueryPlan(plan: KnowledgeQueryPlan): NonNullable<KnowledgeSearchResult["queryPlan"]> {
+  return {
+    originalQuery: plan.originalQuery,
+    normalizedQuery: plan.normalizedQuery,
+    strategy: plan.strategy,
+    signals: plan.signals,
+    variants: plan.variants.map((variant) => ({
+      kind: variant.kind,
+      query: variant.query,
+      weight: variant.weight
+    }))
+  };
+}
+
+function bestVariantMatch(
+  item: KnowledgeItem,
+  chunk: KnowledgeChunk,
+  coveredTerms: Set<string>,
+  variants: KnowledgeQueryVariant[]
+): { coverageRatio: number; phraseMatch: boolean; matchedQuery: string; kind: KnowledgeQueryVariantKind } {
+  let best = { score: -1, coverageRatio: 0, phraseMatch: false, matchedQuery: variants[0]?.query ?? "", kind: (variants[0]?.kind ?? "original") as KnowledgeQueryVariantKind };
+  for (const variant of variants) {
+    const denominator = Math.max(1, Math.min(variant.terms.length, 6));
+    const coverageRatio = clamp01(variant.terms.filter((term) => coveredTerms.has(term)).length / denominator);
+    const phraseMatch = hasPhraseMatch(item, chunk, variant.query);
+    const score = coverageRatio * variant.weight + (phraseMatch ? 0.24 : 0);
+    if (score > best.score) best = { score, coverageRatio, phraseMatch, matchedQuery: variant.query, kind: variant.kind };
+  }
+  return best;
+}
+
+function gradeRetrieval(score: number, coverageRatio: number, fields: KnowledgeSearchField[], semanticScore: number | undefined, phraseMatch: boolean): "strong" | "partial" | "weak" {
+  const metadataMatch = fields.includes("title") || fields.includes("tags") || fields.includes("heading") || fields.includes("fileName");
+  if (score >= 0.82 || phraseMatch || (metadataMatch && coverageRatio >= 0.5) || (semanticScore ?? 0) >= 0.78) return "strong";
+  if (score >= 0.42 || coverageRatio >= 0.25 || (semanticScore ?? 0) >= semanticRecallThreshold) return "partial";
+  return "weak";
+}
+
+function scoreRetrievalConfidence(
+  score: number,
+  coverageRatio: number,
+  semanticScore: number | undefined,
+  phraseMatch: boolean,
+  titleTagMatch: boolean,
+  grade: "strong" | "partial" | "weak"
+): number {
+  const gradeFloor = grade === "strong" ? 0.72 : grade === "partial" ? 0.42 : 0.12;
+  return clamp01(Math.max(
+    gradeFloor,
+    score * 0.58 + coverageRatio * 0.18 + (semanticScore ?? 0) * 0.1 + (phraseMatch ? 0.08 : 0) + (titleTagMatch ? 0.06 : 0)
+  ));
+}
+
+function searchTerms(query: string): string[] {
+  return unique(tokenize(query).filter((term) => !stopTerms.has(term))).slice(0, 64);
+}
+
+function sameTermSet(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const rightSet = new Set(right);
+  return left.every((term) => rightSet.has(term));
+}
 
 function createSearchIndexEntries(item: KnowledgeItem, chunk: KnowledgeChunk): KnowledgeSearchIndexEntry[] {
   const now = nowIso();
@@ -473,10 +766,17 @@ function hasPhraseMatch(item: KnowledgeItem, chunk: KnowledgeChunk, query: strin
     .some((value) => value.toLowerCase().includes(phrase));
 }
 
-function formatRankReason(fields: KnowledgeSearchField[], score: number, coverageRatio: number, semanticScore?: number): string {
+function formatRankReason(
+  fields: KnowledgeSearchField[],
+  score: number,
+  coverageRatio: number,
+  semanticScore: number | undefined,
+  variantKind: KnowledgeQueryVariantKind,
+  grade: "strong" | "partial" | "weak"
+): string {
   const fieldTextValue = fields.length > 0 ? fields.join(", ") : "content";
   const semantic = semanticScore !== undefined ? ` fastText semantic ${semanticScore.toFixed(2)};` : "";
-  return `Matched ${fieldTextValue}; combined score ${score.toFixed(2)};${semantic} query coverage ${Math.round(coverageRatio * 100)}%.`;
+  return `Matched ${fieldTextValue}; ${grade} retrieval via ${variantKind}; combined score ${score.toFixed(2)};${semantic} query coverage ${Math.round(coverageRatio * 100)}%.`;
 }
 
 function compareLocalCandidates(left: RankedKnowledgeResult, right: RankedKnowledgeResult): number {
@@ -514,6 +814,7 @@ function applyLocalRerank(candidates: RankedKnowledgeResult[]): RankedKnowledgeR
         ...candidate,
         rerankScore,
         rerankStatus: "applied" as const,
+        confidence: clamp01((candidate.confidence ?? candidate.score) * 0.65 + rerankScore * 0.35),
         rankReason: `${candidate.rankReason} Local structured rerank ${rerankScore.toFixed(2)}.`
       };
     })
@@ -636,6 +937,7 @@ async function applyTinyRerank(
       ...candidate,
       rerankScore,
       rerankStatus: "applied" as const,
+      confidence: clamp01((candidate.confidence ?? candidate.score) * 0.45 + rerankScore * 0.55),
       rankReason: `${candidate.rankReason} Tiny ONNX reranker ${tinyScore.toFixed(2)}.`
     };
   }));

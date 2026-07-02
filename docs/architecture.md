@@ -49,8 +49,9 @@ flowchart LR
 
 Cache-aware loop constraints:
 
-- Stable system instructions, skill metadata, project memory, and tool-name families should remain early in the prompt to improve provider-side prompt-cache reuse.
-- Task-specific evidence, recent messages, file excerpts, screenshots, and tool results should stay later in context so they can change without fragmenting the stable prefix more than necessary.
+- Core system instructions and durable memory stay early in the prompt to improve provider-side prompt-cache reuse.
+- Task-specific evidence, RAG/knowledge pointers, current-turn text, file excerpts, screenshots, attachments, and tool results stay in later request layers so they can change without fragmenting the stable prefix more than necessary.
+- Every model turn runs a preflight estimate for stable context + recent history + immediate RAG/tool content + reserved response tokens. At 70% of the configured model window, low-value raw detail is trimmed; at 85%, older session events are summarized before the request; at 95%, large tool logs and reasoning traces are aggressively bounded so the current turn can still complete.
 - Prompt-cache optimization must not remove full tool schemas, hide current evidence, skip verification, or downgrade model capability. The target is a rolling cached-token hit ratio of at least 90% for cache-capable providers after warmup while preserving task quality.
 - Token/cache usage is recorded as task telemetry and prompt-cache stats; it is not injected back into model context as task evidence.
 
@@ -91,14 +92,12 @@ Global grants are persisted. Task-scoped grants are stored on the task approval 
 
 ## Context Assembly
 
-The current ContextAssembler emits:
+The current ContextAssembler emits four ordered layers:
 
-1. System instructions.
-2. Previously loaded full skill bodies.
-3. Relevant skill metadata.
-4. Project memory.
-5. File state table.
-6. Recent task history and current input.
+1. **Core system layer**: permanent operating rules, context-layer policy, and workflow heuristics. This layer is never summarized or compressed.
+2. **Durable memory layer**: global/user memory files, project memory files, structured project memories, runtime metadata, loaded skill bodies, and task graph or goal-mode guidance. These are compacted only through explicit memory limits and remain early for cache reuse.
+3. **Recent session layer**: auditable conversation summaries plus the raw sliding window of recent user, assistant, and tool evidence.
+4. **Immediate work layer**: current turn, knowledge/RAG brief, attachments, active continuity, Known Files, approval state, and context-pressure notices. This layer is single-turn evidence and is appended late to protect prompt-cache prefixes.
 
 Task Memory is never directly injected. Skill metadata may be injected; full skill content is loaded only through `use_skill`.
 

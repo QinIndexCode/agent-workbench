@@ -34,6 +34,9 @@ const MAX_PLAN_SUMMARY_TRUNCATE = 1000;
 const MAX_FILE_TRACKER_FILES = 8;
 const MAX_FILE_CONTENT_LENGTH = 48000;
 const SUMMARY_HIGH_PRESSURE_RATIO = 0.9;
+const CONTEXT_WARNING_RATIO = 0.7;
+const CONTEXT_COMPRESSION_RATIO = 0.85;
+const CONTEXT_EMERGENCY_RATIO = 0.95;
 const LOW_BUDGET_THRESHOLD = 3000;
 const LOW_BUDGET_EVENT_THRESHOLD = 60;
 const SUMMARY_FORCE_RECENT = 6;
@@ -96,6 +99,29 @@ const AGENT_WORKFLOW_HEURISTICS = [
   "- Complete when current evidence supports the preserved acceptance criteria at a level proportional to risk; continue gathering evidence when proof is too weak."
 ].join("\n");
 
+const CONTEXT_LAYER_POLICY = [
+  "## Context Layer Policy",
+  "The request context is assembled in four ordered layers so cache reuse and task quality can both hold.",
+  "- Core system layer: permanent operating rules and safety boundaries. Never summarize or compress this layer.",
+  "- Durable memory layer: user/project memory and loaded reusable guidance. Keep it structured, compact under pressure, and treat it as background rather than proof of live state.",
+  "- Recent session layer: auditable conversation summary plus a raw sliding window of recent user, assistant, and tool evidence.",
+  "- Immediate work layer: current turn, RAG/knowledge pointers, attachments, known files, approvals, and active continuity. This layer is single-turn evidence and may change on every tool step.",
+  "Before each model request, estimate stable context + recent history + immediate RAG/tool content + reserved response tokens. At 70% of the model window, trim low-value raw detail; at 85%, update the session summary before sending; at 95%, force compact tool logs and reasoning traces so the current turn can still complete.",
+  "Keep volatile immediate-work details late in the request so they do not fragment provider prompt-cache prefixes."
+].join("\n");
+
+export type ContextPressureLevel = "normal" | "warning" | "compression" | "emergency";
+
+interface ContextPressure {
+  level: ContextPressureLevel;
+  ratio: number;
+  projectedTokens: number;
+  layerTokens: number;
+  historyTokens: number;
+  reservedForResponse: number;
+  maxTotal: number;
+}
+
 export interface TokenBudget {
   maxTotal: number;
   reservedForResponse: number;
@@ -146,17 +172,22 @@ export class ContextAssembler {
     const maxTotal = budget?.maxTotal ?? preferences.maxTokensPerRequest;
     const reservedForResponse = budget?.reservedForResponse ?? Math.min(16000, Math.round(maxTotal * 0.15));
     const tokenBudget = { maxTotal, reservedForResponse };
-    const stableSystemLayers: string[] = [];
+    const coreSystemLayers: string[] = [];
+    const stableSystemExtensionLayers: string[] = [];
     const stableTaskPrefixLayers: string[] = [];
-    const volatileContextLayers: string[] = [];
+    const sessionContextLayers: string[] = [];
+    const immediateWorkLayers: string[] = [];
     const inputLayers: string[] = [];
     let usedTokens = 0;
 
     const systemLayer = this.buildSystemLayer(preferences);
-    stableSystemLayers.push(systemLayer);
+    coreSystemLayers.push(systemLayer);
     usedTokens += estimateTokens(systemLayer);
 
-    stableSystemLayers.push(AGENT_WORKFLOW_HEURISTICS);
+    coreSystemLayers.push(CONTEXT_LAYER_POLICY);
+    usedTokens += estimateTokens(CONTEXT_LAYER_POLICY);
+
+    coreSystemLayers.push(AGENT_WORKFLOW_HEURISTICS);
     usedTokens += estimateTokens(AGENT_WORKFLOW_HEURISTICS);
 
     const latestUser = latestUserEvent(task);
@@ -194,14 +225,14 @@ export class ContextAssembler {
 
     const skillLayer = await this.buildSkillMetaLayer(preferences);
     if (skillLayer) {
-      stableSystemLayers.push(skillLayer);
+      stableSystemExtensionLayers.push(skillLayer);
       usedTokens += estimateTokens(skillLayer);
     }
 
     const compactMemoryLayers = shouldCompactMemoryLayers(tokenBudget);
     const stableMemoryFileLayer = await this.buildStableMemoryFileLayer({ compact: compactMemoryLayers });
     if (stableMemoryFileLayer) {
-      stableSystemLayers.push(stableMemoryFileLayer);
+      stableSystemExtensionLayers.push(stableMemoryFileLayer);
       usedTokens += estimateTokens(stableMemoryFileLayer);
     }
 
@@ -213,7 +244,7 @@ export class ContextAssembler {
 
     const runtimeLayer = await this.buildRuntimeMetadataLayer(preferences);
     if (runtimeLayer) {
-      stableSystemLayers.push(runtimeLayer);
+      stableSystemExtensionLayers.push(runtimeLayer);
       usedTokens += estimateTokens(runtimeLayer);
     }
 
@@ -223,7 +254,7 @@ export class ContextAssembler {
 
     const currentTurnLayer = this.buildCurrentTurnLayer(task);
     if (currentTurnLayer) {
-      stableTaskPrefixLayers.push(currentTurnLayer);
+      immediateWorkLayers.push(currentTurnLayer);
       inputLayers.push(currentTurnLayer);
       usedTokens += estimateTokens(currentTurnLayer);
     }
@@ -236,7 +267,7 @@ export class ContextAssembler {
 
     const knowledgeBriefLayer = await this.buildKnowledgeBriefLayer(task, preferences);
     if (knowledgeBriefLayer) {
-      stableTaskPrefixLayers.push(knowledgeBriefLayer);
+      immediateWorkLayers.push(knowledgeBriefLayer);
       usedTokens += estimateTokens(knowledgeBriefLayer);
     }
 
@@ -260,12 +291,12 @@ export class ContextAssembler {
     }
 
     const continuityLayer = this.buildTaskContinuityLayer(task);
-    volatileContextLayers.push(continuityLayer);
+    immediateWorkLayers.push(continuityLayer);
     usedTokens += estimateTokens(continuityLayer);
 
     const attachmentLayer = await this.buildAttachmentLayer(task.id);
     if (attachmentLayer) {
-      stableTaskPrefixLayers.push(attachmentLayer);
+      immediateWorkLayers.push(attachmentLayer);
       usedTokens += estimateTokens(attachmentLayer);
     }
 
@@ -278,6 +309,16 @@ export class ContextAssembler {
       fileLayerIncluded = true;
     }
 
+    const contextPressure = evaluateContextPressure(tokenBudget, {
+      layerTokens: usedTokens,
+      historyTokens: estimateEventsForSummary(task.events.filter(isSummarizableContextEvent))
+    });
+    const pressureLayer = buildContextPressureLayer(contextPressure);
+    if (pressureLayer) {
+      immediateWorkLayers.unshift(pressureLayer);
+      usedTokens += estimateTokens(pressureLayer);
+    }
+
     const latestContextControlEvent = [...task.events]
       .reverse()
       .find((event) => event.type === "context_overflow_recovered" || event.type === "conversation_summary_created");
@@ -285,23 +326,31 @@ export class ContextAssembler {
     const summary = await this.ensureConversationSummary(task, {
       force: forceSummary,
       tokenBudget,
-      usedBefore: usedTokens
+      usedBefore: usedTokens,
+      pressure: contextPressure
     });
     if (summary) {
       const summaryLayer = `## Conversation Summary\n${summary.summary}`;
-      stableTaskPrefixLayers.push(summaryLayer);
+      sessionContextLayers.push(summaryLayer);
       usedTokens += estimateTokens(summaryLayer);
     }
-    if (fileLayerIncluded) volatileContextLayers.push(fileLayer);
+    if (fileLayerIncluded) immediateWorkLayers.push(fileLayer);
 
     const remaining = tokenBudget.maxTotal - usedTokens - tokenBudget.reservedForResponse;
-    const historyLayer = buildHistoryLayer(task, Math.max(160, remaining), fileLayerIncluded ? tracker : undefined, summary?.rangeEndEventId);
+    const historyLayer = buildHistoryLayer(
+      task,
+      Math.max(160, remaining),
+      fileLayerIncluded ? tracker : undefined,
+      summary?.rangeEndEventId,
+      { pressureLevel: contextPressure.level }
+    );
     if (historyLayer) inputLayers.push(historyLayer);
 
-    const volatileContextPrompt = volatileContextLayers.filter((layer) => layer.trim().length > 0).join("\n\n");
+    const sessionContextPrompt = sessionContextLayers.filter((layer) => layer.trim().length > 0).join("\n\n");
+    const immediateWorkPrompt = immediateWorkLayers.filter((layer) => layer.trim().length > 0).join("\n\n");
     const stableTaskPrefixPrompt = stableTaskPrefixLayers.filter((layer) => layer.trim().length > 0).join("\n\n");
-    const stableSystemPrompt = stableSystemLayers.filter((layer) => layer.trim().length > 0).join("\n\n");
-    const systemPrompt = [stableSystemPrompt, stableTaskPrefixPrompt, volatileContextPrompt].filter((layer) => layer.trim().length > 0).join("\n\n");
+    const stableSystemPrompt = [...coreSystemLayers, ...stableSystemExtensionLayers].filter((layer) => layer.trim().length > 0).join("\n\n");
+    const systemPrompt = [stableSystemPrompt, stableTaskPrefixPrompt, sessionContextPrompt, immediateWorkPrompt].filter((layer) => layer.trim().length > 0).join("\n\n");
     const rawInput = inputLayers.filter((layer) => layer.trim().length > 0).join("\n\n");
     const inputBudget = Math.max(MIN_INPUT_TOKENS, tokenBudget.maxTotal - tokenBudget.reservedForResponse - estimateTokens(systemPrompt) - MESSAGE_OVERHEAD_SAFETY_TOKENS);
     const protectedLayers = [
@@ -315,7 +364,9 @@ export class ContextAssembler {
       tracker: fileLayerIncluded ? tracker : undefined,
       imageAttachments: await this.buildImageAttachments(task),
       prefixContext: stableTaskPrefixPrompt,
-      tailContext: volatileContextPrompt,
+      sessionContext: sessionContextPrompt,
+      tailContext: immediateWorkPrompt,
+      pressureLevel: contextPressure.level,
       omitReasoningContent: !shouldReplayReasoningHistory()
     });
     const activeNode = taskGraph?.nodes.find((node) => node.id === taskGraph.activeNodeId);
@@ -731,7 +782,7 @@ export class ContextAssembler {
 
   private async ensureConversationSummary(
     task: TaskDetail,
-    options: { force?: boolean; tokenBudget?: TokenBudget; usedBefore?: number } = {}
+    options: { force?: boolean; tokenBudget?: TokenBudget; usedBefore?: number; pressure?: ContextPressure } = {}
   ): Promise<ConversationSummary | undefined> {
     const existing = await this.store.listConversationSummaries(task.id);
     const latest = existing.at(-1);
@@ -740,7 +791,9 @@ export class ContextAssembler {
       ? Math.max(1, options.tokenBudget.maxTotal - options.tokenBudget.reservedForResponse)
       : Number.POSITIVE_INFINITY;
     const historyPressure = estimateEventsForSummary(visibleEvents) + (options.usedBefore ?? 0);
-    const highPressure = historyPressure > maxPromptInput * 0.9;
+    const projectedRatio = options.pressure?.ratio ?? (maxPromptInput > 0 ? historyPressure / maxPromptInput : 1);
+    const emergencyPressure = projectedRatio >= CONTEXT_EMERGENCY_RATIO;
+    const highPressure = projectedRatio >= CONTEXT_COMPRESSION_RATIO || historyPressure > maxPromptInput * SUMMARY_HIGH_PRESSURE_RATIO;
     const eventWindowPressure = visibleEvents.length >= SUMMARY_EVENT_WINDOW_THRESHOLD;
     const lowBudgetPressure = Boolean(options.tokenBudget && options.tokenBudget.maxTotal <= 3000 && visibleEvents.length >= 60);
     if (!options.force && !highPressure && !eventWindowPressure && !lowBudgetPressure) return latest;
@@ -749,7 +802,7 @@ export class ContextAssembler {
     if (!options.force && latest && eventWindowPressure && !highPressure && !lowBudgetPressure && uncoveredEventCount < SUMMARY_EVENT_WINDOW_REFRESH_GAP) return latest;
     if (!options.force && latest && !highPressure && !eventWindowPressure && !lowBudgetPressure && visibleEvents.length - latestCoveredIndex < 60) return latest;
     const startIndex = latestCoveredIndex >= 0 ? latestCoveredIndex + 1 : 0;
-    const keepRecent = options.force ? SUMMARY_FORCE_RECENT : highPressure || lowBudgetPressure ? SUMMARY_HIGH_PRESSURE_RECENT : SUMMARY_NORMAL_RECENT;
+    const keepRecent = options.force || emergencyPressure ? SUMMARY_FORCE_RECENT : highPressure || lowBudgetPressure ? SUMMARY_HIGH_PRESSURE_RECENT : SUMMARY_NORMAL_RECENT;
     const endIndex = Math.max(startIndex, visibleEvents.length - keepRecent);
     const slice = visibleEvents.slice(startIndex, endIndex);
     if (slice.length < (options.force || highPressure || lowBudgetPressure ? SUMMARY_FORCE_MIN_EVENTS : SUMMARY_MIN_EVENTS)) return latest;
@@ -758,7 +811,7 @@ export class ContextAssembler {
       ...existing.flatMap((summary) => summary.retainedFacts ?? []),
       ...buildRetainedFacts(task, slice)
     ]);
-    const summaryText = buildRollingConversationSummary(task, slice, retainedFacts);
+    const summaryText = buildRollingConversationSummary(task, slice, retainedFacts, options.pressure?.level ?? "normal");
     const summary: ConversationSummary = {
       id: createId("summary"),
       taskId: task.id,
@@ -766,7 +819,7 @@ export class ContextAssembler {
       rangeEndEventId: slice.at(-1)!.id,
       summary: summaryText,
       tokenEstimate: estimateTokens(summaryText),
-      reason: options.force ? "context_overflow_retry" : highPressure || lowBudgetPressure ? "token_pressure" : "event_window",
+      reason: options.force ? "context_overflow_retry" : emergencyPressure ? "context_emergency" : highPressure || lowBudgetPressure ? "token_pressure" : "event_window",
       retainedFacts,
       droppedRanges: [{ startEventId: slice[0]!.id, endEventId: slice.at(-1)!.id, eventCount: slice.length }],
       ...(options.tokenBudget
@@ -924,17 +977,25 @@ export class FileStateTracker {
   }
 }
 
-export function buildHistoryLayer(task: TaskDetail, maxTokens: number, tracker?: FileStateTracker, afterEventId?: string): string {
+export function buildHistoryLayer(
+  task: TaskDetail,
+  maxTokens: number,
+  tracker?: FileStateTracker,
+  afterEventId?: string,
+  options: { pressureLevel?: ContextPressureLevel } = {}
+): string {
   if (maxTokens <= 0) return "";
   const events = task.events.filter(isModelHistoryEvent);
   const startIndex = afterEventId ? events.findIndex((event) => event.id === afterEventId) + 1 : 0;
   const visibleEvents = startIndex > 0 ? events.slice(startIndex) : events;
   const formatted: string[] = [];
   let usedTokens = 0;
+  const pressureLevel = options.pressureLevel ?? "normal";
   for (let index = visibleEvents.length - 1; index >= 0; index--) {
     const event = visibleEvents[index];
     if (!event) continue;
-    const text = formatEvent(event, tracker);
+    if (pressureLevel !== "normal" && isLowValuePressureEvent(event, index, visibleEvents.length)) continue;
+    const text = formatEvent(event, tracker, { pressureLevel });
     if (!text) continue;
     const tokens = estimateTokens(text);
     if (usedTokens + tokens > maxTokens) {
@@ -974,7 +1035,9 @@ function buildCanonicalModelMessages(
     tracker?: FileStateTracker | undefined;
     imageAttachments?: CanonicalImageAttachment[] | undefined;
     prefixContext?: string | undefined;
+    sessionContext?: string | undefined;
     tailContext?: string | undefined;
+    pressureLevel?: ContextPressureLevel | undefined;
     omitReasoningContent?: boolean | undefined;
   }
 ): CanonicalModelMessage[] {
@@ -983,6 +1046,8 @@ function buildCanonicalModelMessages(
   messages.push(...buildCanonicalHistoryMessages(task, options));
   const prefixContext = formatPrefixContextMessage(options.prefixContext);
   if (prefixContext) insertPrefixContextMessage(messages, prefixContext);
+  const sessionContext = formatSessionContextMessage(options.sessionContext);
+  if (sessionContext) insertSessionContextMessage(messages, sessionContext);
   if (options.imageAttachments && options.imageAttachments.length > 0) {
     messages.push({
       role: "user",
@@ -1022,6 +1087,22 @@ function insertPrefixContextMessage(messages: CanonicalModelMessage[], content: 
   messages.splice(insertIndex, 0, { role: "user", content });
 }
 
+function formatSessionContextMessage(context: string | undefined): string {
+  const trimmed = context?.trim();
+  if (!trimmed) return "";
+  return [
+    "## Recent Session Context",
+    "This compact continuity layer summarizes older task events. Prefer the raw sliding-window messages and fresh tool evidence when exact current state matters.",
+    trimmed
+  ].join("\n");
+}
+
+function insertSessionContextMessage(messages: CanonicalModelMessage[], content: string): void {
+  const stablePrefixIndex = messages.findIndex((message) => message.role === "user" && message.content.startsWith("## Stable Task Context"));
+  const insertIndex = stablePrefixIndex >= 0 ? stablePrefixIndex + 1 : messages[0]?.role === "system" ? 1 : 0;
+  messages.splice(insertIndex, 0, { role: "user", content });
+}
+
 function formatTailContextMessage(context: string | undefined): string {
   const trimmed = context?.trim();
   if (!trimmed) return "";
@@ -1049,6 +1130,52 @@ function shouldCompactMemoryLayers(tokenBudget: TokenBudget): boolean {
   );
 }
 
+function evaluateContextPressure(
+  tokenBudget: TokenBudget,
+  estimate: { layerTokens: number; historyTokens: number }
+): ContextPressure {
+  const projectedTokens =
+    estimate.layerTokens +
+    estimate.historyTokens +
+    tokenBudget.reservedForResponse +
+    MESSAGE_OVERHEAD_SAFETY_TOKENS;
+  const ratio = tokenBudget.maxTotal > 0 ? projectedTokens / tokenBudget.maxTotal : 1;
+  const level: ContextPressureLevel =
+    ratio >= CONTEXT_EMERGENCY_RATIO
+      ? "emergency"
+      : ratio >= CONTEXT_COMPRESSION_RATIO
+        ? "compression"
+        : ratio >= CONTEXT_WARNING_RATIO
+          ? "warning"
+          : "normal";
+  return {
+    level,
+    ratio,
+    projectedTokens,
+    layerTokens: estimate.layerTokens,
+    historyTokens: estimate.historyTokens,
+    reservedForResponse: tokenBudget.reservedForResponse,
+    maxTotal: tokenBudget.maxTotal
+  };
+}
+
+function buildContextPressureLayer(pressure: ContextPressure): string {
+  if (pressure.level === "normal") return "";
+  const percent = Math.round(pressure.ratio * 100);
+  const action =
+    pressure.level === "emergency"
+      ? "Emergency compaction is active: large raw tool logs, old tool role messages, and retained reasoning traces are aggressively bounded. Keep the current objective and decisive evidence first."
+      : pressure.level === "compression"
+        ? "Summary refresh is eligible before the model request: older session events are compacted into the recent-session layer when enough raw history is available."
+        : "Lightweight trimming is active: low-value old events and oversized raw tool outputs are shortened while preserving recent user intent and actionable evidence.";
+  return [
+    "## Context Budget Preflight",
+    `Projected request usage: ${pressure.projectedTokens}/${pressure.maxTotal} estimated prompt+response tokens (${percent}% of configured model window).`,
+    `Pressure level: ${pressure.level}.`,
+    action
+  ].join("\n");
+}
+
 function isEnabledFlag(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on" || normalized === "enabled" || normalized === "enable";
@@ -1056,13 +1183,20 @@ function isEnabledFlag(value: string | undefined): boolean {
 
 function buildCanonicalHistoryMessages(
   task: TaskDetail,
-  options: { afterEventId?: string | undefined; maxTokens: number; tracker?: FileStateTracker | undefined; omitReasoningContent?: boolean | undefined }
+  options: {
+    afterEventId?: string | undefined;
+    maxTokens: number;
+    tracker?: FileStateTracker | undefined;
+    pressureLevel?: ContextPressureLevel | undefined;
+    omitReasoningContent?: boolean | undefined;
+  }
 ): CanonicalModelMessage[] {
   const events = task.events.filter(isModelHistoryEvent);
   const startIndex = options.afterEventId ? events.findIndex((event) => event.id === options.afterEventId) + 1 : 0;
   const visibleEvents = startIndex > 0 ? events.slice(startIndex) : events;
-  const recentStructuredToolEventIds = recentCanonicalToolEventIds(visibleEvents);
-  const omittedToolEvidenceLayer = buildOmittedToolEvidenceLayer(visibleEvents, recentStructuredToolEventIds, options.tracker);
+  const pressureLevel = options.pressureLevel ?? "normal";
+  const recentStructuredToolEventIds = recentCanonicalToolEventIds(visibleEvents, pressureLevel);
+  const omittedToolEvidenceLayer = buildOmittedToolEvidenceLayer(visibleEvents, recentStructuredToolEventIds, options.tracker, pressureLevel);
   const messages: CanonicalModelMessage[] = [];
   let pendingToolCalls: Array<{ call: ToolCall; reasoningContent?: string; eventId?: string }> = [];
   const emittedToolCallIds = new Set<string>();
@@ -1082,7 +1216,7 @@ function buildCanonicalHistoryMessages(
     if (reasoningContent) {
       messages.push({
         role: "assistant",
-        content: formatReasoningHistoryText(reasoningContent),
+        content: formatReasoningHistoryText(reasoningContent, pressureLevel),
         ...(eventId ? { eventId: `${eventId}:reasoning` } : {})
       });
     }
@@ -1116,7 +1250,7 @@ function buildCanonicalHistoryMessages(
           if (reasoningContent) {
             messages.push({
               role: "assistant",
-              content: formatReasoningHistoryText(reasoningContent),
+              content: formatReasoningHistoryText(reasoningContent, pressureLevel),
               reasoningContent,
               eventId: `${event.id}:reasoning`
             });
@@ -1155,7 +1289,7 @@ function buildCanonicalHistoryMessages(
             if (reasoningContent) {
               messages.push({
                 role: "assistant",
-                content: formatReasoningHistoryText(reasoningContent),
+                content: formatReasoningHistoryText(reasoningContent, pressureLevel),
                 eventId: `${event.id}:reasoning`
               });
             }
@@ -1172,7 +1306,7 @@ function buildCanonicalHistoryMessages(
           role: "tool",
           toolCallId: call.id,
           toolName: call.toolName,
-          content: toolResultContentForRole(event, options.tracker),
+          content: toolResultContentForRole(event, options.tracker, pressureLevel),
           ...(reasoningContent ? { reasoningContent } : {}),
           eventId: event.id
         });
@@ -1199,7 +1333,12 @@ function buildCanonicalHistoryMessages(
   return trimCanonicalHistoryMessages(messages, options.maxTokens);
 }
 
-function buildOmittedToolEvidenceLayer(events: TaskEvent[], recentStructuredToolEventIds: Set<string>, tracker?: FileStateTracker): string {
+function buildOmittedToolEvidenceLayer(
+  events: TaskEvent[],
+  recentStructuredToolEventIds: Set<string>,
+  tracker?: FileStateTracker,
+  pressureLevel: ContextPressureLevel = "normal"
+): string {
   const allOmittedResults = events
     .filter((event) => event.type === "tool_result" && !isContextOnlyStateToolEvent(event) && !recentStructuredToolEventIds.has(event.id));
   const omittedResults = allOmittedResults.length <= MAX_OMITTED_TOOL_EVIDENCE_RESULTS
@@ -1215,15 +1354,17 @@ function buildOmittedToolEvidenceLayer(events: TaskEvent[], recentStructuredTool
     ...omittedResults.map((event) => {
       const toolName = String(event.payload["toolName"] ?? "tool");
       const status = event.payload["ok"] === false ? "failed" : "ok";
-      return `- ${toolName} ${status}: ${truncate(formatEvent(event, tracker).replace(/\s+/g, " "), MAX_OMITTED_TOOL_EVIDENCE_CHARS)}`;
+      const maxChars = pressureLevel === "emergency" ? 220 : pressureLevel === "compression" ? 320 : MAX_OMITTED_TOOL_EVIDENCE_CHARS;
+      return `- ${toolName} ${status}: ${truncate(formatEvent(event, tracker, { pressureLevel }).replace(/\s+/g, " "), maxChars)}`;
     })
   ].join("\n");
 }
 
-function recentCanonicalToolEventIds(events: TaskEvent[]): Set<string> {
+function recentCanonicalToolEventIds(events: TaskEvent[], pressureLevel: ContextPressureLevel = "normal"): Set<string> {
   const toolEvents = events.filter((event) => (event.type === "tool_requested" || event.type === "tool_result") && !isContextOnlyStateToolEvent(event));
-  if (toolEvents.length <= MAX_CANONICAL_TOOL_HISTORY_EVENTS) return new Set(toolEvents.map((event) => event.id));
-  const kept = toolEvents.slice(-MAX_CANONICAL_TOOL_HISTORY_EVENTS);
+  const maxStructuredEvents = pressureLevel === "emergency" ? 2 : pressureLevel === "compression" ? 3 : MAX_CANONICAL_TOOL_HISTORY_EVENTS;
+  if (toolEvents.length <= maxStructuredEvents) return new Set(toolEvents.map((event) => event.id));
+  const kept = toolEvents.slice(-maxStructuredEvents);
   const ids = new Set(kept.map((event) => event.id));
   const callIds = new Set(kept.map(eventToolCallId).filter((id): id is string => Boolean(id)));
   if (callIds.size === 0) return ids;
@@ -1285,11 +1426,12 @@ function reasoningContentFromEvent(event: TaskEvent): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function formatReasoningHistoryText(value: string): string {
-  return `Internal continuity note. Do not quote this note verbatim or use it as the final answer:\n${truncate(value, 1600)}`;
+function formatReasoningHistoryText(value: string, pressureLevel: ContextPressureLevel = "normal"): string {
+  const limit = pressureLevel === "emergency" ? 360 : pressureLevel === "compression" ? 800 : 1600;
+  return `Internal continuity note. Do not quote this note verbatim or use it as the final answer:\n${truncate(value, limit)}`;
 }
 
-function toolResultContentForRole(event: TaskEvent, tracker?: FileStateTracker): string {
+function toolResultContentForRole(event: TaskEvent, tracker?: FileStateTracker, pressureLevel: ContextPressureLevel = "normal"): string {
   const toolName = String(event.payload["toolName"] ?? "tool").trim() || "tool";
   const ok = event.payload["ok"] !== false;
   const output = String(event.payload["output"] ?? "");
@@ -1303,7 +1445,7 @@ function toolResultContentForRole(event: TaskEvent, tracker?: FileStateTracker):
     ok,
     status,
     toolName,
-    output: formatToolOutput(output)
+    output: formatToolOutput(output, pressureLevel)
   });
 }
 
@@ -1440,11 +1582,17 @@ function stableJson(value: Record<string, unknown>): string {
   return JSON.stringify(value, (_key, nested) => (nested === undefined ? undefined : nested));
 }
 
-export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): string {
+export function formatEvent(
+  event: TaskEvent,
+  tracker?: FileStateTracker,
+  options: { pressureLevel?: ContextPressureLevel } = {}
+): string {
+  const pressureLevel = options.pressureLevel ?? "normal";
   const withReasoning = (body: string): string => {
     const reasoning = reasoningContentFromEvent(event);
     if (!reasoning) return body;
-    return `**Prior Thinking**: ${truncate(reasoning, 1600)}\n${body}`;
+    const limit = pressureLevel === "emergency" ? 360 : pressureLevel === "compression" ? 800 : 1600;
+    return `**Prior Thinking**: ${truncate(reasoning, limit)}\n${body}`;
   };
   switch (event.type) {
     case "user_message":
@@ -1460,9 +1608,9 @@ export function formatEvent(event: TaskEvent, tracker?: FileStateTracker): strin
       return withReasoning(`**Tool Call**: ${event.payload["toolName"]}(${formatToolArgsForContext(event.payload["args"] ?? {})})`);
     case "tool_result": {
       if (tracker && isFileContentInTracker(event, tracker)) return formatTrackedReadFileResult(event);
-      const fileResult = formatFileToolResult(event);
+      const fileResult = formatFileToolResult(event, pressureLevel);
       if (fileResult) return withReasoning(fileResult);
-      return withReasoning(`${formatToolResultHeading(event)}:\n${formatToolOutput(String(event.payload["output"] ?? ""))}`);
+      return withReasoning(`${formatToolResultHeading(event)}:\n${formatToolOutput(String(event.payload["output"] ?? ""), pressureLevel)}`);
     }
     case "approval_pending":
       return `**Approval Required**: ${event.payload["toolName"]} [${event.payload["riskCategory"]}]`;
@@ -1500,6 +1648,16 @@ function isModelHistoryEvent(event: TaskEvent): boolean {
   if (["prompt_cache_stats", "token_usage_recorded", "conversation_summary_created", "context_overflow_recovered", "project_memory_version_created", "project_memory_rollback_completed"].includes(event.type)) return false;
   if (event.payload["uiHidden"] === true && event.type !== "tool_result") return false;
   return true;
+}
+
+function isLowValuePressureEvent(event: TaskEvent, index: number, totalEvents: number): boolean {
+  const distanceFromTail = totalEvents - index - 1;
+  if (distanceFromTail < 8) return false;
+  if (event.type === "approval_auto_granted" || event.type === "approval_resolved") return true;
+  if (event.type !== "assistant_message") return false;
+  const summary = event.summary.replace(/\s+/g, " ").trim();
+  if (summary.length > 180) return false;
+  return /^(ok|okay|done|received|noted|sure|好的|收到|继续|已完成|明白|可以|没问题)[。.!！\s]*$/iu.test(summary);
 }
 
 function isSummarizableContextEvent(event: TaskEvent): boolean {
@@ -1575,15 +1733,22 @@ function decryptLocalFilePayload(secretBox: LocalSecretBox, text: string): Buffe
   }
 }
 
-function buildRollingConversationSummary(task: TaskDetail, events: TaskEvent[], retainedFacts: string[] = []): string {
+function buildRollingConversationSummary(
+  task: TaskDetail,
+  events: TaskEvent[],
+  retainedFacts: string[] = [],
+  pressureLevel: ContextPressureLevel = "normal"
+): string {
   const latestUser = latestUserEvent(task);
+  const maxDigestEvents = pressureLevel === "emergency" ? 12 : pressureLevel === "compression" ? 18 : COMPACT_HISTORY_LIMIT;
+  const maxLineChars = pressureLevel === "emergency" ? 260 : pressureLevel === "compression" ? 420 : COMPACT_LINE_TRUNCATE;
   const lines = events
-    .map((event) => formatEvent(event))
+    .map((event) => formatEvent(event, undefined, { pressureLevel }))
     .filter(Boolean)
     .filter((line) => !line.includes("UI preview truncated"))
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter(Boolean);
-  const compact = lines.slice(-24).map((line) => `- ${line.slice(0, 700)}`).join("\n");
+  const compact = lines.slice(-maxDigestEvents).map((line) => `- ${line.slice(0, maxLineChars)}`).join("\n");
   return [
     "Auditable model context summary. This is for model continuity only; it is not the user-visible transcript.",
     latestUser ? `Current objective: ${truncate(latestUser.summary, 1000)}` : "",
@@ -1831,11 +1996,21 @@ export function estimateTokens(text: string): number {
   return Math.ceil(tokens);
 }
 
-function formatToolOutput(output: string): string {
-  if (output.length <= 4000) return output;
+function formatToolOutput(output: string, pressureLevel: ContextPressureLevel = "normal"): string {
+  const limit = toolOutputLimitForPressure(pressureLevel);
+  if (output.length <= limit) return output;
   if (/error|exception|failed|stack trace/i.test(output)) return extractErrorSummary(output);
   if (/passing|failing|test suite|✓|✗/i.test(output)) return extractTestSummary(output);
-  return `${output.slice(0, 2000)}\n\n... (${output.length - 4000} chars omitted) ...\n\n${output.slice(-2000)}`;
+  const head = Math.max(200, Math.floor(limit * 0.55));
+  const tail = Math.max(160, limit - head);
+  return `${output.slice(0, head)}\n\n... (${Math.max(0, output.length - limit)} chars omitted under ${pressureLevel} context pressure) ...\n\n${output.slice(-tail)}`;
+}
+
+function toolOutputLimitForPressure(pressureLevel: ContextPressureLevel): number {
+  if (pressureLevel === "emergency") return 900;
+  if (pressureLevel === "compression") return 1800;
+  if (pressureLevel === "warning") return 2800;
+  return MAX_TOOL_OUTPUT;
 }
 
 function truncateToTokenBudget(text: string, maxTokens: number): string {
@@ -1942,7 +2117,7 @@ function formatToolResultHeading(event: TaskEvent): string {
   return toolName ? `**Tool Result ${toolName}${suffix}**` : `**Tool Result${suffix}**`;
 }
 
-function formatFileToolResult(event: TaskEvent): string | null {
+function formatFileToolResult(event: TaskEvent, pressureLevel: ContextPressureLevel = "normal"): string | null {
   const output = String(event.payload["output"] ?? "");
   const parsed = parseJson(output);
   const path = typeof parsed["path"] === "string" ? parsed["path"] : "";
@@ -1952,12 +2127,14 @@ function formatFileToolResult(event: TaskEvent): string | null {
     const content = parsed["content"];
     const partial = parsed["partial"] ? " partial" : "";
     const hashValue = typeof parsed["hash"] === "string" ? ` hash=${parsed["hash"]}` : "";
-    const maxContentChars = 24000;
+    const maxContentChars = pressureLevel === "emergency" ? 1800 : pressureLevel === "compression" ? 6000 : pressureLevel === "warning" ? 12000 : 24000;
+    const headChars = pressureLevel === "emergency" ? 900 : pressureLevel === "compression" ? 3600 : pressureLevel === "warning" ? 8000 : 16000;
+    const tailChars = pressureLevel === "emergency" ? 600 : pressureLevel === "compression" ? 1800 : pressureLevel === "warning" ? 3000 : 6000;
     return [
       `**Tool Result read_file**: ${path}${partial}${hashValue}`,
       "```",
       content.length > maxContentChars
-        ? `${content.slice(0, 16000)}\n... (file content budget-limited; use targeted read_file if exact omitted lines are needed) ...\n${content.slice(-6000)}`
+        ? `${content.slice(0, headChars)}\n... (file content budget-limited under ${pressureLevel} context pressure; use targeted read_file if exact omitted lines are needed) ...\n${content.slice(-tailChars)}`
         : content,
       "```"
     ].join("\n");

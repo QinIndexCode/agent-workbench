@@ -4,7 +4,6 @@ import { type AppRoute, useAppRoute } from "./app-router.js";
 import { api } from "./api.js";
 import { ProviderBrandIcon } from "./components/ProviderBrandIcon.js";
 import { TaskList } from "./components/TaskList.js";
-import { TaskThread } from "./components/TaskThread.js";
 import type { ComposerMode, ComposerPermissionMode, PermissionPreset } from "./components/Composer.js";
 import type { LibrarySection } from "./components/LibraryView.js";
 import type { SettingsSection } from "./components/SettingsView.js";
@@ -49,8 +48,10 @@ const ScheduledTasksPanel = preloadable<ComponentProps<typeof import("./componen
 const SkillCuratorPanel = preloadable<ComponentProps<typeof import("./components/SkillCuratorPanel.js").SkillCuratorPanel>>(() => import("./components/SkillCuratorPanel.js").then((module) => ({ default: module.SkillCuratorPanel })));
 const SkillPanel = preloadable<ComponentProps<typeof import("./components/SkillPanel.js").SkillPanel>>(() => import("./components/SkillPanel.js").then((module) => ({ default: module.SkillPanel })));
 const SupportDialog = preloadable<ComponentProps<typeof import("./components/SupportDialog.js").SupportDialog>>(() => import("./components/SupportDialog.js").then((module) => ({ default: module.SupportDialog })));
+const TaskThread = preloadable<ComponentProps<typeof import("./components/TaskThread.js").TaskThread>>(() => import("./components/TaskThread.js").then((module) => ({ default: module.TaskThread })));
 const WebSearchPanel = preloadable<ComponentProps<typeof import("./components/WebSearchPanel.js").WebSearchPanel>>(() => import("./components/WebSearchPanel.js").then((module) => ({ default: module.WebSearchPanel })));
 const preloadablePages = [
+  TaskThread,
   DocsView,
   HistoryPage,
   LibraryView,

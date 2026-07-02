@@ -12,6 +12,7 @@ const booleanOptionNames = new Set([
   "quiet",
   "yes",
   "include-children",
+  "diagnostics",
   "target",
   "watch",
   "enabled",

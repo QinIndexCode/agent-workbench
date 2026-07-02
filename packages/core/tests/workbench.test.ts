@@ -685,7 +685,7 @@ describe("ContextAssembler", () => {
     expect(context.messages.at(-1)?.role).toBe("user");
   });
 
-  it("injects only a compact knowledge brief as system background", async () => {
+  it("injects only a compact knowledge brief as immediate work context", async () => {
     const store = new InMemoryWorkbenchStore();
     const workbench = new AgentWorkbench({ store });
     await workbench.updatePreferences({ knowledgeActiveInjection: true, maxInjectedKnowledgeItems: 1 });
@@ -731,8 +731,9 @@ describe("ContextAssembler", () => {
       .at(-1);
     expect(latestConversationUser?.role).toBe("user");
     expect(latestConversationUser?.content ?? "").toContain("继续检查当前实现");
-    expect(context.messages[1]?.role === "user" ? context.messages[1].content : "").toContain("## Knowledge Brief");
-    expect(context.messages.at(-1)?.role === "user" ? context.messages.at(-1)?.content : "").not.toContain("## Knowledge Brief");
+    expect(context.messages[0]?.role === "system" ? context.messages[0].content : "").not.toContain("## Knowledge Brief");
+    expect(context.messages[1]?.role === "user" ? context.messages[1].content : "").not.toContain("## Knowledge Brief");
+    expect(context.messages.at(-1)?.role === "user" ? context.messages.at(-1)?.content : "").toContain("## Knowledge Brief");
   });
 
   it("prioritizes current-turn relevant knowledge without hiding the knowledge_search path", async () => {
@@ -890,6 +891,127 @@ describe("ContextAssembler", () => {
 
     expect(summaries).toHaveLength(0);
     expect(context.input).not.toContain("Conversation Summary");
+  });
+
+  it("preflights compression pressure before the request and creates a recent-session summary", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const assembler = new ContextAssembler(store);
+    const longEvidence = "preserve acceptance criteria, file decisions, tool evidence, and verification status. ".repeat(120);
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_preflight_compression",
+      title: "Preflight compression",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events: [
+        ...Array.from({ length: 36 }, (_, index): TaskEvent => ({
+          id: `event_preflight_${index}`,
+          taskId: "task_preflight_compression",
+          type: index % 3 === 0 ? "tool_result" : index % 3 === 1 ? "assistant_message" : "user_message",
+          createdAt: nowIso(),
+          summary: `older context ${index} ${longEvidence}`,
+          payload: index % 3 === 0 ? { toolName: "run_command", ok: true, output: longEvidence } : {}
+        })),
+        {
+          id: "event_latest_preflight",
+          taskId: "task_preflight_compression",
+          type: "user_message",
+          createdAt: nowIso(),
+          summary: "继续修复当前任务，必须保留最新目标并在必要时重新验证。",
+          payload: {}
+        }
+      ]
+    };
+
+    const context = await assembler.assemble(task, { maxTotal: 28_000, reservedForResponse: 2_000 });
+    const summaries = await store.listConversationSummaries(task.id);
+    const stablePrefix = context.messages[1]?.role === "user" ? context.messages[1].content : "";
+
+    expect(summaries).toHaveLength(1);
+    expect(["token_pressure", "context_emergency"]).toContain(summaries[0]?.reason);
+    expect(context.systemPrompt).toContain("## Conversation Summary");
+    expect(context.messages.some((message) => message.role === "user" && message.content.startsWith("## Recent Session Context"))).toBe(true);
+    expect(stablePrefix).not.toContain("## Conversation Summary");
+    expect(context.input).toContain("继续修复当前任务");
+  });
+
+  it("uses emergency pressure to bound raw tool logs while preserving the current turn", async () => {
+    const assembler = new ContextAssembler(new InMemoryWorkbenchStore());
+    const rawLog = "RAW_LOG_MARKER output chunk ".repeat(700);
+    const events: TaskEvent[] = [
+      {
+        id: "event_emergency_goal",
+        taskId: "task_emergency_pressure",
+        type: "user_message",
+        createdAt: nowIso(),
+        summary: "继续排查失败构建，保留最新失败证据。",
+        payload: {}
+      }
+    ];
+    for (let index = 0; index < 10; index += 1) {
+      events.push({
+        id: `event_emergency_call_${index}`,
+        taskId: "task_emergency_pressure",
+        type: "tool_requested",
+        createdAt: nowIso(),
+        summary: "run_command",
+        payload: { toolCallId: `call_emergency_${index}`, toolName: "run_command", args: { command: `npm.cmd run check:${index}` } }
+      });
+      events.push({
+        id: `event_emergency_result_${index}`,
+        taskId: "task_emergency_pressure",
+        type: "tool_result",
+        createdAt: nowIso(),
+        summary: "Tool completed",
+        payload: { toolCallId: `call_emergency_${index}`, toolName: "run_command", ok: true, output: rawLog }
+      });
+    }
+    events.push({
+      id: "event_emergency_latest",
+      taskId: "task_emergency_pressure",
+      type: "user_message",
+      createdAt: nowIso(),
+      summary: "继续，但不要丢掉最新失败定位。",
+      payload: {}
+    });
+    events.push({
+      id: "event_emergency_final_call",
+      taskId: "task_emergency_pressure",
+      type: "tool_requested",
+      createdAt: nowIso(),
+      summary: "run_command",
+      payload: { toolCallId: "call_emergency_final", toolName: "run_command", args: { command: "npm.cmd run check:final" } }
+    });
+    events.push({
+      id: "event_emergency_final_result",
+      taskId: "task_emergency_pressure",
+      type: "tool_result",
+      createdAt: nowIso(),
+      summary: "Tool completed",
+      payload: { toolCallId: "call_emergency_final", toolName: "run_command", ok: true, output: rawLog }
+    });
+    const task: TaskDetail = {
+      kind: "primary",
+      id: "task_emergency_pressure",
+      title: "Emergency pressure",
+      status: "running",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      approvals: [],
+      pendingGuidance: [],
+      events
+    };
+
+    const context = await assembler.assemble(task, { maxTotal: 6_000, reservedForResponse: 800 });
+    const serialized = JSON.stringify(context.messages);
+
+    expect(serialized).toContain("Pressure level: emergency");
+    expect(serialized).toContain("under emergency context pressure");
+    expect(serialized).toContain("继续，但不要丢掉最新失败定位");
+    expect(serialized.length).toBeLessThan(rawLog.length * 3);
   });
 
   it("names explicit verification commands in goal mode and marks them pending after edits", async () => {
@@ -6116,9 +6238,44 @@ describe("AgentWorkbench", () => {
     expect((await workbench.searchKnowledge({ query: "API route", projectId: "default", limit: 3 }))[0]?.item.id).toBe(apiItem.id);
     expect((await workbench.searchKnowledge({ query: "knowledge-api.ts", projectId: "default", limit: 3 }))[0]?.matchedFields).toContain("fileName");
     expect((await workbench.searchKnowledge({ query: "loadKnowledgeIndex", projectId: "default", limit: 3 }))[0]?.item.id).toBe(apiItem.id);
+    expect((await workbench.searchKnowledge({ query: "load knowledge index", projectId: "default", limit: 3 }))[0]?.item.id).toBe(apiItem.id);
     const chinese = await workbench.searchKnowledge({ query: "中文检索", projectId: "default", limit: 3 });
     expect(chinese[0]?.item.id).toBe(chineseItem.id);
     expect(chinese[0]?.highlights?.some((highlight) => highlight.text.includes("中文检索"))).toBe(true);
+  });
+
+  it("plans adaptive knowledge queries with aliases, grades, confidence, and bounded diagnostics", async () => {
+    const store = new InMemoryWorkbenchStore();
+    const workbench = new AgentWorkbench({ store });
+    const item = await workbench.createKnowledgeItem({
+      kind: "memory",
+      title: "Approval policy",
+      content: "Workspace writes require explicit approval. Reusable permission grants should stay scoped to the task.",
+      tags: ["permissions", "approvals"]
+    });
+    await workbench.createKnowledgeItem({
+      kind: "memory",
+      title: "Provider cache note",
+      content: "Prompt cache hit rate depends on stable model, endpoint, system prompt, and tool inventory.",
+      tags: ["cache"]
+    });
+
+    const results = await workbench.searchKnowledge({
+      query: "权限审批模式",
+      projectId: "default",
+      limit: 3,
+      includeDiagnostics: true
+    });
+    const plain = await workbench.searchKnowledge({ query: "权限审批模式", projectId: "default", limit: 3 });
+
+    expect(results[0]?.item.id).toBe(item.id);
+    expect(results[0]?.matchedQuery).toMatch(/approval|permission/i);
+    expect(results[0]?.retrievalGrade).toMatch(/strong|partial/);
+    expect(results[0]?.confidence).toBeGreaterThan(0.4);
+    expect(results[0]?.queryPlan?.signals).toContain("permission_aliases");
+    expect(results[0]?.queryPlan?.variants.some((variant) => variant.kind === "alias")).toBe(true);
+    expect((results[0]?.queryPlan?.variants.length ?? 0)).toBeLessThanOrEqual(5);
+    expect(plain[0]?.queryPlan).toBeUndefined();
   });
 
   it("reindexes knowledge when a direct core patch clears indexed content", async () => {

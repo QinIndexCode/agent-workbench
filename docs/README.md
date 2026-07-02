@@ -20,7 +20,7 @@
 | [architecture.md](architecture.md) | 系统概览 | 运行时流程、安全边界、学习边界、组件交互时序 | 新加入的开发者、架构评审者 |
 | [cli.md](cli.md) | 本地 CLI | `aw`/`agent-workbench` 命令、HTTP session、上传、清理 live-model 产物 | 本地运维与自动化使用者 |
 | [agent-workflow.md](agent-workflow.md) | Agent 工作流 | 工作流阶梯、验证阶梯、反硬编码与反过度约束边界 | Agent 指令与质量门禁维护者 |
-| [design-context-assembly.md](design-context-assembly.md) | 组件实现标准 | 5层上下文架构、ContextAssembler、FileStateTracker、流式解析、工具定义 | 实现上下文系统的开发者 |
+| [design-context-assembly.md](design-context-assembly.md) | 组件实现标准 | 4层上下文架构、ContextAssembler、FileStateTracker、流式解析、工具定义 | 实现上下文系统的开发者 |
 | [design-memory-system.md](design-memory-system.md) | 组件实现标准 | 三层记忆模型、Skill生命周期、反思系统、冲突处理、MCP接入 | 实现记忆与学习系统的开发者 |
 | [DigDeeper.md](DigDeeper.md) | 历史愿景 | 早期设计哲学、研究假设和行业对标，不是交付清单 | 架构研究者 |
 | [experience.md](experience.md) | 行业参考 | 主流AI IDE设计经验总结、可复用工程化经验 | 全体开发者（可选阅读） |

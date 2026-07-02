@@ -103,10 +103,7 @@
 .dangerButton,
 .textButton,
 .settingsNavItem,
-.newTaskButton,
-.iconNavButton,
-.approvalActions button,
-.copyOutputButton {
+.approvalActions button {
   min-height: 34px;
   padding: 0 11px;
   color: var(--text);
@@ -123,10 +120,7 @@
 .dangerButton:hover,
 .textButton:hover,
 .settingsNavItem:hover,
-.newTaskButton:hover,
-.iconNavButton:hover,
-.approvalActions button:hover,
-.copyOutputButton:hover {
+.approvalActions button:hover {
   background: var(--surface-hover);
   border-color: var(--border-strong);
 }
@@ -134,20 +128,14 @@
 :root[data-theme="dark"] .dangerButton:hover,
 :root[data-theme="dark"] .textButton:hover,
 :root[data-theme="dark"] .settingsNavItem:hover,
-:root[data-theme="dark"] .newTaskButton:hover,
-:root[data-theme="dark"] .iconNavButton:hover,
-:root[data-theme="dark"] .approvalActions button:hover,
-:root[data-theme="dark"] .copyOutputButton:hover {
+:root[data-theme="dark"] .approvalActions button:hover {
   border-color: #3f3f46;
 }
 
 :root[data-theme="light"] .dangerButton:hover,
 :root[data-theme="light"] .textButton:hover,
 :root[data-theme="light"] .settingsNavItem:hover,
-:root[data-theme="light"] .newTaskButton:hover,
-:root[data-theme="light"] .iconNavButton:hover,
-:root[data-theme="light"] .approvalActions button:hover,
-:root[data-theme="light"] .copyOutputButton:hover {
+:root[data-theme="light"] .approvalActions button:hover {
   border-color: #a1a1aa;
 }
 
@@ -162,8 +150,6 @@ button:active:not(:disabled) {
 }
 
 .subtleButton:disabled,
-.newTaskButton:disabled,
-.iconNavButton:disabled,
 .iconButton:disabled {
   cursor: default;
   opacity: 0.45;

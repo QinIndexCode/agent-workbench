@@ -927,9 +927,27 @@ export const KnowledgeSearchRequestSchema = z
   .object({
     query: z.string().min(1),
     projectId: z.string().default("default"),
-    limit: z.number().int().positive().max(12).default(5)
+    limit: z.number().int().positive().max(12).default(5),
+    mode: z.enum(["auto", "keyword", "hybrid"]).default("auto"),
+    includeDiagnostics: z.boolean().default(false)
   })
   .strict();
+
+export const KnowledgeQueryVariantKindSchema = z.enum(["original", "normalized", "identifier", "alias", "step_back"]);
+
+export const KnowledgeQueryPlanSchema = z.object({
+  originalQuery: z.string(),
+  normalizedQuery: z.string(),
+  strategy: z.enum(["keyword", "hybrid"]),
+  variants: z.array(
+    z.object({
+      kind: KnowledgeQueryVariantKindSchema,
+      query: z.string(),
+      weight: z.number().min(0).max(1)
+    })
+  ),
+  signals: z.array(z.string()).default([])
+});
 
 export const KnowledgeSearchResultSchema = z.object({
   item: KnowledgeItemSchema,
@@ -948,6 +966,10 @@ export const KnowledgeSearchResultSchema = z.object({
   matchedFields: z.array(KnowledgeSearchFieldSchema).optional(),
   rerankScore: z.number().min(0).max(1).optional(),
   rerankStatus: z.enum(["applied", "skipped", "failed"]).optional(),
+  retrievalGrade: z.enum(["strong", "partial", "weak"]).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  matchedQuery: z.string().optional(),
+  queryPlan: KnowledgeQueryPlanSchema.optional(),
   citation: z
     .object({
       knowledgeId: z.string(),
